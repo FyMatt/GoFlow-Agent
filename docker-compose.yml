@@ -1,0 +1,23 @@
+services:
+  goflow:
+    build:
+      context: .
+    image: goflow-agent:local
+    env_file:
+      - .env
+    environment:
+      GOFLOW_BACKUP_BASE_URL: ${GOFLOW_BACKUP_BASE_URL:-${GOFLOW_BASE_URL}}
+      GOFLOW_BACKUP_API_KEY: ${GOFLOW_BACKUP_API_KEY:-${GOFLOW_API_KEY}}
+      GOFLOW_BACKUP_MODEL: ${GOFLOW_BACKUP_MODEL:-${GOFLOW_MODEL}}
+    ports:
+      - "8080:8080"
+    volumes:
+      - ./workspace:/workspace
+    command:
+      - --config
+      - /app/configs/agent.docker.yaml
+      - --workspace
+      - /workspace
+      - --http
+      - :8080
+

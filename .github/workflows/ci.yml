@@ -1,0 +1,78 @@
+name: ci
+
+on:
+  push:
+    branches:
+      - main
+      - master
+  pull_request:
+
+jobs:
+  linux-smoke:
+    name: linux smoke
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Go tests
+        run: go test ./...
+
+      - name: Python MCP smoke tests
+        run: |
+          python scripts/validate_python_mcp.py
+          python scripts/validate_extension_workflow.py
+
+      - name: Deployment asset validation
+        run: python scripts/validate_deployment_assets.py
+
+  docker-build:
+    name: docker build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Validate deployment assets
+        run: python scripts/validate_deployment_assets.py
+
+      - name: Build Docker image
+        run: docker build -t goflow-agent:ci .
+
+      - name: Smoke-test HTTP container startup
+        run: |
+          mkdir -p .ci-workspace
+          docker run -d --rm \
+            --name goflow-ci \
+            -p 18080:8080 \
+            -v "$PWD/.ci-workspace:/workspace" \
+            -e GOFLOW_BASE_URL=http://localhost:9999/v1 \
+            -e GOFLOW_API_KEY=ci-key \
+            -e GOFLOW_MODEL=ci-model \
+            -e GOFLOW_BACKUP_BASE_URL=http://localhost:9999/v1 \
+            -e GOFLOW_BACKUP_API_KEY=ci-key \
+            -e GOFLOW_BACKUP_MODEL=ci-model \
+            goflow-agent:ci
+          for i in $(seq 1 20); do
+            if curl -fsS http://127.0.0.1:18080/api/session > /tmp/goflow-session.json; then
+              cat /tmp/goflow-session.json
+              docker stop goflow-ci
+              exit 0
+            fi
+            sleep 1
+          done
+          docker logs goflow-ci || true
+          docker stop goflow-ci || true
+          exit 1
+

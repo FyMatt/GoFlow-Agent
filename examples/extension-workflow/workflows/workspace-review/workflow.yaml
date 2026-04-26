@@ -1,0 +1,13 @@
+name: workspace-review
+description: Build a workspace inventory with a custom MCP tool, then audit the result.
+stages:
+  - name: inventory
+    agent: workspace-reporter
+    skill: workspace-report
+    approval: false
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+    approval: false
+

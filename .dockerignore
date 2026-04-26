@@ -1,0 +1,13 @@
+.git
+.goflow
+**/.goflow
+**/__pycache__
+**/.pytest_cache
+**/node_modules
+**/.venv
+**/venv
+tmp
+dist
+build
+*.log
+
