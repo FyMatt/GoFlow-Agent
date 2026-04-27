@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>GoFlow Console</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+</head>
+<body>
+  <div class="shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <div class="brand-mark">GF</div>
+        <div>
+          <strong>GoFlow</strong>
+          <span>Agent Studio</span>
+        </div>
+      </div>
+      <nav class="nav" aria-label="Console sections">
+        <button data-view="overview" class="active" data-i18n="nav.overview">Overview</button>
+        <button data-view="workflows" data-i18n="nav.workflows">Workflow Studio</button>
+        <button data-view="playground" data-i18n="nav.playground">Playground</button>
+        <button data-view="workspace" data-i18n="nav.workspace">Workspace</button>
+        <button data-view="approvals" data-i18n="nav.approvals">Approvals</button>
+        <button data-view="catalog" data-i18n="nav.catalog">Resources</button>
+        <button data-view="status" data-i18n="nav.status">Observability</button>
+        <button data-view="settings" data-i18n="nav.settings">Settings</button>
+      </nav>
+      <div class="side-status" id="sideStatus">Loading runtime...</div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div>
+          <p class="eyebrow" id="sectionEyebrow">Visual orchestration</p>
+          <h1 id="sectionTitle">Workflow Studio</h1>
+        </div>
+        <div class="top-actions">
+          <select id="languageSelect" aria-label="Language">
+            <option value="en">English</option>
+            <option value="zh">中文</option>
+          </select>
+          <div class="runtime-pill" id="runtimePill">runtime</div>
+        </div>
+      </header>
+      <section id="app" class="view"></section>
+    </main>
+  </div>
+
+  <script type="module" src="/assets/app.js"></script>
+</body>
+</html>

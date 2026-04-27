@@ -22,7 +22,7 @@ GoFlow should therefore be both:
 2. an out-of-the-box CLI/HTTP product that ordinary users can run against a workspace without first understanding the framework internals
 3. a deployable runtime that works on Windows, Linux, and Docker while preserving the runtime-home/workspace boundary
 4. a workspace-aware assistant that supports pure chat without a workspace, but requires an explicit workspace before reading, writing, generating project files, running workflows over files, or using workspace-scoped tools
-5. a visual agent console, not only a terminal app: HTTP mode should eventually expose the same operational power as the CLI through pages for chat, workspace selection, agents, tools, skills, workflows, approvals, diffs, logs, tokens, and session state
+5. a visual Agent Studio, not only a terminal app: HTTP mode should expose CLI-level operational power through a modern workflow-platform UI for workflow design, workspace selection, resource catalogs, approvals, diffs, logs, tokens, settings, and session state
 6. a framework that supports both configuration-first use and code-first extension, so simple users can stay in YAML/UI while advanced developers can replace or extend core components
 
 The long-term goal is to let limited LLMs produce higher-quality work through strong runtime scaffolding:
@@ -69,6 +69,7 @@ The long-term goal is to let limited LLMs produce higher-quality work through st
 - Approved normal-chat tool calls can resume the interrupted LLM tool loop instead of requiring the user to type "continue".
 - Workflow resume replays approved tool results into the suspended stage conversation.
 - Pressing Escape twice cancels the current agent/workflow operation in the interactive CLI.
+- Esc-cancelled turns remember the cancelled request in the current CLI process. A later continuation-only reply such as `继续`, `重试`, or `continue` re-runs that request from the beginning with a clear retry log. Durable mid-stage resume remains a future workflow-run persistence goal.
 
 ### MCP Tools
 
@@ -199,6 +200,11 @@ Skill authoring support:
 - Session inspection and approval endpoints exist.
 - Workflow graph listing, create/update/delete, option discovery, and visual editing endpoints are implemented.
 - HTTP SSE endpoints now forward the same `schema.StreamEvent` semantics used by the CLI for normal turns, workflow runs, and streamed approval resumes, including task stages, tool results, approvals, token usage, and final `workflow_result` events.
+- HTTP now has a modular embedded frontend baseline under `internal/api/web`: `/console` and `/workflows` serve a modern Agent Studio shell with overview, workflow Studio, agent-selectable playground, workspace, approval, resource catalog, observability, and settings areas.
+- The Studio supports Chinese/English language switching for the main navigation and core workflow/playground surfaces.
+- The workflow Studio baseline uses a Dify-style canvas: workflow list, draggable node palette, start/end markers, agent/skill/tool/custom node metadata, visual edges, click-to-connect custom links, node parameter editing, save/delete, and run preview backed by persisted workflow graph YAML.
+- HTTP has supporting frontend APIs for runtime inventory (`/api/runtime`), active-agent selection (`/api/runtime/agent`), workspace file suggestions (`/api/workspace-files`), update policy metadata (`/api/update-policy`), and approve-and-remember actions.
+- Resource editing baseline exists for skills: Studio can create/update `skills/<name>/SKILL.md` through validated `/api/resources/skills/{name}` saves, then hot reload skills when the manager supports reload.
 
 ### Deployment
 
@@ -212,6 +218,7 @@ Skill authoring support:
 - `.env.example` contains placeholders rather than credentials.
 - `.github/workflows/ci.yml` runs Linux Go/Python smoke tests plus Docker image build and HTTP startup checks.
 - `scripts/validate_deployment_assets.py` statically validates Docker/deployment files without requiring Docker locally.
+- HTTP mode handles Ctrl+C/SIGTERM through graceful server shutdown instead of hanging inside `ListenAndServe`.
 
 ## 3. Current Gaps And Risks
 
@@ -224,7 +231,7 @@ Skill authoring support:
 - Completed baseline: malformed tool-call JSON retries use structured recovery rules, suppress repeated prose, require complete arguments, and tell the model to stop calling tools if arguments cannot be reconstructed safely.
 - The runtime needs stronger "enough context, now act" nudges for implementation requests.
 - Completed CLI baseline: the runtime distinguishes pure chat from workspace-required tasks when the CLI workspace was only defaulted. If the request needs file generation, file reads/writes, command execution, `@file`, or workflow stages over project files, the CLI stops and asks the operator to confirm the workspace.
-- Remaining gap: HTTP mode still needs first-class workspace lifecycle APIs and UI, including selecting, confirming, clearing, and displaying workspace state.
+- Completed HTTP baseline: workspace lifecycle APIs and UI can display, confirm, clear, and request restart for workspace selection. Remaining gap is dynamic workspace rebinding and a platform-aware folder picker where the host environment can support one safely.
 
 ### CLI Interactivity
 
@@ -251,7 +258,7 @@ Skill authoring support:
 - Completed baseline: skill, Python MCP tool, agent snippet, and executable workflow blueprint scaffold commands include richer generated examples, next-step hints, validation guards, and authoring docs.
 - Custom workflow graph execution has a tested baseline, invalid graph files now surface validation errors instead of being reported as unknown workflows, validation edge cases are covered by tests, `docs/workflows.md` documents branch selection, stage approval, approval-resume examples, HTTP graph management APIs, and the visual editor.
 - Complex-task workflow support needs a richer execution model: durable per-stage state, explicit stage inputs/outputs, artifacts, retries, cancellation, manual checkpoints, longer pause/resume windows, nested or reusable sub-workflows, and better run history.
-- The visual workflow editor is a baseline editor. It still needs run monitoring, stage-level logs, approval handling, diff review, branch visualization, reusable templates, and workflow run replay/history.
+- The visual workflow Studio is a baseline authoring surface. It still needs durable run monitoring, stage-level logs, approval handling, diff review, branch visualization, reusable templates, and workflow run replay/history.
 
 ### Multi-Agent Collaboration
 
@@ -263,10 +270,11 @@ Skill authoring support:
 
 ### HTTP Console And API Parity
 
-- HTTP mode exposes core run, stream, session, approval, workflow execution, workflow graph management, workspace lifecycle APIs, a basic workspace page, and the baseline visual workflow editor.
+- HTTP mode exposes core run, stream, session, approval, workflow execution, workflow graph management, workspace lifecycle APIs, a basic workspace page, and the modular Agent Studio baseline.
 - Remaining gap: HTTP should reach CLI feature parity. It should expose first-class endpoints and UI for `/help`, `/agents`, `/skills`, `/tools`, `/status`, `/session`, `/trace`, approval choices including remember/approve-all scopes, `@file` attachment behavior, token usage, task stages, write diffs, workflow runs, and session persistence.
 - Completed baseline: HTTP has `/api/workspace`, `/api/workspace/confirm`, `/api/workspace/clear`, `/api/workspace/select`, workspace-required JSON/SSE failures, and a basic `/workspace` page. Dynamic workspace rebinding still requires restart so MCP servers are rebound safely.
-- Remaining gap: HTTP should provide a unified browser console similar to modern agent platforms: chat panel, richer workspace picker, file reference picker, tool/skill/agent catalog, workflow builder, workflow run monitor, approval inbox, diff viewer, logs, token usage, and settings.
+- Completed baseline: HTTP provides a unified browser Studio similar to modern agent/workflow platforms, with overview, visual workflow builder, agent-selectable playground, workspace picker, approval inbox, tool/skill/agent catalog, status/session visibility, settings, update-policy guidance, direct validated skill editing, and a resource-builder path for agents/tools that opens safe scaffold/edit requests in Playground.
+- Remaining gap: the Studio still needs deeper workflow run history, replayable stage logs, first-class diff viewer, direct validated visual config editing for agents/MCP tools/providers, richer onboarding, reusable workflow templates, import/export, and more polished Dify-like interaction details such as edge handles with branch labels, node-type-specific forms, and canvas zoom/pan.
 - The HTTP UI must preserve the same workspace safety boundary as CLI. UI convenience must not let browser actions read or write outside the selected workspace root.
 
 ### Documentation
@@ -433,15 +441,18 @@ Priority:
 
 1. Define a UI/API parity matrix against CLI commands and stream events.
 2. Completed baseline: add workspace lifecycle APIs: current workspace, select workspace with restart-required response, confirm current directory, clear workspace, and workspace-required error responses for unsafe operations.
-3. Expand the browser console beyond `/workflows`: chat/run page, workflow run monitor, approvals inbox, diff viewer, token/task-stage panel, tools/skills/agents browser, session/status pages, and settings.
-4. Make HTTP approval behavior match CLI, including approve, deny, approve-and-remember, workflow-scoped approve-all, and streamed resume.
-5. Add `@file` reference support to HTTP requests with the same workspace-root checks and read-tool log semantics as CLI.
-6. Add tests that compare CLI-visible behavior and HTTP/SSE behavior for approvals, workflow runs, token usage, task stages, write diffs, and workspace-required failures.
+3. Completed baseline: add a modular Agent Studio frontend at `/console` and `/workflows`, with overview, visual workflow Studio, agent-selectable playground, workspace, approvals, resource catalog, observability, settings modules, and Chinese/English language switching.
+4. Completed baseline: make HTTP approval behavior match CLI for approve, deny, approve-and-remember, and streamed resume. Continue with workflow-scoped approve-all UX.
+5. Completed baseline: add `@file` reference support and workspace file suggestions to HTTP requests with the same workspace-root checks and visible read-style stream events. Continue with richer attachment chips and preview UX.
+6. Completed baseline for skills: add visual skill creation/update with generated `SKILL.md` validation and hot reload. Continue with visual config editing for providers, agents, MCP tools, and update settings, with validation before writing YAML or scripts.
+7. Add workflow run persistence and Studio run history: run id, stage logs, artifacts, approvals, retries, cancellation, replay, and diff review.
+8. Continue polished workflow authoring interactions: edge handles, branch labels, richer node templates, validation overlays, import/export, template gallery, zoom/pan, and better run-state overlays on the canvas.
+9. Add tests that compare CLI-visible behavior and HTTP/SSE behavior for approvals, workflow runs, token usage, task stages, write diffs, and workspace-required failures.
 
 Success criteria:
 
-- A user can operate GoFlow from the browser without losing CLI-level visibility or safety.
-- The visual workflow page can author workflows and inspect live runs.
+- A user can operate GoFlow from a modern browser Studio without losing CLI-level visibility or safety.
+- The visual workflow page can author workflows, persist them as YAML, and inspect live runs.
 - Workspace selection is explicit, visible, and enforced before file-affecting operations.
 
 ### Phase H: Vertical Agent Kits And Visual Composition
@@ -464,8 +475,8 @@ Success criteria:
 
 ## 5. Immediate Next Actions
 
-1. Expand HTTP toward CLI parity with a unified visual console: chat, workflow runs, approvals, diffs, tools, skills, agents, status, session, logs, token usage, and richer workspace/file-reference picking.
-2. Strengthen complex-task workflows with durable run state, stage artifacts, retries, cancellation, checkpoints, and run history.
+1. Harden the new HTTP Agent Studio baseline: add visual config editing, richer onboarding, workflow templates, edge-handle authoring, run history, diff review, and frontend regression tests.
+2. Strengthen complex-task workflows with durable run state, stage artifacts, retries, cancellation, checkpoints, and replayable run history.
 3. Define the multi-agent collaboration primitives: message bus, shared blackboard, handoff packets, team templates, and visible team state.
 4. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
 5. Strengthen implementation-request nudges so agents act once enough context has been gathered.

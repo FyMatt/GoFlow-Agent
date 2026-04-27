@@ -139,12 +139,18 @@ workspace-scoped request arrives while the workspace is unconfirmed, JSON
 endpoints return `409 workspace_required` and SSE endpoints emit an error event
 instead of exposing read/write/exec tools.
 
-HTTP mode also exposes workflow graph management endpoints plus a small
-browser-based editor at `/workflows`. The editor persists the same YAML graph
-files used by the CLI runner, including optional visual `position` metadata for
-dragged stage nodes. Runtime execution ignores visual metadata and continues to
-use explicit stage order, `next` edges, branch strategy, agent selection, and
-skill selection.
+HTTP mode also exposes workflow graph management endpoints plus the embedded
+Agent Studio at `/console` and `/workflows`. The Studio is implemented as
+modular static assets under `internal/api/web` and is embedded into the Go
+binary, so release archives and Docker images remain self-contained. Its
+workflow canvas persists the same YAML graph files used by the CLI runner,
+including optional visual `position` metadata for dragged stage nodes. Runtime
+execution ignores visual-only `start` / `end` nodes and visual `position`
+metadata, while executable nodes continue to use explicit stage order, `next`
+edges, branch strategy, agent selection, and skill selection. Optional
+`node_type`, `tool`, and `params` metadata help the Studio represent richer
+agent/skill/tool nodes and are included in executable stage prompts where
+applicable.
 
 `plan-fix-audit` runs three named agents in order:
 

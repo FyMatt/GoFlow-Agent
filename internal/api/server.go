@@ -24,12 +24,20 @@ func NewServer(runtime *agent.Runtime) *Server {
 
 func NewServerWithWorkspace(runtime *agent.Runtime, workspaceState *workspace.State) *Server {
 	s := &Server{runtime: runtime, workspace: workspaceState, mux: http.NewServeMux()}
+	s.mux.HandleFunc("/", s.handleConsole)
+	s.mux.HandleFunc("/console", s.handleConsole)
+	s.mux.HandleFunc("/console/", s.handleConsole)
+	s.mux.Handle("/assets/", s.handleConsoleAssets())
 	s.mux.HandleFunc("/workspace", s.handleWorkspacePage)
 	s.mux.HandleFunc("/workspace/", s.handleWorkspacePage)
 	s.mux.HandleFunc("/workflows", s.handleWorkflowEditor)
 	s.mux.HandleFunc("/workflows/", s.handleWorkflowEditor)
+	s.mux.HandleFunc("/api/runtime", s.handleRuntimeStatus)
+	s.mux.HandleFunc("/api/runtime/agent", s.handleRuntimeAgent)
+	s.mux.HandleFunc("/api/update-policy", s.handleUpdatePolicy)
 	s.mux.HandleFunc("/api/workspace", s.handleWorkspace)
 	s.mux.HandleFunc("/api/workspace/", s.handleWorkspaceAction)
+	s.mux.HandleFunc("/api/workspace-files", s.handleWorkspaceFiles)
 	s.mux.HandleFunc("/api/run", s.handleRun)
 	s.mux.HandleFunc("/api/run/stream", s.handleRunStream)
 	s.mux.HandleFunc("/api/session", s.handleSession)
@@ -37,6 +45,8 @@ func NewServerWithWorkspace(runtime *agent.Runtime, workspaceState *workspace.St
 	s.mux.HandleFunc("/api/workflow-graphs/", s.handleWorkflowGraphItem)
 	s.mux.HandleFunc("/api/workflow-options", s.handleWorkflowOptions)
 	s.mux.HandleFunc("/api/workflows/", s.handleWorkflow)
+	s.mux.HandleFunc("/api/resources/skills", s.handleSkillResourceCollection)
+	s.mux.HandleFunc("/api/resources/skills/", s.handleSkillResourceItem)
 	s.mux.HandleFunc("/api/approvals/approve-all", s.handleApproveAll)
 	s.mux.HandleFunc("/api/approvals/", s.handleApprovalAction)
 	return s
@@ -71,7 +81,12 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 	if !s.ensureWorkspaceConfirmedForRun(w, req.Input) {
 		return
 	}
-	result, err := s.runtime.RunStream(r.Context(), req.Input, nil)
+	input, err := s.expandAtReferences(r.Context(), req.Input, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := s.runtime.RunStream(r.Context(), input, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
@@ -107,7 +122,12 @@ func (s *Server) handleWorkflow(w http.ResponseWriter, r *http.Request) {
 	if !s.ensureWorkspaceConfirmedForJSON(w, "workflow execution runs workspace-scoped stages") {
 		return
 	}
-	result, err := s.runtime.WorkflowRunner().Run(r.Context(), workflowName, req.Input, true, nil)
+	input, err := s.expandAtReferences(r.Context(), req.Input, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	result, err := s.runtime.WorkflowRunner().Run(r.Context(), workflowName, input, true, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
@@ -139,6 +159,8 @@ func (s *Server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
 	switch action {
 	case "approve":
 		result, err = s.runtime.ApproveToolCall(r.Context(), callID)
+	case "approve-remember":
+		result, err = s.runtime.ApproveToolCallAndRemember(r.Context(), callID)
 	case "deny":
 		result, err = s.runtime.DenyToolCall(callID)
 	default:
@@ -184,7 +206,12 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	_, err = s.runtime.RunStream(r.Context(), req.Input, writer.write)
+	input, err := s.expandAtReferences(r.Context(), req.Input, writer.write)
+	if err != nil {
+		_ = writer.write(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), IsError: true})
+		return
+	}
+	_, err = s.runtime.RunStream(r.Context(), input, writer.write)
 	if err != nil {
 		_ = writer.write(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), IsError: true})
 	}
@@ -203,7 +230,12 @@ func (s *Server) handleWorkflowStream(w http.ResponseWriter, r *http.Request, wo
 	if !ok {
 		return
 	}
-	result, err := s.runtime.WorkflowRunner().Run(r.Context(), workflowName, req.Input, true, writer.write)
+	input, err := s.expandAtReferences(r.Context(), req.Input, writer.write)
+	if err != nil {
+		_ = writer.write(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), IsError: true})
+		return
+	}
+	result, err := s.runtime.WorkflowRunner().Run(r.Context(), workflowName, input, true, writer.write)
 	if err != nil {
 		_ = writer.write(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), IsError: true})
 		return
@@ -218,10 +250,16 @@ func (s *Server) handleApprovalActionStream(w http.ResponseWriter, r *http.Reque
 	}
 	pending := pendingApprovalSummary(s.runtime.SessionSnapshot().PendingApprovals, callID)
 	if strings.TrimSpace(pending.WorkflowName) != "" {
-		approve, ok := approvalAction(action)
+		approve, remember, ok := approvalAction(action)
 		if !ok {
 			_ = writer.write(schema.StreamEvent{Type: schema.StreamEventError, Content: "unknown approval action", IsError: true})
 			return
+		}
+		if approve && remember {
+			if err := s.runtime.RememberPendingToolApproval(callID); err != nil {
+				_ = writer.write(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), IsError: true})
+				return
+			}
 		}
 		result, err := s.runtime.WorkflowRunner().Resume(r.Context(), pending.WorkflowName, callID, approve, writer.write)
 		if err != nil {
@@ -238,6 +276,8 @@ func (s *Server) handleApprovalActionStream(w http.ResponseWriter, r *http.Reque
 	switch action {
 	case "approve":
 		result, err = s.runtime.ApproveToolCall(r.Context(), callID)
+	case "approve-remember":
+		result, err = s.runtime.ApproveToolCallAndRemember(r.Context(), callID)
 	case "deny":
 		result, err = s.runtime.DenyToolCall(callID)
 	default:
@@ -327,14 +367,16 @@ func pendingApprovalSummary(items []session.PendingApprovalSnapshot, callID stri
 	return session.PendingApprovalSnapshot{}
 }
 
-func approvalAction(action string) (bool, bool) {
+func approvalAction(action string) (bool, bool, bool) {
 	switch action {
 	case "approve":
-		return true, true
+		return true, false, true
+	case "approve-remember":
+		return true, true, true
 	case "deny":
-		return false, true
+		return false, false, true
 	default:
-		return false, false
+		return false, false, false
 	}
 }
 

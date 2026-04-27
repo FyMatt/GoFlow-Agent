@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/http"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -424,6 +425,59 @@ func TestDoubleEscCancellerExpiresFirstPress(t *testing.T) {
 	}
 	if action := canceller.press(start.Add(3 * time.Second)); action != doubleEscActionWarn {
 		t.Fatalf("expected delayed second Esc to warn instead of cancel, got %v", action)
+	}
+}
+
+func TestRunHTTPServerStopsWhenContextCancelled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	server := &http.Server{
+		Addr:    "127.0.0.1:0",
+		Handler: http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}),
+	}
+	var output bytes.Buffer
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- runHTTPServer(ctx, server, &output)
+	}()
+
+	time.Sleep(50 * time.Millisecond)
+	cancel()
+
+	select {
+	case err := <-errCh:
+		if err != nil {
+			t.Fatalf("runHTTPServer: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("expected HTTP server to stop after context cancellation")
+	}
+	if got := output.String(); !strings.Contains(got, "shutting down") || !strings.Contains(got, "stopped") {
+		t.Fatalf("expected shutdown status output, got %q", got)
+	}
+}
+
+func TestContinuationOnlyInputIsDetected(t *testing.T) {
+	for _, input := range []string{"继续", "继续吧", "可以，继续", "重试", "continue", "go ahead", "retry"} {
+		if !isContinuationOnlyInput(input) {
+			t.Fatalf("expected %q to be treated as continuation-only input", input)
+		}
+	}
+	for _, input := range []string{"继续优化这个项目", "continue fixing parser", "帮我继续写 README"} {
+		if isContinuationOnlyInput(input) {
+			t.Fatalf("expected %q to be treated as a concrete new request", input)
+		}
+	}
+}
+
+func TestFormatRetryingCancelledTaskIncludesLastRequest(t *testing.T) {
+	message := formatRetryingCancelledTask(cancelledTaskState{
+		Request:     "帮我优化下这个代码 拓展功能",
+		Agent:       "fixer",
+		Mode:        "fix",
+		CancelledAt: time.Now(),
+	})
+	if !strings.Contains(message, "Re-running") || !strings.Contains(message, "帮我优化下这个代码") || !strings.Contains(message, "fixer/fix") {
+		t.Fatalf("unexpected cancelled-task retry message: %q", message)
 	}
 }
 

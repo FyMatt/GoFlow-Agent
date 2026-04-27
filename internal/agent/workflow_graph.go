@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
@@ -18,12 +19,15 @@ type workflowGraph struct {
 }
 
 type workflowGraphStage struct {
-	Name         string   `yaml:"name"`
-	Agent        string   `yaml:"agent"`
-	Skill        string   `yaml:"skill"`
-	Approval     bool     `yaml:"approval"`
-	NextStrategy string   `yaml:"next_strategy"`
-	Next         []string `yaml:"next"`
+	Name         string            `yaml:"name"`
+	NodeType     string            `yaml:"node_type"`
+	Agent        string            `yaml:"agent"`
+	Skill        string            `yaml:"skill"`
+	Tool         string            `yaml:"tool"`
+	Params       map[string]string `yaml:"params"`
+	Approval     bool              `yaml:"approval"`
+	NextStrategy string            `yaml:"next_strategy"`
+	Next         []string          `yaml:"next"`
 }
 
 func (w *WorkflowRunner) workflowFromGraph(name string) (workflowDefinition, bool, error) {
@@ -83,6 +87,9 @@ func validateWorkflowGraph(invokedName string, graph workflowGraph) error {
 			return fmt.Errorf("workflow graph %s has duplicate stage %q", graph.Name, stage.Name)
 		}
 		seen[key] = struct{}{}
+		if isVisualOnlyWorkflowNode(stage) {
+			continue
+		}
 		if strings.TrimSpace(stage.Agent) == "" {
 			return fmt.Errorf("workflow graph %s stage %s missing agent", graph.Name, stage.Name)
 		}
@@ -108,7 +115,7 @@ func (w *WorkflowRunner) runWorkflowGraph(ctx context.Context, graph workflowGra
 		return WorkflowResult{}, fmt.Errorf("workflow graph %s has no stages", graph.Name)
 	}
 	w.runtime.DisableWorkflowAutoApproval(graph.Name)
-	return w.runWorkflowGraphQueue(ctx, graph, request, approve, []int{0}, nil, handler)
+	return w.runWorkflowGraphQueue(ctx, graph, request, approve, []int{entryWorkflowGraphStageIndex(graph)}, nil, handler)
 }
 
 func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workflowGraph, request string, approve bool, queue []int, completed []WorkflowStageResult, handler func(event schema.StreamEvent) error) (WorkflowResult, error) {
@@ -122,6 +129,11 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 		stage := graph.Stages[index]
 		stageKey := normalizeWorkflowSkillName(stage.Name)
 		if _, ok := seen[stageKey]; ok {
+			continue
+		}
+		if isVisualOnlyWorkflowNode(stage) {
+			seen[stageKey] = struct{}{}
+			queue = append(w.nextWorkflowGraphStageIndices(graph, index, request, "", completed), queue...)
 			continue
 		}
 		if stage.Approval && !approve {
@@ -222,6 +234,29 @@ func (w *WorkflowRunner) graphStageSkill(stage workflowGraphStage) (schema.Skill
 		return schema.Skill{}, fmt.Errorf("workflow stage %s references unknown skill %s", stage.Name, stage.Skill)
 	}
 	return skill, nil
+}
+
+func isVisualOnlyWorkflowNode(stage workflowGraphStage) bool {
+	switch normalizeWorkflowSkillName(stage.NodeType) {
+	case "start", "end":
+		return true
+	default:
+		return false
+	}
+}
+
+func entryWorkflowGraphStageIndex(graph workflowGraph) int {
+	for index, stage := range graph.Stages {
+		if normalizeWorkflowSkillName(stage.NodeType) == "start" {
+			return index
+		}
+	}
+	for index, stage := range graph.Stages {
+		if !isVisualOnlyWorkflowNode(stage) {
+			return index
+		}
+	}
+	return 0
 }
 
 func (w *WorkflowRunner) nextWorkflowGraphStageIndices(graph workflowGraph, currentIndex int, request, stageOutput string, completed []WorkflowStageResult) []int {
@@ -329,6 +364,23 @@ func buildWorkflowGraphStagePrompt(graph workflowGraph, stage workflowGraphStage
 	fmt.Fprintf(&builder, "Run workflow %q stage %q for the following request.\n\nOriginal request:\n%s\n", graph.Name, stage.Name, request)
 	if graph.Description != "" {
 		fmt.Fprintf(&builder, "\nWorkflow description: %s\n", graph.Description)
+	}
+	if strings.TrimSpace(stage.NodeType) != "" {
+		fmt.Fprintf(&builder, "\nVisual node type: %s\n", stage.NodeType)
+	}
+	if strings.TrimSpace(stage.Tool) != "" {
+		fmt.Fprintf(&builder, "Preferred/related tool for this stage: %s\n", stage.Tool)
+	}
+	if len(stage.Params) > 0 {
+		builder.WriteString("Stage parameters:\n")
+		keys := make([]string, 0, len(stage.Params))
+		for key := range stage.Params {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		for _, key := range keys {
+			fmt.Fprintf(&builder, "- %s: %s\n", key, stage.Params[key])
+		}
 	}
 	if len(completed) > 0 {
 		builder.WriteString("\nCompleted prior stages:\n")

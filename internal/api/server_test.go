@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -113,9 +115,11 @@ func TestServerWorkflowGraphManagementEndpointsPersistCustomGraph(t *testing.T) 
 		"name":"release-check",
 		"description":"Plan, implement, and audit a release change.",
 		"stages":[
-			{"name":"plan","agent":"planner","skill":"execution-plan","next":["implement"],"position":{"x":80,"y":120}},
-			{"name":"implement","agent":"fixer","skill":"code-writing","approval":true,"next":["audit"],"position":{"x":320,"y":120}},
-			{"name":"audit","agent":"auditor","skill":"code-audit","position":{"x":560,"y":120}}
+			{"name":"start","node_type":"start","next":["plan"],"position":{"x":20,"y":120}},
+			{"name":"plan","node_type":"agent","agent":"planner","skill":"execution-plan","params":{"depth":"focused"},"next":["implement"],"position":{"x":80,"y":120}},
+			{"name":"implement","node_type":"tool","agent":"fixer","skill":"code-writing","tool":"file_tools/write_file","approval":true,"next":["audit"],"position":{"x":320,"y":120}},
+			{"name":"audit","node_type":"skill","agent":"auditor","skill":"code-audit","next":["end"],"position":{"x":560,"y":120}},
+			{"name":"end","node_type":"end","position":{"x":780,"y":120}}
 		]
 	}`)
 	request := httptest.NewRequest(http.MethodPut, "/api/workflow-graphs/release-check", body)
@@ -127,7 +131,7 @@ func TestServerWorkflowGraphManagementEndpointsPersistCustomGraph(t *testing.T) 
 	if response.Code != http.StatusOK {
 		t.Fatalf("expected save 200, got %d body=%s", response.Code, response.Body.String())
 	}
-	if !strings.Contains(response.Body.String(), `"name":"release-check"`) || !strings.Contains(response.Body.String(), `"x":80`) {
+	if !strings.Contains(response.Body.String(), `"name":"release-check"`) || !strings.Contains(response.Body.String(), `"node_type":"tool"`) || !strings.Contains(response.Body.String(), `"tool":"file_tools/write_file"`) {
 		t.Fatalf("expected persisted workflow graph response, got %s", response.Body.String())
 	}
 
@@ -161,8 +165,8 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 	if pageResponse.Code != http.StatusOK {
 		t.Fatalf("expected editor 200, got %d", pageResponse.Code)
 	}
-	if !strings.Contains(pageResponse.Body.String(), "GoFlow Workflow Editor") || !strings.Contains(pageResponse.Body.String(), "/api/workflow-graphs") {
-		t.Fatalf("expected workflow editor HTML, got %s", pageResponse.Body.String())
+	if !strings.Contains(pageResponse.Body.String(), "GoFlow Console") || !strings.Contains(pageResponse.Body.String(), "Agent Studio") || !strings.Contains(pageResponse.Body.String(), "/assets/app.js") {
+		t.Fatalf("expected GoFlow Studio HTML, got %s", pageResponse.Body.String())
 	}
 
 	optionsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-options", nil)
@@ -173,6 +177,140 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 	}
 	if !strings.Contains(optionsResponse.Body.String(), `"planner"`) || !strings.Contains(optionsResponse.Body.String(), `"execution-plan"`) {
 		t.Fatalf("expected workflow options, got %s", optionsResponse.Body.String())
+	}
+}
+
+func TestServerConsolePageAndAssets(t *testing.T) {
+	server := NewServer(newAPITestRuntime(t))
+
+	pageRequest := httptest.NewRequest(http.MethodGet, "/console", nil)
+	pageResponse := httptest.NewRecorder()
+	server.ServeHTTP(pageResponse, pageRequest)
+	if pageResponse.Code != http.StatusOK {
+		t.Fatalf("expected console 200, got %d", pageResponse.Code)
+	}
+	if !strings.Contains(pageResponse.Body.String(), "Agent Studio") || !strings.Contains(pageResponse.Body.String(), "Workflow Studio") {
+		t.Fatalf("expected modern Studio shell, got %s", pageResponse.Body.String())
+	}
+
+	assetRequest := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
+	assetResponse := httptest.NewRecorder()
+	server.ServeHTTP(assetResponse, assetRequest)
+	if assetResponse.Code != http.StatusOK {
+		t.Fatalf("expected app asset 200, got %d", assetResponse.Code)
+	}
+	if !strings.Contains(assetResponse.Body.String(), "renderWorkflows") {
+		t.Fatalf("expected modular app asset, got %s", assetResponse.Body.String())
+	}
+}
+
+func TestServerRuntimeStatusAndUpdatePolicy(t *testing.T) {
+	server := NewServer(newAPITestRuntime(t))
+
+	statusRequest := httptest.NewRequest(http.MethodGet, "/api/runtime", nil)
+	statusResponse := httptest.NewRecorder()
+	server.ServeHTTP(statusResponse, statusRequest)
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("expected runtime status 200, got %d", statusResponse.Code)
+	}
+	if !strings.Contains(statusResponse.Body.String(), `"agents"`) || !strings.Contains(statusResponse.Body.String(), `"tools"`) {
+		t.Fatalf("expected runtime inventory, got %s", statusResponse.Body.String())
+	}
+
+	updateRequest := httptest.NewRequest(http.MethodGet, "/api/update-policy", nil)
+	updateResponse := httptest.NewRecorder()
+	server.ServeHTTP(updateResponse, updateRequest)
+	if updateResponse.Code != http.StatusOK {
+		t.Fatalf("expected update policy 200, got %d", updateResponse.Code)
+	}
+	if !strings.Contains(updateResponse.Body.String(), `"release-archive"`) || !strings.Contains(updateResponse.Body.String(), `"docker"`) {
+		t.Fatalf("expected update strategies, got %s", updateResponse.Body.String())
+	}
+}
+
+func TestServerRuntimeAgentSelection(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	server := NewServer(runtimeRef)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/runtime/agent", strings.NewReader(`{"agent":"auditor"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected agent selection 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	if runtimeRef.ActiveAgent() != "auditor" || runtimeRef.Mode() != "audit" {
+		t.Fatalf("expected auditor active, got agent=%s mode=%s", runtimeRef.ActiveAgent(), runtimeRef.Mode())
+	}
+	if !strings.Contains(response.Body.String(), `"active_agent":"auditor"`) {
+		t.Fatalf("expected runtime status response, got %s", response.Body.String())
+	}
+}
+
+func TestServerSkillResourceSaveValidatesAndWritesSkill(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	server := NewServer(runtimeRef)
+	body := strings.NewReader(`{
+		"name":"custom-review",
+		"description":"Review custom project changes.",
+		"version":"1.0.0",
+		"author":"GoFlow Studio",
+		"mode":"audit",
+		"preferred_agent":"auditor",
+		"allowed_tool_kinds":["read"],
+		"output_kind":"findings",
+		"activation":{"keywords":["custom-review","review"]},
+		"tools":[{"name":"file_tools/read_file","required":true}],
+		"instructions":"## Role\n\nReview the requested files and report findings."
+	}`)
+	request := httptest.NewRequest(http.MethodPut, "/api/resources/skills/custom-review", body)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected skill save 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"name":"custom-review"`) {
+		t.Fatalf("expected saved skill response, got %s", response.Body.String())
+	}
+	path := filepath.Join(runtimeRef.RuntimeHome(), "skills", "custom-review", "SKILL.md")
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("expected skill file written: %v", err)
+	}
+	if !strings.Contains(string(data), "Review the requested files") || strings.Contains(string(data), "instructions:") {
+		t.Fatalf("unexpected skill file content:\n%s", string(data))
+	}
+}
+
+func TestServerWorkspaceFilesListsConfirmedWorkspaceFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, ".goflow"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".goflow", "session.json"), []byte("{}"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	server := NewServerWithWorkspace(newAPITestRuntime(t), workspace.New(root, true))
+
+	request := httptest.NewRequest(http.MethodGet, "/api/workspace-files?prefix=REA", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected workspace files 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"README.md"`) {
+		t.Fatalf("expected README suggestion, got %s", response.Body.String())
+	}
+	if strings.Contains(response.Body.String(), ".goflow") {
+		t.Fatalf("expected .goflow to be hidden, got %s", response.Body.String())
 	}
 }
 

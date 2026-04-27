@@ -57,17 +57,20 @@ def binary_name(name: str, goos: str) -> str:
     return name
 
 
-def build_go_binary(name: str, package: str, goos: str, goarch: str, out_dir: Path) -> None:
+def build_go_binary(name: str, package: str, version: str, goos: str, goarch: str, out_dir: Path) -> None:
     env = os.environ.copy()
     env.update({"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch})
     output = out_dir / binary_name(name, goos)
+    ldflags = "-s -w"
+    if name == "goflow":
+        ldflags += f" -X github.com/FyMatt/GoFlow-Agent/internal/version.Version={version}"
     run(
         [
             "go",
             "build",
             "-trimpath",
             "-ldflags",
-            "-s -w",
+            ldflags,
             "-o",
             str(output),
             package,
@@ -157,7 +160,7 @@ def build_target(version: str, goos: str, goarch: str, dist_dir: Path) -> Path:
     (stage_dir / "bin").mkdir(parents=True)
 
     for name, package in GO_PROJECTS:
-        build_go_binary(name, package, goos, goarch, stage_dir / "bin")
+        build_go_binary(name, package, version, goos, goarch, stage_dir / "bin")
     copy_common_assets(stage_dir)
     write_launchers(stage_dir, goos)
     archive = archive_target(stage_dir, dist_dir / package_name, goos)

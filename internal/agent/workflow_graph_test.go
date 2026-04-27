@@ -75,6 +75,58 @@ stages:
 	}
 }
 
+func TestWorkflowRunnerSkipsVisualStartAndEndNodes(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "visual-flow", `
+name: visual-flow
+description: Visual start/end nodes should not execute as LLM stages.
+stages:
+  - name: start
+    node_type: start
+    next: [plan]
+    position: {x: 40, y: 120}
+  - name: plan
+    node_type: agent
+    agent: planner
+    skill: execution-plan
+    next: [audit]
+    params:
+      goal: scoped plan
+    position: {x: 260, y: 120}
+  - name: audit
+    node_type: skill
+    agent: auditor
+    skill: code-audit
+    next: [end]
+    position: {x: 520, y: 120}
+  - name: end
+    node_type: end
+    position: {x: 760, y: 120}
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "Plan ready."}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "Audit done."}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "visual-flow", "review this", true, nil)
+	if err != nil {
+		t.Fatalf("Run visual workflow graph: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 2 {
+		t.Fatalf("expected only executable stages to complete, got %#v", result)
+	}
+	if result.CompletedStages[0].Stage != "plan" || result.CompletedStages[1].Stage != "audit" {
+		t.Fatalf("unexpected completed stages: %#v", result.CompletedStages)
+	}
+	if !strings.Contains(plannerLLM.requests[0].Messages[len(plannerLLM.requests[0].Messages)-1].Content, "goal: scoped plan") {
+		t.Fatalf("expected stage params in prompt, got %#v", plannerLLM.requests[0].Messages)
+	}
+}
+
 func TestWorkflowRunnerCustomWorkflowGraphSelectsBranch(t *testing.T) {
 	runtimeHome := t.TempDir()
 	writeWorkflowGraph(t, runtimeHome, "release-check", `

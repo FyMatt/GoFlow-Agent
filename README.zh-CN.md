@@ -113,6 +113,8 @@ go run ./cmd/goflow --workspace D:/my-empty-project --http :8080
 GoFlow HTTP API ready. runtime=C:\path\to\agent workspace=D:\my-empty-project addr=:8080
 ```
 
+使用 `Ctrl+C` 停止 HTTP 模式。GoFlow 会优雅关闭 HTTP server，并在退出前保存 session 快照。
+
 ### 使用 Docker 运行
 
 源码仓库本地构建时，复制 `.env.example` 为 `.env`，填入模型配置后运行：
@@ -211,6 +213,8 @@ workflow 暂停期间：
 
 如果普通 chat 先产出计划并等待批准执行，GoFlow 会在 session 中记录一个待执行 handoff。用户回复 `可以`、`继续`、`就按这个执行`、`全部添加`、`yes` 或 `go ahead` 等确认语句时，会切换到目标可执行 agent，并从已批准计划继续，而不是再次进入 planner 输出循环。
 
+Esc 取消和待执行 handoff 不同。连续按两次 Esc 会取消当前任务；之后单独输入 `继续`、`重试` 或 `continue` 会用清晰的 retry 日志从头重新执行刚才被取消的完整请求。
+
 handoff 待处理期间：
 
 - 重启后的启动 banner 可以展示待处理 handoff 摘要
@@ -266,9 +270,13 @@ SSE 客户端应处理这些事件：
 
 流式审批端点可以在工具调用获批或拒绝后恢复普通 chat 或 workflow 执行。
 
-HTTP 模式还提供 `GET /workflows` 浏览器工作流编辑器，可以查看、创建、拖拽、
-编辑、保存、删除并运行自定义 workflow graph。自定义工作流会持久化到
-`workflows/<name>/workflow.yaml`。更多细节见 [Workflow Graphs](./docs/workflows.md)。
+HTTP 模式还提供 `GET /console` 和 `GET /workflows` 内嵌 Agent Studio。
+这是现代化的可视化工作流页面，而不是终端克隆；它包含 workflow 列表、节点库、
+可拖拽阶段画布、属性面板、运行预览、审批、资源目录、workspace 控制、观测信息
+和设置/更新提示。Playground 可以在运行前选择指定 Agent，资源目录里也有经过校验的
+Skill 可视化编辑器，主界面支持中文/英文切换。
+自定义工作流会持久化到 `workflows/<name>/workflow.yaml`。
+更多细节见 [Workflow Graphs](./docs/workflows.md)。
 
 ## 内置 MCP 工具
 
@@ -334,6 +342,7 @@ Please generate an initial README and docs/overview.md for this empty project.
 - [Skills](./docs/skills.md)
 - [Skill Authoring](./docs/skill-authoring.md)
 - [Workflow Graphs](./docs/workflows.md)
+- [Updates](./docs/updates.md)
 
 ## 当前状态
 

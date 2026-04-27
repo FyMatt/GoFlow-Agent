@@ -31,7 +31,7 @@ For all scaffold commands and generated-file verification steps, see [Scaffold C
 
 For an end-to-end custom extension, see `examples/extension-workflow`. It includes a custom Python MCP server, a read-only agent snippet, a custom skill, and a graph workflow that composes the custom stage with a built-in audit stage.
 
-## Visual Editor
+## Visual Workflow Studio
 
 Start HTTP mode:
 
@@ -45,14 +45,25 @@ Open:
 http://127.0.0.1:8080/workflows
 ```
 
-The editor can:
+`/workflows` opens the same modular Agent Studio used by `/console`, focused on
+the workflow canvas. It is intended to feel like a modern workflow platform
+rather than a terminal page.
+
+The Studio can:
 
 - list built-in and custom workflow graphs
 - create custom workflow graphs
+- add stages from a node palette
+- drag node types from the palette into the canvas
 - drag stages on a canvas
-- edit stage agent, skill, approval, next strategy, and next-stage edges
+- model visual `start` and `end` markers
+- model executable `agent`, `skill`, `tool`, and `custom` nodes
+- show visual edges between stages
+- create custom edges by selecting a source node and then clicking a target node
+- edit stage agent, skill, approval, next strategy, and next-stage edges in a side property panel
+- edit optional node metadata such as `node_type`, `tool`, and key/value `params`
 - save custom graphs back to `workflows/<name>/workflow.yaml`
-- run the selected workflow through the same HTTP workflow endpoint
+- run the selected workflow through the same HTTP workflow endpoint and display stage/token/approval stream events
 
 Node positions are saved as optional stage metadata:
 
@@ -64,7 +75,26 @@ position:
 
 Execution ignores `position`; it is only used by the editor.
 
+Visual node metadata can also be saved:
+
+```yaml
+node_type: tool
+tool: file_tools/write_file
+params:
+  goal: update project files
+```
+
+`start` and `end` nodes are visual-only. They can be used to make a graph easier
+to read and to define the first executable path, but they do not run LLM stages.
+Executable nodes still need an `agent` and `skill`; `tool` and `params` are
+included in the stage prompt as metadata.
+
 Built-in workflows are shown for reference but cannot be overwritten or deleted.
+
+The first Studio baseline intentionally keeps the frontend dependency-free:
+assets live under `internal/api/web` and are embedded into the Go binary. This
+keeps release archives and Docker images self-contained while still allowing the
+web UI to grow by adding separate view modules.
 
 ## Stage Schema
 
@@ -72,7 +102,12 @@ Built-in workflows are shown for reference but cannot be overwritten or deleted.
 name: release-check
 description: Review and improve a change.
 stages:
+  - name: start
+    node_type: start
+    next: [triage]
+    position: {x: 40, y: 120}
   - name: triage
+    node_type: agent
     agent: planner
     skill: execution-plan
     approval: false
@@ -80,16 +115,23 @@ stages:
     next: [implement, audit]
     position: {x: 80, y: 120}
   - name: implement
+    node_type: tool
     agent: fixer
     skill: code-writing
+    tool: file_tools/write_file
     approval: true
     next: [audit]
     position: {x: 360, y: 120}
   - name: audit
+    node_type: skill
     agent: auditor
     skill: code-audit
+    next: [end]
     approval: false
     position: {x: 640, y: 120}
+  - name: end
+    node_type: end
+    position: {x: 900, y: 120}
 ```
 
 Fields:
@@ -98,8 +140,11 @@ Fields:
 - `description`: optional operator-facing purpose.
 - `stages`: ordered stage list. The first stage is the entry point.
 - `stage.name`: stage id used by `next` edges and status output.
+- `stage.node_type`: optional visual type. Supported Studio values are `start`, `agent`, `skill`, `tool`, `custom`, and `end`.
 - `stage.agent`: configured agent profile to run the stage.
 - `stage.skill`: loaded skill name whose instructions are applied to the stage.
+- `stage.tool`: optional tool metadata for a tool-focused stage.
+- `stage.params`: optional key/value metadata included in the stage prompt.
 - `stage.approval`: if `true`, pause before entering the stage unless the run is pre-approved.
 - `stage.next`: candidate next stage names. If omitted, GoFlow continues to the next stage in file order.
 - `stage.next_strategy`: optional branch strategy. Supported values include `select`, `best`, `conditional`, `planner_select`, `planner-select`, `dynamic`, and `graph`.
@@ -263,6 +308,7 @@ During pauses:
 - `/status` shows current workflow, next stage, pending call id, tool, agent, and stage.
 - `/session` shows persisted workflow and pending approval snapshots.
 - `Esc` twice cancels the active operation in interactive CLI mode.
+- After cancellation, typing only `继续`, `重试`, or `continue` re-runs the cancelled request from the beginning.
 
 ## Common Errors
 

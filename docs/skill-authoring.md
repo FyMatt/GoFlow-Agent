@@ -25,6 +25,18 @@ Available templates:
 
 Generated skills include metadata, tool declarations, activation keywords, preferred mode/agent, an example request, and extension notes. See [Scaffold Commands](./scaffolds.md) for the generated-file workflow and verification checklist.
 
+You can also create or edit skills from the HTTP Studio:
+
+```text
+http://127.0.0.1:8080/console#catalog
+```
+
+The Skill editor writes `skills/<name>/SKILL.md`, validates the generated
+frontmatter and instructions with the same parser used at startup, and reloads
+skills when hot reload is available. Use the Resource builder beside it when you
+want an agent to create a more specialized skill, agent, or tool through the
+normal tool-approval path.
+
 ## Minimal Shape
 
 ```markdown

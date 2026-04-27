@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
@@ -1438,6 +1439,47 @@ func (r *Runtime) SkillList() []schema.Skill {
 		return nil
 	}
 	return r.skills.List()
+}
+
+// SkillRoot returns the directory where editable skills are stored.
+func (r *Runtime) SkillRoot() string {
+	if r == nil {
+		return ""
+	}
+	if provider, ok := r.skills.(interface{ Root() string }); ok {
+		return strings.TrimSpace(provider.Root())
+	}
+	if home := strings.TrimSpace(r.RuntimeHome()); home != "" {
+		return filepath.Join(home, "skills")
+	}
+	return ""
+}
+
+// ReloadSkills reloads skills when the configured manager supports hot reload.
+func (r *Runtime) ReloadSkills() error {
+	if r == nil || r.skills == nil {
+		return nil
+	}
+	if reloader, ok := r.skills.(interface{ Reload() error }); ok {
+		return reloader.Reload()
+	}
+	return nil
+}
+
+// ToolNames returns the currently discovered MCP tool names.
+func (r *Runtime) ToolNames() []string {
+	if r == nil || r.mcp == nil {
+		return nil
+	}
+	return r.mcp.ToolNames()
+}
+
+// MCPHealthStatus returns MCP server health details.
+func (r *Runtime) MCPHealthStatus(ctx context.Context) map[string]string {
+	if r == nil || r.mcp == nil {
+		return nil
+	}
+	return r.mcp.HealthStatus(ctx)
 }
 
 // StatusLines returns human-readable runtime status information.

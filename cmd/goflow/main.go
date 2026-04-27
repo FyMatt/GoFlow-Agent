@@ -17,6 +17,7 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
+	"time"
 	"unicode"
 	"unicode/utf8"
 
@@ -101,9 +102,13 @@ func main() {
 			Handler: apipkg.NewServerWithWorkspace(agentRuntime, workspaceState),
 		}
 		fmt.Printf("GoFlow HTTP API ready. runtime=%s workspace=%s addr=%s\n", cfg.RuntimeHome, workspaceState.DisplayRoot(), paths.HTTPAddr)
-		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+		fmt.Println("Press Ctrl+C to stop the HTTP server.")
+		if err := runHTTPServer(ctx, server, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "http server error: %v\n", err)
 			os.Exit(1)
+		}
+		if err := sessionState.Save(cfg.Session.PersistPath); err != nil {
+			fmt.Fprintf(os.Stderr, "save session error: %v\n", err)
 		}
 		return
 	}
@@ -111,6 +116,7 @@ func main() {
 	setTerminalTitle(buildTerminalTitle(cfg.WorkspaceRoot), os.Stdin, os.Stdout)
 	fmt.Print(renderStartupBanner(buildStartupDisplayRow(agentRuntime, cfg.RuntimeHome, workspaceState.DisplayRoot())))
 	lineReader := newCLIInputLineReader(os.Stdin, os.Stdout, cfg.WorkspaceRoot)
+	var lastCancelledTask cancelledTaskState
 	for {
 		input, ok, err := lineReader.ReadLine(formatPrompt(agentRuntime))
 		if err != nil {
@@ -154,6 +160,14 @@ func main() {
 			}
 			continue
 		}
+		if !lastCancelledTask.IsZero() {
+			if isContinuationOnlyInput(input) {
+				fmt.Println(formatRetryingCancelledTask(lastCancelledTask))
+				input = lastCancelledTask.Request
+			} else {
+				lastCancelledTask = cancelledTaskState{}
+			}
+		}
 		if strings.Contains(input, "@") && !ensureWorkspaceConfirmed(workspaceState, "@file reference reads workspace files") {
 			continue
 		}
@@ -182,12 +196,16 @@ func main() {
 			}
 			fmt.Println(formatCommandSuccess("attached", strings.Join(names, ", ")))
 		}
+		taskAgent := agentRuntime.ActiveAgent()
+		taskMode := agentRuntime.Mode()
+		lastCancelledTask = cancelledTaskState{}
 		result, err := runCancelableAgentOperation(ctx, os.Stdin, os.Stdout, func(taskCtx context.Context) (schema.AgentResult, error) {
 			return agentRuntime.RunStream(taskCtx, expandedInput, renderer.Handle)
 		})
 		if err != nil {
 			renderer.Flush()
 			if errors.Is(err, context.Canceled) {
+				lastCancelledTask = cancelledTaskState{Request: input, Agent: taskAgent, Mode: taskMode, CancelledAt: time.Now()}
 				fmt.Println(formatTaskCancelled())
 				continue
 			}
@@ -205,6 +223,46 @@ func main() {
 
 	if err := lineReader.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "input error: %v\n", err)
+	}
+}
+
+func runHTTPServer(ctx context.Context, server *http.Server, output io.Writer) error {
+	if server == nil {
+		return fmt.Errorf("http server is nil")
+	}
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- server.ListenAndServe()
+	}()
+	select {
+	case err := <-errCh:
+		if err == nil || errors.Is(err, http.ErrServerClosed) {
+			return nil
+		}
+		return err
+	case <-ctx.Done():
+		if output != nil {
+			fmt.Fprintln(output, "GoFlow HTTP API shutting down...")
+		}
+		shutdownCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		if err := server.Shutdown(shutdownCtx); err != nil {
+			_ = server.Close()
+			return fmt.Errorf("shutdown http server: %w", err)
+		}
+		select {
+		case err := <-errCh:
+			if err == nil || errors.Is(err, http.ErrServerClosed) {
+				if output != nil {
+					fmt.Fprintln(output, "GoFlow HTTP API stopped.")
+				}
+				return nil
+			}
+			return err
+		case <-time.After(5 * time.Second):
+			_ = server.Close()
+			return fmt.Errorf("http server did not stop after shutdown")
+		}
 	}
 }
 
@@ -1225,6 +1283,48 @@ func runCancelableWorkflowOperation(ctx context.Context, input io.Reader, output
 		return result, context.Canceled
 	}
 	return result, err
+}
+
+type cancelledTaskState struct {
+	Request     string
+	Agent       string
+	Mode        string
+	CancelledAt time.Time
+}
+
+func (s cancelledTaskState) IsZero() bool {
+	return strings.TrimSpace(s.Request) == "" && s.CancelledAt.IsZero()
+}
+
+func isContinuationOnlyInput(input string) bool {
+	text := strings.ToLower(strings.TrimSpace(input))
+	if text == "" {
+		return false
+	}
+	text = strings.Trim(text, " \t\r\n.!！?？。")
+	text = strings.ReplaceAll(text, "，", ",")
+	text = strings.ReplaceAll(text, "、", ",")
+	text = strings.Join(strings.Fields(text), " ")
+	switch text {
+	case "继续", "继续吧", "继续执行", "继续任务", "可以继续", "可以,继续", "继续上次任务", "重试", "重新执行", "再试一次":
+		return true
+	case "continue", "continue please", "go ahead", "keep going", "proceed", "retry", "try again", "rerun":
+		return true
+	default:
+		return false
+	}
+}
+
+func formatRetryingCancelledTask(state cancelledTaskState) string {
+	request := truncateCLISummaryValue(state.Request)
+	if request == "" {
+		request = "previous task"
+	}
+	agentMode := ""
+	if strings.TrimSpace(state.Agent) != "" || strings.TrimSpace(state.Mode) != "" {
+		agentMode = fmt.Sprintf(" [%s/%s]", fallbackDisplayText(state.Agent, "agent"), fallbackDisplayText(state.Mode, "mode"))
+	}
+	return fmt.Sprintf("%s Re-running the cancelled task%s from the beginning: %s", styleStatus("[retry]", "approval"), agentMode, request)
 }
 
 func handlePendingApprovalInput(ctx context.Context, input string, agentRuntime *agent.Runtime) bool {

@@ -20,8 +20,11 @@ type WorkflowGraphDocument struct {
 // WorkflowGraphStageDocument is one persisted workflow stage.
 type WorkflowGraphStageDocument struct {
 	Name         string                `json:"name" yaml:"name"`
+	NodeType     string                `json:"node_type,omitempty" yaml:"node_type,omitempty"`
 	Agent        string                `json:"agent" yaml:"agent"`
 	Skill        string                `json:"skill" yaml:"skill"`
+	Tool         string                `json:"tool,omitempty" yaml:"tool,omitempty"`
+	Params       map[string]string     `json:"params,omitempty" yaml:"params,omitempty"`
 	Approval     bool                  `json:"approval,omitempty" yaml:"approval,omitempty"`
 	NextStrategy string                `json:"next_strategy,omitempty" yaml:"next_strategy,omitempty"`
 	Next         []string              `json:"next,omitempty" yaml:"next,omitempty"`
@@ -49,6 +52,7 @@ type WorkflowGraphSummary struct {
 type WorkflowOptionSet struct {
 	Agents []WorkflowAgentOption `json:"agents"`
 	Skills []WorkflowSkillOption `json:"skills"`
+	Tools  []string              `json:"tools"`
 }
 
 type WorkflowAgentOption struct {
@@ -231,6 +235,8 @@ func (w *WorkflowRunner) WorkflowOptions() WorkflowOptionSet {
 		})
 	}
 	sort.Slice(options.Skills, func(i, j int) bool { return options.Skills[i].Name < options.Skills[j].Name })
+	options.Tools = w.runtime.ToolNames()
+	sort.Strings(options.Tools)
 	return options
 }
 
@@ -239,14 +245,28 @@ func (d WorkflowGraphDocument) toInternalGraph() workflowGraph {
 	for _, stage := range d.Stages {
 		stages = append(stages, workflowGraphStage{
 			Name:         stage.Name,
+			NodeType:     stage.NodeType,
 			Agent:        stage.Agent,
 			Skill:        stage.Skill,
+			Tool:         stage.Tool,
+			Params:       copyStringMap(stage.Params),
 			Approval:     stage.Approval,
 			NextStrategy: stage.NextStrategy,
 			Next:         append([]string(nil), stage.Next...),
 		})
 	}
 	return workflowGraph{Name: d.Name, Description: d.Description, Stages: stages}
+}
+
+func copyStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func (w *WorkflowRunner) workflowGraphRoot() (string, error) {

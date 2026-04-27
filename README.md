@@ -118,6 +118,9 @@ At startup the server prints runtime, workspace, and listen address:
 GoFlow HTTP API ready. runtime=C:\path\to\agent workspace=D:\my-empty-project addr=:8080
 ```
 
+Use `Ctrl+C` to stop HTTP mode. GoFlow shuts the server down gracefully and saves
+the session snapshot before exiting.
+
 ### Run with Docker
 
 For local source checkouts, copy `.env.example` to `.env`, fill in provider values, then run:
@@ -217,6 +220,10 @@ For plain-language requests, the runtime can reroute into planner/fixer/auditor 
 
 If ordinary chat first produces a plan and is waiting for approval to execute it, GoFlow records a pending conversational handoff in the session snapshot. Natural replies such as `可以`, `继续`, `就按这个执行`, `全部添加`, `yes`, or `go ahead` confirm the handoff, switch to the target executable agent, and continue from the approved plan instead of looping back into more planner output.
 
+Esc cancellation is different from a pending handoff. Pressing Esc twice cancels
+the active turn; a later standalone `继续`, `重试`, or `continue` re-runs the
+cancelled request from the beginning with a clear retry log.
+
 While that handoff is pending:
 - the startup banner can show a pending handoff summary on restart
 - `/session` includes a structured `Pending handoff` section
@@ -279,9 +286,13 @@ SSE clients should handle these event types:
 
 The streamed approval endpoints resume ordinary chat or workflow execution when the approved or denied call has resumable context.
 
-HTTP mode also serves a browser workflow editor at `GET /workflows`. It can
-list, create, drag, edit, save, delete, and run custom workflow graphs persisted
-under `workflows/<name>/workflow.yaml`. See [Workflow Graphs](./docs/workflows.md).
+HTTP mode also serves the embedded Agent Studio at `GET /console` and
+`GET /workflows`. The Studio is a modern visual workflow surface with a
+workflow list, node palette, draggable stage canvas, property panel, run
+preview, approvals, resource catalog, workspace controls, observability, and
+settings/update guidance. The Playground can choose a specific agent before a
+run, the resource catalog includes a validated Skill editor, and the main UI supports English and Chinese. Custom workflow graphs are persisted under
+`workflows/<name>/workflow.yaml`. See [Workflow Graphs](./docs/workflows.md).
 
 ## Built-in MCP tools
 
@@ -345,6 +356,7 @@ Please generate an initial README and docs/overview.md for this empty project.
 - [Skills](./docs/skills.md)
 - [Skill Authoring](./docs/skill-authoring.md)
 - [Workflow Graphs](./docs/workflows.md)
+- [Updates](./docs/updates.md)
 
 ## Status
 

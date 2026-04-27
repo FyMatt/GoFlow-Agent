@@ -403,16 +403,28 @@ You can also combine it with an external workspace:
 go run ./cmd/goflow --workspace D:/target-dir --http :8080
 ```
 
+Stop HTTP mode with `Ctrl+C`. The CLI catches the signal, calls HTTP server
+shutdown, and saves the session snapshot before exiting.
+
 Current endpoints:
+- `GET /console`
+- `GET /workflows`
+- `GET /api/runtime`
+- `POST /api/runtime/agent`
+- `GET /api/update-policy`
 - `GET /api/workspace`
 - `POST /api/workspace/confirm`
 - `POST /api/workspace/clear`
 - `POST /api/workspace/select`
+- `GET /api/workspace-files`
 - `POST /api/run`
 - `POST /api/run/stream`
 - `GET /api/session`
 - `POST /api/workflows/{name}`
 - `POST /api/workflows/{name}/stream`
+- `GET /api/resources/skills`
+- `GET /api/resources/skills/{name}`
+- `PUT /api/resources/skills/{name}`
 - `GET /api/workflow-graphs`
 - `POST /api/workflow-graphs`
 - `GET /api/workflow-graphs/{name}`
@@ -421,6 +433,8 @@ Current endpoints:
 - `GET /api/workflow-options`
 - `POST /api/approvals/{callID}/approve`
 - `POST /api/approvals/{callID}/approve/stream`
+- `POST /api/approvals/{callID}/approve-remember`
+- `POST /api/approvals/{callID}/approve-remember/stream`
 - `POST /api/approvals/{callID}/deny`
 - `POST /api/approvals/{callID}/deny/stream`
 - `POST /api/approvals/approve-all`
@@ -438,10 +452,35 @@ operator can restart with `--workspace <path>` and rebind MCP servers safely.
 
 `GET /api/session` returns the same persisted workflow, pending handoff, and pending approval snapshot surfaced by the CLI.
 
+`GET /console` serves the modular Agent Studio UI. It is a browser-native
+workflow platform surface, not a terminal clone. It includes overview,
+workflow Studio, playground, workspace, approvals, resource catalog,
+observability, and settings modules.
+
+`GET /api/runtime` returns the browser-facing runtime inventory: version,
+active agent, mode, workspace state, session snapshot, agents, skills, tools,
+MCP health, and first-run environment-variable status.
+
+`POST /api/runtime/agent` switches the active agent for browser-initiated runs.
+The Studio Playground uses this to let users choose `chat`, `planner`, `fixer`,
+`auditor`, or any custom configured agent before sending a request. Tool policy
+and approval behavior still come from the selected agent profile.
+
+`GET/PUT /api/resources/skills/{name}` backs the Studio skill editor. A save
+generates `skills/<name>/SKILL.md`, parses it with the same skill validator used
+at startup, then reloads skills when the configured skill manager supports hot
+reload. This is an explicit operator configuration save, separate from LLM tool
+calls and their approval flow.
+
+`GET /api/update-policy` returns the update strategy metadata used by the
+settings page. Release-archive self-update should verify checksums/signatures
+and remain opt-in. Docker and source installs should normally show prompted
+upgrade commands rather than mutate themselves silently.
+
 `GET /workspace` serves a basic workspace status and confirmation page.
 
-`GET /workflows` serves the built-in workflow graph editor. Custom workflow
-graphs saved through the editor are persisted under
+`GET /workflows` serves the Studio focused on the visual workflow canvas.
+Custom workflow graphs saved through the Studio are persisted under
 `workflows/<name>/workflow.yaml` in runtime home.
 
 ## Backward compatibility
