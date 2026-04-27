@@ -27,21 +27,23 @@ const (
 
 // Runtime coordinates multiple named agents over shared skills and tools.
 type Runtime struct {
-	cfg                     *config.Config
-	skills                  interfaces.SkillManager
-	mcp                     interfaces.MCPClient
-	session                 *session.State
-	audit                   *runtime.AuditLogger
-	runners                 map[string]*AgentRunner
-	active                  string
-	traceInCLI              bool
-	approvals               *approvalStore
-	workflowAutoApproval    map[string]map[string]workflowApprovalScope
-	autoApprovedResults     map[string]schema.ToolResult
-	approvedWorkflowResumes map[string]pendingApproval
-	ordinaryApprovalResumes map[string]ordinaryApprovalResume
-	ordinaryCallResumes     map[string]string
-	ordinaryResumeResults   map[string]map[string]schema.ToolResult
+	cfg                      *config.Config
+	skills                   interfaces.SkillManager
+	mcp                      interfaces.MCPClient
+	session                  *session.State
+	audit                    *runtime.AuditLogger
+	runners                  map[string]*AgentRunner
+	active                   string
+	traceInCLI               bool
+	approvals                *approvalStore
+	workflowAutoApproval     map[string]map[string]workflowApprovalScope
+	autoApprovedResults      map[string]schema.ToolResult
+	approvedWorkflowResumes  map[string]pendingApproval
+	ordinaryApprovalResumes  map[string]ordinaryApprovalResume
+	ordinaryCallResumes      map[string]string
+	ordinaryResumeResults    map[string]map[string]schema.ToolResult
+	workspaceConfirmed       bool
+	workspaceConfirmationSet bool
 }
 
 // AgentRunner encapsulates one configured agent profile and its provider client.
@@ -227,20 +229,22 @@ func NewRuntime(cfg *config.Config, clients map[string]interfaces.LLMClient, ski
 		}
 	}
 	runtimeRef := &Runtime{
-		cfg:                     cfg,
-		skills:                  skills,
-		mcp:                     mcp,
-		session:                 state,
-		audit:                   audit,
-		runners:                 runners,
-		traceInCLI:              cfg.Audit.ShowTraceInCLI,
-		approvals:               newApprovalStore(),
-		workflowAutoApproval:    make(map[string]map[string]workflowApprovalScope),
-		autoApprovedResults:     make(map[string]schema.ToolResult),
-		approvedWorkflowResumes: make(map[string]pendingApproval),
-		ordinaryApprovalResumes: make(map[string]ordinaryApprovalResume),
-		ordinaryCallResumes:     make(map[string]string),
-		ordinaryResumeResults:   make(map[string]map[string]schema.ToolResult),
+		cfg:                      cfg,
+		skills:                   skills,
+		mcp:                      mcp,
+		session:                  state,
+		audit:                    audit,
+		runners:                  runners,
+		traceInCLI:               cfg.Audit.ShowTraceInCLI,
+		approvals:                newApprovalStore(),
+		workflowAutoApproval:     make(map[string]map[string]workflowApprovalScope),
+		autoApprovedResults:      make(map[string]schema.ToolResult),
+		approvedWorkflowResumes:  make(map[string]pendingApproval),
+		ordinaryApprovalResumes:  make(map[string]ordinaryApprovalResume),
+		ordinaryCallResumes:      make(map[string]string),
+		ordinaryResumeResults:    make(map[string]map[string]schema.ToolResult),
+		workspaceConfirmed:       true,
+		workspaceConfirmationSet: true,
 	}
 	active := runtimeRef.defaultAgentID()
 	if state != nil {
@@ -248,6 +252,26 @@ func NewRuntime(cfg *config.Config, clients map[string]interfaces.LLMClient, ski
 	}
 	runtimeRef.active = active
 	return runtimeRef, nil
+}
+
+// SetWorkspaceConfirmed controls whether workspace-scoped tools are visible to agents.
+func (r *Runtime) SetWorkspaceConfirmed(confirmed bool) {
+	if r == nil {
+		return
+	}
+	r.workspaceConfirmationSet = true
+	r.workspaceConfirmed = confirmed
+}
+
+// WorkspaceConfirmed reports whether workspace-scoped tool access is enabled.
+func (r *Runtime) WorkspaceConfirmed() bool {
+	if r == nil {
+		return true
+	}
+	if !r.workspaceConfirmationSet {
+		return true
+	}
+	return r.workspaceConfirmed
 }
 
 func firstRuntimeAgent(agents map[string]config.AgentProfile) string {

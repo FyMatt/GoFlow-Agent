@@ -114,6 +114,39 @@ func TestResolvePathsDefaultsWorkspaceToCurrentDirectory(t *testing.T) {
 	}
 }
 
+func TestResolvePathSettingsMarksDefaultWorkspaceUnconfirmed(t *testing.T) {
+	runtimeHome := t.TempDir()
+
+	settings, err := resolvePathSettings(runtimeHome, nil)
+	if err != nil {
+		t.Fatalf("resolve path settings: %v", err)
+	}
+	if settings.WorkspaceExplicit {
+		t.Fatalf("expected default workspace to be implicit, got %#v", settings)
+	}
+	workspace := newWorkspaceLifecycle(settings.WorkspaceRoot, settings.WorkspaceExplicit)
+	if workspace.Confirmed() {
+		t.Fatalf("expected implicit workspace to require confirmation")
+	}
+}
+
+func TestResolvePathSettingsMarksWorkspaceFlagExplicit(t *testing.T) {
+	runtimeHome := t.TempDir()
+	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
+
+	settings, err := resolvePathSettings(runtimeHome, []string{"--workspace", workspaceRoot})
+	if err != nil {
+		t.Fatalf("resolve path settings: %v", err)
+	}
+	if !settings.WorkspaceExplicit {
+		t.Fatalf("expected --workspace to mark workspace explicit")
+	}
+	workspace := newWorkspaceLifecycle(settings.WorkspaceRoot, settings.WorkspaceExplicit)
+	if !workspace.Confirmed() {
+		t.Fatalf("expected explicit workspace to start confirmed")
+	}
+}
+
 func TestResolvePathsRequiresWorkspaceValue(t *testing.T) {
 	runtimeHome := t.TempDir()
 
@@ -140,6 +173,36 @@ func TestResolvePathsAcceptsRelativeWorkspaceAndNormalizesIt(t *testing.T) {
 	}
 	if resolvedWorkspace != filepath.Clean(want) {
 		t.Fatalf("expected workspace %q, got %q", filepath.Clean(want), resolvedWorkspace)
+	}
+}
+
+func TestWorkspaceRequirementForInputDetectsWorkspaceTasks(t *testing.T) {
+	cases := []string{
+		"帮我用python写个计算器",
+		"optimize and extend this project",
+		"@README.md 总结一下",
+		"run tests",
+	}
+	for _, input := range cases {
+		if req := workspaceRequirementForInput(input); !req.Required {
+			t.Fatalf("expected workspace requirement for %q", input)
+		}
+	}
+	if req := workspaceRequirementForInput("Go 终端中如何监听按键？"); req.Required {
+		t.Fatalf("expected pure chat to avoid workspace requirement, got %#v", req)
+	}
+}
+
+func TestWorkspaceLifecycleConfirmCommand(t *testing.T) {
+	workspace := newWorkspaceLifecycle(`D:\Projects\test`, false)
+	if workspace.Confirmed() {
+		t.Fatal("expected implicit workspace to start unconfirmed")
+	}
+	if handled := handleCommand(context.Background(), "/workspace confirm", nil, nil, nil, workspace); !handled {
+		t.Fatal("expected /workspace confirm to be handled")
+	}
+	if !workspace.Confirmed() {
+		t.Fatal("expected /workspace confirm to mark workspace confirmed")
 	}
 }
 

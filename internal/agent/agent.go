@@ -72,6 +72,9 @@ func (a *Agent) RunStream(ctx context.Context, input string, handler func(event 
 
 // RunStream executes a request for one configured agent runner.
 func (r *AgentRunner) RunStream(ctx context.Context, input string, skills interfaces.SkillManager, mcp interfaces.MCPClient, state *session.State, audit *runtime.AuditLogger, runtimeRef *Runtime, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	if runtimeRef != nil && !runtimeRef.WorkspaceConfirmed() {
+		mcp = workspaceGatedMCP{mcp: mcp}
+	}
 	matchedSkill, matchDiagnostic, _ := skills.MatchWithDiagnostics(input)
 	if matchedSkill != nil && strings.TrimSpace(matchedSkill.PreferredAgent) != "" && matchedSkill.PreferredAgent != r.id {
 		audit.Record(schema.AuditEntry{Type: "skill_match", AgentID: r.id, SkillName: matchedSkill.Name, Outcome: "preferred_agent_mismatch", Detail: matchedSkill.PreferredAgent})
@@ -120,6 +123,77 @@ func (r *AgentRunner) RunStream(ctx context.Context, input string, skills interf
 		StartedAt:    startedAt,
 		FallbackUsed: fallbackUsed,
 	}, skills, mcp, state, audit, runtimeRef, handler)
+}
+
+type workspaceGatedMCP struct {
+	mcp interfaces.MCPClient
+}
+
+func (m workspaceGatedMCP) ListTools(ctx context.Context) ([]schema.Tool, error) {
+	tools, err := m.mcp.ListTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]schema.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if toolAllowedWithoutWorkspace(tool) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered, nil
+}
+
+func (m workspaceGatedMCP) RefreshTools(ctx context.Context) ([]schema.Tool, error) {
+	tools, err := m.mcp.RefreshTools(ctx)
+	if err != nil {
+		return nil, err
+	}
+	filtered := make([]schema.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if toolAllowedWithoutWorkspace(tool) {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered, nil
+}
+
+func (m workspaceGatedMCP) CallTool(ctx context.Context, name string, arguments []byte) (schema.ToolResult, error) {
+	tools, err := m.mcp.ListTools(ctx)
+	if err != nil {
+		return schema.ToolResult{}, err
+	}
+	for _, tool := range tools {
+		if tool.Name == name || formatQualifiedToolName(tool) == name {
+			if !toolAllowedWithoutWorkspace(tool) {
+				return schema.ToolResult{ToolName: tool.Name, Content: "workspace is not confirmed; workspace-scoped tools are disabled", IsError: true, Denied: true}, nil
+			}
+			return m.mcp.CallTool(ctx, name, arguments)
+		}
+	}
+	return schema.ToolResult{ToolName: name, Content: "workspace is not confirmed; unknown tools are disabled", IsError: true, Denied: true}, nil
+}
+
+func (m workspaceGatedMCP) HealthStatus(ctx context.Context) map[string]string {
+	return m.mcp.HealthStatus(ctx)
+}
+
+func (m workspaceGatedMCP) ToolNames() []string {
+	names := m.mcp.ToolNames()
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+func toolAllowedWithoutWorkspace(tool schema.Tool) bool {
+	return strings.EqualFold(strings.TrimSpace(tool.Kind), string(config.ToolKindNetwork))
+}
+
+func formatQualifiedToolName(tool schema.Tool) string {
+	if strings.TrimSpace(tool.Server) == "" {
+		return strings.TrimSpace(tool.Name)
+	}
+	return strings.TrimSpace(tool.Server) + "/" + strings.TrimSpace(tool.Name)
 }
 
 func applySkillToProfile(profile config.AgentProfile, skill *schema.Skill) config.AgentProfile {

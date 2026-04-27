@@ -35,6 +35,7 @@ For end-user installation and deployment commands, see [Installation And Deploym
 - Cross-language MCP support with built-in Go and Python servers
 - Dynamic skill loading from `SKILL.md`
 - Per-workspace session persistence with workflow and pending approval snapshots
+- Workspace confirmation gate: pure chat can run from the default directory, while file reads/writes, `@file` references, command execution, and workflows require a confirmed workspace
 - Audit logging and CLI trace/status/session output
 - External workspace mode via `--workspace`
 - Windows, Linux, and Docker deployment paths
@@ -79,6 +80,12 @@ Use the current directory as the workspace:
 
 ```bash
 go run ./cmd/goflow
+```
+
+When no `--workspace` is provided, the CLI treats the current directory as a default workspace candidate. Pure chat can continue immediately. Before any workspace-scoped action such as reading files, writing files, running commands, attaching `@file` references, generating project files, or running workflows, GoFlow asks you to confirm that default with:
+
+```text
+/workspace confirm
 ```
 
 Use an external directory as the workspace:
@@ -144,6 +151,7 @@ CLI commands use the `/` prefix.
 /agents
 /use <agent>
 /mode <chat|plan|audit|fix>
+/workspace [status|confirm|clear|use <path>]
 /workflow plan-fix-audit [--approve] <request>
 /workflow skill-chain <request>
 /workflow <custom-name> <request>
@@ -161,6 +169,8 @@ CLI commands use the `/` prefix.
 /new-workflow <name>
 exit
 ```
+
+`/workspace status` shows whether the active workspace is explicit or still the current-directory default. `/workspace confirm` enables workspace-scoped tools for the current session. `/workspace clear` removes that confirmation. `/workspace use <path>` validates the requested path and tells you to restart with `--workspace <path>` when switching would require rebinding MCP servers.
 
 `--approve` pre-approves the planner -> fixer stage transition. Without it, GoFlow first asks whether to enter the fixer stage, then separately prompts again if a fixer tool call requires confirmation.
 
@@ -284,7 +294,7 @@ under `workflows/<name>/workflow.yaml`. See [Workflow Graphs](./docs/workflows.m
 - `python_notes/binary_strings`
 - `python_notes/hex_preview`
 
-File, note, source-inspection, and binary-inspection tools resolve every path under the active workspace root and reject path traversal or symlink escapes. Write operations render git-like CLI summaries with status letters, added/deleted line counts, changed line ranges, byte counts, and compact colored diff hunks. In the interactive CLI, type `@` to show workspace file suggestions, then type a prefix and press `Tab` to complete a unique match or show candidates. You can reference workspace files inline with `@relative/path.ext`; GoFlow reads the file through the normal `file_tools/read_file` path, prints the same tool logs, and attaches the file content before the request reaches the agent. In non-interactive input, type `@prefix` as a full line to list matching references.
+File, note, source-inspection, and binary-inspection tools resolve every path under the active workspace root and reject path traversal or symlink escapes. If the workspace was only defaulted from the current directory, GoFlow hides workspace-scoped read/write/exec tools from the model until you confirm it. Write operations render git-like CLI summaries with status letters, added/deleted line counts, changed line ranges, byte counts, and compact colored diff hunks. In the interactive CLI, type `@` to show workspace file suggestions, then type a prefix and press `Tab` to complete a unique match or show candidates. You can reference workspace files inline with `@relative/path.ext`; GoFlow reads the file through the normal `file_tools/read_file` path, prints the same tool logs, and attaches the file content before the request reaches the agent. In non-interactive input, type `@prefix` as a full line to list matching references.
 
 Interactive CLI input also supports `Tab` completion for `/` commands and consumes arrow/Home/End/Delete key sequences so those keys do not appear as literal escape text in ordinary prompts.
 

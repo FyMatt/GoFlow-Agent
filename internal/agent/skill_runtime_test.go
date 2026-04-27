@@ -261,6 +261,29 @@ func (s *stubRuntimeMCP) ToolNames() []string {
 	return nil
 }
 
+func TestWorkspaceGatedMCPOnlyExposesNetworkTools(t *testing.T) {
+	mcp := workspaceGatedMCP{mcp: &stubRuntimeMCP{tools: []schema.Tool{
+		{Name: "read_file", Server: "file_tools", Kind: "read"},
+		{Name: "write_file", Server: "file_tools", Kind: "write"},
+		{Name: "run", Server: "shell", Kind: "exec"},
+		{Name: "web_search", Server: "web_tools", Kind: "network"},
+	}}}
+	tools, err := mcp.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "web_search" {
+		t.Fatalf("expected only network tools, got %#v", tools)
+	}
+	result, err := mcp.CallTool(context.Background(), "file_tools/read_file", []byte(`{"path":"README.md"}`))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !result.IsError || !result.Denied {
+		t.Fatalf("expected workspace tool denial, got %#v", result)
+	}
+}
+
 func TestSkillAllowedToolKindsRestrictExecution(t *testing.T) {
 	skill := &schema.Skill{Name: "safe-plan", AllowedToolKinds: []string{"read"}}
 	llm := &stubLLMClient{responses: []schema.ChatResponse{{

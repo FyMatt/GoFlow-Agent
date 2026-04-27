@@ -74,13 +74,14 @@ func main() {
 		fmt.Fprintf(os.Stderr, "resolve runtime home error: %v\n", err)
 		os.Exit(1)
 	}
-	configPath, workspaceRoot, httpAddr, err := resolvePaths(runtimeHome, os.Args[1:])
+	paths, err := resolvePathSettings(runtimeHome, os.Args[1:])
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve paths error: %v\n", err)
 		os.Exit(1)
 	}
+	workspaceState := newWorkspaceLifecycle(paths.WorkspaceRoot, paths.WorkspaceExplicit)
 
-	app, err := apppkg.Bootstrap(ctx, apppkg.BootstrapOptions{RuntimeHome: runtimeHome, WorkspaceRoot: workspaceRoot, ConfigPath: configPath})
+	app, err := apppkg.Bootstrap(ctx, apppkg.BootstrapOptions{RuntimeHome: runtimeHome, WorkspaceRoot: paths.WorkspaceRoot, ConfigPath: paths.ConfigPath})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bootstrap runtime error: %v\n", err)
 		os.Exit(1)
@@ -88,15 +89,16 @@ func main() {
 	cfg := app.Config
 	sessionState := app.SessionState
 	agentRuntime := app.Runtime
+	agentRuntime.SetWorkspaceConfirmed(workspaceState.Confirmed())
 	skillManager := app.SkillManager.(*skill.Manager)
 	mcpManager := app.MCPClient
 
-	if strings.TrimSpace(httpAddr) != "" {
+	if strings.TrimSpace(paths.HTTPAddr) != "" {
 		server := &http.Server{
-			Addr:    httpAddr,
+			Addr:    paths.HTTPAddr,
 			Handler: apipkg.NewServer(agentRuntime),
 		}
-		fmt.Printf("GoFlow HTTP API ready. runtime=%s workspace=%s addr=%s\n", cfg.RuntimeHome, cfg.WorkspaceRoot, httpAddr)
+		fmt.Printf("GoFlow HTTP API ready. runtime=%s workspace=%s addr=%s\n", cfg.RuntimeHome, workspaceState.DisplayRoot(), paths.HTTPAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
 			fmt.Fprintf(os.Stderr, "http server error: %v\n", err)
 			os.Exit(1)
@@ -105,7 +107,7 @@ func main() {
 	}
 
 	setTerminalTitle(buildTerminalTitle(cfg.WorkspaceRoot), os.Stdin, os.Stdout)
-	fmt.Print(renderStartupBanner(buildStartupDisplayRow(agentRuntime, cfg.RuntimeHome, cfg.WorkspaceRoot)))
+	fmt.Print(renderStartupBanner(buildStartupDisplayRow(agentRuntime, cfg.RuntimeHome, workspaceState.DisplayRoot())))
 	lineReader := newCLIInputLineReader(os.Stdin, os.Stdout, cfg.WorkspaceRoot)
 	for {
 		input, ok, err := lineReader.ReadLine(formatPrompt(agentRuntime))
@@ -127,7 +129,8 @@ func main() {
 			return
 		}
 		if isCommandInput(input) {
-			if handled := handleCommand(ctx, input, skillManager, mcpManager, agentRuntime); handled {
+			if handled := handleCommand(ctx, input, skillManager, mcpManager, agentRuntime, workspaceState); handled {
+				agentRuntime.SetWorkspaceConfirmed(workspaceState.Confirmed())
 				if err := sessionState.Save(cfg.Session.PersistPath); err != nil {
 					fmt.Fprintf(os.Stderr, "save session error: %v\n", err)
 				}
@@ -140,10 +143,16 @@ func main() {
 			}
 			continue
 		}
+		if agentRuntime.HasPendingHandoff() && strings.EqualFold(agentRuntime.PendingHandoffDecision(input), "confirm") && !ensureWorkspaceConfirmed(workspaceState, "confirming an implementation handoff will run workspace tools") {
+			continue
+		}
 		if handled := handlePendingHandoffInput(ctx, input, os.Stdin, os.Stdout, agentRuntime); handled {
 			if err := sessionState.Save(cfg.Session.PersistPath); err != nil {
 				fmt.Fprintf(os.Stderr, "save session error: %v\n", err)
 			}
+			continue
+		}
+		if strings.Contains(input, "@") && !ensureWorkspaceConfirmed(workspaceState, "@file reference reads workspace files") {
 			continue
 		}
 		if suggestions, handled, err := formatAtReferenceSuggestions(input, cfg.WorkspaceRoot); handled {
@@ -155,6 +164,9 @@ func main() {
 			continue
 		}
 		agentRuntime.ClearAudit()
+		if requirement := workspaceRequirementForInput(input); requirement.Required && !ensureWorkspaceConfirmed(workspaceState, requirement.Reason) {
+			continue
+		}
 		renderer := newCLIStreamRenderer(agentRuntime.TraceEnabled())
 		expandedInput, refs, err := expandAtFileReferencesWithTools(ctx, input, cfg.WorkspaceRoot, mcpManager, renderer)
 		if err != nil {
@@ -766,15 +778,31 @@ func fuzzyStringScore(value, query string) (int, bool) {
 	return score, true
 }
 
+type pathSettings struct {
+	ConfigPath        string
+	WorkspaceRoot     string
+	HTTPAddr          string
+	WorkspaceExplicit bool
+}
+
 func resolvePaths(runtimeHome string, args []string) (string, string, string, error) {
+	settings, err := resolvePathSettings(runtimeHome, args)
+	if err != nil {
+		return "", "", "", err
+	}
+	return settings.ConfigPath, settings.WorkspaceRoot, settings.HTTPAddr, nil
+}
+
+func resolvePathSettings(runtimeHome string, args []string) (pathSettings, error) {
 	configPath := filepath.Join(runtimeHome, "configs", "agent.yaml")
 	workspaceRoot := ""
 	httpAddr := ""
+	workspaceExplicit := false
 	remaining := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		if args[i] == "--config" {
 			if i+1 >= len(args) {
-				return "", "", "", fmt.Errorf("missing value for --config")
+				return pathSettings{}, fmt.Errorf("missing value for --config")
 			}
 			configPath = args[i+1]
 			i++
@@ -782,15 +810,16 @@ func resolvePaths(runtimeHome string, args []string) (string, string, string, er
 		}
 		if args[i] == "--workspace" {
 			if i+1 >= len(args) {
-				return "", "", "", fmt.Errorf("missing value for --workspace")
+				return pathSettings{}, fmt.Errorf("missing value for --workspace")
 			}
 			workspaceRoot = args[i+1]
+			workspaceExplicit = true
 			i++
 			continue
 		}
 		if args[i] == "--http" {
 			if i+1 >= len(args) {
-				return "", "", "", fmt.Errorf("missing value for --http")
+				return pathSettings{}, fmt.Errorf("missing value for --http")
 			}
 			httpAddr = args[i+1]
 			i++
@@ -802,24 +831,33 @@ func resolvePaths(runtimeHome string, args []string) (string, string, string, er
 	if strings.TrimSpace(workspaceRoot) == "" {
 		cwd, err := os.Getwd()
 		if err != nil {
-			return "", "", "", fmt.Errorf("get current directory: %w", err)
+			return pathSettings{}, fmt.Errorf("get current directory: %w", err)
 		}
 		workspaceRoot = cwd
 	}
 	if !filepath.IsAbs(workspaceRoot) {
 		absoluteWorkspace, err := filepath.Abs(workspaceRoot)
 		if err != nil {
-			return "", "", "", fmt.Errorf("resolve workspace path: %w", err)
+			return pathSettings{}, fmt.Errorf("resolve workspace path: %w", err)
 		}
 		workspaceRoot = absoluteWorkspace
 	}
 	if !filepath.IsAbs(configPath) {
 		configPath = filepath.Join(runtimeHome, configPath)
 	}
-	return filepath.Clean(configPath), filepath.Clean(workspaceRoot), strings.TrimSpace(httpAddr), nil
+	return pathSettings{
+		ConfigPath:        filepath.Clean(configPath),
+		WorkspaceRoot:     filepath.Clean(workspaceRoot),
+		HTTPAddr:          strings.TrimSpace(httpAddr),
+		WorkspaceExplicit: workspaceExplicit,
+	}, nil
 }
 
-func handleCommand(ctx context.Context, input string, skillManager *skill.Manager, mcpClient interfaces.MCPClient, agentRuntime *agent.Runtime) bool {
+func handleCommand(ctx context.Context, input string, skillManager *skill.Manager, mcpClient interfaces.MCPClient, agentRuntime *agent.Runtime, workspaceStates ...*workspaceLifecycle) bool {
+	var workspaceState *workspaceLifecycle
+	if len(workspaceStates) > 0 {
+		workspaceState = workspaceStates[0]
+	}
 	trimmed := strings.TrimSpace(input)
 	fields := strings.Fields(trimmed)
 	if len(fields) == 0 {
@@ -829,6 +867,8 @@ func handleCommand(ctx context.Context, input string, skillManager *skill.Manage
 	case "/help":
 		fmt.Print(formatHelpOutput())
 		return true
+	case "/workspace":
+		return handleWorkspaceCommand(fields, workspaceState)
 	case "/skills":
 		skills := skillManager.List()
 		rows := make([]skillDisplayRow, 0, len(skills))
@@ -931,6 +971,9 @@ func handleCommand(ctx context.Context, input string, skillManager *skill.Manage
 		fmt.Println(formatCommandSuccess("mode", agentRuntime.Mode()))
 		return true
 	case "/workflow":
+		if !ensureWorkspaceConfirmed(workspaceState, "workflow execution runs workspace-scoped stages") {
+			return true
+		}
 		return handleWorkflowCommand(ctx, fields[1:], agentRuntime)
 	case "/status":
 		fmt.Print(formatStatusLines(agentRuntime.StatusLines(ctx)))
@@ -1507,6 +1550,7 @@ var knownCLICommands = []string{
 	"/agents",
 	"/status",
 	"/session",
+	"/workspace",
 	"/use",
 	"/mode",
 	"/workflow",
@@ -1697,6 +1741,7 @@ func formatHelpOutput() string {
 	writeCommandGroup(&b, "Control", []commandHelpRow{
 		{Command: "/use <agent>", Description: "Switch active agent"},
 		{Command: "/mode <chat|plan|audit|fix>", Description: "Switch session mode"},
+		{Command: "/workspace [status|confirm|clear|use <path>]", Description: "Show or confirm the active workspace"},
 		{Command: "/workflow plan-fix-audit [--approve] <request>", Description: "Run planner -> fixer -> auditor"},
 		{Command: "/workflow skill-chain <request>", Description: "Run matched skill and declared next_skills"},
 		{Command: "/workflow <custom-name> <request>", Description: "Run workflows/<name>/workflow.yaml"},

@@ -175,6 +175,7 @@ Skill authoring support:
 ### CLI And Operator UX
 
 - Branded startup banner shows runtime/workspace/agent/mode/policy/tool kinds.
+- Completed baseline: CLI startup distinguishes explicit `--workspace` from current-directory defaults; pure chat can run before confirmation, while workspace-scoped reads/writes/exec tools are hidden and `@file`, workflow, document/project generation, and command/test requests prompt for `/workspace confirm`.
 - Tool logs include tool kind, path/URL summaries, completion summaries, and change/diff previews for writes.
 - Write logs use a compact git-like summary with status letters, added/deleted line counts, changed line ranges, byte counts, and colored `diff --goflow` hunks.
 - Multi-file write runs add an end-of-turn `[write-summary]` with total files, added/deleted line counts, bytes written, status counts, and compact per-file rows.
@@ -222,14 +223,16 @@ Skill authoring support:
 - Completed baseline: tool argument schema errors, unknown tools, policy denials, and MCP call errors are fed back as observations so the model can recover or summarize without losing context.
 - Completed baseline: malformed tool-call JSON retries use structured recovery rules, suppress repeated prose, require complete arguments, and tell the model to stop calling tools if arguments cannot be reconstructed safely.
 - The runtime needs stronger "enough context, now act" nudges for implementation requests.
-- The runtime should distinguish pure chat from workspace-required tasks. If no workspace is selected and the request needs file generation, file reads/writes, command execution, or workflow stages over project files, the product should stop and ask the operator to select or confirm a workspace.
+- Completed CLI baseline: the runtime distinguishes pure chat from workspace-required tasks when the CLI workspace was only defaulted. If the request needs file generation, file reads/writes, command execution, `@file`, or workflow stages over project files, the CLI stops and asks the operator to confirm the workspace.
+- Remaining gap: HTTP mode still needs first-class workspace lifecycle APIs and UI, including selecting, confirming, clearing, and displaying workspace state.
 
 ### CLI Interactivity
 
 - Completed baseline: `@` reference suggestions, `/` command completion, cursor-key editing, in-memory prompt history navigation, and fuzzy completion are implemented for the interactive CLI.
 - Approval and diff output are improved, with git-like write summaries, colored hunks, and multi-file write batching summaries.
 - Completed baseline: long LLM waits now emit visible status lines before model responses, tool-result follow-ups, and final-summary requests.
-- Workspace selection UX is still incomplete. The product should default to the current execution directory as the workspace when appropriate, but offer a clear prompt and, where supported, a folder picker when no workspace is set or when the user wants to switch workspace.
+- Completed baseline: `/workspace status`, `/workspace confirm`, `/workspace clear`, and `/workspace use <path>` expose CLI workspace state. Runtime rebinding remains conservative: selecting a different path tells the operator to restart with `--workspace <path>` so MCP servers are rebound safely.
+- Workspace selection UX is still incomplete for dynamic switching. The product should eventually offer a platform-aware folder picker where supported, plus a text fallback in terminals or headless environments.
 
 ### MCP Extensibility
 
@@ -390,8 +393,8 @@ Priority:
 4. Completed baseline: improve command output layout for `/skills`, `/tools`, and `/agents` with summaries, grouping, and warning counts.
 5. Completed baseline: add optional history/fuzzy completion for interactive prompt input.
 6. Completed baseline: keep HTTP/SSE behavior aligned with CLI stream events for normal turns, workflow runs, and approval resumes.
-7. Add workspace-required task gating to CLI: pure chat can continue without a workspace, but file/project/workflow operations must prompt for a workspace or confirm the current directory default.
-8. Add workspace switch/select commands and a platform-aware folder picker where feasible; provide text fallback in terminals or headless environments.
+7. Completed CLI baseline: add workspace-required task gating to CLI; pure chat can continue with an unconfirmed current-directory default, but file/project/workflow operations prompt for confirmation.
+8. Completed CLI baseline: add `/workspace status|confirm|clear|use <path>`; dynamic workspace switching and platform-aware folder picker remain future work.
 
 Success criteria:
 
@@ -460,8 +463,8 @@ Success criteria:
 
 ## 5. Immediate Next Actions
 
-1. Implement workspace lifecycle rules: allow pure chat without workspace, default to current execution directory when appropriate, and require workspace selection/confirmation for file, command, document-generation, and workflow operations.
-2. Expand HTTP toward CLI parity with a unified visual console: chat, workspace picker, workflow runs, approvals, diffs, tools, skills, agents, status, session, logs, and token usage.
+1. Expand HTTP toward CLI parity with a unified visual console: chat, workspace picker, workflow runs, approvals, diffs, tools, skills, agents, status, session, logs, and token usage.
+2. Add HTTP workspace lifecycle APIs and UI: current workspace, confirm current default, select/switch workspace, clear workspace, and workspace-required error responses.
 3. Strengthen complex-task workflows with durable run state, stage artifacts, retries, cancellation, checkpoints, and run history.
 4. Define the multi-agent collaboration primitives: message bus, shared blackboard, handoff packets, team templates, and visible team state.
 5. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.

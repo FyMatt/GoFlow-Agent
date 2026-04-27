@@ -38,11 +38,24 @@ Relative config paths are resolved from runtime home. Absolute config paths are 
 In interactive CLI mode (`go run ./cmd/goflow` without `--http`), GoFlow adds a presentation layer on top of the same runtime:
 
 - prints a compact startup banner with brand text plus runtime/workspace summary
+- treats the current directory as an unconfirmed default workspace when `--workspace` is omitted
+- allows pure chat before workspace confirmation, but hides workspace-scoped read/write/exec tools and stops `@file`, workflow, file-generation, and command-execution requests until `/workspace confirm`
 - shows the active agent, current mode, tool policy, allowed tool kinds, explicit `allowed_tools`, workflow summary, pending conversational handoff summary, pending approval count, and remembered per-workspace tool approvals in that startup summary
 - sets the terminal title to `GoFlow Agent - <workspace>` when stdin/stdout look like interactive terminals
 - uses an interactive approval selector with `Up` / `Down` and `Enter`
 - still accepts `1`, `2`, and `3` as approval shortcuts
 - falls back to the numeric prompt when stdin/stdout are redirected or otherwise non-interactive
+
+Workspace commands:
+
+```text
+/workspace status
+/workspace confirm
+/workspace clear
+/workspace use <path>
+```
+
+Runtime workspace rebinding is intentionally conservative: `use <path>` confirms the current runtime workspace when the path matches, and otherwise tells the operator to restart with `--workspace <path>` so MCP servers are rebound under the new root.
 
 HTTP server mode keeps the plain startup line and does not use the interactive CLI banner or approval menu.
 

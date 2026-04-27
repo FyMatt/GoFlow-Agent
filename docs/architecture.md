@@ -28,11 +28,12 @@ CLI entrypoint.
 
 Key responsibilities:
 - resolve runtime home
-- parse `--workspace`
+- parse `--workspace` and track whether the active workspace was explicit or only defaulted from the current directory
 - bootstrap the shared runtime app from `internal/app`
 - render streaming events in the terminal
 - render the branded startup banner in interactive CLI mode
 - set the terminal title when supported
+- require `/workspace confirm` before workspace-scoped actions when the workspace was only defaulted
 - own blocking approval input, including interactive selector and numeric fallback
 
 ### `internal/app`
@@ -52,6 +53,7 @@ Owns the request lifecycle and multi-agent coordination.
 Key responsibilities:
 - select the active agent profile
 - match a skill
+- hide workspace-scoped read/write/exec tools when the transport marks the workspace as unconfirmed
 - build the system prompt
 - run the LLM/tool loop
 - emit streaming events
