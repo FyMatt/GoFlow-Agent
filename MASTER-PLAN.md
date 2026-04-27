@@ -206,7 +206,7 @@ Skill authoring support:
 - Linux local startup is supported through direct `go run ./cmd/goflow` or compiled binaries.
 - `--config` allows selecting an alternate runtime config, which lets Docker use container-specific MCP commands without overwriting development config.
 - `configs/agent.docker.yaml` runs compiled Go MCP server binaries plus the Python MCP server under `/app`, with `/workspace` as the target workspace.
-- `configs/agent.binary.yaml` supports archive-based Windows/Linux launches by taking compiled MCP binary paths from launcher-provided environment variables.
+- `configs/agent.binary.yaml` supports archive-based Windows/Linux launches by taking compiled MCP binary paths from launcher-provided environment variables; release launchers now default backup provider variables from primary provider values, and direct execution from `bin/goflow` resolves runtime home to the archive root.
 - Docker deployment files exist: `Dockerfile`, `.dockerignore`, `docker-compose.yml`, and `docs/deployment.md`.
 - Release packaging files exist: `scripts/build_release_assets.py`, `docs/release.md`, and `.github/workflows/release.yml`.
 - `.env.example` contains placeholders rather than credentials.
@@ -263,9 +263,10 @@ Skill authoring support:
 
 ### HTTP Console And API Parity
 
-- HTTP mode exposes core run, stream, session, approval, workflow execution, workflow graph management, and the baseline visual workflow editor.
+- HTTP mode exposes core run, stream, session, approval, workflow execution, workflow graph management, workspace lifecycle APIs, a basic workspace page, and the baseline visual workflow editor.
 - Remaining gap: HTTP should reach CLI feature parity. It should expose first-class endpoints and UI for `/help`, `/agents`, `/skills`, `/tools`, `/status`, `/session`, `/trace`, approval choices including remember/approve-all scopes, `@file` attachment behavior, token usage, task stages, write diffs, workflow runs, and session persistence.
-- Remaining gap: HTTP should provide a unified browser console similar to modern agent platforms: chat panel, workspace picker, file reference picker, tool/skill/agent catalog, workflow builder, workflow run monitor, approval inbox, diff viewer, logs, token usage, and settings.
+- Completed baseline: HTTP has `/api/workspace`, `/api/workspace/confirm`, `/api/workspace/clear`, `/api/workspace/select`, workspace-required JSON/SSE failures, and a basic `/workspace` page. Dynamic workspace rebinding still requires restart so MCP servers are rebound safely.
+- Remaining gap: HTTP should provide a unified browser console similar to modern agent platforms: chat panel, richer workspace picker, file reference picker, tool/skill/agent catalog, workflow builder, workflow run monitor, approval inbox, diff viewer, logs, token usage, and settings.
 - The HTTP UI must preserve the same workspace safety boundary as CLI. UI convenience must not let browser actions read or write outside the selected workspace root.
 
 ### Documentation
@@ -431,7 +432,7 @@ Goal: make HTTP mode a full operator surface, not just a JSON/SSE transport.
 Priority:
 
 1. Define a UI/API parity matrix against CLI commands and stream events.
-2. Add workspace lifecycle APIs: current workspace, select workspace, confirm current directory, clear workspace, and workspace-required error responses for unsafe operations.
+2. Completed baseline: add workspace lifecycle APIs: current workspace, select workspace with restart-required response, confirm current directory, clear workspace, and workspace-required error responses for unsafe operations.
 3. Expand the browser console beyond `/workflows`: chat/run page, workflow run monitor, approvals inbox, diff viewer, token/task-stage panel, tools/skills/agents browser, session/status pages, and settings.
 4. Make HTTP approval behavior match CLI, including approve, deny, approve-and-remember, workflow-scoped approve-all, and streamed resume.
 5. Add `@file` reference support to HTTP requests with the same workspace-root checks and read-tool log semantics as CLI.
@@ -463,12 +464,11 @@ Success criteria:
 
 ## 5. Immediate Next Actions
 
-1. Expand HTTP toward CLI parity with a unified visual console: chat, workspace picker, workflow runs, approvals, diffs, tools, skills, agents, status, session, logs, and token usage.
-2. Add HTTP workspace lifecycle APIs and UI: current workspace, confirm current default, select/switch workspace, clear workspace, and workspace-required error responses.
-3. Strengthen complex-task workflows with durable run state, stage artifacts, retries, cancellation, checkpoints, and run history.
-4. Define the multi-agent collaboration primitives: message bus, shared blackboard, handoff packets, team templates, and visible team state.
-5. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
-6. Strengthen implementation-request nudges so agents act once enough context has been gathered.
+1. Expand HTTP toward CLI parity with a unified visual console: chat, workflow runs, approvals, diffs, tools, skills, agents, status, session, logs, token usage, and richer workspace/file-reference picking.
+2. Strengthen complex-task workflows with durable run state, stage artifacts, retries, cancellation, checkpoints, and run history.
+3. Define the multi-agent collaboration primitives: message bus, shared blackboard, handoff packets, team templates, and visible team state.
+4. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
+5. Strengthen implementation-request nudges so agents act once enough context has been gathered.
 
 ## 6. Execution Principles
 

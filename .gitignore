@@ -5,7 +5,7 @@
 .goflow/
 dist/
 bin/
-workspace/
+/workspace/
 
 *.exe
 *.test

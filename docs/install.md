@@ -55,9 +55,6 @@ Extract the zip, then run:
 $env:GOFLOW_BASE_URL="https://api.deepseek.com/v1"
 $env:GOFLOW_API_KEY="your-api-key"
 $env:GOFLOW_MODEL="deepseek-chat"
-$env:GOFLOW_BACKUP_BASE_URL=$env:GOFLOW_BASE_URL
-$env:GOFLOW_BACKUP_API_KEY=$env:GOFLOW_API_KEY
-$env:GOFLOW_BACKUP_MODEL=$env:GOFLOW_MODEL
 
 .\run-goflow.cmd D:\Projects\my-workspace
 ```
@@ -73,16 +70,19 @@ cd goflow-agent_<version>_linux_amd64
 export GOFLOW_BASE_URL=https://api.deepseek.com/v1
 export GOFLOW_API_KEY=your-api-key
 export GOFLOW_MODEL=deepseek-chat
-export GOFLOW_BACKUP_BASE_URL=$GOFLOW_BASE_URL
-export GOFLOW_BACKUP_API_KEY=$GOFLOW_API_KEY
-export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
 
 ./run-goflow.sh /path/to/workspace
 ```
 
 Release archives use `configs/agent.binary.yaml`. The launcher scripts set the
 compiled MCP tool paths automatically, so Go is not required on the target
-machine. Python is still required for the built-in Python MCP server.
+machine. They also default the backup provider environment variables to the
+primary provider values when `GOFLOW_BACKUP_*` is not set. Python is still
+required for the built-in Python MCP server.
+
+You can also run `bin/goflow` or `bin/goflow.exe` directly from an extracted
+archive. When launched from `bin`, GoFlow resolves runtime home to the archive
+root and uses `configs/agent.binary.yaml` by default.
 
 ## Run The Published Docker Image
 

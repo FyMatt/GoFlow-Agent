@@ -114,6 +114,63 @@ func TestResolvePathsDefaultsWorkspaceToCurrentDirectory(t *testing.T) {
 	}
 }
 
+func TestResolveRuntimeHomeUsesParentWhenRunningFromBin(t *testing.T) {
+	runtimeHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(runtimeHome, "configs"), 0o755); err != nil {
+		t.Fatalf("mkdir configs: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeHome, "configs", "agent.binary.yaml"), []byte("agent: {}\n"), 0o644); err != nil {
+		t.Fatalf("write binary config: %v", err)
+	}
+	binDir := filepath.Join(runtimeHome, "bin")
+	exePath := filepath.Join(binDir, "goflow.exe")
+
+	info := resolveRuntimeHomeFrom(binDir, exePath)
+	if info.Root != runtimeHome {
+		t.Fatalf("expected runtime home %q, got %#v", runtimeHome, info)
+	}
+	if !info.BinaryArchive {
+		t.Fatalf("expected binary archive runtime, got %#v", info)
+	}
+	if got := defaultConfigPathForRuntime(info); got != filepath.Join(runtimeHome, "configs", "agent.binary.yaml") {
+		t.Fatalf("expected binary config, got %q", got)
+	}
+}
+
+func TestResolvePathSettingsWithDefaultConfig(t *testing.T) {
+	runtimeHome := t.TempDir()
+	customConfig := filepath.Join(runtimeHome, "configs", "agent.binary.yaml")
+
+	settings, err := resolvePathSettingsWithDefault(runtimeHome, nil, customConfig)
+	if err != nil {
+		t.Fatalf("resolve path settings: %v", err)
+	}
+	if settings.ConfigPath != customConfig {
+		t.Fatalf("expected custom default config %q, got %q", customConfig, settings.ConfigPath)
+	}
+}
+
+func TestApplyStartupEnvDefaultsMirrorsBackupProviderFromPrimary(t *testing.T) {
+	t.Setenv("GOFLOW_BASE_URL", "https://example.test/v1")
+	t.Setenv("GOFLOW_API_KEY", "primary-key")
+	t.Setenv("GOFLOW_MODEL", "primary-model")
+	t.Setenv("GOFLOW_BACKUP_BASE_URL", "")
+	t.Setenv("GOFLOW_BACKUP_API_KEY", "")
+	t.Setenv("GOFLOW_BACKUP_MODEL", "")
+
+	applyStartupEnvDefaults(runtimeHomeInfo{})
+
+	if os.Getenv("GOFLOW_BACKUP_BASE_URL") != "https://example.test/v1" {
+		t.Fatalf("expected backup base url fallback, got %q", os.Getenv("GOFLOW_BACKUP_BASE_URL"))
+	}
+	if os.Getenv("GOFLOW_BACKUP_API_KEY") != "primary-key" {
+		t.Fatalf("expected backup api key fallback, got %q", os.Getenv("GOFLOW_BACKUP_API_KEY"))
+	}
+	if os.Getenv("GOFLOW_BACKUP_MODEL") != "primary-model" {
+		t.Fatalf("expected backup model fallback, got %q", os.Getenv("GOFLOW_BACKUP_MODEL"))
+	}
+}
+
 func TestResolvePathSettingsMarksDefaultWorkspaceUnconfirmed(t *testing.T) {
 	runtimeHome := t.TempDir()
 

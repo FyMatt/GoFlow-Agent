@@ -54,13 +54,19 @@ Each archive contains:
 - `docs/`
 - launcher script: `run-goflow.sh` or `run-goflow.cmd`
 
-The launcher sets the MCP binary paths through environment variables, then starts:
+The launcher sets the MCP binary paths and defaults `GOFLOW_BACKUP_*` to the
+primary provider values when backup variables are not set. It then starts:
 
 ```text
 goflow --config configs/agent.binary.yaml --workspace <workspace>
 ```
 
 The Python MCP server still requires Python on the target machine. Linux launchers default to `python3`; Windows launchers default to `python`. Override `GOFLOW_PYTHON_CMD` when needed.
+
+Direct execution from `bin/goflow` or `bin/goflow.exe` is also supported. When
+the executable is launched from an archive `bin` directory, GoFlow resolves
+runtime home to the archive root and defaults to `configs/agent.binary.yaml`
+instead of looking for `bin/configs/agent.yaml`.
 
 The build script writes `dist/SHA256SUMS` for archive integrity checks. The SBOM
 script writes `dist/SBOM.spdx.json` and can append its checksum to `SHA256SUMS`.

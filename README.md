@@ -225,6 +225,10 @@ While that handoff is pending:
 ## HTTP API
 
 Current endpoints:
+- `GET /api/workspace`
+- `POST /api/workspace/confirm`
+- `POST /api/workspace/clear`
+- `POST /api/workspace/select`
 - `POST /api/run`
 - `POST /api/run/stream`
 - `GET /api/session`
@@ -241,6 +245,11 @@ Current endpoints:
 - `POST /api/approvals/{callID}/deny`
 - `POST /api/approvals/{callID}/deny/stream`
 - `POST /api/approvals/approve-all`
+
+HTTP mode also serves a basic workspace page at `GET /workspace`. It shows the
+current workspace root, whether it is confirmed, and actions for confirm, clear,
+or selecting another path. Selecting a different path returns a restart-required
+response so MCP servers are rebound safely under the new workspace root.
 
 ### Example: final JSON response
 

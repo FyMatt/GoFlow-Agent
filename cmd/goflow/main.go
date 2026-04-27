@@ -12,6 +12,7 @@ import (
 	"os/signal"
 	"path"
 	"path/filepath"
+	goruntime "runtime"
 	"sort"
 	"strconv"
 	"strings"
@@ -69,19 +70,20 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	runtimeHome, err := os.Getwd()
+	runtimeInfo, err := resolveRuntimeHome()
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve runtime home error: %v\n", err)
 		os.Exit(1)
 	}
-	paths, err := resolvePathSettings(runtimeHome, os.Args[1:])
+	applyStartupEnvDefaults(runtimeInfo)
+	paths, err := resolvePathSettingsWithDefault(runtimeInfo.Root, os.Args[1:], defaultConfigPathForRuntime(runtimeInfo))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve paths error: %v\n", err)
 		os.Exit(1)
 	}
 	workspaceState := newWorkspaceLifecycle(paths.WorkspaceRoot, paths.WorkspaceExplicit)
 
-	app, err := apppkg.Bootstrap(ctx, apppkg.BootstrapOptions{RuntimeHome: runtimeHome, WorkspaceRoot: paths.WorkspaceRoot, ConfigPath: paths.ConfigPath})
+	app, err := apppkg.Bootstrap(ctx, apppkg.BootstrapOptions{RuntimeHome: runtimeInfo.Root, WorkspaceRoot: paths.WorkspaceRoot, ConfigPath: paths.ConfigPath})
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "bootstrap runtime error: %v\n", err)
 		os.Exit(1)
@@ -96,7 +98,7 @@ func main() {
 	if strings.TrimSpace(paths.HTTPAddr) != "" {
 		server := &http.Server{
 			Addr:    paths.HTTPAddr,
-			Handler: apipkg.NewServer(agentRuntime),
+			Handler: apipkg.NewServerWithWorkspace(agentRuntime, workspaceState),
 		}
 		fmt.Printf("GoFlow HTTP API ready. runtime=%s workspace=%s addr=%s\n", cfg.RuntimeHome, workspaceState.DisplayRoot(), paths.HTTPAddr)
 		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
@@ -785,6 +787,118 @@ type pathSettings struct {
 	WorkspaceExplicit bool
 }
 
+type runtimeHomeInfo struct {
+	Root          string
+	BinaryArchive bool
+}
+
+func resolveRuntimeHome() (runtimeHomeInfo, error) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		return runtimeHomeInfo{}, fmt.Errorf("get current directory: %w", err)
+	}
+	exePath, _ := os.Executable()
+	return resolveRuntimeHomeFrom(cwd, exePath), nil
+}
+
+func resolveRuntimeHomeFrom(cwd, exePath string) runtimeHomeInfo {
+	cwd = filepath.Clean(strings.TrimSpace(cwd))
+	if cwd == "" {
+		cwd = "."
+	}
+	if info, ok := runtimeHomeFromBinDir(cwd); ok {
+		return info
+	}
+	exePath = filepath.Clean(strings.TrimSpace(exePath))
+	if exePath != "" && exePath != "." {
+		exeDir := filepath.Dir(exePath)
+		if info, ok := runtimeHomeFromBinDir(exeDir); ok {
+			return info
+		}
+		if hasRuntimeConfig(exeDir) {
+			return runtimeHomeInfo{Root: exeDir}
+		}
+	}
+	if hasRuntimeConfig(cwd) {
+		return runtimeHomeInfo{Root: cwd}
+	}
+	return runtimeHomeInfo{Root: cwd}
+}
+
+func runtimeHomeFromBinDir(dir string) (runtimeHomeInfo, bool) {
+	dir = filepath.Clean(strings.TrimSpace(dir))
+	if dir == "" || !strings.EqualFold(filepath.Base(dir), "bin") {
+		return runtimeHomeInfo{}, false
+	}
+	parent := filepath.Dir(dir)
+	if !hasRuntimeConfig(parent) {
+		return runtimeHomeInfo{}, false
+	}
+	return runtimeHomeInfo{Root: parent, BinaryArchive: fileExists(filepath.Join(parent, "configs", "agent.binary.yaml"))}, true
+}
+
+func hasRuntimeConfig(root string) bool {
+	root = strings.TrimSpace(root)
+	if root == "" {
+		return false
+	}
+	return fileExists(filepath.Join(root, "configs", "agent.yaml")) || fileExists(filepath.Join(root, "configs", "agent.binary.yaml"))
+}
+
+func fileExists(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && !info.IsDir()
+}
+
+func defaultConfigPathForRuntime(info runtimeHomeInfo) string {
+	if strings.TrimSpace(info.Root) == "" {
+		return ""
+	}
+	binaryConfig := filepath.Join(info.Root, "configs", "agent.binary.yaml")
+	if info.BinaryArchive && fileExists(binaryConfig) {
+		return binaryConfig
+	}
+	return filepath.Join(info.Root, "configs", "agent.yaml")
+}
+
+func applyStartupEnvDefaults(info runtimeHomeInfo) {
+	applyBackupProviderEnvDefaults()
+	if !info.BinaryArchive || strings.TrimSpace(info.Root) == "" {
+		return
+	}
+	setEnvDefault("GOFLOW_FILE_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("file_tools")))
+	setEnvDefault("GOFLOW_WEB_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("web_tools")))
+	setEnvDefault("GOFLOW_PYTHON_CMD", defaultPythonCommand())
+	setEnvDefault("GOFLOW_PYTHON_NOTES_PATH", filepath.Join(info.Root, "mcp_servers", "python_notes.py"))
+}
+
+func applyBackupProviderEnvDefaults() {
+	setEnvDefault("GOFLOW_BACKUP_BASE_URL", os.Getenv("GOFLOW_BASE_URL"))
+	setEnvDefault("GOFLOW_BACKUP_API_KEY", os.Getenv("GOFLOW_API_KEY"))
+	setEnvDefault("GOFLOW_BACKUP_MODEL", os.Getenv("GOFLOW_MODEL"))
+}
+
+func setEnvDefault(key, value string) {
+	if strings.TrimSpace(os.Getenv(key)) != "" || strings.TrimSpace(value) == "" {
+		return
+	}
+	_ = os.Setenv(key, value)
+}
+
+func executableName(name string) string {
+	if goruntime.GOOS == "windows" {
+		return name + ".exe"
+	}
+	return name
+}
+
+func defaultPythonCommand() string {
+	if goruntime.GOOS == "windows" {
+		return "python"
+	}
+	return "python3"
+}
+
 func resolvePaths(runtimeHome string, args []string) (string, string, string, error) {
 	settings, err := resolvePathSettings(runtimeHome, args)
 	if err != nil {
@@ -794,7 +908,14 @@ func resolvePaths(runtimeHome string, args []string) (string, string, string, er
 }
 
 func resolvePathSettings(runtimeHome string, args []string) (pathSettings, error) {
-	configPath := filepath.Join(runtimeHome, "configs", "agent.yaml")
+	return resolvePathSettingsWithDefault(runtimeHome, args, filepath.Join(runtimeHome, "configs", "agent.yaml"))
+}
+
+func resolvePathSettingsWithDefault(runtimeHome string, args []string, defaultConfigPath string) (pathSettings, error) {
+	configPath := strings.TrimSpace(defaultConfigPath)
+	if configPath == "" {
+		configPath = filepath.Join(runtimeHome, "configs", "agent.yaml")
+	}
 	workspaceRoot := ""
 	httpAddr := ""
 	workspaceExplicit := false

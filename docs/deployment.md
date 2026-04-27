@@ -112,8 +112,13 @@ Binary release archives use `configs/agent.binary.yaml`. The included launcher s
 - `GOFLOW_WEB_TOOLS_CMD`
 - `GOFLOW_PYTHON_CMD`
 - `GOFLOW_PYTHON_NOTES_PATH`
+- `GOFLOW_BACKUP_*` defaults copied from the primary provider variables when unset
 
 This lets archive installs run compiled Go MCP tools without requiring `go run` on the target machine.
+
+If an operator runs `bin/goflow` or `bin/goflow.exe` directly from the archive,
+the executable detects the parent archive root, loads `configs/agent.binary.yaml`
+by default, and uses the compiled MCP tools from `bin/`.
 
 ## Volumes
 

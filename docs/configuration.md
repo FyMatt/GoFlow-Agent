@@ -404,6 +404,10 @@ go run ./cmd/goflow --workspace D:/target-dir --http :8080
 ```
 
 Current endpoints:
+- `GET /api/workspace`
+- `POST /api/workspace/confirm`
+- `POST /api/workspace/clear`
+- `POST /api/workspace/select`
 - `POST /api/run`
 - `POST /api/run/stream`
 - `GET /api/session`
@@ -425,7 +429,16 @@ Current endpoints:
 
 `POST /api/run/stream` returns `text/event-stream` and forwards runtime `schema.StreamEvent` values as SSE frames.
 
+When the workspace was only defaulted from the server process directory,
+workspace-scoped HTTP requests return `409 workspace_required` until the
+operator confirms the workspace through `POST /api/workspace/confirm` or the
+browser page at `GET /workspace`. `POST /api/workspace/select` can confirm the
+current path; selecting a different path returns `restart_required` so the
+operator can restart with `--workspace <path>` and rebind MCP servers safely.
+
 `GET /api/session` returns the same persisted workflow, pending handoff, and pending approval snapshot surfaced by the CLI.
+
+`GET /workspace` serves a basic workspace status and confirmation page.
 
 `GET /workflows` serves the built-in workflow graph editor. Custom workflow
 graphs saved through the editor are persisted under

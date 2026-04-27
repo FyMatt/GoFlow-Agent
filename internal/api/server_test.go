@@ -13,6 +13,7 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
+	"github.com/FyMatt/GoFlow-Agent/internal/workspace"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
@@ -189,6 +190,82 @@ func TestServerRunEndpointReturnsAgentResult(t *testing.T) {
 	}
 	if !strings.Contains(response.Body.String(), `"output"`) {
 		t.Fatalf("expected agent result body, got %s", response.Body.String())
+	}
+}
+
+func TestWorkspaceAPIConfirmClearAndSelect(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	workspaceState := workspace.New(`D:\Projects\demo`, false)
+	runtimeRef.SetWorkspaceConfirmed(workspaceState.Confirmed())
+	server := NewServerWithWorkspace(runtimeRef, workspaceState)
+
+	statusRequest := httptest.NewRequest(http.MethodGet, "/api/workspace", nil)
+	statusResponse := httptest.NewRecorder()
+	server.ServeHTTP(statusResponse, statusRequest)
+	if statusResponse.Code != http.StatusOK {
+		t.Fatalf("expected workspace status 200, got %d", statusResponse.Code)
+	}
+	if !strings.Contains(statusResponse.Body.String(), `"confirmed":false`) {
+		t.Fatalf("expected unconfirmed workspace status, got %s", statusResponse.Body.String())
+	}
+
+	confirmRequest := httptest.NewRequest(http.MethodPost, "/api/workspace/confirm", nil)
+	confirmResponse := httptest.NewRecorder()
+	server.ServeHTTP(confirmResponse, confirmRequest)
+	if confirmResponse.Code != http.StatusOK || !runtimeRef.WorkspaceConfirmed() {
+		t.Fatalf("expected confirmed workspace, code=%d body=%s", confirmResponse.Code, confirmResponse.Body.String())
+	}
+
+	clearRequest := httptest.NewRequest(http.MethodPost, "/api/workspace/clear", nil)
+	clearResponse := httptest.NewRecorder()
+	server.ServeHTTP(clearResponse, clearRequest)
+	if clearResponse.Code != http.StatusOK || runtimeRef.WorkspaceConfirmed() {
+		t.Fatalf("expected cleared workspace confirmation, code=%d body=%s", clearResponse.Code, clearResponse.Body.String())
+	}
+
+	selectRequest := httptest.NewRequest(http.MethodPost, "/api/workspace/select", strings.NewReader(`{"path":"D:\\Projects\\other"}`))
+	selectRequest.Header.Set("Content-Type", "application/json")
+	selectResponse := httptest.NewRecorder()
+	server.ServeHTTP(selectResponse, selectRequest)
+	if selectResponse.Code != http.StatusConflict {
+		t.Fatalf("expected restart-required conflict, got %d body=%s", selectResponse.Code, selectResponse.Body.String())
+	}
+	if !strings.Contains(selectResponse.Body.String(), `"restart_required":true`) {
+		t.Fatalf("expected restart required response, got %s", selectResponse.Body.String())
+	}
+}
+
+func TestServerRunEndpointRequiresWorkspaceConfirmationForWorkspaceTasks(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	workspaceState := workspace.New(`D:\Projects\demo`, false)
+	runtimeRef.SetWorkspaceConfirmed(workspaceState.Confirmed())
+	server := NewServerWithWorkspace(runtimeRef, workspaceState)
+
+	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"帮我写个 Python 计算器项目"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusConflict {
+		t.Fatalf("expected workspace-required conflict, got %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"workspace_required"`) {
+		t.Fatalf("expected workspace required response, got %s", response.Body.String())
+	}
+}
+
+func TestServerWorkspacePageRendersStatus(t *testing.T) {
+	server := NewServerWithWorkspace(newAPITestRuntime(t), workspace.New(`D:\Projects\demo`, false))
+	request := httptest.NewRequest(http.MethodGet, "/workspace", nil)
+	response := httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected workspace page 200, got %d", response.Code)
+	}
+	if !strings.Contains(response.Body.String(), "GoFlow Workspace") || !strings.Contains(response.Body.String(), "Confirm Workspace") {
+		t.Fatalf("expected workspace page HTML, got %s", response.Body.String())
 	}
 }
 

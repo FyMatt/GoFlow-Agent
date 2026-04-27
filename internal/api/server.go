@@ -8,18 +8,28 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
+	"github.com/FyMatt/GoFlow-Agent/internal/workspace"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
 type Server struct {
-	runtime *agent.Runtime
-	mux     *http.ServeMux
+	runtime   *agent.Runtime
+	workspace *workspace.State
+	mux       *http.ServeMux
 }
 
 func NewServer(runtime *agent.Runtime) *Server {
-	s := &Server{runtime: runtime, mux: http.NewServeMux()}
+	return NewServerWithWorkspace(runtime, nil)
+}
+
+func NewServerWithWorkspace(runtime *agent.Runtime, workspaceState *workspace.State) *Server {
+	s := &Server{runtime: runtime, workspace: workspaceState, mux: http.NewServeMux()}
+	s.mux.HandleFunc("/workspace", s.handleWorkspacePage)
+	s.mux.HandleFunc("/workspace/", s.handleWorkspacePage)
 	s.mux.HandleFunc("/workflows", s.handleWorkflowEditor)
 	s.mux.HandleFunc("/workflows/", s.handleWorkflowEditor)
+	s.mux.HandleFunc("/api/workspace", s.handleWorkspace)
+	s.mux.HandleFunc("/api/workspace/", s.handleWorkspaceAction)
 	s.mux.HandleFunc("/api/run", s.handleRun)
 	s.mux.HandleFunc("/api/run/stream", s.handleRunStream)
 	s.mux.HandleFunc("/api/session", s.handleSession)
@@ -58,6 +68,9 @@ func (s *Server) handleRun(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	if !s.ensureWorkspaceConfirmedForRun(w, req.Input) {
+		return
+	}
 	result, err := s.runtime.RunStream(r.Context(), req.Input, nil)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
@@ -89,6 +102,9 @@ func (s *Server) handleWorkflow(w http.ResponseWriter, r *http.Request) {
 	req, err := decodeRunRequest(r)
 	if err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if !s.ensureWorkspaceConfirmedForJSON(w, "workflow execution runs workspace-scoped stages") {
 		return
 	}
 	result, err := s.runtime.WorkflowRunner().Run(r.Context(), workflowName, req.Input, true, nil)
@@ -161,6 +177,9 @@ func (s *Server) handleRunStream(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "invalid json", http.StatusBadRequest)
 		return
 	}
+	if !s.ensureWorkspaceConfirmedForStream(w, req.Input) {
+		return
+	}
 	writer, ok := newSSEWriter(w)
 	if !ok {
 		return
@@ -175,6 +194,9 @@ func (s *Server) handleWorkflowStream(w http.ResponseWriter, r *http.Request, wo
 	req, err := decodeRunRequest(r)
 	if err != nil {
 		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if !s.ensureWorkspaceConfirmedForWorkflowStream(w) {
 		return
 	}
 	writer, ok := newSSEWriter(w)

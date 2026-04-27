@@ -172,6 +172,7 @@ def validate_release_script() -> None:
             "agent.binary.yaml",
             "run-goflow.sh",
             "run-goflow.cmd",
+            "GOFLOW_BACKUP_MODEL",
             "SHA256SUMS",
             "hashlib.sha256",
             "archive_base.parent",

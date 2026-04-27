@@ -132,6 +132,13 @@ The built-in `plan-fix-audit` and `skill-chain` workflows are registered once an
 
 HTTP streaming endpoints forward the same `schema.StreamEvent` objects used by the CLI renderer. `/api/run/stream` streams normal agent turns, `/api/workflows/<name>/stream` streams workflow stage execution and ends with a `workflow_result` event, and streamed approval endpoints can resume ordinary or workflow tool loops while preserving token, task-stage, tool-result, and approval events.
 
+HTTP mode exposes the same workspace confirmation concept as the CLI through
+`/api/workspace`, `/api/workspace/confirm`, `/api/workspace/clear`,
+`/api/workspace/select`, and a small browser page at `/workspace`. If a
+workspace-scoped request arrives while the workspace is unconfirmed, JSON
+endpoints return `409 workspace_required` and SSE endpoints emit an error event
+instead of exposing read/write/exec tools.
+
 HTTP mode also exposes workflow graph management endpoints plus a small
 browser-based editor at `/workflows`. The editor persists the same YAML graph
 files used by the CLI runner, including optional visual `position` metadata for
