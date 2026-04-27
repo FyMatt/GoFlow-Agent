@@ -12,6 +12,8 @@ GoFlow should be both:
 1. a reusable local agent framework that is easy to extend with custom agents, tools, skills, workflows, and transports
 2. an out-of-the-box CLI/HTTP product that ordinary users can run against a workspace without first understanding the framework internals
 3. a deployable runtime that works on Windows, Linux, and Docker while preserving the runtime-home/workspace boundary
+4. a workspace-aware assistant that supports pure chat without a workspace, but requires an explicit workspace before reading, writing, generating project files, running workflows over files, or using workspace-scoped tools
+5. a visual agent console, not only a terminal app: HTTP mode should eventually expose the same operational power as the CLI through pages for chat, workspace selection, agents, tools, skills, workflows, approvals, diffs, logs, tokens, and session state
 
 The long-term goal is to let limited LLMs produce higher-quality work through strong runtime scaffolding:
 
@@ -23,6 +25,8 @@ The long-term goal is to let limited LLMs produce higher-quality work through st
 - safer workspace-scoped execution
 - clear operator logs and approvals
 - predictable Windows/Linux/Docker startup paths
+- explicit workspace selection and workspace-required task gating
+- visual workflow orchestration for complex tasks
 
 ## 2. Current Implemented Baseline
 
@@ -206,12 +210,14 @@ Skill authoring support:
 - Completed baseline: tool argument schema errors, unknown tools, policy denials, and MCP call errors are fed back as observations so the model can recover or summarize without losing context.
 - Completed baseline: malformed tool-call JSON retries use structured recovery rules, suppress repeated prose, require complete arguments, and tell the model to stop calling tools if arguments cannot be reconstructed safely.
 - The runtime needs stronger "enough context, now act" nudges for implementation requests.
+- The runtime should distinguish pure chat from workspace-required tasks. If no workspace is selected and the request needs file generation, file reads/writes, command execution, or workflow stages over project files, the product should stop and ask the operator to select or confirm a workspace.
 
 ### CLI Interactivity
 
 - Completed baseline: `@` reference suggestions, `/` command completion, cursor-key editing, in-memory prompt history navigation, and fuzzy completion are implemented for the interactive CLI.
 - Approval and diff output are improved, with git-like write summaries, colored hunks, and multi-file write batching summaries.
 - Completed baseline: long LLM waits now emit visible status lines before model responses, tool-result follow-ups, and final-summary requests.
+- Workspace selection UX is still incomplete. The product should default to the current execution directory as the workspace when appropriate, but offer a clear prompt and, where supported, a folder picker when no workspace is set or when the user wants to switch workspace.
 
 ### MCP Extensibility
 
@@ -229,12 +235,22 @@ Skill authoring support:
 - Skills can declare `next_skills`, `/skills` displays them, and `skill-chain` can execute them with linear, metadata-selected, or explicit planner-output branching.
 - Completed baseline: skill, Python MCP tool, agent snippet, and executable workflow blueprint scaffold commands include richer generated examples, next-step hints, validation guards, and authoring docs.
 - Custom workflow graph execution has a tested baseline, invalid graph files now surface validation errors instead of being reported as unknown workflows, validation edge cases are covered by tests, `docs/workflows.md` documents branch selection, stage approval, approval-resume examples, HTTP graph management APIs, and the visual editor.
+- Complex-task workflow support needs a richer execution model: durable per-stage state, explicit stage inputs/outputs, artifacts, retries, cancellation, manual checkpoints, longer pause/resume windows, nested or reusable sub-workflows, and better run history.
+- The visual workflow editor is a baseline editor. It still needs run monitoring, stage-level logs, approval handling, diff review, branch visualization, reusable templates, and workflow run replay/history.
+
+### HTTP Console And API Parity
+
+- HTTP mode exposes core run, stream, session, approval, workflow execution, workflow graph management, and the baseline visual workflow editor.
+- Remaining gap: HTTP should reach CLI feature parity. It should expose first-class endpoints and UI for `/help`, `/agents`, `/skills`, `/tools`, `/status`, `/session`, `/trace`, approval choices including remember/approve-all scopes, `@file` attachment behavior, token usage, task stages, write diffs, workflow runs, and session persistence.
+- Remaining gap: HTTP should provide a unified browser console similar to modern agent platforms: chat panel, workspace picker, file reference picker, tool/skill/agent catalog, workflow builder, workflow run monitor, approval inbox, diff viewer, logs, token usage, and settings.
+- The HTTP UI must preserve the same workspace safety boundary as CLI. UI convenience must not let browser actions read or write outside the selected workspace root.
 
 ### Documentation
 
 - README and docs now describe most implemented behavior, including end-user install paths for release archives, published Docker images, Docker Compose, source checkout usage, HTTP API smoke tests, workspace/session locations, checksums, and SBOM.
 - Chinese and English installation documentation should remain synchronized as features stabilize.
 - Authoring guides still need more examples for custom agent/tool/skill/workflow combinations.
+- Documentation should add a clear user-facing workspace model: no-workspace chat, current-directory default workspace, selecting/switching workspaces, and which actions require workspace confirmation.
 
 ### Deployment And Packaging
 
@@ -294,6 +310,9 @@ Priority:
 4. Completed: improve skill matching with scoring explanations in `/status`.
 5. Completed baseline: make generated `workflows/<name>/workflow.yaml` files executable through `/workflow <name>`.
 6. Completed: add tests for web and binary skill activation, routing, and declared tool metadata.
+7. Add workflow run persistence for complex tasks: run id, stage state, stage outputs, artifacts, approvals, retries, cancellation, and replayable history.
+8. Add reusable workflow templates for common complex flows: plan -> implement -> test -> audit, web research -> evidence collection -> risk report, binary triage -> strings/imports -> vulnerability assessment, docs generation -> review -> publish.
+9. Add nested or reusable sub-workflow support only after the stage state model is stable.
 
 Success criteria:
 
@@ -332,12 +351,15 @@ Priority:
 4. Completed baseline: improve command output layout for `/skills`, `/tools`, and `/agents` with summaries, grouping, and warning counts.
 5. Completed baseline: add optional history/fuzzy completion for interactive prompt input.
 6. Completed baseline: keep HTTP/SSE behavior aligned with CLI stream events for normal turns, workflow runs, and approval resumes.
+7. Add workspace-required task gating to CLI: pure chat can continue without a workspace, but file/project/workflow operations must prompt for a workspace or confirm the current directory default.
+8. Add workspace switch/select commands and a platform-aware folder picker where feasible; provide text fallback in terminals or headless environments.
 
 Success criteria:
 
 - Operators can tell exactly what the agent is doing.
 - File modifications are readable before and after approval.
 - CLI defaults feel usable without custom configuration.
+- Operators cannot accidentally run file-affecting tasks against the wrong workspace.
 
 ### Phase F: Cross-Platform Deployment
 
@@ -360,11 +382,32 @@ Success criteria:
 - Containerized MCP servers use explicit commands and workspace mounts.
 - Deployment config does not require broad host filesystem access.
 
+### Phase G: HTTP Console And Visual Operations
+
+Goal: make HTTP mode a full operator surface, not just a JSON/SSE transport.
+
+Priority:
+
+1. Define a UI/API parity matrix against CLI commands and stream events.
+2. Add workspace lifecycle APIs: current workspace, select workspace, confirm current directory, clear workspace, and workspace-required error responses for unsafe operations.
+3. Expand the browser console beyond `/workflows`: chat/run page, workflow run monitor, approvals inbox, diff viewer, token/task-stage panel, tools/skills/agents browser, session/status pages, and settings.
+4. Make HTTP approval behavior match CLI, including approve, deny, approve-and-remember, workflow-scoped approve-all, and streamed resume.
+5. Add `@file` reference support to HTTP requests with the same workspace-root checks and read-tool log semantics as CLI.
+6. Add tests that compare CLI-visible behavior and HTTP/SSE behavior for approvals, workflow runs, token usage, task stages, write diffs, and workspace-required failures.
+
+Success criteria:
+
+- A user can operate GoFlow from the browser without losing CLI-level visibility or safety.
+- The visual workflow page can author workflows and inspect live runs.
+- Workspace selection is explicit, visible, and enforced before file-affecting operations.
+
 ## 5. Immediate Next Actions
 
-1. Keep Chinese and English docs synchronized as the HTTP/SSE, scaffold, deployment, and install surfaces stabilize.
-2. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
-3. Strengthen implementation-request nudges so agents act once enough context has been gathered.
+1. Implement workspace lifecycle rules: allow pure chat without workspace, default to current execution directory when appropriate, and require workspace selection/confirmation for file, command, document-generation, and workflow operations.
+2. Expand HTTP toward CLI parity with a unified visual console: chat, workspace picker, workflow runs, approvals, diffs, tools, skills, agents, status, session, logs, and token usage.
+3. Strengthen complex-task workflows with durable run state, stage artifacts, retries, cancellation, checkpoints, and run history.
+4. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
+5. Strengthen implementation-request nudges so agents act once enough context has been gathered.
 
 ## 6. Execution Principles
 
