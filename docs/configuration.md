@@ -395,8 +395,17 @@ Current endpoints:
 - `POST /api/run/stream`
 - `GET /api/session`
 - `POST /api/workflows/{name}`
+- `POST /api/workflows/{name}/stream`
+- `GET /api/workflow-graphs`
+- `POST /api/workflow-graphs`
+- `GET /api/workflow-graphs/{name}`
+- `PUT /api/workflow-graphs/{name}`
+- `DELETE /api/workflow-graphs/{name}`
+- `GET /api/workflow-options`
 - `POST /api/approvals/{callID}/approve`
+- `POST /api/approvals/{callID}/approve/stream`
 - `POST /api/approvals/{callID}/deny`
+- `POST /api/approvals/{callID}/deny/stream`
 - `POST /api/approvals/approve-all`
 
 `POST /api/run` returns the final JSON agent result.
@@ -404,6 +413,10 @@ Current endpoints:
 `POST /api/run/stream` returns `text/event-stream` and forwards runtime `schema.StreamEvent` values as SSE frames.
 
 `GET /api/session` returns the same persisted workflow, pending handoff, and pending approval snapshot surfaced by the CLI.
+
+`GET /workflows` serves the built-in workflow graph editor. Custom workflow
+graphs saved through the editor are persisted under
+`workflows/<name>/workflow.yaml` in runtime home.
 
 ## Backward compatibility
 

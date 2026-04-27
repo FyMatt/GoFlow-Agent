@@ -7,6 +7,10 @@ GoFlow supports two workflow styles:
 
 Use workflow graphs when a task needs named stages, explicit agent assignment, branch selection, or approval boundaries.
 
+Workflow graphs are persisted runtime configuration. They are loaded when you
+run them, so editing `workflows/<name>/workflow.yaml` or saving from the HTTP
+editor changes the next execution without recompiling GoFlow.
+
 ## Create And Run
 
 ```text
@@ -27,6 +31,41 @@ For all scaffold commands and generated-file verification steps, see [Scaffold C
 
 For an end-to-end custom extension, see `examples/extension-workflow`. It includes a custom Python MCP server, a read-only agent snippet, a custom skill, and a graph workflow that composes the custom stage with a built-in audit stage.
 
+## Visual Editor
+
+Start HTTP mode:
+
+```bash
+go run ./cmd/goflow --workspace /path/to/workspace --http :8080
+```
+
+Open:
+
+```text
+http://127.0.0.1:8080/workflows
+```
+
+The editor can:
+
+- list built-in and custom workflow graphs
+- create custom workflow graphs
+- drag stages on a canvas
+- edit stage agent, skill, approval, next strategy, and next-stage edges
+- save custom graphs back to `workflows/<name>/workflow.yaml`
+- run the selected workflow through the same HTTP workflow endpoint
+
+Node positions are saved as optional stage metadata:
+
+```yaml
+position:
+  x: 80
+  y: 120
+```
+
+Execution ignores `position`; it is only used by the editor.
+
+Built-in workflows are shown for reference but cannot be overwritten or deleted.
+
 ## Stage Schema
 
 ```yaml
@@ -39,15 +78,18 @@ stages:
     approval: false
     next_strategy: select
     next: [implement, audit]
+    position: {x: 80, y: 120}
   - name: implement
     agent: fixer
     skill: code-writing
     approval: true
     next: [audit]
+    position: {x: 360, y: 120}
   - name: audit
     agent: auditor
     skill: code-audit
     approval: false
+    position: {x: 640, y: 120}
 ```
 
 Fields:
@@ -61,8 +103,51 @@ Fields:
 - `stage.approval`: if `true`, pause before entering the stage unless the run is pre-approved.
 - `stage.next`: candidate next stage names. If omitted, GoFlow continues to the next stage in file order.
 - `stage.next_strategy`: optional branch strategy. Supported values include `select`, `best`, `conditional`, `planner_select`, `planner-select`, `dynamic`, and `graph`.
+- `stage.position`: optional visual editor metadata. It does not affect execution.
 
 Agent profile permissions remain the final tool boundary. A stage cannot grant itself write, exec, or network access just by naming a skill.
+
+## HTTP Management API
+
+Workflow execution endpoints:
+
+- `POST /api/workflows/{name}`
+- `POST /api/workflows/{name}/stream`
+
+Workflow graph management endpoints:
+
+- `GET /api/workflow-graphs`
+- `POST /api/workflow-graphs`
+- `GET /api/workflow-graphs/{name}`
+- `PUT /api/workflow-graphs/{name}`
+- `DELETE /api/workflow-graphs/{name}`
+- `GET /api/workflow-options`
+
+`/api/workflow-options` returns configured agents and loaded skills for editors.
+
+Save a workflow graph:
+
+```bash
+curl -s -X PUT http://127.0.0.1:8080/api/workflow-graphs/release-check \
+  -H "Content-Type: application/json" \
+  -d '{
+    "name": "release-check",
+    "description": "Plan, implement, and audit a change.",
+    "stages": [
+      {"name":"plan","agent":"planner","skill":"execution-plan","next":["implement"],"position":{"x":80,"y":120}},
+      {"name":"implement","agent":"fixer","skill":"code-writing","approval":true,"next":["audit"],"position":{"x":360,"y":120}},
+      {"name":"audit","agent":"auditor","skill":"code-audit","position":{"x":640,"y":120}}
+    ]
+  }'
+```
+
+Run it:
+
+```bash
+curl -s -X POST http://127.0.0.1:8080/api/workflows/release-check \
+  -H "Content-Type: application/json" \
+  -d '{"input":"improve CLI diff output"}'
+```
 
 ## Linear Workflow
 

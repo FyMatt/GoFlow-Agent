@@ -65,7 +65,13 @@ func (m *apiTestMCP) ToolNames() []string { return []string{"write_file"} }
 
 type apiTestSkillManager struct{}
 
-func (apiTestSkillManager) List() []schema.Skill               { return nil }
+func (apiTestSkillManager) List() []schema.Skill {
+	return []schema.Skill{
+		{Name: "execution-plan", Description: "Plan work", Mode: "plan", PreferredAgent: "planner"},
+		{Name: "code-writing", Description: "Implement work", Mode: "fix", PreferredAgent: "fixer"},
+		{Name: "code-audit", Description: "Review work", Mode: "audit", PreferredAgent: "auditor"},
+	}
+}
 func (apiTestSkillManager) Match(string) (*schema.Skill, bool) { return nil, false }
 func (apiTestSkillManager) MatchWithDiagnostics(string) (*schema.Skill, schema.SkillMatchDiagnostic, bool) {
 	return nil, schema.SkillMatchDiagnostic{}, false
@@ -74,6 +80,7 @@ func (apiTestSkillManager) MatchWithDiagnostics(string) (*schema.Skill, schema.S
 func newAPITestRuntime(t *testing.T) *agent.Runtime {
 	t.Helper()
 	cfg := &config.Config{
+		RuntimeHome:  t.TempDir(),
 		Audit:        config.AuditConfig{},
 		Session:      config.SessionConfig{MaxHistory: 8},
 		DefaultAgent: "chat",
@@ -97,6 +104,75 @@ func newAPITestRuntime(t *testing.T) *agent.Runtime {
 		t.Fatalf("NewRuntime: %v", err)
 	}
 	return runtimeRef
+}
+
+func TestServerWorkflowGraphManagementEndpointsPersistCustomGraph(t *testing.T) {
+	server := NewServer(newAPITestRuntime(t))
+	body := strings.NewReader(`{
+		"name":"release-check",
+		"description":"Plan, implement, and audit a release change.",
+		"stages":[
+			{"name":"plan","agent":"planner","skill":"execution-plan","next":["implement"],"position":{"x":80,"y":120}},
+			{"name":"implement","agent":"fixer","skill":"code-writing","approval":true,"next":["audit"],"position":{"x":320,"y":120}},
+			{"name":"audit","agent":"auditor","skill":"code-audit","position":{"x":560,"y":120}}
+		]
+	}`)
+	request := httptest.NewRequest(http.MethodPut, "/api/workflow-graphs/release-check", body)
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected save 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	if !strings.Contains(response.Body.String(), `"name":"release-check"`) || !strings.Contains(response.Body.String(), `"x":80`) {
+		t.Fatalf("expected persisted workflow graph response, got %s", response.Body.String())
+	}
+
+	listRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-graphs", nil)
+	listResponse := httptest.NewRecorder()
+	server.ServeHTTP(listResponse, listRequest)
+	if listResponse.Code != http.StatusOK {
+		t.Fatalf("expected list 200, got %d", listResponse.Code)
+	}
+	if !strings.Contains(listResponse.Body.String(), `"release-check"`) || !strings.Contains(listResponse.Body.String(), `"custom"`) {
+		t.Fatalf("expected custom workflow in list, got %s", listResponse.Body.String())
+	}
+
+	getRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-graphs/release-check", nil)
+	getResponse := httptest.NewRecorder()
+	server.ServeHTTP(getResponse, getRequest)
+	if getResponse.Code != http.StatusOK {
+		t.Fatalf("expected get 200, got %d", getResponse.Code)
+	}
+	if !strings.Contains(getResponse.Body.String(), `"position"`) {
+		t.Fatalf("expected visual position metadata, got %s", getResponse.Body.String())
+	}
+}
+
+func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
+	server := NewServer(newAPITestRuntime(t))
+
+	pageRequest := httptest.NewRequest(http.MethodGet, "/workflows", nil)
+	pageResponse := httptest.NewRecorder()
+	server.ServeHTTP(pageResponse, pageRequest)
+	if pageResponse.Code != http.StatusOK {
+		t.Fatalf("expected editor 200, got %d", pageResponse.Code)
+	}
+	if !strings.Contains(pageResponse.Body.String(), "GoFlow Workflow Editor") || !strings.Contains(pageResponse.Body.String(), "/api/workflow-graphs") {
+		t.Fatalf("expected workflow editor HTML, got %s", pageResponse.Body.String())
+	}
+
+	optionsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-options", nil)
+	optionsResponse := httptest.NewRecorder()
+	server.ServeHTTP(optionsResponse, optionsRequest)
+	if optionsResponse.Code != http.StatusOK {
+		t.Fatalf("expected options 200, got %d", optionsResponse.Code)
+	}
+	if !strings.Contains(optionsResponse.Body.String(), `"planner"`) || !strings.Contains(optionsResponse.Body.String(), `"execution-plan"`) {
+		t.Fatalf("expected workflow options, got %s", optionsResponse.Body.String())
+	}
 }
 
 func TestServerRunEndpointReturnsAgentResult(t *testing.T) {

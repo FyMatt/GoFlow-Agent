@@ -130,6 +130,13 @@ The built-in `plan-fix-audit` and `skill-chain` workflows are registered once an
 
 HTTP streaming endpoints forward the same `schema.StreamEvent` objects used by the CLI renderer. `/api/run/stream` streams normal agent turns, `/api/workflows/<name>/stream` streams workflow stage execution and ends with a `workflow_result` event, and streamed approval endpoints can resume ordinary or workflow tool loops while preserving token, task-stage, tool-result, and approval events.
 
+HTTP mode also exposes workflow graph management endpoints plus a small
+browser-based editor at `/workflows`. The editor persists the same YAML graph
+files used by the CLI runner, including optional visual `position` metadata for
+dragged stage nodes. Runtime execution ignores visual metadata and continues to
+use explicit stage order, `next` edges, branch strategy, agent selection, and
+skill selection.
+
 `plan-fix-audit` runs three named agents in order:
 
 1. `planner`
@@ -152,6 +159,7 @@ Behavior:
 - Graph stages run with the configured skill instructions while the selected agent profile remains the final permission boundary.
 - Graph workflows support sequential execution, declared next-stage edges, explicit stage selection through `Next skill: ...` / `Next skills: ...`, and suspended tool approval/resume.
 - Custom workflow files live in runtime home, while any file tools used by stages still operate against the active workspace root.
+- Custom workflow graph files can be managed through `GET/PUT/DELETE /api/workflow-graphs/{name}` or edited visually at `/workflows`.
 - For graph schema and examples, see `docs/workflows.md`.
 - `/session` renders persisted workflow, pending approvals, pending handoff, and last-routing sections for operator inspection
 - ordinary chat can also persist a pending plan -> execution handoff so natural-language confirmations resume into the target executable agent instead of restarting planner output

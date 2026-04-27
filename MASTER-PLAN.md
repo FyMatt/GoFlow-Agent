@@ -153,6 +153,8 @@ Skill authoring support:
 - Runtime workflow graph files under `workflows/<name>/workflow.yaml` are executable with `/workflow <name> <request>`.
 - Custom workflow graph stages bind an explicit `agent`, `skill`, optional `approval`, optional `next_strategy`, and optional `next` stage list.
 - Graph workflows support sequential stages, selected branches, explicit `Next skill: ...` directives, and suspended tool approval/resume.
+- HTTP workflow graph management endpoints persist custom workflows under `workflows/<name>/workflow.yaml`.
+- HTTP mode serves `/workflows`, a browser workflow editor with draggable stage nodes and optional persisted visual `position` metadata.
 
 ### CLI And Operator UX
 
@@ -178,6 +180,7 @@ Skill authoring support:
 - HTTP JSON and SSE endpoints are implemented.
 - Shared runtime bootstrap is reused by CLI and HTTP.
 - Session inspection and approval endpoints exist.
+- Workflow graph listing, create/update/delete, option discovery, and visual editing endpoints are implemented.
 - HTTP SSE endpoints now forward the same `schema.StreamEvent` semantics used by the CLI for normal turns, workflow runs, and streamed approval resumes, including task stages, tool results, approvals, token usage, and final `workflow_result` events.
 
 ### Deployment
@@ -225,7 +228,7 @@ Skill authoring support:
 - Skill matching is still keyword-first, but the selected score and reason are now explainable.
 - Skills can declare `next_skills`, `/skills` displays them, and `skill-chain` can execute them with linear, metadata-selected, or explicit planner-output branching.
 - Completed baseline: skill, Python MCP tool, agent snippet, and executable workflow blueprint scaffold commands include richer generated examples, next-step hints, validation guards, and authoring docs.
-- Custom workflow graph execution has a tested baseline, invalid graph files now surface validation errors instead of being reported as unknown workflows, validation edge cases are covered by tests, and `docs/workflows.md` documents branch selection, stage approval, and approval-resume examples.
+- Custom workflow graph execution has a tested baseline, invalid graph files now surface validation errors instead of being reported as unknown workflows, validation edge cases are covered by tests, `docs/workflows.md` documents branch selection, stage approval, approval-resume examples, HTTP graph management APIs, and the visual editor.
 
 ### Documentation
 

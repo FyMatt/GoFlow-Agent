@@ -1408,6 +1408,14 @@ func (r *Runtime) RuntimeHome() string {
 	return strings.TrimSpace(r.cfg.RuntimeHome)
 }
 
+// SkillList returns loaded skills for workflow authoring and diagnostics.
+func (r *Runtime) SkillList() []schema.Skill {
+	if r == nil || r.skills == nil {
+		return nil
+	}
+	return r.skills.List()
+}
+
 // StatusLines returns human-readable runtime status information.
 func (r *Runtime) StatusLines(ctx context.Context) []string {
 	lines := []string{

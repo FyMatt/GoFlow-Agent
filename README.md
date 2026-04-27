@@ -220,6 +220,12 @@ Current endpoints:
 - `GET /api/session`
 - `POST /api/workflows/{name}`
 - `POST /api/workflows/{name}/stream`
+- `GET /api/workflow-graphs`
+- `POST /api/workflow-graphs`
+- `GET /api/workflow-graphs/{name}`
+- `PUT /api/workflow-graphs/{name}`
+- `DELETE /api/workflow-graphs/{name}`
+- `GET /api/workflow-options`
 - `POST /api/approvals/{callID}/approve`
 - `POST /api/approvals/{callID}/approve/stream`
 - `POST /api/approvals/{callID}/deny`
@@ -253,6 +259,10 @@ SSE clients should handle these event types:
 - `workflow_result` for final or paused workflow state from `/api/workflows/{name}/stream` and streamed approval resumes
 
 The streamed approval endpoints resume ordinary chat or workflow execution when the approved or denied call has resumable context.
+
+HTTP mode also serves a browser workflow editor at `GET /workflows`. It can
+list, create, drag, edit, save, delete, and run custom workflow graphs persisted
+under `workflows/<name>/workflow.yaml`. See [Workflow Graphs](./docs/workflows.md).
 
 ## Built-in MCP tools
 

@@ -226,6 +226,12 @@ handoff 待处理期间：
 - `GET /api/session`
 - `POST /api/workflows/{name}`
 - `POST /api/workflows/{name}/stream`
+- `GET /api/workflow-graphs`
+- `POST /api/workflow-graphs`
+- `GET /api/workflow-graphs/{name}`
+- `PUT /api/workflow-graphs/{name}`
+- `DELETE /api/workflow-graphs/{name}`
+- `GET /api/workflow-options`
 - `POST /api/approvals/{callID}/approve`
 - `POST /api/approvals/{callID}/approve/stream`
 - `POST /api/approvals/{callID}/deny`
@@ -259,6 +265,10 @@ SSE 客户端应处理这些事件：
 - `workflow_result`：workflow 最终或暂停状态
 
 流式审批端点可以在工具调用获批或拒绝后恢复普通 chat 或 workflow 执行。
+
+HTTP 模式还提供 `GET /workflows` 浏览器工作流编辑器，可以查看、创建、拖拽、
+编辑、保存、删除并运行自定义 workflow graph。自定义工作流会持久化到
+`workflows/<name>/workflow.yaml`。更多细节见 [Workflow Graphs](./docs/workflows.md)。
 
 ## 内置 MCP 工具
 

@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
@@ -46,21 +45,11 @@ func (w *WorkflowRunner) workflowFromGraph(name string) (workflowDefinition, boo
 }
 
 func (w *WorkflowRunner) loadWorkflowGraph(name string) (workflowGraph, error) {
-	if w == nil || w.runtime == nil || w.runtime.cfg == nil {
-		return workflowGraph{}, fmt.Errorf("workflow runtime not configured")
+	path, err := w.workflowGraphPath(name)
+	if err != nil {
+		return workflowGraph{}, err
 	}
-	name = strings.TrimSpace(strings.ToLower(name))
-	if name == "" || strings.ContainsAny(name, `/\`) || name == "." || name == ".." {
-		return workflowGraph{}, fmt.Errorf("invalid workflow name: %s", name)
-	}
-	root := filepath.Join(w.runtime.cfg.RuntimeHome, "workflows")
-	path := filepath.Join(root, name, "workflow.yaml")
-	cleanPath := filepath.Clean(path)
-	rel, err := filepath.Rel(root, cleanPath)
-	if err != nil || rel == "." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) || rel == ".." {
-		return workflowGraph{}, fmt.Errorf("workflow path escapes runtime workflows directory")
-	}
-	data, err := os.ReadFile(cleanPath)
+	data, err := os.ReadFile(path)
 	if err != nil {
 		return workflowGraph{}, err
 	}
@@ -68,7 +57,7 @@ func (w *WorkflowRunner) loadWorkflowGraph(name string) (workflowGraph, error) {
 	if err := yaml.Unmarshal(data, &graph); err != nil {
 		return workflowGraph{}, fmt.Errorf("parse workflow graph: %w", err)
 	}
-	if err := validateWorkflowGraph(name, graph); err != nil {
+	if err := validateWorkflowGraph(normalizePersistedWorkflowName(name), graph); err != nil {
 		return workflowGraph{}, err
 	}
 	return graph, nil

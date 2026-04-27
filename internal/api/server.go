@@ -18,9 +18,14 @@ type Server struct {
 
 func NewServer(runtime *agent.Runtime) *Server {
 	s := &Server{runtime: runtime, mux: http.NewServeMux()}
+	s.mux.HandleFunc("/workflows", s.handleWorkflowEditor)
+	s.mux.HandleFunc("/workflows/", s.handleWorkflowEditor)
 	s.mux.HandleFunc("/api/run", s.handleRun)
 	s.mux.HandleFunc("/api/run/stream", s.handleRunStream)
 	s.mux.HandleFunc("/api/session", s.handleSession)
+	s.mux.HandleFunc("/api/workflow-graphs", s.handleWorkflowGraphCollection)
+	s.mux.HandleFunc("/api/workflow-graphs/", s.handleWorkflowGraphItem)
+	s.mux.HandleFunc("/api/workflow-options", s.handleWorkflowOptions)
 	s.mux.HandleFunc("/api/workflows/", s.handleWorkflow)
 	s.mux.HandleFunc("/api/approvals/approve-all", s.handleApproveAll)
 	s.mux.HandleFunc("/api/approvals/", s.handleApprovalAction)
