@@ -5,12 +5,15 @@ GoFlow release delivery has two paths:
 - binary archives for Windows and Linux users
 - Docker images for HTTP/API deployments
 
+For direct end-user commands, see [Installation And Deployment](./install.md)
+and [安装与部署](./install.zh-CN.md).
+
 ## Binary Archives
 
 Build archives locally:
 
 ```bash
-python scripts/build_release_assets.py --clean --version v0.1.0
+python scripts/build_release_assets.py --clean --version v0.1.2
 ```
 
 Default targets:
@@ -29,8 +32,8 @@ python scripts/build_release_assets.py --clean --version dev --target linux/amd6
 Validate a full local build:
 
 ```bash
-python scripts/generate_sbom.py --version v0.1.0 --output dist/SBOM.spdx.json --update-checksums
-python scripts/validate_release_archives.py --dist dist --version v0.1.0 --require-sbom
+python scripts/generate_sbom.py --version v0.1.2 --output dist/SBOM.spdx.json --update-checksums
+python scripts/validate_release_archives.py --dist dist --version v0.1.2 --require-sbom
 ```
 
 Each archive contains:
@@ -60,8 +63,8 @@ script writes `dist/SBOM.spdx.json` and can append its checksum to `SHA256SUMS`.
 Pushing a tag that starts with `v` runs `.github/workflows/release.yml`:
 
 ```bash
-git tag v0.1.0
-git push origin v0.1.0
+git tag v0.1.2
+git push origin v0.1.2
 ```
 
 The workflow:
@@ -79,8 +82,8 @@ The workflow:
 The release workflow publishes:
 
 ```text
-ghcr.io/<owner>/<repo>:<tag>
-ghcr.io/<owner>/<repo>:latest
+ghcr.io/fymatt/goflow-agent:<tag>
+ghcr.io/fymatt/goflow-agent:latest
 ```
 
 The Docker image uses `configs/agent.docker.yaml` and starts HTTP mode by default:

@@ -25,6 +25,8 @@ GoFlow Agent 将 **runtime home** 和 **workspace root** 分开：
 
 部署文件可以用 `python scripts/validate_deployment_assets.py` 做本地静态检查，不需要安装 Docker。
 
+面向普通用户的安装和部署命令见 [安装与部署](./docs/install.zh-CN.md)。英文版见 [Installation And Deployment](./docs/install.md)。
+
 ## 核心能力
 
 - 多 Agent 运行时，支持命名 agent profile
@@ -113,13 +115,25 @@ GoFlow HTTP API ready. runtime=C:\path\to\agent workspace=D:\my-empty-project ad
 
 ### 使用 Docker 运行
 
-复制 `.env.example` 为 `.env`，填入模型配置后运行：
+源码仓库本地构建时，复制 `.env.example` 为 `.env`，填入模型配置后运行：
 
 ```bash
 docker compose up --build
 ```
 
 容器会监听 `http://127.0.0.1:8080`，并把宿主机的 `./workspace` 挂载为容器内的 `/workspace`。Windows、Linux 和 Docker 细节见 [Deployment](./docs/deployment.md)。
+
+如果要直接运行已经发布的镜像：
+
+```bash
+docker run --rm -it \
+  --env-file .env \
+  -p 8080:8080 \
+  -v "$PWD/workspace:/workspace" \
+  ghcr.io/fymatt/goflow-agent:<version>
+```
+
+Release 压缩包和 Docker 镜像用法见 [安装与部署](./docs/install.zh-CN.md)。
 
 ## 常用 CLI 命令
 

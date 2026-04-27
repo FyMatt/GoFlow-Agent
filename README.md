@@ -21,6 +21,8 @@ You can smoke-test that packaged example with `python scripts/validate_extension
 
 Deployment files can be checked locally without Docker using `python scripts/validate_deployment_assets.py`.
 
+For end-user installation and deployment commands, see [Installation And Deployment](./docs/install.md). For Chinese instructions, see [安装与部署](./docs/install.zh-CN.md).
+
 ## Key features
 
 - Multi-agent runtime with named agent profiles
@@ -111,13 +113,25 @@ GoFlow HTTP API ready. runtime=C:\path\to\agent workspace=D:\my-empty-project ad
 
 ### Run with Docker
 
-Copy `.env.example` to `.env`, fill in provider values, then run:
+For local source checkouts, copy `.env.example` to `.env`, fill in provider values, then run:
 
 ```bash
 docker compose up --build
 ```
 
 The container listens on `http://127.0.0.1:8080` and uses `./workspace` as `/workspace` inside the container. See [Deployment](./docs/deployment.md) for Windows, Linux, and Docker details.
+
+To run a published image instead of building locally:
+
+```bash
+docker run --rm -it \
+  --env-file .env \
+  -p 8080:8080 \
+  -v "$PWD/workspace:/workspace" \
+  ghcr.io/fymatt/goflow-agent:<version>
+```
+
+Release archives and Docker images are covered in [Installation And Deployment](./docs/install.md).
 
 ## Common CLI commands
 

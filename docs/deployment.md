@@ -2,6 +2,10 @@
 
 GoFlow is intended to run on Windows, Linux, and inside Docker.
 
+For a user-facing install guide with release archive and published image
+commands, see [Installation And Deployment](./install.md). For Chinese
+instructions, see [安装与部署](./install.zh-CN.md).
+
 ## Local Windows
 
 Use the provided command script after setting provider credentials:
@@ -74,6 +78,16 @@ Compose:
 
 ```bash
 docker compose up --build
+```
+
+Use the published GHCR image when you do not need a local source build:
+
+```bash
+docker run --rm -it \
+  --env-file .env \
+  -p 8080:8080 \
+  -v "$PWD/workspace:/workspace" \
+  ghcr.io/fymatt/goflow-agent:<version>
 ```
 
 The container defaults to:

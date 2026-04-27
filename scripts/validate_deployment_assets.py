@@ -213,8 +213,41 @@ def validate_release_docs() -> None:
             "configs/agent.binary.yaml",
             "SHA256SUMS",
             "SBOM.spdx.json",
-            "ghcr.io/<owner>/<repo>:<tag>",
+            "ghcr.io/fymatt/goflow-agent:<tag>",
             "configs/agent.docker.yaml",
+        ],
+    )
+
+
+def validate_install_docs() -> None:
+    install = read("docs/install.md")
+    assert_contains(
+        "docs/install.md",
+        install,
+        [
+            "ghcr.io/fymatt/goflow-agent:<version>",
+            "run-goflow.cmd",
+            "run-goflow.sh",
+            "docker run --rm -it",
+            "docker compose up --build",
+            "curl http://127.0.0.1:8080/api/session",
+            "SBOM.spdx.json",
+            "<workspace>/.goflow/session.json",
+        ],
+    )
+    install_zh = read("docs/install.zh-CN.md")
+    assert_contains(
+        "docs/install.zh-CN.md",
+        install_zh,
+        [
+            "ghcr.io/fymatt/goflow-agent:<version>",
+            "run-goflow.cmd",
+            "run-goflow.sh",
+            "docker run --rm -it",
+            "docker compose up --build",
+            "curl http://127.0.0.1:8080/api/session",
+            "SBOM.spdx.json",
+            "<workspace>/.goflow/session.json",
         ],
     )
 
@@ -229,6 +262,7 @@ def main() -> int:
     validate_release_workflow()
     validate_release_script()
     validate_release_docs()
+    validate_install_docs()
     print("deployment asset validation passed")
     return 0
 

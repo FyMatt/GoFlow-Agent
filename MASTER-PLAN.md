@@ -229,9 +229,9 @@ Skill authoring support:
 
 ### Documentation
 
-- README and docs now describe most implemented behavior, but authoring guides still need more examples.
-- Chinese and English documentation should remain synchronized as features stabilize.
-- Deployment documentation should stay synchronized across Windows, Linux, and Docker examples.
+- README and docs now describe most implemented behavior, including end-user install paths for release archives, published Docker images, Docker Compose, source checkout usage, HTTP API smoke tests, workspace/session locations, checksums, and SBOM.
+- Chinese and English installation documentation should remain synchronized as features stabilize.
+- Authoring guides still need more examples for custom agent/tool/skill/workflow combinations.
 
 ### Deployment And Packaging
 
@@ -360,7 +360,7 @@ Success criteria:
 
 ## 5. Immediate Next Actions
 
-1. Keep Chinese and English docs synchronized as the HTTP/SSE, scaffold, and deployment surfaces stabilize.
+1. Keep Chinese and English docs synchronized as the HTTP/SSE, scaffold, deployment, and install surfaces stabilize.
 2. Add release signing for release archives, SBOM, and checksums.
 3. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
 
