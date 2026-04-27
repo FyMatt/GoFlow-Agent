@@ -3,17 +3,27 @@
 > Status: active framework roadmap  
 > Updated: 2026-04-27  
 > Strategy: framework-first, product-ready by default  
-> Scope: agent routing, MCP tooling, skills, workflow orchestration, CLI/HTTP usability, deployment, and second-development ergonomics
+> Scope: agent routing, MCP tooling, skills, workflow orchestration, multi-agent collaboration, visual composition, CLI/HTTP usability, deployment, and second-development ergonomics
 
 ## 1. Product Direction
 
-GoFlow should be both:
+GoFlow's north star is to become a general-purpose Agent framework with a low barrier to entry and a high ceiling for customization.
+
+Developers should be able to:
+
+1. start an Agent out of the box through configuration, with tool calling, memory, planning, approvals, workspace safety, and observable execution already wired together
+2. build vertical Agents by defining domain-specific skills, tools, prompts, workflows, policies, and runtime profiles for customer support, software engineering, data analysis, operations, security research, and other domains
+3. compose multiple Agents through roles, handoffs, a message bus, shared blackboard state, workflow stages, and explicit collaboration contracts
+4. visually orchestrate Agents, skills, tools, and workflows while preserving code/config definitions for version control and second development
+
+GoFlow should therefore be both:
 
 1. a reusable local agent framework that is easy to extend with custom agents, tools, skills, workflows, and transports
 2. an out-of-the-box CLI/HTTP product that ordinary users can run against a workspace without first understanding the framework internals
 3. a deployable runtime that works on Windows, Linux, and Docker while preserving the runtime-home/workspace boundary
 4. a workspace-aware assistant that supports pure chat without a workspace, but requires an explicit workspace before reading, writing, generating project files, running workflows over files, or using workspace-scoped tools
 5. a visual agent console, not only a terminal app: HTTP mode should eventually expose the same operational power as the CLI through pages for chat, workspace selection, agents, tools, skills, workflows, approvals, diffs, logs, tokens, and session state
+6. a framework that supports both configuration-first use and code-first extension, so simple users can stay in YAML/UI while advanced developers can replace or extend core components
 
 The long-term goal is to let limited LLMs produce higher-quality work through strong runtime scaffolding:
 
@@ -21,6 +31,8 @@ The long-term goal is to let limited LLMs produce higher-quality work through st
 - better tool selection
 - explicit plans and handoffs
 - repeatable skill workflows
+- reusable Agent/Skill/Tool/Workflow composition primitives
+- shared blackboard state and message-bus mediated collaboration for multi-agent tasks
 - verifiable observations
 - safer workspace-scoped execution
 - clear operator logs and approvals
@@ -238,6 +250,14 @@ Skill authoring support:
 - Complex-task workflow support needs a richer execution model: durable per-stage state, explicit stage inputs/outputs, artifacts, retries, cancellation, manual checkpoints, longer pause/resume windows, nested or reusable sub-workflows, and better run history.
 - The visual workflow editor is a baseline editor. It still needs run monitoring, stage-level logs, approval handling, diff review, branch visualization, reusable templates, and workflow run replay/history.
 
+### Multi-Agent Collaboration
+
+- Current multi-agent behavior is mostly routed single-agent execution: `chat`, `planner`, `fixer`, `auditor`, and optional verifier roles can hand off or be selected by workflows, but they do not yet collaborate through a first-class team runtime.
+- Remaining gap: define a message bus so agents can send typed messages, requests, observations, critiques, and final handoff packets without losing provenance.
+- Remaining gap: define a shared blackboard for durable task state, evidence, intermediate artifacts, decisions, open questions, and stage outputs across agents and workflow runs.
+- Remaining gap: define collaboration patterns such as planner -> implementer -> tester -> auditor, researcher -> analyst -> reporter, and operator-supervised review loops as reusable configuration templates.
+- Remaining gap: expose multi-agent state in CLI/HTTP so users can see which agent owns a task, which messages were exchanged, what blackboard entries changed, and what decisions remain unresolved.
+
 ### HTTP Console And API Parity
 
 - HTTP mode exposes core run, stream, session, approval, workflow execution, workflow graph management, and the baseline visual workflow editor.
@@ -320,6 +340,25 @@ Success criteria:
 - Skill matches are explainable.
 - Complex tasks can be decomposed through plan -> execute -> audit style flows without custom code each time for linear skill chains or graph-backed workflows.
 
+### Phase C2: Add Multi-Agent Collaboration Primitives
+
+Goal: move from role routing to configurable Agent teams.
+
+Priority:
+
+1. Define the core collaboration model: agent role, task ownership, typed message, handoff packet, shared blackboard entry, and decision record.
+2. Add an internal message bus that supports agent-to-agent messages with provenance, timestamps, run ids, stage ids, and visible operator logs.
+3. Add a shared blackboard persisted under the session/workflow run scope, with APIs for reading/writing evidence, artifacts, plans, unresolved questions, and final decisions.
+4. Add reusable team templates: software task team, audit/security team, web research team, binary triage team, documentation team, and operations/runbook team.
+5. Let workflows invoke teams as stages once durable workflow state exists, while preserving tool permission boundaries per agent.
+6. Expose team state in CLI and HTTP: active owner, message timeline, blackboard changes, pending approvals, unresolved decisions, and final handoff summaries.
+
+Success criteria:
+
+- Developers can define a vertical multi-agent team through config before writing custom Go code.
+- Agent collaboration is observable and resumable, not hidden inside a single LLM prompt.
+- Shared state improves long-task quality without weakening workspace or tool approval boundaries.
+
 ### Phase D: Strengthen Reasoning And Verification
 
 Goal: raise result quality by making the runtime enforce better reasoning loops.
@@ -401,13 +440,32 @@ Success criteria:
 - The visual workflow page can author workflows and inspect live runs.
 - Workspace selection is explicit, visible, and enforced before file-affecting operations.
 
+### Phase H: Vertical Agent Kits And Visual Composition
+
+Goal: make GoFlow useful as a platform for domain-specific Agent products.
+
+Priority:
+
+1. Define a packaged vertical kit format that can include agents, prompts, skills, tools, workflows, policies, UI metadata, examples, and validation tests.
+2. Add kit scaffolding commands and HTTP UI flows for creating customer support, software engineering, data analysis, operations, security, and documentation Agents.
+3. Support both code-state and config-state editing: YAML files stay versionable, while HTTP pages can edit and validate the same definitions.
+4. Add import/export for Agent/Skill/Tool/Workflow kits so teams can share reusable vertical solutions.
+5. Add compatibility checks that validate kit-defined tools, skills, agents, workflow graphs, required environment variables, and workspace permissions before activation.
+
+Success criteria:
+
+- A developer can create a vertical Agent package without learning the entire framework internals.
+- A team can operate and customize the same package from the browser or from version-controlled files.
+- Framework extension remains modular enough for Go, Python, and external MCP tools.
+
 ## 5. Immediate Next Actions
 
 1. Implement workspace lifecycle rules: allow pure chat without workspace, default to current execution directory when appropriate, and require workspace selection/confirmation for file, command, document-generation, and workflow operations.
 2. Expand HTTP toward CLI parity with a unified visual console: chat, workspace picker, workflow runs, approvals, diffs, tools, skills, agents, status, session, logs, and token usage.
 3. Strengthen complex-task workflows with durable run state, stage artifacts, retries, cancellation, checkpoints, and run history.
-4. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
-5. Strengthen implementation-request nudges so agents act once enough context has been gathered.
+4. Define the multi-agent collaboration primitives: message bus, shared blackboard, handoff packets, team templates, and visible team state.
+5. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
+6. Strengthen implementation-request nudges so agents act once enough context has been gathered.
 
 ## 6. Execution Principles
 
