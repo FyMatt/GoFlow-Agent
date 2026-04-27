@@ -32,6 +32,9 @@ jobs:
       - name: Build release archives
         run: python scripts/build_release_assets.py --clean --version "${GITHUB_REF_NAME:-dev}"
 
+      - name: Validate release archives
+        run: python scripts/validate_release_archives.py --dist dist --version "${GITHUB_REF_NAME:-dev}"
+
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
         with:

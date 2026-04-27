@@ -131,13 +131,13 @@ exec "$ROOT/bin/goflow" --config "$ROOT/configs/agent.binary.yaml" --workspace "
 
 def archive_target(stage_dir: Path, archive_base: Path, goos: str) -> Path:
     if goos == "windows":
-        archive_path = archive_base.with_suffix(".zip")
+        archive_path = archive_base.parent / f"{archive_base.name}.zip"
         with zipfile.ZipFile(archive_path, "w", compression=zipfile.ZIP_DEFLATED) as archive:
             for path in sorted(stage_dir.rglob("*")):
                 archive.write(path, path.relative_to(stage_dir.parent))
         return archive_path
 
-    archive_path = archive_base.with_suffix(".tar.gz")
+    archive_path = archive_base.parent / f"{archive_base.name}.tar.gz"
     with tarfile.open(archive_path, "w:gz") as archive:
         archive.add(stage_dir, arcname=stage_dir.name)
     return archive_path

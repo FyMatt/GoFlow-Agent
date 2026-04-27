@@ -140,6 +140,7 @@ def validate_release_workflow() -> None:
         workflow,
         [
             "python scripts/build_release_assets.py --clean --version",
+            "python scripts/validate_release_archives.py --dist dist --version",
             "actions/upload-artifact@v4",
             "softprops/action-gh-release@v2",
             "docker/login-action@v3",
@@ -167,6 +168,19 @@ def validate_release_script() -> None:
             "run-goflow.cmd",
             "SHA256SUMS",
             "hashlib.sha256",
+            "archive_base.parent",
+        ],
+    )
+    release_archive_validator = read("scripts/validate_release_archives.py")
+    assert_contains(
+        "scripts/validate_release_archives.py",
+        release_archive_validator,
+        [
+            "linux_amd64.tar.gz",
+            "linux_arm64.tar.gz",
+            "windows_amd64.zip",
+            "windows_arm64.zip",
+            "SHA256SUMS",
         ],
     )
 
@@ -178,6 +192,7 @@ def validate_release_docs() -> None:
         docs,
         [
             "python scripts/build_release_assets.py --clean --version",
+            "scripts/validate_release_archives.py",
             "configs/agent.binary.yaml",
             "SHA256SUMS",
             "ghcr.io/<owner>/<repo>:<tag>",

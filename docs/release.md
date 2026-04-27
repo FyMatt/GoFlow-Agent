@@ -26,6 +26,12 @@ Build one target:
 python scripts/build_release_assets.py --clean --version dev --target linux/amd64
 ```
 
+Validate a full local build:
+
+```bash
+python scripts/validate_release_archives.py --dist dist --version v0.1.0
+```
+
 Each archive contains:
 
 - `bin/goflow`
@@ -59,10 +65,11 @@ git push origin v0.1.0
 The workflow:
 
 1. builds the binary archives with `scripts/build_release_assets.py`
-2. uploads workflow artifacts
-3. attaches the archives and `SHA256SUMS` to the GitHub Release
-4. builds the Docker image
-5. pushes the Docker image to GHCR when the run is tag-triggered
+2. validates the expected OS/architecture archive names and `SHA256SUMS`
+3. uploads workflow artifacts
+4. attaches the archives and `SHA256SUMS` to the GitHub Release
+5. builds the Docker image
+6. pushes the Docker image to GHCR when the run is tag-triggered
 
 ## Docker Image
 
