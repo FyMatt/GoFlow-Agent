@@ -203,8 +203,19 @@ GitHub Releases include:
 - platform archives
 - `SHA256SUMS`
 - `SBOM.spdx.json`
+- one `.sigstore.json` signature bundle per signed release file
 
 Use `SHA256SUMS` to verify downloaded archive integrity. `SBOM.spdx.json`
-describes the Go module dependencies included in that release.
+describes the Go module dependencies included in that release. The Sigstore
+bundles prove the files were signed by this repository's GitHub Actions release
+workflow.
 
-Release signing is planned but not wired yet.
+Verify an asset with Cosign:
+
+```bash
+cosign verify-blob \
+  --bundle goflow-agent_<version>_linux_amd64.tar.gz.sigstore.json \
+  --certificate-identity-regexp "https://github.com/FyMatt/GoFlow-Agent/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  goflow-agent_<version>_linux_amd64.tar.gz
+```

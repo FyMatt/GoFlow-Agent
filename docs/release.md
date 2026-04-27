@@ -36,6 +36,13 @@ python scripts/generate_sbom.py --version v0.1.2 --output dist/SBOM.spdx.json --
 python scripts/validate_release_archives.py --dist dist --version v0.1.2 --require-sbom
 ```
 
+If Cosign is available and configured for signing, validate signatures too:
+
+```bash
+python scripts/sign_release_artifacts.py --dist dist
+python scripts/validate_release_archives.py --dist dist --version v0.1.2 --require-sbom --require-signatures
+```
+
 Each archive contains:
 
 - `bin/goflow`
@@ -57,6 +64,9 @@ The Python MCP server still requires Python on the target machine. Linux launche
 
 The build script writes `dist/SHA256SUMS` for archive integrity checks. The SBOM
 script writes `dist/SBOM.spdx.json` and can append its checksum to `SHA256SUMS`.
+The release workflow signs each archive, `SHA256SUMS`, and `SBOM.spdx.json`
+with Sigstore/Cosign keyless signing and uploads one `.sigstore.json` bundle per
+signed artifact.
 
 ## GitHub Release
 
@@ -71,11 +81,35 @@ The workflow:
 
 1. builds the binary archives with `scripts/build_release_assets.py`
 2. generates `SBOM.spdx.json` with `scripts/generate_sbom.py`
-3. validates the expected OS/architecture archive names, `SHA256SUMS`, and SBOM
-4. uploads workflow artifacts
-5. attaches the archives, `SHA256SUMS`, and `SBOM.spdx.json` to the GitHub Release
-6. builds the Docker image
-7. pushes the Docker image to GHCR when the run is tag-triggered
+3. signs archives, `SHA256SUMS`, and `SBOM.spdx.json` with `scripts/sign_release_artifacts.py`
+4. validates the expected OS/architecture archive names, `SHA256SUMS`, SBOM, and signature bundles
+5. uploads workflow artifacts
+6. attaches the archives, `SHA256SUMS`, `SBOM.spdx.json`, and `.sigstore.json` bundles to the GitHub Release
+7. builds the Docker image
+8. pushes the Docker image to GHCR when the run is tag-triggered
+9. signs the pushed Docker image digest with Cosign keyless signing
+
+## Signature Verification
+
+Release assets are signed by the GitHub Actions release workflow through
+Sigstore keyless signing. Verify a downloaded file with its adjacent bundle:
+
+```bash
+cosign verify-blob \
+  --bundle goflow-agent_v0.1.2_linux_amd64.tar.gz.sigstore.json \
+  --certificate-identity-regexp "https://github.com/FyMatt/GoFlow-Agent/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  goflow-agent_v0.1.2_linux_amd64.tar.gz
+```
+
+Verify the Docker image:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp "https://github.com/FyMatt/GoFlow-Agent/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/fymatt/goflow-agent:<tag>
+```
 
 ## Docker Image
 

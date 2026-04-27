@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Validate release archive names, checksums, and optional SBOM output."""
+"""Validate release archive names, checksums, optional SBOM, and signatures."""
 
 from __future__ import annotations
 
@@ -17,11 +17,16 @@ EXPECTED_SUFFIXES = [
 ]
 
 
+def read_json(path: Path) -> object:
+    return json.loads(path.read_text(encoding="utf-8-sig"))
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--dist", default="dist")
     parser.add_argument("--version", required=True)
     parser.add_argument("--require-sbom", action="store_true")
+    parser.add_argument("--require-signatures", action="store_true")
     args = parser.parse_args()
 
     dist = (ROOT / args.dist).resolve()
@@ -44,11 +49,21 @@ def main() -> int:
             raise AssertionError(f"SHA256SUMS missing {name}")
 
     if args.require_sbom:
-        sbom = json.loads((dist / "SBOM.spdx.json").read_text(encoding="utf-8"))
+        sbom = read_json(dist / "SBOM.spdx.json")
         if sbom.get("spdxVersion") != "SPDX-2.3":
             raise AssertionError("SBOM.spdx.json must use SPDX-2.3")
         if not sbom.get("packages"):
             raise AssertionError("SBOM.spdx.json must contain packages")
+
+    if args.require_signatures:
+        signed = [*expected, "SHA256SUMS"]
+        missing_signatures = [f"{name}.sigstore.json" for name in signed if not (dist / f"{name}.sigstore.json").is_file()]
+        if missing_signatures:
+            raise AssertionError(f"missing signature bundles: {missing_signatures}")
+        for name in signed:
+            bundle = read_json(dist / f"{name}.sigstore.json")
+            if not isinstance(bundle, dict) or not bundle:
+                raise AssertionError(f"invalid signature bundle: {name}.sigstore.json")
 
     print("release artifact validation passed")
     return 0

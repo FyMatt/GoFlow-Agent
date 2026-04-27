@@ -198,8 +198,18 @@ GitHub Release 包含：
 - 各平台压缩包
 - `SHA256SUMS`
 - `SBOM.spdx.json`
+- 每个已签名发布文件对应的 `.sigstore.json` 签名 bundle
 
 `SHA256SUMS` 用于校验下载文件完整性。`SBOM.spdx.json` 记录该版本包含的
-Go module 依赖，方便供应链审计。
+Go module 依赖，方便供应链审计。Sigstore bundle 用于证明文件由本仓库的
+GitHub Actions release workflow 签名。
 
-Release signing 还未接入，后续会补充。
+使用 Cosign 校验发布文件：
+
+```bash
+cosign verify-blob \
+  --bundle goflow-agent_<version>_linux_amd64.tar.gz.sigstore.json \
+  --certificate-identity-regexp "https://github.com/FyMatt/GoFlow-Agent/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  goflow-agent_<version>_linux_amd64.tar.gz
+```

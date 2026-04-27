@@ -8,6 +8,7 @@ on:
 
 permissions:
   contents: write
+  id-token: write
   packages: write
 
 jobs:
@@ -35,8 +36,14 @@ jobs:
       - name: Generate SBOM
         run: python scripts/generate_sbom.py --version "${GITHUB_REF_NAME:-dev}" --output dist/SBOM.spdx.json --update-checksums
 
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+
+      - name: Sign release artifacts
+        run: python scripts/sign_release_artifacts.py --dist dist
+
       - name: Validate release artifacts
-        run: python scripts/validate_release_archives.py --dist dist --version "${GITHUB_REF_NAME:-dev}" --require-sbom
+        run: python scripts/validate_release_archives.py --dist dist --version "${GITHUB_REF_NAME:-dev}" --require-sbom --require-signatures
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
@@ -70,7 +77,12 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
 
+      - name: Install Cosign
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: sigstore/cosign-installer@v3
+
       - name: Build and optionally push Docker image
+        id: build
         uses: docker/build-push-action@v6
         with:
           context: .
@@ -78,3 +90,7 @@ jobs:
           tags: |
             ${{ steps.image.outputs.name }}:${{ github.ref_name }}
             ${{ steps.image.outputs.name }}:latest
+
+      - name: Sign Docker image
+        if: startsWith(github.ref, 'refs/tags/')
+        run: cosign sign --yes "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"

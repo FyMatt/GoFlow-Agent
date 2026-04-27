@@ -141,8 +141,12 @@ def validate_release_workflow() -> None:
         [
             "python scripts/build_release_assets.py --clean --version",
             "python scripts/generate_sbom.py --version",
+            "python scripts/sign_release_artifacts.py --dist dist",
             "python scripts/validate_release_archives.py --dist dist --version",
             "--require-sbom",
+            "--require-signatures",
+            "sigstore/cosign-installer@v3",
+            "cosign sign --yes",
             "actions/upload-artifact@v4",
             "softprops/action-gh-release@v2",
             "docker/login-action@v3",
@@ -198,6 +202,20 @@ def validate_release_script() -> None:
             "SHA256SUMS",
             "SBOM.spdx.json",
             "--require-sbom",
+            "--require-signatures",
+            ".sigstore.json",
+        ],
+    )
+    signer = read("scripts/sign_release_artifacts.py")
+    assert_contains(
+        "scripts/sign_release_artifacts.py",
+        signer,
+        [
+            "cosign",
+            "sign-blob",
+            "--bundle",
+            ".sigstore.json",
+            "release_artifacts",
         ],
     )
 
@@ -213,6 +231,8 @@ def validate_release_docs() -> None:
             "configs/agent.binary.yaml",
             "SHA256SUMS",
             "SBOM.spdx.json",
+            ".sigstore.json",
+            "cosign verify-blob",
             "ghcr.io/fymatt/goflow-agent:<tag>",
             "configs/agent.docker.yaml",
         ],
@@ -232,6 +252,7 @@ def validate_install_docs() -> None:
             "docker compose up --build",
             "curl http://127.0.0.1:8080/api/session",
             "SBOM.spdx.json",
+            ".sigstore.json",
             "<workspace>/.goflow/session.json",
         ],
     )
@@ -247,6 +268,7 @@ def validate_install_docs() -> None:
             "docker compose up --build",
             "curl http://127.0.0.1:8080/api/session",
             "SBOM.spdx.json",
+            ".sigstore.json",
             "<workspace>/.goflow/session.json",
         ],
     )
