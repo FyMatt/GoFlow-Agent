@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -2428,8 +2429,10 @@ func formatStartupKV(key, value string) string {
 }
 
 func buildTerminalTitle(workspaceRoot string) string {
-	base := filepath.Base(filepath.Clean(workspaceRoot))
-	if base == "." || base == string(filepath.Separator) || strings.TrimSpace(base) == "" {
+	normalized := strings.TrimSpace(workspaceRoot)
+	normalized = strings.ReplaceAll(normalized, "\\", "/")
+	base := path.Base(path.Clean(normalized))
+	if base == "." || base == "/" || strings.TrimSpace(base) == "" {
 		return "GoFlow Agent"
 	}
 	return "GoFlow Agent - " + base
