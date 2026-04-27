@@ -29,7 +29,8 @@ python scripts/build_release_assets.py --clean --version dev --target linux/amd6
 Validate a full local build:
 
 ```bash
-python scripts/validate_release_archives.py --dist dist --version v0.1.0
+python scripts/generate_sbom.py --version v0.1.0 --output dist/SBOM.spdx.json --update-checksums
+python scripts/validate_release_archives.py --dist dist --version v0.1.0 --require-sbom
 ```
 
 Each archive contains:
@@ -51,7 +52,8 @@ goflow --config configs/agent.binary.yaml --workspace <workspace>
 
 The Python MCP server still requires Python on the target machine. Linux launchers default to `python3`; Windows launchers default to `python`. Override `GOFLOW_PYTHON_CMD` when needed.
 
-The build script also writes `dist/SHA256SUMS` for archive integrity checks.
+The build script writes `dist/SHA256SUMS` for archive integrity checks. The SBOM
+script writes `dist/SBOM.spdx.json` and can append its checksum to `SHA256SUMS`.
 
 ## GitHub Release
 
@@ -65,11 +67,12 @@ git push origin v0.1.0
 The workflow:
 
 1. builds the binary archives with `scripts/build_release_assets.py`
-2. validates the expected OS/architecture archive names and `SHA256SUMS`
-3. uploads workflow artifacts
-4. attaches the archives and `SHA256SUMS` to the GitHub Release
-5. builds the Docker image
-6. pushes the Docker image to GHCR when the run is tag-triggered
+2. generates `SBOM.spdx.json` with `scripts/generate_sbom.py`
+3. validates the expected OS/architecture archive names, `SHA256SUMS`, and SBOM
+4. uploads workflow artifacts
+5. attaches the archives, `SHA256SUMS`, and `SBOM.spdx.json` to the GitHub Release
+6. builds the Docker image
+7. pushes the Docker image to GHCR when the run is tag-triggered
 
 ## Docker Image
 

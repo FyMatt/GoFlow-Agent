@@ -140,7 +140,9 @@ def validate_release_workflow() -> None:
         workflow,
         [
             "python scripts/build_release_assets.py --clean --version",
+            "python scripts/generate_sbom.py --version",
             "python scripts/validate_release_archives.py --dist dist --version",
+            "--require-sbom",
             "actions/upload-artifact@v4",
             "softprops/action-gh-release@v2",
             "docker/login-action@v3",
@@ -171,6 +173,19 @@ def validate_release_script() -> None:
             "archive_base.parent",
         ],
     )
+    sbom_generator = read("scripts/generate_sbom.py")
+    assert_contains(
+        "scripts/generate_sbom.py",
+        sbom_generator,
+        [
+            "SPDX-2.3",
+            "go list",
+            "PACKAGE-MANAGER",
+            "purl",
+            "SBOM.spdx.json",
+            "SHA256SUMS",
+        ],
+    )
     release_archive_validator = read("scripts/validate_release_archives.py")
     assert_contains(
         "scripts/validate_release_archives.py",
@@ -181,6 +196,8 @@ def validate_release_script() -> None:
             "windows_amd64.zip",
             "windows_arm64.zip",
             "SHA256SUMS",
+            "SBOM.spdx.json",
+            "--require-sbom",
         ],
     )
 
@@ -195,6 +212,7 @@ def validate_release_docs() -> None:
             "scripts/validate_release_archives.py",
             "configs/agent.binary.yaml",
             "SHA256SUMS",
+            "SBOM.spdx.json",
             "ghcr.io/<owner>/<repo>:<tag>",
             "configs/agent.docker.yaml",
         ],

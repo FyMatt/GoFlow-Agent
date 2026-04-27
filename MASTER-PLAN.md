@@ -239,8 +239,8 @@ Skill authoring support:
 - Completed baseline: Docker uses compiled Go MCP binaries rather than `go run`, reducing runtime image requirements.
 - Completed baseline: Docker build and HTTP startup are covered by CI smoke tests.
 - Completed baseline: Linux resource-control isolation is available through explicit `isolation: linux_cgroup` config when the host has a writable cgroup v2 parent.
-- Completed baseline: release workflow builds Windows/Linux archives, publishes GHCR Docker images on version tags, and emits `SHA256SUMS` for archive integrity checks.
-- Remaining gap: release signing and SBOM generation are not wired yet.
+- Completed baseline: release workflow builds Windows/Linux archives, publishes GHCR Docker images on version tags, emits `SHA256SUMS` for artifact integrity checks, and generates `SBOM.spdx.json` for SPDX dependency disclosure.
+- Remaining gap: release signing is not wired yet.
 
 ## 4. Roadmap
 
@@ -361,7 +361,7 @@ Success criteria:
 ## 5. Immediate Next Actions
 
 1. Keep Chinese and English docs synchronized as the HTTP/SSE, scaffold, and deployment surfaces stabilize.
-2. Add release signing and SBOM generation.
+2. Add release signing for release archives, SBOM, and checksums.
 3. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
 
 ## 6. Execution Principles
