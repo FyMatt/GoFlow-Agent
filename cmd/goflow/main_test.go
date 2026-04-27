@@ -293,6 +293,9 @@ func TestRenderStartupBannerUsesStableAlignedLayout(t *testing.T) {
 	if !strings.Contains(output, "██████") || !strings.Contains(output, "GoFlow Agent") {
 		t.Fatalf("expected clear 3D startup title, got %q", output)
 	}
+	if strings.Contains(output, "�") {
+		t.Fatalf("expected startup title to avoid replacement characters, got %q", output)
+	}
 	if !strings.Contains(output, "runtime") || !strings.Contains(output, `C:\runtime`) {
 		t.Fatalf("expected runtime path, got %q", output)
 	}
@@ -704,7 +707,7 @@ func TestRunInteractiveApprovalMenuIgnoresTypedSentenceUntilExplicitConfirmation
 	if approved || denied || approvedAll {
 		t.Fatalf("expected no approval action from incidental typed input, approved=%t denied=%t approvedAll=%t", approved, denied, approvedAll)
 	}
-	if !strings.Contains(output.String(), "Use �?�?to choose and Enter to confirm.") {
+	if !strings.Contains(output.String(), "Use ↑/↓ to choose and Enter to confirm.") {
 		t.Fatalf("expected invalid input guidance, got %q", output.String())
 	}
 }
@@ -802,7 +805,7 @@ func TestRunBlockingApprovalPromptUsesInteractiveMenuWhenTerminalSupported(t *te
 	if approved || !denied || approvedAll {
 		t.Fatalf("expected interactive menu deny path, approved=%t denied=%t approvedAll=%t", approved, denied, approvedAll)
 	}
-	if !strings.Contains(output.String(), "Enter to confirm �?�?�?to move") {
+	if !strings.Contains(output.String(), "Enter to confirm • ↑/↓ to move") {
 		t.Fatalf("expected interactive menu instructions, got %q", output.String())
 	}
 }
@@ -1508,7 +1511,7 @@ func TestHandleOrdinaryChatPendingApprovalUsesInteractiveMenuWhenAvailable(t *te
 			t.Fatalf("expected no stderr output, got %q", stderr)
 		}
 	})
-	if !strings.Contains(stdout, "Enter to confirm �?�?�?to move") {
+	if !strings.Contains(stdout, "Enter to confirm • ↑/↓ to move") {
 		t.Fatalf("expected interactive approval menu instructions, got %q", stdout)
 	}
 	if !strings.Contains(stdout, "Approved call-1 -> write_file") {

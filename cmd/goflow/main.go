@@ -2649,12 +2649,12 @@ func buildStartupDisplayRow(agentRuntime *agent.Runtime, runtimeHome, workspaceR
 
 func renderStartupBanner(row startupDisplayRow) string {
 	lines := []string{
-		styleHeader(`██████�? ██████�?███████╗██�?     ██████�?██�?   ██╗`),
+		styleHeader(`██████╗  ██████╗ ███████╗██╗      ██████╗ ██╗    ██╗`),
 		styleHeader(`██╔════╝ ██╔═══██╗██╔════╝██║     ██╔═══██╗██║    ██║`),
-		styleHeader(`██�? ███╗██�?  ██║█████�? ██�?    ██�?  ██║██║ █╗ ██║`),
-		styleHeader(`██�?  ██║██║   ██║██╔══�? ██�?    ██�?  ██║██║███╗██║`),
-		styleHeader(`╚██████╔╝╚██████╔╝██�?    ███████╗╚██████╔╝╚███╔███╔╝`),
-		styleHeader(` ╚═════�? ╚═════�?╚═�?    ╚══════╝ ╚═════�? ╚══╝╚══╝`),
+		styleHeader(`██║  ███╗██║   ██║█████╗  ██║     ██║   ██║██║ █╗ ██║`),
+		styleHeader(`██║   ██║██║   ██║██╔══╝  ██║     ██║   ██║██║███╗██║`),
+		styleHeader(`╚██████╔╝╚██████╔╝██║     ███████╗╚██████╔╝╚███╔███╔╝`),
+		styleHeader(` ╚═════╝  ╚═════╝ ╚═╝     ╚══════╝ ╚═════╝  ╚══╝╚══╝`),
 		fmt.Sprintf("%s %s", styleStatus("GoFlow Agent", "ready"), styleMuted("local workflow runtime")),
 		formatStartupKV("runtime", row.RuntimeHome),
 		formatStartupKV("workspace", row.WorkspaceRoot),
@@ -2768,12 +2768,12 @@ func approvalMenuLines(prompt string, options []approvalOption, selected int) []
 		cursor := "  "
 		label := option.label
 		if i == selected {
-			cursor = styleLabel("�?")
+			cursor = styleLabel("→")
 			label = styleStatus(option.label, option.kind)
 		}
 		lines = append(lines, cursor+label)
 	}
-	lines = append(lines, styleLabel("Enter to confirm �?�?�?to move"))
+	lines = append(lines, styleLabel("Enter to confirm • ↑/↓ to move"))
 	return lines
 }
 
@@ -2791,18 +2791,18 @@ func approvalMenuSelectionLines(options []approvalOption, selected int) []string
 		cursor := "  "
 		label := option.label
 		if i == selected {
-			cursor = styleLabel("�?")
+			cursor = styleLabel("→")
 			label = styleStatus(option.label, option.kind)
 		}
 		lines = append(lines, cursor+label)
 	}
-	lines = append(lines, styleLabel("Enter to confirm �?�?�?to move"))
+	lines = append(lines, styleLabel("Enter to confirm • ↑/↓ to move"))
 	return lines
 }
 
 func renderApprovalMenuError(output io.Writer, options []approvalOption, selected int) {
 	clearApprovalMenuTransient(output)
-	fmt.Fprintln(output, styleStatus("Use �?�?to choose and Enter to confirm.", "error"))
+	fmt.Fprintln(output, styleStatus("Use ↑/↓ to choose and Enter to confirm.", "error"))
 	for _, line := range approvalMenuSelectionLines(options, selected) {
 		fmt.Fprintln(output, line)
 	}

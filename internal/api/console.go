@@ -24,6 +24,15 @@ func (s *Server) handleConsole(w http.ResponseWriter, r *http.Request) {
 	http.ServeFileFS(w, r, consoleFS, "web/console.html")
 }
 
+func (s *Server) handleFavicon(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet && r.Method != http.MethodHead {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	w.Header().Set("Cache-Control", "public, max-age=86400")
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (s *Server) handleConsoleAssets() http.Handler {
 	assets, err := fs.Sub(consoleFS, "web/assets")
 	if err != nil {

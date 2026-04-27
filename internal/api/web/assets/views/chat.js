@@ -21,7 +21,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
       <aside class="panel span-4">
         <h2>${t("chat.files")}</h2>
         <p class="muted">${t("chat.fileHelp")}</p>
-        <input id="filePrefix" placeholder="Filter, for example src/">
+        <input id="filePrefix" placeholder="${escapeHTML(t("chat.fileFilter"))}">
         <div id="fileSuggestions" class="file-suggestions" style="margin-top:10px"></div>
       </aside>
     </div>`;
@@ -77,23 +77,23 @@ export async function renderChat(root, runtime, refreshRuntime) {
           return;
         }
         if (event.type === "token_usage") {
-          appendMessage(messages, `tokens: input ${event.prompt_tokens || 0}, output ${event.output_tokens || 0}, cached ${event.cached_tokens || 0}`, "event");
+          appendMessage(messages, `${t("chat.tokens")}: ${t("chat.input")} ${event.prompt_tokens || 0}, ${t("chat.output")} ${event.output_tokens || 0}, ${t("chat.cached")} ${event.cached_tokens || 0}`, "event");
           return;
         }
         if (event.type === "tool_call") {
-          appendMessage(messages, `[tool] ${event.tool_name || ""} ${event.arguments_summary || ""}`, "event");
+          appendMessage(messages, `[${t("chat.tool")}] ${event.tool_name || ""} ${event.arguments_summary || ""}`, "event");
           return;
         }
         if (event.type === "tool_result") {
-          appendMessage(messages, `[tool done] ${event.tool_name || ""} ${event.arguments_summary || ""}`, "event");
+          appendMessage(messages, `[${t("chat.toolDone")}] ${event.tool_name || ""} ${event.arguments_summary || ""}`, "event");
           return;
         }
         if (event.type === "approval") {
-          appendMessage(messages, `[approval] ${event.tool_name || ""} ${event.arguments_summary || ""}`, "event");
+          appendMessage(messages, `[${t("chat.approval")}] ${event.tool_name || ""} ${event.arguments_summary || ""}`, "event");
           location.hash = "approvals";
         }
         if (event.type === "task_stage") {
-          appendMessage(messages, `[stage] ${event.task_stage || ""} ${event.content || ""}`, "event");
+          appendMessage(messages, `[${t("chat.stage")}] ${event.task_stage || ""} ${event.content || ""}`, "event");
         }
       });
     } catch (error) {
@@ -124,7 +124,7 @@ async function loadFiles(prefix, target, prompt) {
       };
       target.appendChild(button);
     }
-    if (!target.innerHTML) target.innerHTML = `<div class="item muted">No matching files.</div>`;
+    if (!target.innerHTML) target.innerHTML = `<div class="item muted">${t("chat.noFiles")}</div>`;
   } catch (error) {
     target.innerHTML = `<div class="item muted">${escapeHTML(error.message)}</div>`;
   }

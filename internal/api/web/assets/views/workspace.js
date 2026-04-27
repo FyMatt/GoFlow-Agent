@@ -1,26 +1,27 @@
 import { escapeHTML, postJSON } from "../api.js";
+import { t } from "../i18n.js";
 
 export async function renderWorkspace(root, runtime, refreshRuntime) {
   const workspace = runtime.workspace || {};
   root.innerHTML = `
     <div class="grid">
       <section class="panel span-7">
-        <h2>Workspace</h2>
+        <h2>${t("workspace.title")}</h2>
         <table class="kv">
-          <tr><th>Root</th><td><code>${escapeHTML(workspace.root || "(none)")}</code></td></tr>
-          <tr><th>Status</th><td>${badge(workspace.confirmed ? "Confirmed" : "Needs confirmation", workspace.confirmed ? "good" : "warn")}</td></tr>
-          <tr><th>Source</th><td>${escapeHTML(workspace.source || "-")}</td></tr>
+          <tr><th>${t("workspace.root")}</th><td><code>${escapeHTML(workspace.root || t("common.none"))}</code></td></tr>
+          <tr><th>${t("workspace.status")}</th><td>${badge(workspace.confirmed ? t("workspace.confirmed") : t("workspace.needsConfirmation"), workspace.confirmed ? "good" : "warn")}</td></tr>
+          <tr><th>${t("workspace.source")}</th><td>${escapeHTML(workspace.source || "-")}</td></tr>
         </table>
         <div class="toolbar" style="margin-top:14px">
-          <button id="confirm" class="primary">Confirm current workspace</button>
-          <button id="clear">Clear confirmation</button>
+          <button id="confirm" class="primary">${t("workspace.confirm")}</button>
+          <button id="clear">${t("workspace.clear")}</button>
         </div>
       </section>
       <section class="panel span-5">
-        <h2>Select workspace</h2>
-        <p class="muted">Changing to another workspace returns a restart command because MCP servers must be rebound under the new root.</p>
-        <input id="workspacePath" placeholder="C:/Projects/demo or /workspace">
-        <button id="select" style="margin-top:10px">Prepare restart</button>
+        <h2>${t("workspace.selectTitle")}</h2>
+        <p class="muted">${t("workspace.selectHelp")}</p>
+        <input id="workspacePath" placeholder="${escapeHTML(t("workspace.pathPlaceholder"))}">
+        <button id="select" style="margin-top:10px">${t("workspace.prepareRestart")}</button>
         <pre id="workspaceOutput" class="log" style="margin-top:12px;min-height:120px"></pre>
       </section>
     </div>`;

@@ -8,7 +8,8 @@ const state = {
   graph: { name: "new-workflow", description: "", stages: [] },
   selected: -1,
   dragging: null,
-  connectSource: ""
+  connectSource: "",
+  connecting: null
 };
 
 export async function renderWorkflows(root) {
@@ -26,12 +27,12 @@ export async function renderWorkflows(root) {
           <h2>${t("workflow.library")}</h2>
           <p class="muted">${t("workflow.dropHint")}</p>
           <div class="node-palette">
-            ${paletteButton("start", "Start", "Entry point")}
-            ${paletteButton("agent", "Agent", "Run an agent stage")}
-            ${paletteButton("skill", "Skill", "Apply a skill")}
-            ${paletteButton("tool", "Tool", "Tool-focused stage")}
-            ${paletteButton("custom", "Custom", "Manual stage")}
-            ${paletteButton("end", "End", "Terminal marker")}
+            ${paletteButton("start", t("workflow.node.start"), t("workflow.node.startHelp"))}
+            ${paletteButton("agent", t("workflow.node.agent"), t("workflow.node.agentHelp"))}
+            ${paletteButton("skill", t("workflow.node.skill"), t("workflow.node.skillHelp"))}
+            ${paletteButton("tool", t("workflow.node.tool"), t("workflow.node.toolHelp"))}
+            ${paletteButton("custom", t("workflow.node.custom"), t("workflow.node.customHelp"))}
+            ${paletteButton("end", t("workflow.node.end"), t("workflow.node.endHelp"))}
           </div>
         </div>
       </aside>
@@ -39,15 +40,20 @@ export async function renderWorkflows(root) {
       <section class="workflow-board">
         <div class="board-toolbar">
           <div>
-            <input id="graphName" class="title-input" placeholder="workflow-name">
-            <input id="graphDescription" class="description-input" placeholder="Describe what this workflow does">
+            <input id="graphName" class="title-input" placeholder="${escapeHTML(t("workflow.graphNamePlaceholder"))}">
+            <input id="graphDescription" class="description-input" placeholder="${escapeHTML(t("workflow.graphDescriptionPlaceholder"))}">
           </div>
           <div class="toolbar">
+            <span id="stageCount" class="badge"></span>
             <button id="saveGraph" class="primary">${t("workflow.save")}</button>
             <button id="deleteGraph" class="danger">${t("workflow.delete")}</button>
           </div>
         </div>
         <div id="canvas" class="canvas">
+          <div class="canvas-guide">
+            <strong>${t("workflow.boardHint")}</strong>
+            <span>${t("workflow.boardHintSub")}</span>
+          </div>
           <svg id="edges" aria-hidden="true">
             <defs><marker id="arrow" markerWidth="9" markerHeight="9" refX="8" refY="4" orient="auto"><path d="M0,0 L0,8 L8,4 z" fill="#2563eb"/></marker></defs>
           </svg>
@@ -59,32 +65,33 @@ export async function renderWorkflows(root) {
           <h2>${t("workflow.settings")}</h2>
           <div id="stageEmpty" class="muted">${t("workflow.empty")}</div>
           <div id="stageForm" class="stack hidden">
-            <label><span>Node type</span><select id="stageNodeType">
-              <option value="start">Start</option>
-              <option value="agent">Agent</option>
-              <option value="skill">Skill</option>
-              <option value="tool">Tool</option>
-              <option value="custom">Custom</option>
-              <option value="end">End</option>
+            <label><span>${t("workflow.nodeType")}</span><select id="stageNodeType">
+              <option value="start">${t("workflow.node.start")}</option>
+              <option value="agent">${t("workflow.node.agent")}</option>
+              <option value="skill">${t("workflow.node.skill")}</option>
+              <option value="tool">${t("workflow.node.tool")}</option>
+              <option value="custom">${t("workflow.node.custom")}</option>
+              <option value="end">${t("workflow.node.end")}</option>
             </select></label>
-            <label><span>Stage name</span><input id="stageName"></label>
-            <label><span>Agent</span><select id="stageAgent"></select></label>
-            <label><span>Skill</span><select id="stageSkill"></select></label>
-            <label><span>Tool metadata</span><select id="stageTool"></select></label>
-            <label><span>Next stages</span><input id="stageNext" placeholder="audit, publish"></label>
-            <label><span>Branch strategy</span><input id="stageNextStrategy" placeholder="select / conditional"></label>
-            <label><span>Parameters</span><textarea id="stageParams" class="compact-textarea" placeholder="key=value&#10;timeout=60s"></textarea></label>
-            <label class="check"><input id="stageApproval" type="checkbox"> Require approval before stage</label>
+            <label><span>${t("workflow.stageName")}</span><input id="stageName"></label>
+            <label><span>${t("workflow.agent")}</span><select id="stageAgent"></select></label>
+            <label><span>${t("workflow.skill")}</span><select id="stageSkill"></select></label>
+            <label><span>${t("workflow.toolMetadata")}</span><select id="stageTool"></select></label>
+            <label><span>${t("workflow.nextStages")}</span><input id="stageNext" placeholder="${escapeHTML(t("workflow.nextPlaceholder"))}"></label>
+            <label><span>${t("workflow.branchStrategy")}</span><input id="stageNextStrategy" placeholder="${escapeHTML(t("workflow.branchPlaceholder"))}"></label>
+            <label><span>${t("workflow.parameters")}</span><textarea id="stageParams" class="compact-textarea" placeholder="${escapeHTML(t("workflow.paramsPlaceholder"))}"></textarea></label>
+            <label class="check"><input id="stageApproval" type="checkbox"> ${t("workflow.requireApproval")}</label>
             <div class="toolbar">
               <button id="connectStage">${t("workflow.connect")}</button>
               <button id="removeStage" class="danger">${t("workflow.remove")}</button>
             </div>
             <div id="connectHint" class="muted"></div>
+            <div class="muted">${t("workflow.edgeHint")}</div>
           </div>
         </div>
         <div class="panel flat">
           <h2>${t("workflow.runPreview")}</h2>
-          <textarea id="runInput" placeholder="Describe the task to run through this workflow"></textarea>
+          <textarea id="runInput" placeholder="${escapeHTML(t("workflow.runInputPlaceholder"))}"></textarea>
           <button id="runGraph" class="primary" style="margin-top:10px">${t("workflow.run")}</button>
           <pre id="runOutput" class="mini-log"></pre>
         </div>
@@ -99,7 +106,9 @@ export async function renderWorkflows(root) {
 }
 
 function paletteButton(template, title, subtitle) {
-  return `<button draggable="true" data-template="${template}"><strong>${title}</strong><span>${subtitle}</span></button>`;
+  return `<button class="palette-${template}" draggable="true" data-template="${template}">
+    <i></i><strong>${title}</strong><span>${subtitle}</span>
+  </button>`;
 }
 
 async function loadWorkflowList() {
@@ -147,6 +156,11 @@ function bind(root) {
     renderAll(root);
   };
   window.onmousemove = event => {
+    if (state.connecting) {
+      updateConnectionDraft(root, event);
+      drawEdges(root);
+      return;
+    }
     if (!state.dragging) return;
     const rect = canvas.getBoundingClientRect();
     const stage = state.graph.stages[state.dragging.index];
@@ -154,7 +168,13 @@ function bind(root) {
     stage.position.y = Math.max(24, event.clientY - rect.top - state.dragging.dy);
     renderCanvas(root);
   };
-  window.onmouseup = () => { state.dragging = null; };
+  window.onmouseup = event => {
+    if (state.connecting) {
+      finishConnectionDrag(root, event);
+      return;
+    }
+    state.dragging = null;
+  };
 }
 
 function createPresetGraph() {
@@ -199,6 +219,7 @@ function addStageFromTemplate(template, x, y) {
 function renderAll(root) {
   root.querySelector("#graphName").value = state.graph.name || "";
   root.querySelector("#graphDescription").value = state.graph.description || "";
+  root.querySelector("#stageCount").textContent = `${state.graph.stages.length} ${t("workflow.stages")}`;
   renderWorkflowList(root);
   fillSelect(root.querySelector("#stageAgent"), (state.options.agents || []).map(item => item.name));
   fillSelect(root.querySelector("#stageSkill"), (state.options.skills || []).map(item => item.name));
@@ -213,7 +234,7 @@ function renderWorkflowList(root) {
   for (const workflow of state.workflows || []) {
     const item = document.createElement("button");
     item.className = "flow-card" + (workflow.name === state.graph.name ? " active" : "");
-    item.innerHTML = `<strong>${escapeHTML(workflow.name)}</strong><span>${escapeHTML(workflow.source || "")} · ${workflow.stages || 0} stages</span>`;
+    item.innerHTML = `<strong>${escapeHTML(workflow.name)}</strong><span>${escapeHTML(workflow.source || "")} · ${workflow.stages || 0} ${t("workflow.stages")}</span>`;
     item.onclick = async () => {
       const doc = await request(`/api/workflow-graphs/${encodeURIComponent(workflow.name)}`);
       state.graph = normalizeGraph(doc);
@@ -227,21 +248,31 @@ function renderWorkflowList(root) {
 
 function renderCanvas(root) {
   const canvas = root.querySelector("#canvas");
+  canvas.classList.toggle("connecting", !!state.connecting);
   canvas.querySelectorAll(".flow-node").forEach(node => node.remove());
   for (const [index, stage] of state.graph.stages.entries()) {
     ensurePosition(stage, index);
     const nodeType = normalizedNodeType(stage);
+    const canReceive = nodeType !== "start";
+    const canSend = nodeType !== "end";
     const node = document.createElement("div");
-    node.className = `flow-node ${nodeType}` + (index === state.selected ? " selected" : "") + (stage.approval ? " needs-approval" : "") + (state.connectSource === stage.name ? " connecting" : "");
+    node.dataset.stageName = stage.name;
+    node.className = `flow-node ${nodeType}` +
+      (index === state.selected ? " selected" : "") +
+      (stage.approval ? " needs-approval" : "") +
+      (state.connectSource === stage.name || state.connecting?.sourceName === stage.name ? " connecting" : "") +
+      (state.connecting && state.connecting.sourceName !== stage.name && canReceive ? " connect-target" : "");
     node.style.left = `${stage.position.x}px`;
     node.style.top = `${stage.position.y}px`;
     node.innerHTML = `
-      <div class="node-type">${escapeHTML(nodeType)}</div>
-      <div class="node-top"><span>${escapeHTML(stage.name || "stage")}</span><b>${escapeHTML(stage.agent || "")}</b></div>
-      <div class="node-skill">${escapeHTML(stage.skill || stage.tool || "-")}</div>
-      ${stage.approval ? `<div class="node-flag">approval gate</div>` : ""}`;
+      ${canReceive ? `<span class="node-port port-in" title="${escapeHTML(t("workflow.dropConnection"))}"></span>` : ""}
+      ${canSend ? `<span class="node-port port-out" title="${escapeHTML(t("workflow.dragToConnect"))}"></span>` : ""}
+      <div class="node-type"><i></i>${escapeHTML(nodeType)}</div>
+      <div class="node-top"><span>${escapeHTML(stage.name || t("workflow.noStage"))}</span><b>${escapeHTML(stage.agent || "")}</b></div>
+      <div class="node-skill">${escapeHTML(stage.skill || stage.tool || t("workflow.noSkill"))}</div>
+      ${stage.approval ? `<div class="node-flag">${t("workflow.approvalGate")}</div>` : ""}`;
     node.onmousedown = event => {
-      if (event.target.closest("button")) return;
+      if (event.target.closest("button") || event.target.closest(".node-port")) return;
       const rect = root.querySelector("#canvas").getBoundingClientRect();
       state.selected = index;
       state.dragging = { index, dx: event.clientX - rect.left - stage.position.x, dy: event.clientY - rect.top - stage.position.y };
@@ -258,30 +289,52 @@ function renderCanvas(root) {
       renderStageForm(root);
       renderCanvas(root);
     };
+    const outPort = node.querySelector(".port-out");
+    if (outPort) {
+      outPort.onmousedown = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        startConnectionDrag(root, event, stage.name, index);
+      };
+    }
+    const inPort = node.querySelector(".port-in");
+    if (inPort) {
+      inPort.onmouseup = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        finishConnectionDrag(root, event, stage.name);
+      };
+    }
     canvas.appendChild(node);
   }
   drawEdges(root);
 }
 
 function drawEdges(root) {
+  const canvas = root.querySelector("#canvas");
   const svg = root.querySelector("#edges");
   svg.querySelectorAll("path.edge").forEach(edge => edge.remove());
+  canvas.querySelectorAll(".edge-action").forEach(button => button.remove());
+  const rects = nodeRects(root);
   const byName = new Map(state.graph.stages.map(stage => [stage.name, stage]));
   for (const stage of state.graph.stages) {
-    ensurePosition(stage, 0);
     for (const next of stage.next || []) {
       const target = byName.get(next);
       if (!target) continue;
-      ensurePosition(target, 0);
-      const x1 = stage.position.x + 218;
-      const y1 = stage.position.y + 48;
-      const x2 = target.position.x;
-      const y2 = target.position.y + 48;
-      const mid = Math.max(50, Math.abs(x2 - x1) / 2);
-      const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
-      path.setAttribute("class", "edge");
-      path.setAttribute("d", `M ${x1} ${y1} C ${x1 + mid} ${y1}, ${x2 - mid} ${y2}, ${x2} ${y2}`);
-      svg.appendChild(path);
+      const sourceRect = rects.get(stage.name);
+      const targetRect = rects.get(target.name);
+      if (!sourceRect || !targetRect) continue;
+      const anchors = edgeAnchors(sourceRect, targetRect);
+      svg.appendChild(edgePath(edgeD(anchors), "edge"));
+      canvas.appendChild(edgeDeleteButton(root, stage.name, target.name, edgeMidpoint(anchors)));
+    }
+  }
+  if (state.connecting) {
+    const sourceRect = rects.get(state.connecting.sourceName);
+    if (sourceRect) {
+      const from = { x: sourceRect.left + sourceRect.width, y: sourceRect.top + sourceRect.height / 2, direction: 1 };
+      const to = { x: state.connecting.x, y: state.connecting.y, direction: -1 };
+      svg.appendChild(edgePath(edgeD({ from, to }), "edge draft"));
     }
   }
 }
@@ -302,14 +355,18 @@ function renderStageForm(root) {
   root.querySelector("#stageNextStrategy").value = stage.next_strategy || "";
   root.querySelector("#stageParams").value = formatParams(stage.params);
   root.querySelector("#stageApproval").checked = !!stage.approval;
-  root.querySelector("#connectHint").textContent = state.connectSource ? `Connecting from ${state.connectSource}. Click a target node.` : "";
+  root.querySelector("#connectHint").textContent = state.connectSource
+    ? `${t("workflow.connectingHint")} ${state.connectSource}. ${t("workflow.connectingInstruction")}`
+    : t("workflow.dragHint");
 }
 
 function syncStageFromForm(root) {
   const stage = selectedStage();
   if (!stage) return;
+  const oldName = stage.name;
   stage.node_type = root.querySelector("#stageNodeType").value;
   stage.name = slug(root.querySelector("#stageName").value);
+  if (oldName && stage.name && oldName !== stage.name) renameStageReferences(oldName, stage.name);
   stage.agent = root.querySelector("#stageAgent").value;
   stage.skill = root.querySelector("#stageSkill").value;
   stage.tool = root.querySelector("#stageTool").value;
@@ -333,6 +390,119 @@ function addConnection(sourceName, targetName) {
   if (!source.next.includes(targetName)) source.next.push(targetName);
 }
 
+function removeConnection(root, sourceName, targetName) {
+  const source = state.graph.stages.find(stage => stage.name === sourceName);
+  if (!source) return;
+  source.next = (source.next || []).filter(name => name !== targetName);
+  renderAll(root);
+}
+
+function startConnectionDrag(root, event, sourceName, index) {
+  state.selected = index;
+  state.connectSource = "";
+  state.dragging = null;
+  state.connecting = { sourceName, x: 0, y: 0 };
+  updateConnectionDraft(root, event);
+  renderStageForm(root);
+  renderCanvas(root);
+}
+
+function finishConnectionDrag(root, event, explicitTargetName = "") {
+  const sourceName = state.connecting?.sourceName;
+  const targetName = explicitTargetName || stageNameFromEvent(event);
+  state.connecting = null;
+  state.dragging = null;
+  if (sourceName && targetName && sourceName !== targetName) addConnection(sourceName, targetName);
+  renderAll(root);
+}
+
+function updateConnectionDraft(root, event) {
+  if (!state.connecting) return;
+  const canvas = root.querySelector("#canvas");
+  const rect = canvas.getBoundingClientRect();
+  state.connecting.x = Math.max(0, event.clientX - rect.left);
+  state.connecting.y = Math.max(0, event.clientY - rect.top);
+}
+
+function stageNameFromEvent(event) {
+  const target = event?.target instanceof Element ? event.target.closest(".flow-node") : null;
+  return target?.dataset?.stageName || "";
+}
+
+function renameStageReferences(oldName, newName) {
+  for (const stage of state.graph.stages) {
+    stage.next = (stage.next || []).map(name => name === oldName ? newName : name);
+  }
+  if (state.connectSource === oldName) state.connectSource = newName;
+  if (state.connecting?.sourceName === oldName) state.connecting.sourceName = newName;
+}
+
+function nodeRects(root) {
+  const canvasRect = root.querySelector("#canvas").getBoundingClientRect();
+  const rects = new Map();
+  root.querySelectorAll(".flow-node").forEach(node => {
+    const rect = node.getBoundingClientRect();
+    rects.set(node.dataset.stageName, {
+      left: rect.left - canvasRect.left,
+      top: rect.top - canvasRect.top,
+      width: rect.width,
+      height: rect.height
+    });
+  });
+  return rects;
+}
+
+function edgeAnchors(sourceRect, targetRect) {
+  const sourceCenter = sourceRect.left + sourceRect.width / 2;
+  const targetCenter = targetRect.left + targetRect.width / 2;
+  const leftToRight = sourceCenter <= targetCenter;
+  const from = {
+    x: leftToRight ? sourceRect.left + sourceRect.width : sourceRect.left,
+    y: sourceRect.top + sourceRect.height / 2,
+    direction: leftToRight ? 1 : -1
+  };
+  const to = {
+    x: leftToRight ? targetRect.left : targetRect.left + targetRect.width,
+    y: targetRect.top + targetRect.height / 2,
+    direction: leftToRight ? -1 : 1
+  };
+  return { from, to };
+}
+
+function edgeD({ from, to }) {
+  const distance = Math.max(72, Math.abs(to.x - from.x) * 0.45);
+  const c1x = from.x + distance * from.direction;
+  const c2x = to.x + distance * to.direction;
+  return `M ${from.x} ${from.y} C ${c1x} ${from.y}, ${c2x} ${to.y}, ${to.x} ${to.y}`;
+}
+
+function edgePath(d, className) {
+  const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+  path.setAttribute("class", className);
+  path.setAttribute("d", d);
+  return path;
+}
+
+function edgeMidpoint({ from, to }) {
+  return { x: (from.x + to.x) / 2, y: (from.y + to.y) / 2 };
+}
+
+function edgeDeleteButton(root, sourceName, targetName, point) {
+  const button = document.createElement("button");
+  button.type = "button";
+  button.className = "edge-action";
+  button.title = t("workflow.deleteEdgeTitle");
+  button.setAttribute("aria-label", `${t("workflow.deleteEdge")}: ${sourceName} -> ${targetName}`);
+  button.textContent = "×";
+  button.style.left = `${point.x}px`;
+  button.style.top = `${point.y}px`;
+  button.onclick = event => {
+    event.stopPropagation();
+    removeConnection(root, sourceName, targetName);
+  };
+  return button;
+}
+
 function removeSelectedStage() {
   const stage = selectedStage();
   if (!stage) return;
@@ -349,7 +519,7 @@ async function saveGraph(root) {
   try {
     state.graph.name = slug(root.querySelector("#graphName").value);
     state.graph.description = root.querySelector("#graphDescription").value.trim();
-    if (!state.graph.name) throw new Error("workflow name is required");
+    if (!state.graph.name) throw new Error(t("workflow.nameRequired"));
     const saved = await request(`/api/workflow-graphs/${encodeURIComponent(state.graph.name)}`, {
       method: "PUT",
       headers: { "Content-Type": "application/json" },
@@ -358,9 +528,9 @@ async function saveGraph(root) {
     state.graph = normalizeGraph(saved);
     await loadWorkflowList();
     renderAll(root);
-    output.textContent = `Saved ${state.graph.name}`;
+    output.textContent = `${t("workflow.saved")} ${state.graph.name}`;
   } catch (error) {
-    output.textContent = `Save failed: ${error.message}`;
+    output.textContent = `${t("workflow.saveFailed")}: ${error.message}`;
   }
 }
 
@@ -369,16 +539,16 @@ async function deleteGraph(root) {
   try {
     if (!state.graph.name) return;
     const current = (state.workflows || []).find(item => item.name === state.graph.name);
-    if (current?.source === "builtin") throw new Error("built-in workflows cannot be deleted");
-    if (!confirm(`Delete workflow ${state.graph.name}?`)) return;
+    if (current?.source === "builtin") throw new Error(t("workflow.builtinDeleteDenied"));
+    if (!confirm(`${t("workflow.deleteConfirm")} ${state.graph.name}${t("workflow.deleteConfirmSuffix")}`)) return;
     const response = await fetch(`/api/workflow-graphs/${encodeURIComponent(state.graph.name)}`, { method: "DELETE" });
     if (!response.ok) throw new Error(await response.text());
     await loadWorkflowList();
     createPresetGraph();
     renderAll(root);
-    output.textContent = "Deleted.";
+    output.textContent = t("workflow.deleted");
   } catch (error) {
-    output.textContent = `Delete failed: ${error.message}`;
+    output.textContent = `${t("workflow.deleteFailed")}: ${error.message}`;
   }
 }
 
@@ -390,19 +560,19 @@ async function runGraph(root) {
   try {
     await streamRun(`/api/workflows/${encodeURIComponent(state.graph.name)}/stream`, input, event => {
       if (event.type === "workflow_result") {
-        output.textContent += `\nworkflow ${event.workflow_name}: ${event.workflow_status}\n`;
+        output.textContent += `\n${t("workflow.workflowEvent")} ${event.workflow_name}: ${event.workflow_status}\n`;
       } else if (event.type === "task_stage") {
-        output.textContent += `\nstage: ${event.task_stage || ""} ${event.content || ""}`;
+        output.textContent += `\n${t("workflow.stageEvent")}: ${event.task_stage || ""} ${event.content || ""}`;
       } else if (event.type === "approval") {
-        output.textContent += `\napproval required: ${event.tool_name || ""} ${event.arguments_summary || ""}`;
+        output.textContent += `\n${t("workflow.approvalRequired")}: ${event.tool_name || ""} ${event.arguments_summary || ""}`;
       } else if (event.type === "token_usage") {
-        output.textContent += `\ntokens: in ${event.prompt_tokens || 0}, out ${event.output_tokens || 0}`;
+        output.textContent += `\n${t("workflow.tokens")}: ${t("workflow.in")} ${event.prompt_tokens || 0}, ${t("workflow.out")} ${event.output_tokens || 0}`;
       } else if (event.content) {
         output.textContent += `\n${event.content}`;
       }
     });
   } catch (error) {
-    output.textContent += `\nRun failed: ${error.message}`;
+    output.textContent += `\n${t("workflow.runFailed")}: ${error.message}`;
   }
 }
 

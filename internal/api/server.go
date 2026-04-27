@@ -24,6 +24,7 @@ func NewServer(runtime *agent.Runtime) *Server {
 
 func NewServerWithWorkspace(runtime *agent.Runtime, workspaceState *workspace.State) *Server {
 	s := &Server{runtime: runtime, workspace: workspaceState, mux: http.NewServeMux()}
+	s.mux.HandleFunc("/favicon.ico", s.handleFavicon)
 	s.mux.HandleFunc("/", s.handleConsole)
 	s.mux.HandleFunc("/console", s.handleConsole)
 	s.mux.HandleFunc("/console/", s.handleConsole)

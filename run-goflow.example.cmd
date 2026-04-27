@@ -1,5 +1,6 @@
 @echo off
 setlocal
+chcp 65001 >nul
 
 if "%GOFLOW_API_KEY%"=="" (
   echo Example usage:
@@ -14,4 +15,4 @@ if "%GOFLOW_BACKUP_BASE_URL%"=="" set "GOFLOW_BACKUP_BASE_URL=%GOFLOW_BASE_URL%"
 if "%GOFLOW_BACKUP_MODEL%"=="" set "GOFLOW_BACKUP_MODEL=%GOFLOW_MODEL%"
 if "%GOFLOW_BACKUP_API_KEY%"=="" set "GOFLOW_BACKUP_API_KEY=%GOFLOW_API_KEY%"
 
-go run ./cmd/goflow --workspace D:\Projects\test
+go run ./cmd/goflow --workspace D:\Projects\test --http :8080

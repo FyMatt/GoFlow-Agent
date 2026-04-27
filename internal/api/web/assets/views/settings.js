@@ -1,4 +1,5 @@
 import { escapeHTML, request } from "../api.js";
+import { t } from "../i18n.js";
 
 export async function renderSettings(root, runtime) {
   let update = null;
@@ -10,31 +11,31 @@ export async function renderSettings(root, runtime) {
   root.innerHTML = `
     <div class="grid">
       <section class="panel span-7">
-        <h2>First-run setup</h2>
-        <p class="muted">These checks help non-developer users understand what must be configured before the visual Studio can call a model.</p>
+        <h2>${t("settings.firstRun")}</h2>
+        <p class="muted">${t("settings.firstRunHelp")}</p>
         <table class="kv">
           ${(runtime.setup?.env || []).map(item => `
             <tr>
               <th>${escapeHTML(item.name)}</th>
               <td>
-                <span class="badge ${item.set ? "good" : item.required ? "warn" : ""}">${item.set ? "set" : item.required ? "required" : "optional"}</span>
+                <span class="badge ${item.set ? "good" : item.required ? "warn" : ""}">${item.set ? t("common.set") : item.required ? t("common.required") : t("common.optional")}</span>
                 <div class="muted">${escapeHTML(item.description || "")}</div>
               </td>
             </tr>`).join("")}
         </table>
       </section>
       <section class="panel span-5">
-        <h2>Guided tour</h2>
+        <h2>${t("settings.guidedTour")}</h2>
         <div class="tour" style="grid-template-columns:1fr">
-          <div class="tour-step"><strong>Workspace</strong><span>Confirm where tools may read, write, or execute.</span></div>
-          <div class="tour-step"><strong>Workflow Studio</strong><span>Drag stages, bind agents/skills, and save reusable flows.</span></div>
-          <div class="tour-step"><strong>Approvals</strong><span>Review risky tool calls before they run.</span></div>
-          <div class="tour-step"><strong>Observability</strong><span>Inspect task stages, token usage, session state, and MCP health.</span></div>
+          <div class="tour-step"><strong>${t("settings.tourWorkspace")}</strong><span>${t("settings.tourWorkspaceHelp")}</span></div>
+          <div class="tour-step"><strong>${t("settings.tourWorkflow")}</strong><span>${t("settings.tourWorkflowHelp")}</span></div>
+          <div class="tour-step"><strong>${t("settings.tourApprovals")}</strong><span>${t("settings.tourApprovalsHelp")}</span></div>
+          <div class="tour-step"><strong>${t("settings.tourObservability")}</strong><span>${t("settings.tourObservabilityHelp")}</span></div>
         </div>
       </section>
       <section class="panel span-12">
-        <h2>Updates</h2>
-        <p class="muted">GoFlow can prompt for updates from GitHub Releases. Automatic replacement should remain opt-in and verify checksums/signatures before changing local files.</p>
+        <h2>${t("settings.updates")}</h2>
+        <p class="muted">${t("settings.updatesHelp")}</p>
         <pre class="log">${escapeHTML(JSON.stringify(update || {}, null, 2))}</pre>
       </section>
     </div>`;

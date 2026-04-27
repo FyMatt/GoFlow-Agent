@@ -98,6 +98,7 @@ def write_launchers(stage_dir: Path, goos: str) -> None:
         script.write_text(
             """@echo off
 setlocal
+chcp 65001 >nul
 set "ROOT=%~dp0"
 set "GOFLOW_FILE_TOOLS_CMD=%ROOT%bin\\file_tools.exe"
 set "GOFLOW_WEB_TOOLS_CMD=%ROOT%bin\\web_tools.exe"

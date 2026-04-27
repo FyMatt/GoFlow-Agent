@@ -202,6 +202,23 @@ func TestServerConsolePageAndAssets(t *testing.T) {
 	if !strings.Contains(assetResponse.Body.String(), "renderWorkflows") {
 		t.Fatalf("expected modular app asset, got %s", assetResponse.Body.String())
 	}
+
+	catalogRequest := httptest.NewRequest(http.MethodGet, "/assets/views/catalog.js", nil)
+	catalogResponse := httptest.NewRecorder()
+	server.ServeHTTP(catalogResponse, catalogRequest)
+	if catalogResponse.Code != http.StatusOK {
+		t.Fatalf("expected catalog asset 200, got %d", catalogResponse.Code)
+	}
+	if !strings.Contains(catalogResponse.Body.String(), "<code>skills/") {
+		t.Fatalf("expected catalog asset to avoid nested template backticks, got %s", catalogResponse.Body.String())
+	}
+
+	faviconRequest := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
+	faviconResponse := httptest.NewRecorder()
+	server.ServeHTTP(faviconResponse, faviconRequest)
+	if faviconResponse.Code != http.StatusNoContent {
+		t.Fatalf("expected favicon 204, got %d", faviconResponse.Code)
+	}
 }
 
 func TestServerRuntimeStatusAndUpdatePolicy(t *testing.T) {

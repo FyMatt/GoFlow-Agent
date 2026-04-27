@@ -33,8 +33,8 @@ async function refreshRuntime() {
   runtime = await request("/api/runtime");
   runtimePill.textContent = `${runtime.active_agent || "-"} / ${runtime.mode || "-"} / ${runtime.version || "dev"}`;
   sideStatus.textContent = [
-    `${t("runtime.workspace")}: ${runtime.workspace?.display || "(none)"}`,
-    `${t("runtime.trace")}: ${runtime.trace ? "on" : "off"}`,
+    `${t("runtime.workspace")}: ${runtime.workspace?.display || t("common.none")}`,
+    `${t("runtime.trace")}: ${runtime.trace ? t("common.on") : t("common.off")}`,
     `${t("runtime.pending")}: ${runtime.session?.pending_approvals?.length || 0}`,
     `${t("runtime.tools")}: ${runtime.tools?.length || 0}`
   ].join("\n");
