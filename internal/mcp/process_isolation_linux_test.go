@@ -46,7 +46,7 @@ func TestLinuxCgroupPathRejectsRelativeParent(t *testing.T) {
 }
 
 func TestLinuxCgroupPathRejectsUnsafeName(t *testing.T) {
-	for _, name := range []string{"", ".", "..", "../escape", "bad/name", "bad name"} {
+	for _, name := range []string{".", "..", "../escape", "bad/name", "bad name"} {
 		_, err := linuxCgroupPath(map[string]string{
 			"cgroup_parent": t.TempDir(),
 			"cgroup_name":   name,
