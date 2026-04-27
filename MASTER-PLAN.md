@@ -242,8 +242,7 @@ Skill authoring support:
 - Completed baseline: Docker uses compiled Go MCP binaries rather than `go run`, reducing runtime image requirements.
 - Completed baseline: Docker build and HTTP startup are covered by CI smoke tests.
 - Completed baseline: Linux resource-control isolation is available through explicit `isolation: linux_cgroup` config when the host has a writable cgroup v2 parent.
-- Completed baseline: release workflow builds Windows/Linux archives, publishes GHCR Docker images on version tags, emits `SHA256SUMS` for artifact integrity checks, generates `SBOM.spdx.json` for SPDX dependency disclosure, signs release files with Cosign/Sigstore keyless `.sigstore.json` bundles, and signs pushed Docker image digests.
-- Remaining gap: release signing should be verified on the next tag-triggered release and documented with any operator-facing troubleshooting from that run.
+- Completed baseline: release workflow builds Windows/Linux archives, publishes GHCR Docker images on version tags, emits `SHA256SUMS` for artifact integrity checks, generates `SBOM.spdx.json` for SPDX dependency disclosure, signs release files with Cosign/Sigstore keyless `.sigstore.json` bundles, and signs pushed Docker image digests. This was verified on the `v0.1.3` tag-triggered release.
 
 ## 4. Roadmap
 
@@ -364,8 +363,8 @@ Success criteria:
 ## 5. Immediate Next Actions
 
 1. Keep Chinese and English docs synchronized as the HTTP/SSE, scaffold, deployment, and install surfaces stabilize.
-2. Verify release signing on the next tag-triggered release and keep signature verification docs aligned with the produced assets.
-3. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
+2. Keep Linux cgroup deployment docs and tests aligned with real-world cgroup provisioning requirements.
+3. Strengthen implementation-request nudges so agents act once enough context has been gathered.
 
 ## 6. Execution Principles
 

@@ -13,7 +13,7 @@ and [安装与部署](./install.zh-CN.md).
 Build archives locally:
 
 ```bash
-python scripts/build_release_assets.py --clean --version v0.1.2
+python scripts/build_release_assets.py --clean --version v0.1.3
 ```
 
 Default targets:
@@ -32,15 +32,15 @@ python scripts/build_release_assets.py --clean --version dev --target linux/amd6
 Validate a full local build:
 
 ```bash
-python scripts/generate_sbom.py --version v0.1.2 --output dist/SBOM.spdx.json --update-checksums
-python scripts/validate_release_archives.py --dist dist --version v0.1.2 --require-sbom
+python scripts/generate_sbom.py --version v0.1.3 --output dist/SBOM.spdx.json --update-checksums
+python scripts/validate_release_archives.py --dist dist --version v0.1.3 --require-sbom
 ```
 
 If Cosign is available and configured for signing, validate signatures too:
 
 ```bash
 python scripts/sign_release_artifacts.py --dist dist
-python scripts/validate_release_archives.py --dist dist --version v0.1.2 --require-sbom --require-signatures
+python scripts/validate_release_archives.py --dist dist --version v0.1.3 --require-sbom --require-signatures
 ```
 
 Each archive contains:
@@ -73,8 +73,8 @@ signed artifact.
 Pushing a tag that starts with `v` runs `.github/workflows/release.yml`:
 
 ```bash
-git tag v0.1.2
-git push origin v0.1.2
+git tag v0.1.3
+git push origin v0.1.3
 ```
 
 The workflow:
@@ -96,10 +96,10 @@ Sigstore keyless signing. Verify a downloaded file with its adjacent bundle:
 
 ```bash
 cosign verify-blob \
-  --bundle goflow-agent_v0.1.2_linux_amd64.tar.gz.sigstore.json \
+  --bundle goflow-agent_v0.1.3_linux_amd64.tar.gz.sigstore.json \
   --certificate-identity-regexp "https://github.com/FyMatt/GoFlow-Agent/.github/workflows/release.yml@refs/tags/v.*" \
   --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  goflow-agent_v0.1.2_linux_amd64.tar.gz
+  goflow-agent_v0.1.3_linux_amd64.tar.gz
 ```
 
 Verify the Docker image:
