@@ -4,7 +4,6 @@ package mcp
 
 import (
 	"fmt"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
