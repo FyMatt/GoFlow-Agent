@@ -102,14 +102,20 @@ func EnforceToolPolicy(agent config.AgentProfile, tool schema.Tool) error {
 	if !kindAllowed {
 		allowedStrings := make([]string, 0, len(allowed))
 		for _, candidate := range allowed {
+			if candidate == config.ToolKind("__none__") {
+				continue
+			}
 			allowedStrings = append(allowedStrings, string(candidate))
 		}
 		sort.Strings(allowedStrings)
+		if len(allowedStrings) == 0 {
+			allowedStrings = []string{"-"}
+		}
 		return fmt.Errorf("tool kind %s is not allowed; allowed kinds: %s", kind, strings.Join(allowedStrings, ", "))
 	}
 	if len(agent.AllowedTools) > 0 {
 		for _, name := range agent.AllowedTools {
-			if strings.TrimSpace(name) == tool.Name {
+			if toolMatchesAllowedName(tool, name) {
 				if agent.ToolPolicy == config.ToolPolicyDeny {
 					return fmt.Errorf("tool policy denies tool %s", tool.Name)
 				}
@@ -122,6 +128,20 @@ func EnforceToolPolicy(agent config.AgentProfile, tool schema.Tool) error {
 		return fmt.Errorf("tool policy denies tool kind %s", kind)
 	}
 	return nil
+}
+
+func toolMatchesAllowedName(tool schema.Tool, allowed string) bool {
+	allowed = strings.TrimSpace(allowed)
+	if allowed == "" {
+		return false
+	}
+	if allowed == strings.TrimSpace(tool.Name) {
+		return true
+	}
+	if strings.TrimSpace(tool.Server) != "" && allowed == strings.TrimSpace(tool.Server)+"/"+strings.TrimSpace(tool.Name) {
+		return true
+	}
+	return false
 }
 
 func validateAgainstSchema(toolName, path string, value any, schemaDef map[string]any) error {

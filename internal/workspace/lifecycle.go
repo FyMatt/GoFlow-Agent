@@ -169,10 +169,21 @@ func RequirementForInput(input string) Requirement {
 	if strings.Contains(text, "@") {
 		return Requirement{Required: true, Reason: "@file reference reads workspace files"}
 	}
-	terms := []struct {
-		term   string
-		reason string
-	}{
+	for _, item := range workspaceRequirementTerms() {
+		if strings.Contains(text, item.term) {
+			return Requirement{Required: true, Reason: item.reason}
+		}
+	}
+	return Requirement{}
+}
+
+type requirementTerm struct {
+	term   string
+	reason string
+}
+
+func workspaceRequirementTerms() []requirementTerm {
+	return []requirementTerm{
 		{"write_file", "file write requested"},
 		{"read_file", "file read requested"},
 		{"delete_file", "file delete requested"},
@@ -217,10 +228,4 @@ func RequirementForInput(input string) Requirement {
 		{"写文档", "document generation requested"},
 		{"项目", "project file operation requested"},
 	}
-	for _, item := range terms {
-		if strings.Contains(text, item.term) {
-			return Requirement{Required: true, Reason: item.reason}
-		}
-	}
-	return Requirement{}
 }

@@ -2,6 +2,7 @@ package mcp
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -165,6 +166,31 @@ func (m *Manager) ToolNames() []string {
 	}
 	sort.Strings(names)
 	return names
+}
+
+// Close stops all managed MCP server processes and clears runtime indexes.
+func (m *Manager) Close() error {
+	if m == nil {
+		return nil
+	}
+	m.mu.Lock()
+	clients := make([]*Client, 0, len(m.clients))
+	for _, client := range m.clients {
+		clients = append(clients, client)
+	}
+	m.clients = make(map[string]*Client)
+	m.toolIndex = make(map[string]*Client)
+	m.ambiguousShortNames = make(map[string][]string)
+	m.cachedTools = nil
+	m.mu.Unlock()
+
+	var joined error
+	for _, client := range clients {
+		if err := client.Close(); err != nil {
+			joined = errors.Join(joined, err)
+		}
+	}
+	return joined
 }
 
 func qualifiedToolName(tool schema.Tool) string {

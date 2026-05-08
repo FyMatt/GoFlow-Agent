@@ -4,6 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
@@ -34,6 +35,16 @@ func (bootstrapStubMCP) HealthStatus(context.Context) map[string]string {
 }
 func (bootstrapStubMCP) ToolNames() []string { return nil }
 
+type bootstrapCloseableMCP struct {
+	bootstrapStubMCP
+	closed bool
+}
+
+func (m *bootstrapCloseableMCP) Close() error {
+	m.closed = true
+	return nil
+}
+
 type bootstrapStubLLM struct{}
 
 func (bootstrapStubLLM) Chat(context.Context, schema.ChatRequest) (schema.ChatResponse, error) {
@@ -55,7 +66,7 @@ func TestNewRuntimeAppUsesWorkspaceRuntimeAndConfigPath(t *testing.T) {
 			"planner": {Provider: "primary", Mode: "plan"},
 		},
 	}
-	configPath := filepath.Join(runtimeHome, "configs", "agent.yaml")
+	configPath := filepath.Join(runtimeHome, "configs", "goflow.yaml")
 	clients := map[string]interfaces.LLMClient{"primary": bootstrapStubLLM{}}
 	state := session.New(8)
 	audit := runtime.NewAuditLogger(false, false)
@@ -84,13 +95,48 @@ func TestNewRuntimeAppUsesWorkspaceRuntimeAndConfigPath(t *testing.T) {
 	}
 }
 
+func TestRuntimeAppCloseClosesMCPClientWhenSupported(t *testing.T) {
+	mcpClient := &bootstrapCloseableMCP{}
+	app := &RuntimeApp{MCPClient: mcpClient}
+
+	if err := app.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if !mcpClient.closed {
+		t.Fatal("expected Close to call MCP client close hook")
+	}
+}
+
+func TestRuntimeAppSaveSessionPersistsConfiguredSession(t *testing.T) {
+	path := filepath.Join(t.TempDir(), ".goflow", "session.json")
+	state := session.New(8)
+	state.SetActiveAgent("chat")
+	state.SetMode("chat")
+	state.AddPrompt("hello")
+	app := &RuntimeApp{
+		Config:       &config.Config{Session: config.SessionConfig{PersistPath: path}},
+		SessionState: state,
+	}
+
+	if err := app.SaveSession(); err != nil {
+		t.Fatalf("SaveSession: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read saved session: %v", err)
+	}
+	if !strings.Contains(string(data), `"active_agent": "chat"`) || !strings.Contains(string(data), "hello") {
+		t.Fatalf("expected saved session content, got %s", string(data))
+	}
+}
+
 func TestLoadRuntimeConfigLoadsWorkspaceScopedConfig(t *testing.T) {
 	runtimeHome := t.TempDir()
 	configDir := filepath.Join(runtimeHome, "configs")
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	configPath := filepath.Join(configDir, "agent.yaml")
+	configPath := filepath.Join(configDir, "goflow.yaml")
 	workspaceRoot := t.TempDir()
 	if err := os.WriteFile(configPath, []byte(`providers:
   primary:
@@ -127,7 +173,7 @@ func TestLoadRuntimeConfigFromPathUsesExplicitConfig(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	configPath := filepath.Join(configDir, "agent.docker.yaml")
+	configPath := filepath.Join(configDir, "goflow.docker.yaml")
 	workspaceRoot := t.TempDir()
 	if err := os.WriteFile(configPath, []byte(`providers:
   primary:

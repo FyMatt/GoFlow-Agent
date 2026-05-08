@@ -9,6 +9,13 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
+const (
+	systemPromptRecentPromptLimit = 4
+	systemPromptRecentToolLimit   = 6
+	systemPromptPromptItemBytes   = 1200
+	systemPromptToolItemBytes     = 900
+)
+
 // BuildSystemPrompt assembles the runtime system prompt.
 func BuildSystemPrompt(profile config.AgentProfile, skill *schema.Skill, snapshot session.Snapshot) string {
 	var builder strings.Builder
@@ -38,6 +45,49 @@ func BuildSystemPrompt(profile config.AgentProfile, skill *schema.Skill, snapsho
 		builder.WriteString("\nSkill instructions:\n")
 		builder.WriteString(skill.Instructions)
 		builder.WriteString("\n")
+		if len(skill.Scripts) > 0 {
+			builder.WriteString("Skill declared scripts:\n")
+			for _, script := range skill.Scripts {
+				builder.WriteString("- ")
+				builder.WriteString(script.Name)
+				if strings.TrimSpace(script.Description) != "" {
+					builder.WriteString(": ")
+					builder.WriteString(script.Description)
+				}
+				builder.WriteString(" [")
+				builder.WriteString(script.Path)
+				if strings.TrimSpace(script.Runtime) != "" {
+					builder.WriteString(", runtime=")
+					builder.WriteString(script.Runtime)
+				}
+				if strings.TrimSpace(script.Isolation) != "" {
+					builder.WriteString(", isolation=")
+					builder.WriteString(script.Isolation)
+				}
+				if strings.TrimSpace(script.Approval) != "" {
+					builder.WriteString(", approval=")
+					builder.WriteString(script.Approval)
+				}
+				builder.WriteString("]\n")
+			}
+			builder.WriteString("When the skill_runner/run_script tool is exposed, run declared scripts only with {\"skill\":\"")
+			builder.WriteString(skill.Name)
+			builder.WriteString("\",\"script\":\"<declared-name>\",\"args\":{...}}. Do not execute scripts through any other path; normal approval, audit, and MCP isolation still apply.\n")
+		}
+		if len(skill.Resources) > 0 {
+			builder.WriteString("Skill bundled resources available in the skill folder:\n")
+			for _, resource := range skill.Resources {
+				builder.WriteString("- ")
+				builder.WriteString(resource.Path)
+				if strings.TrimSpace(resource.Kind) != "" {
+					builder.WriteString(" (")
+					builder.WriteString(resource.Kind)
+					builder.WriteString(")")
+				}
+				builder.WriteString("\n")
+			}
+			builder.WriteString("Use these resource paths as authoring context; do not assume they are workspace files unless the user copies or references them explicitly.\n")
+		}
 	}
 	if snapshot.ActiveAgent != "" || snapshot.Mode != "" || snapshot.LastSkill != "" || len(snapshot.RecentPrompts) > 0 || len(snapshot.RecentTools) > 0 {
 		builder.WriteString("Session context:\n")
@@ -58,19 +108,150 @@ func BuildSystemPrompt(profile config.AgentProfile, skill *schema.Skill, snapsho
 		}
 		if len(snapshot.RecentPrompts) > 0 {
 			builder.WriteString("- Recent prompts:\n")
-			for _, prompt := range snapshot.RecentPrompts {
+			for _, prompt := range compactSessionHistoryForPrompt(snapshot.RecentPrompts, systemPromptRecentPromptLimit, systemPromptPromptItemBytes, "prompts") {
 				builder.WriteString(fmt.Sprintf("  - %s\n", prompt))
 			}
 		}
 		if len(snapshot.RecentTools) > 0 {
 			builder.WriteString("- Recent tool summaries:\n")
-			for _, summary := range snapshot.RecentTools {
+			for _, summary := range compactSessionHistoryForPrompt(snapshot.RecentTools, systemPromptRecentToolLimit, systemPromptToolItemBytes, "tool summaries") {
 				builder.WriteString(fmt.Sprintf("  - %s\n", summary))
 			}
 		}
 	}
 	builder.WriteString("When using tools, choose only the tools necessary for the current request.")
 	return builder.String()
+}
+
+func compactSessionHistoryForPrompt(items []string, recentLimit, itemBytes int, label string) []string {
+	stats := sessionHistoryCompactionStats(items, recentLimit)
+	if len(stats.RetainedItems) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(stats.RetainedItems)+1)
+	if stats.OlderCompacted > 0 || stats.Deduplicated > 0 {
+		out = append(out, sessionHistoryCompactionMarker(stats.OlderCompacted, stats.Deduplicated, len(stats.RetainedItems), label))
+	}
+	for _, item := range stats.RetainedItems {
+		out = append(out, compactHistoryItemForPrompt(item, itemBytes))
+	}
+	return out
+}
+
+type sessionHistoryCompaction struct {
+	OriginalItems   int
+	RetainedItems   []string
+	Deduplicated    int
+	OlderCompacted  int
+	SavedItemTokens int
+}
+
+func sessionHistoryCompactionStats(items []string, recentLimit int) sessionHistoryCompaction {
+	if len(items) == 0 {
+		return sessionHistoryCompaction{}
+	}
+	cleaned := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		cleaned = append(cleaned, item)
+	}
+	if len(cleaned) == 0 {
+		return sessionHistoryCompaction{}
+	}
+	deduped, duplicateCount := dedupeHistoryItemsNewestFirst(cleaned)
+	if recentLimit <= 0 || recentLimit > len(deduped) {
+		recentLimit = len(deduped)
+	}
+	olderCount := len(deduped) - recentLimit
+	retained := append([]string(nil), deduped[len(deduped)-recentLimit:]...)
+	savedTokens := 0
+	if duplicateCount > 0 || olderCount > 0 {
+		retainedKeys := make(map[string]int, len(retained))
+		for _, item := range retained {
+			retainedKeys[normalizeHistoryDedupeKey(item)]++
+		}
+		for _, item := range cleaned {
+			key := normalizeHistoryDedupeKey(item)
+			if retainedKeys[key] > 0 {
+				retainedKeys[key]--
+				continue
+			}
+			savedTokens += estimateTextTokens(item)
+		}
+	}
+	return sessionHistoryCompaction{
+		OriginalItems:   len(cleaned),
+		RetainedItems:   retained,
+		Deduplicated:    duplicateCount,
+		OlderCompacted:  olderCount,
+		SavedItemTokens: savedTokens,
+	}
+}
+
+func dedupeHistoryItemsNewestFirst(items []string) ([]string, int) {
+	if len(items) == 0 {
+		return nil, 0
+	}
+	seen := make(map[string]struct{}, len(items))
+	reversed := make([]string, 0, len(items))
+	duplicates := 0
+	for i := len(items) - 1; i >= 0; i-- {
+		item := strings.TrimSpace(items[i])
+		if item == "" {
+			continue
+		}
+		key := normalizeHistoryDedupeKey(item)
+		if _, ok := seen[key]; ok {
+			duplicates++
+			continue
+		}
+		seen[key] = struct{}{}
+		reversed = append(reversed, item)
+	}
+	out := make([]string, len(reversed))
+	for i := range reversed {
+		out[len(reversed)-1-i] = reversed[i]
+	}
+	return out, duplicates
+}
+
+func normalizeHistoryDedupeKey(item string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(item)), " ")
+}
+
+func sessionHistoryCompactionMarker(olderCount, duplicateCount, retained int, label string) string {
+	parts := make([]string, 0, 2)
+	if olderCount > 0 {
+		parts = append(parts, fmt.Sprintf("compacted %d older %s", olderCount, fallbackHistoryLabel(label)))
+	}
+	if duplicateCount > 0 {
+		parts = append(parts, fmt.Sprintf("deduplicated %d repeated %s", duplicateCount, fallbackHistoryLabel(label)))
+	}
+	parts = append(parts, fmt.Sprintf("latest %d retained", retained))
+	return "[" + strings.Join(parts, "; ") + "]"
+}
+
+func compactHistoryItemForPrompt(item string, maxBytes int) string {
+	if maxBytes <= 0 || len([]byte(item)) <= maxBytes {
+		return item
+	}
+	trimmed := strings.TrimSpace(trimStringToMaxBytes(item, maxBytes))
+	omitted := len([]byte(item)) - len([]byte(trimmed))
+	if omitted <= 0 {
+		return trimmed
+	}
+	return fmt.Sprintf("%s ... [compacted %d bytes]", trimmed, omitted)
+}
+
+func fallbackHistoryLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "items"
+	}
+	return label
 }
 
 func writeCapabilityContract(builder *strings.Builder) {

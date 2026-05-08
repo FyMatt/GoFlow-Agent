@@ -13,10 +13,13 @@ import (
 // ExecutionContext provides execution metadata for one run.
 type ExecutionContext struct {
 	AgentID       string
+	AgentRunID    string
 	Profile       config.AgentProfile
 	Tools         []schema.Tool
 	Audit         *runtime.AuditLogger
 	WorkspaceRoot string
+	RiskPolicy    config.ToolRiskPolicyConfig
+	MCPServers    []config.MCPServerRef
 	approvedTools map[string]struct{}
 }
 
@@ -40,6 +43,9 @@ func (e ExecutionContext) validateToolCall(call schema.ToolCall) (schema.Tool, e
 }
 
 func (e ExecutionContext) requiresApproval(tool schema.Tool) bool {
+	if e.RiskPolicy.RequireApprovalForUnsandboxedRiskyTools && e.toolRequiresRiskApproval(tool) {
+		return true
+	}
 	if e.Profile.ToolPolicy != config.ToolPolicyConfirm {
 		return false
 	}
@@ -47,6 +53,60 @@ func (e ExecutionContext) requiresApproval(tool schema.Tool) bool {
 		return false
 	}
 	return !e.hasRememberedApproval(tool)
+}
+
+func (e ExecutionContext) canRememberApproval(tool schema.Tool) bool {
+	if e.RiskPolicy.DisableRememberForUnsandboxedRiskyTools && e.toolRequiresRiskApproval(tool) {
+		return false
+	}
+	return true
+}
+
+func (e ExecutionContext) rejectByRiskPolicy(tool schema.Tool) error {
+	if !e.RiskPolicy.RejectUnsandboxedRiskyTools || !e.toolRequiresRiskApproval(tool) {
+		return nil
+	}
+	name := strings.TrimSpace(tool.Name)
+	if name == "" {
+		name = "tool"
+	}
+	kind := string(policy.KindForTool(tool))
+	if strings.TrimSpace(kind) == "" {
+		kind = "unknown"
+	}
+	return fmt.Errorf("tool_risk_policy rejects unsandboxed risky tool %s (kind=%s); run it with isolation: container, use a capability-specific sandbox such as linux_netns for network-only tools, or disable reject_unsandboxed_risky_tools", name, kind)
+}
+
+func (e ExecutionContext) toolRequiresRiskApproval(tool schema.Tool) bool {
+	kind := policy.KindForTool(tool)
+	if kind == config.ToolKindRead {
+		return false
+	}
+	if e.toolCapabilitySandboxed(tool) {
+		return false
+	}
+	return kind == config.ToolKindWrite || kind == config.ToolKindExec || kind == config.ToolKindNetwork || kind == config.ToolKindUnknown
+}
+
+func (e ExecutionContext) toolCapabilitySandboxed(tool schema.Tool) bool {
+	kind := policy.KindForTool(tool)
+	serverName := strings.TrimSpace(tool.Server)
+	if serverName == "" && strings.Contains(tool.Name, "/") {
+		serverName = strings.TrimSpace(strings.SplitN(tool.Name, "/", 2)[0])
+	}
+	for _, server := range e.MCPServers {
+		if !strings.EqualFold(strings.TrimSpace(server.Name), serverName) {
+			continue
+		}
+		isolation := strings.ToLower(strings.TrimSpace(server.Isolation))
+		if isolation == "container" {
+			return true
+		}
+		if isolation == "linux_netns" && kind == config.ToolKindNetwork {
+			return true
+		}
+	}
+	return false
 }
 
 func (e *ExecutionContext) RememberApprovedTool(toolName string) {
@@ -142,5 +202,8 @@ func isPolicyDenial(err error) bool {
 		return false
 	}
 	text := strings.ToLower(err.Error())
-	return strings.Contains(text, "not allowed") || strings.Contains(text, "policy denies")
+	return strings.Contains(text, "not allowed") ||
+		strings.Contains(text, "policy denies") ||
+		strings.Contains(text, "tool_risk_policy rejects") ||
+		strings.Contains(text, "reject_unsandboxed_risky_tools")
 }

@@ -9,6 +9,7 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/policy"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
@@ -201,18 +202,149 @@ func applySkillToProfile(profile config.AgentProfile, skill *schema.Skill) confi
 		return profile
 	}
 	if len(skill.AllowedToolKinds) > 0 {
-		profile.AllowedToolKinds = make([]config.ToolKind, 0, len(skill.AllowedToolKinds))
-		for _, kind := range skill.AllowedToolKinds {
-			profile.AllowedToolKinds = append(profile.AllowedToolKinds, config.ToolKind(kind))
-		}
+		profile.AllowedToolKinds = intersectProfileToolKinds(profile.AllowedToolKinds, skillAllowedToolKinds(skill))
 	}
 	if skill.MaxIterations > 0 {
 		profile.MaxIterations = skill.MaxIterations
 	}
+	profile.AllowedTools = intersectProfileTools(profile.AllowedTools, skillDeclaredTools(skill))
 	if skill.Mode != "" {
 		profile.Mode = skill.Mode
 	}
 	return profile
+}
+
+func skillAllowedToolKinds(skill *schema.Skill) []string {
+	if skill == nil {
+		return nil
+	}
+	kinds := append([]string(nil), skill.AllowedToolKinds...)
+	if len(skill.Scripts) > 0 {
+		kinds = append(kinds, string(config.ToolKindExec))
+	}
+	return kinds
+}
+
+func skillDeclaredTools(skill *schema.Skill) []schema.SkillTool {
+	if skill == nil {
+		return nil
+	}
+	tools := append([]schema.SkillTool(nil), skill.Tools...)
+	if len(skill.Scripts) > 0 {
+		tools = append(tools, schema.SkillTool{Name: "skill_runner/run_script", Required: true})
+	}
+	return tools
+}
+
+func intersectProfileTools(existing []string, declared []schema.SkillTool) []string {
+	if len(declared) == 0 {
+		return existing
+	}
+	declaredNames := make([]string, 0, len(declared))
+	for _, tool := range declared {
+		name := strings.TrimSpace(tool.Name)
+		if name != "" {
+			declaredNames = append(declaredNames, name)
+		}
+	}
+	if len(declaredNames) == 0 {
+		return existing
+	}
+	if len(existing) == 0 {
+		return dedupeToolNames(declaredNames)
+	}
+	intersected := make([]string, 0, len(declaredNames))
+	for _, declaredName := range declaredNames {
+		for _, existingName := range existing {
+			if toolNameEquivalent(declaredName, existingName) {
+				intersected = append(intersected, declaredName)
+				break
+			}
+		}
+	}
+	return dedupeToolNames(intersected)
+}
+
+func dedupeToolNames(names []string) []string {
+	seen := make(map[string]struct{}, len(names))
+	out := make([]string, 0, len(names))
+	for _, name := range names {
+		name = strings.TrimSpace(name)
+		if name == "" {
+			continue
+		}
+		key := strings.ToLower(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, name)
+	}
+	return out
+}
+
+func toolNameEquivalent(left, right string) bool {
+	left = strings.ToLower(strings.TrimSpace(left))
+	right = strings.ToLower(strings.TrimSpace(right))
+	if left == "" || right == "" {
+		return false
+	}
+	if left == right {
+		return true
+	}
+	if !strings.Contains(left, "/") && strings.HasSuffix(right, "/"+left) {
+		return true
+	}
+	if !strings.Contains(right, "/") && strings.HasSuffix(left, "/"+right) {
+		return true
+	}
+	return false
+}
+
+func filterPromptTools(profile config.AgentProfile, tools []schema.Tool) []schema.Tool {
+	filtered := make([]schema.Tool, 0, len(tools))
+	for _, tool := range tools {
+		if policy.EnforceToolPolicy(profile, tool) == nil {
+			filtered = append(filtered, tool)
+		}
+	}
+	return filtered
+}
+
+func intersectProfileToolKinds(existing []config.ToolKind, requested []string) []config.ToolKind {
+	requestedKinds := make([]config.ToolKind, 0, len(requested))
+	seenRequested := map[config.ToolKind]struct{}{}
+	for _, kind := range requested {
+		toolKind := config.ToolKind(strings.TrimSpace(kind))
+		if strings.TrimSpace(string(toolKind)) == "" {
+			continue
+		}
+		if _, ok := seenRequested[toolKind]; ok {
+			continue
+		}
+		seenRequested[toolKind] = struct{}{}
+		requestedKinds = append(requestedKinds, toolKind)
+	}
+	if len(requestedKinds) == 0 {
+		return existing
+	}
+	if len(existing) == 0 {
+		return requestedKinds
+	}
+	allowedExisting := make(map[config.ToolKind]struct{}, len(existing))
+	for _, kind := range existing {
+		allowedExisting[kind] = struct{}{}
+	}
+	intersected := make([]config.ToolKind, 0, len(requestedKinds))
+	for _, kind := range requestedKinds {
+		if _, ok := allowedExisting[kind]; ok {
+			intersected = append(intersected, kind)
+		}
+	}
+	if len(intersected) == 0 {
+		return []config.ToolKind{config.ToolKind("__none__")}
+	}
+	return intersected
 }
 
 func (r *AgentRunner) continueConversation(ctx context.Context, state agentConversationState, skills interfaces.SkillManager, mcp interfaces.MCPClient, sessionState *session.State, audit *runtime.AuditLogger, runtimeRef *Runtime, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
@@ -237,9 +369,14 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 	streamedText := state.StreamedText
 	fallbackUsed := effectiveFallbackUsed(r.llm, state.FallbackUsed)
 	execCtx := newExecutionContext(r.id, profile, state.Tools, audit, workspaceRoot(runtimeRef))
+	execCtx.AgentRunID = agentRunIDFromContext(ctx)
 	if runtimeRef != nil {
+		execCtx.RiskPolicy = runtimeRef.toolRiskPolicy()
+		execCtx.MCPServers = runtimeRef.MCPServerRefs()
 		runtimeRef.applySessionApprovedTools(&execCtx)
 	}
+	promptTools := filterPromptTools(profile, state.Tools)
+	actionNudge := newActionNudgeTracker(profile, mode, state.MatchedSkill, state.Input)
 
 	for i := 0; i <= profile.MaxIterations; i++ {
 		iteration := i + 1
@@ -252,10 +389,11 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 			Model:       profile.Model,
 			System:      state.SystemPrompt,
 			Messages:    messages,
-			Tools:       state.Tools,
+			Tools:       promptTools,
 			Temperature: profile.Temperature,
 			MaxTokens:   profile.MaxTokens,
 		}
+		emitPromptBudget(handler, sessionState, r.id, mode, request, state.MatchedSkill, len(state.Tools))
 
 		resp, err := runAgentChatWithRecovery(ctx, r.llm, request, r.id, mode, handler, &streamedText, &messages)
 		if err != nil {
@@ -265,7 +403,7 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 			execCtx.recordAudit(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "llm_error", Detail: err.Error(), DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: effectiveFallbackUsed(r.llm, fallbackUsed)})
 			return schema.AgentResult{}, fmt.Errorf("llm chat: %w", err)
 		}
-		emitTokenUsage(handler, r.id, mode, resp.Usage)
+		emitTokenUsage(handler, sessionState, r.id, mode, resp.Usage)
 
 		if len(resp.ToolCalls) == 0 {
 			emitTaskStage(handler, sessionState, r.id, mode, "summarize", "preparing final response")
@@ -287,10 +425,11 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 		}
 		runFinalToolCalls := finalResponseTurn && shouldRunFinalTurnToolCalls(execCtx, resp.ToolCalls)
 		if finalResponseTurn && !runFinalToolCalls {
-			return r.finalizeAfterIterationBudget(ctx, state, messages, collectedResults, fallbackUsed, iteration, handler, audit)
+			return r.finalizeAfterIterationBudget(ctx, state, messages, collectedResults, fallbackUsed, iteration, handler, audit, runtimeRef)
 		}
 
 		messages = append(messages, schema.Message{Role: "assistant", Content: resp.Message.Content, ToolCalls: resp.ToolCalls})
+		batchProfile := classifyToolCallBatch(resp.ToolCalls, execCtx)
 		resumeMessages := append([]schema.Message(nil), messages...)
 		resumeCollected := append([]schema.ToolResult(nil), collectedResults...)
 		emitTaskStage(handler, sessionState, r.id, mode, taskStageForToolCalls(resp.ToolCalls, execCtx), summarizeToolCallStage(resp.ToolCalls, execCtx))
@@ -319,20 +458,28 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 				}
 				continue
 			}
-			messages = append(messages, schema.Message{Role: "tool", Name: result.ToolName, ToolCallID: result.CallID, Content: result.Content})
-			resumeMessages = append(resumeMessages, schema.Message{Role: "tool", Name: result.ToolName, ToolCallID: result.CallID, Content: result.Content})
+			artifactRef := storeCompactedToolResultArtifact(sessionState, result, r.id, mode)
+			promptContent := compactToolResultForPromptWithArtifact(result, artifactRef)
+			messages = append(messages, schema.Message{Role: "tool", Name: result.ToolName, ToolCallID: result.CallID, Content: promptContent})
+			resumeMessages = append(resumeMessages, schema.Message{Role: "tool", Name: result.ToolName, ToolCallID: result.CallID, Content: promptContent})
 			resumeCollected = append(resumeCollected, result)
 		}
 		if len(suspendedCalls) > 0 {
 			if runtimeRef != nil && !runtimeRef.workflowInProgress() {
-				runtimeRef.CaptureOrdinaryApprovalContext(r.id, profile, state.MatchedSkill, state.SystemPrompt, mode, resumeMessages, suspendedCalls, resumeCollected)
+				runtimeRef.CaptureOrdinaryApprovalContext(execCtx.AgentRunID, r.id, profile, state.MatchedSkill, state.SystemPrompt, mode, resumeMessages, suspendedCalls, resumeCollected)
 			}
 			structured := buildStructuredSections(resp.Message.Content, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 			findings, changes, verification := buildStructuredArtifacts(resp.Message.Content, collectedResults, mode)
 			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
 		}
 		if runFinalToolCalls {
-			return r.finalizeAfterIterationBudget(ctx, state, messages, collectedResults, fallbackUsed, iteration, handler, audit)
+			return r.finalizeAfterIterationBudget(ctx, state, messages, collectedResults, fallbackUsed, iteration, handler, audit, runtimeRef)
+		}
+		if nudge, ok := actionNudge.Next(batchProfile, len(results)); ok {
+			messages = append(messages, schema.Message{Role: "user", Content: nudge})
+			if handler != nil {
+				_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "enough context gathered; nudging model to act", AgentID: r.id, Mode: mode, NeedsAction: true})
+			}
 		}
 		streamedText = false
 	}
@@ -341,38 +488,58 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 	return schema.AgentResult{}, fmt.Errorf("agent exceeded max iterations")
 }
 
-func (r *AgentRunner) finalizeAfterIterationBudget(ctx context.Context, state agentConversationState, messages []schema.Message, collectedResults []schema.ToolResult, fallbackUsed bool, iteration int, handler func(event schema.StreamEvent) error, audit *runtime.AuditLogger) (schema.AgentResult, error) {
+func (r *AgentRunner) finalizeAfterIterationBudget(ctx context.Context, state agentConversationState, messages []schema.Message, collectedResults []schema.ToolResult, fallbackUsed bool, iteration int, handler func(event schema.StreamEvent) error, audit *runtime.AuditLogger, runtimeRef *Runtime) (schema.AgentResult, error) {
 	mode := state.Mode
 	if mode == "" {
 		mode = state.Profile.Mode
 	}
+	summaryLLM := r.llm
+	summaryModel := state.Profile.Model
+	summaryTemperature := state.Profile.Temperature
+	summaryMaxTokens := state.Profile.MaxTokens
+	if runtimeRef != nil {
+		if target, ok := runtimeRef.effectiveAuxiliaryModelTarget(auxiliaryModelSummarizer, state.Profile, r.llm); ok {
+			summaryLLM = target.llm
+			summaryModel = target.route.Model
+			summaryTemperature = target.route.Temperature
+			summaryMaxTokens = target.route.MaxTokens
+			if handler != nil {
+				_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: fmt.Sprintf("using summarizer route provider=%s model=%s", fallbackText(target.route.Provider, "-"), fallbackText(target.route.Model, "-")), AgentID: r.id, Mode: mode, NeedsAction: true})
+			}
+		}
+	}
+	var sessionState *session.State
+	if runtimeRef != nil {
+		sessionState = runtimeRef.session
+	}
 	if handler != nil {
-		emitTaskStage(handler, nil, r.id, mode, "summarize", "iteration budget reached")
+		emitTaskStage(handler, sessionState, r.id, mode, "summarize", "iteration budget reached")
 		_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "tool iteration budget reached; requesting final summary without additional tool calls", AgentID: r.id, Mode: mode, NeedsAction: true})
 	}
 	finalMessages := append([]schema.Message(nil), messages...)
 	finalMessages = append(finalMessages, schema.Message{Role: "user", Content: "Tool iteration budget has been reached. Do not call more tools. Do not repeat earlier planning text. Produce a concise final summary from the observations already in this conversation: completed work, verification already available, remaining risk, and the next concrete step if any."})
 	streamedText := false
 	request := schema.ChatRequest{
-		Model:       state.Profile.Model,
+		Model:       summaryModel,
 		System:      state.SystemPrompt,
 		Messages:    finalMessages,
 		Tools:       nil,
-		Temperature: state.Profile.Temperature,
-		MaxTokens:   state.Profile.MaxTokens,
+		Temperature: summaryTemperature,
+		MaxTokens:   summaryMaxTokens,
 	}
+	emitPromptBudget(handler, sessionState, r.id, mode, request, state.MatchedSkill, len(state.Tools))
 	emitModelWaitStatus(handler, r.id, mode, modelWaitStatusContext{FinalSummary: true})
-	resp, err := runAgentChatWithRecovery(ctx, r.llm, request, r.id, mode, handler, &streamedText, &finalMessages)
+	resp, err := runAgentChatWithRecovery(ctx, summaryLLM, request, r.id, mode, handler, &streamedText, &finalMessages)
 	if err != nil {
 		if isRecoverableToolArgumentError(err) {
 			return r.finalizeWithLocalBudgetSummary(state, collectedResults, fallbackUsed, iteration, handler, audit)
 		}
 		if audit != nil {
-			audit.Record(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "max_iterations", Detail: err.Error(), DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: effectiveFallbackUsed(r.llm, fallbackUsed)})
+			audit.Record(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "max_iterations", Detail: err.Error(), DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: effectiveFallbackUsed(summaryLLM, fallbackUsed)})
 		}
 		return schema.AgentResult{}, fmt.Errorf("agent exceeded max iterations")
 	}
-	emitTokenUsage(handler, r.id, mode, resp.Usage)
+	emitTokenUsage(handler, sessionState, r.id, mode, resp.Usage)
 	if len(resp.ToolCalls) > 0 && strings.TrimSpace(resp.Message.Content) == "" {
 		return r.finalizeWithLocalBudgetSummary(state, collectedResults, fallbackUsed, iteration, handler, audit)
 	}
@@ -385,7 +552,7 @@ func (r *AgentRunner) finalizeAfterIterationBudget(ctx context.Context, state ag
 		_ = handler(schema.StreamEvent{Type: schema.StreamEventDone, Content: resp.Message.Content, AgentID: r.id, Mode: mode})
 	}
 	if audit != nil {
-		fallbackUsed = effectiveFallbackUsed(r.llm, fallbackUsed)
+		fallbackUsed = effectiveFallbackUsed(summaryLLM, fallbackUsed)
 		audit.Record(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "completed_after_iteration_budget", Detail: resp.Message.Content, DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: fallbackUsed, PromptTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.OutputTokens, CachedTokens: resp.Usage.CachedTokens})
 	}
 	structured := buildStructuredSections(resp.Message.Content, state.MatchedSkill, collectedResults, mode, fallbackUsed)
@@ -482,6 +649,124 @@ func shouldRunFinalTurnToolCalls(execCtx ExecutionContext, calls []schema.ToolCa
 		}
 	}
 	return false
+}
+
+type toolCallBatchProfile struct {
+	ReadOnly         bool
+	Mutating         bool
+	ReadCalls        int
+	ContentReadCalls int
+	DiscoverySeen    bool
+	Valid            int
+}
+
+type actionNudgeTracker struct {
+	enabled             bool
+	sent                bool
+	mutationSeen        bool
+	readOnlyBatches     int
+	readOnlyResultCount int
+}
+
+func newActionNudgeTracker(profile config.AgentProfile, mode string, skill *schema.Skill, input string) *actionNudgeTracker {
+	return &actionNudgeTracker{
+		enabled: profileCanMutate(profile) && isImplementationActionRequest(profile, mode, skill, input),
+	}
+}
+
+func (t *actionNudgeTracker) Next(batch toolCallBatchProfile, resultCount int) (string, bool) {
+	if t == nil || !t.enabled || t.sent {
+		return "", false
+	}
+	if batch.Mutating {
+		t.mutationSeen = true
+		return "", false
+	}
+	if t.mutationSeen || !batch.ReadOnly || resultCount <= 0 {
+		return "", false
+	}
+	t.readOnlyBatches++
+	t.readOnlyResultCount += resultCount
+	if batch.DiscoverySeen && batch.ContentReadCalls > 0 {
+		t.sent = true
+		return implementationActionNudgePrompt(), true
+	}
+	if t.readOnlyBatches < 2 && t.readOnlyResultCount < 2 {
+		return "", false
+	}
+	t.sent = true
+	return implementationActionNudgePrompt(), true
+}
+
+func classifyToolCallBatch(calls []schema.ToolCall, execCtx ExecutionContext) toolCallBatchProfile {
+	profile := toolCallBatchProfile{}
+	for _, call := range calls {
+		tool, err := execCtx.validateToolCall(call)
+		if err != nil {
+			continue
+		}
+		profile.Valid++
+		toolName := strings.ToLower(strings.TrimSpace(tool.Name))
+		switch config.ToolKind(execCtx.toolKind(tool)) {
+		case config.ToolKindWrite, config.ToolKindExec:
+			profile.Mutating = true
+		case config.ToolKindRead:
+			profile.ReadCalls++
+			if isImplementationDiscoveryTool(toolName) {
+				profile.DiscoverySeen = true
+			}
+			if isImplementationContentReadTool(toolName) {
+				profile.ContentReadCalls++
+			}
+		}
+	}
+	profile.ReadOnly = profile.Valid > 0 && profile.ReadCalls == profile.Valid && !profile.Mutating
+	return profile
+}
+
+func isImplementationDiscoveryTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "list_dir", "list_tree", "search_files", "file_info":
+		return true
+	default:
+		return false
+	}
+}
+
+func isImplementationContentReadTool(name string) bool {
+	switch strings.ToLower(strings.TrimSpace(name)) {
+	case "read_file", "read_note":
+		return true
+	default:
+		return false
+	}
+}
+
+func isImplementationActionRequest(profile config.AgentProfile, mode string, skill *schema.Skill, input string) bool {
+	if strings.EqualFold(strings.TrimSpace(mode), "fix") || strings.EqualFold(strings.TrimSpace(profile.Mode), "fix") {
+		return true
+	}
+	if skill != nil {
+		skillText := strings.ToLower(strings.Join([]string{skill.Name, skill.Description, skill.Mode}, " "))
+		for _, keyword := range []string{"code-writing", "implement", "implementation", "fix", "modify", "write", "refactor", "build", "create", "实现", "修复", "修改", "重构", "开发"} {
+			if strings.Contains(skillText, keyword) {
+				return true
+			}
+		}
+	}
+	text := strings.ToLower(input)
+	for _, keyword := range []string{
+		"implement", "fix", "modify", "update", "add", "extend", "expand", "enhance", "optimize", "improve", "debug", "patch", "refactor", "rewrite", "edit", "build", "create", "write code",
+		"实现", "修复", "修改", "新增", "添加", "拓展", "扩展", "增强", "优化", "完善", "重构", "改造", "调整", "开发", "写个", "写一个",
+	} {
+		if strings.Contains(text, keyword) {
+			return true
+		}
+	}
+	return false
+}
+func implementationActionNudgePrompt() string {
+	return "Enough workspace context has been gathered for this implementation request. Stop broad inspection now. If the relevant files are identified, make the smallest safe write/exec changes next; only read more if one specific missing detail blocks the edit. Do not repeat the plan or restate proposed features without acting."
 }
 
 func ensureMinimumToolIterations(profile config.AgentProfile) config.AgentProfile {
@@ -649,8 +934,24 @@ func summarizeToolCallStage(calls []schema.ToolCall, execCtx ExecutionContext) s
 	}
 }
 
-func emitTokenUsage(handler func(event schema.StreamEvent) error, agentID, mode string, usage schema.TokenUsage) {
-	if handler == nil || !hasTokenUsage(usage) {
+func emitTokenUsage(handler func(event schema.StreamEvent) error, state *session.State, agentID, mode string, usage schema.TokenUsage) {
+	if !hasTokenUsage(usage) {
+		return
+	}
+	if state != nil {
+		snapshot := state.Snapshot()
+		state.AddTokenUsage(schema.TokenUsageSample{
+			AgentID:      agentID,
+			Mode:         mode,
+			WorkflowName: snapshot.Workflow.Name,
+			TaskStage:    snapshot.TaskStage.Stage,
+			PromptTokens: usage.PromptTokens,
+			OutputTokens: usage.OutputTokens,
+			CachedTokens: usage.CachedTokens,
+			TotalTokens:  usage.PromptTokens + usage.OutputTokens,
+		})
+	}
+	if handler == nil {
 		return
 	}
 	_ = handler(schema.StreamEvent{

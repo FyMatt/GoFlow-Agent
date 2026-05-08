@@ -1,4 +1,6 @@
-﻿# Architecture
+# Architecture
+
+[English](./architecture.md) | [简体中文](./architecture.zh-CN.md)
 
 ## Design principles
 
@@ -10,12 +12,13 @@ GoFlow Agent is built around a few core rules:
 4. Keep operator-facing behavior inspectable through the CLI.
 5. Separate **runtime home** from **workspace root**.
 6. Reuse shared schemas across CLI, HTTP, and future transports instead of forking runtime behavior.
+7. Treat Web Studio as the visual implementation of CLI operations. New CLI capabilities should normally ship with matching HTTP/API coverage, browser UI affordances, and parity tests unless there is a documented reason they must remain terminal-only.
 
 ## Runtime home vs workspace root
 
 This is now a first-class architectural concept.
 
-- **runtime home**: the GoFlow project itself, which provides `configs/agent.yaml`, `skills/`, and built-in MCP server code under `mcp_servers/`
+- **runtime home**: the GoFlow project itself, which provides `configs/goflow.yaml`, `skills/`, and built-in MCP server code under `mcp_servers/`
 - **workspace root**: the target working directory where tools read/write files and where session state is stored
 
 This separation allows GoFlow to be launched against an arbitrary empty external folder while still loading its own runtime assets from the framework repository.
@@ -130,7 +133,51 @@ Workflow execution is registry-backed rather than hard-coded at the transport bo
 
 The built-in `plan-fix-audit` and `skill-chain` workflows are registered once and then invoked through the shared workflow runner from both CLI and HTTP paths. If a workflow name is not built in, the runner attempts to load `workflows/<name>/workflow.yaml` from runtime home and execute it as a graph-backed workflow.
 
-HTTP streaming endpoints forward the same `schema.StreamEvent` objects used by the CLI renderer. `/api/run/stream` streams normal agent turns, `/api/workflows/<name>/stream` streams workflow stage execution and ends with a `workflow_result` event, and streamed approval endpoints can resume ordinary or workflow tool loops while preserving token, task-stage, tool-result, and approval events.
+HTTP streaming endpoints forward the same `schema.StreamEvent` objects used by the CLI renderer. `/api/run/stream` streams normal agent turns, `/api/workflows/<name>/stream` streams workflow stage execution and ends with a `workflow_result` event, and streamed approval endpoints can resume ordinary or workflow tool loops while preserving prompt-budget, token, task-stage, tool-result, and approval events.
+
+For browser Studio usage, ordinary Agent turns can also run as durable
+background runs: `POST /api/run` with `"background": true` creates a persisted
+`agent_runs` snapshot, returns a `run_id` immediately, and executes under a
+server-owned context rather than the browser request context. Clients reconnect
+through `/api/agent-runs/{id}/events/stream?since=<seq>` or `Last-Event-ID`;
+events are stored in the session snapshot with the same task-stage, token,
+tool, approval, error, and final-message data used by the foreground stream.
+Cancellation is explicit through `/api/agent-runs/{id}/cancel`. The ordinary
+run resource also exposes `/events`, `/timeline`, `/replay`, `/diffs`, and
+`/actions`, plus `/export?format=json|md`, so Studio can render chat history,
+reconnectable progress, file-change diffs, and downloadable evidence reports
+without parsing a live request body. Tool approvals are bound back to the
+originating ordinary run as
+`pending_approvals`, and run actions can approve/deny one or all pending tools.
+The suspended ordinary tool-loop context is stored in the run snapshot, so a
+process that reloads the same session can rebuild the pending approval state
+and continue the turn after approval. If an old or damaged run lacks that resume
+context, action discovery reports approval actions as unavailable so Studio can
+steer the operator to retry or cancel.
+
+Before each provider call, the agent runner emits a `prompt_budget` event with
+an approximate token breakdown for system prompt, messages, tool schemas, and
+matched skill context. The same call path filters model-visible tool schemas by
+agent policy and matched skill declarations, while the executor keeps enforcing
+the policy if the model guesses a hidden tool. The budget event also carries
+stable hashes for the system prompt, visible tool schemas, skill context, and
+combined prompt prefix, plus an estimated cacheable-prefix token count. These
+fields let CLI/HTTP consumers reason about provider prompt-cache behavior
+without GoFlow storing provider KV tensors. Large tool results are kept in full
+for logs/replay/result objects, but the prompt observation sent back to the next
+LLM call is compacted with head/tail context and original-size metadata once it
+crosses the large-output threshold.
+Those large observations are also stored as bounded session artifacts and
+assigned `goflow://session-artifacts/<id>` refs. CLI and HTTP request expansion
+can rehydrate those refs back into prompt context on demand, while
+`/api/session-artifacts` exposes list/detail access for Studio panels.
+
+Session prompt/tool history remains stored in session state, but system prompt
+construction only carries a bounded recent slice and truncates oversized history
+items with compact markers. This keeps long-running sessions from growing model
+input linearly while preserving the durable session snapshot for inspection.
+Session state also keeps a bounded `prompt_budget_history`, and `/api/runtime`
+derives a compact `cost` diagnostic block for Studio dashboards and API clients.
 
 HTTP mode exposes the same workspace confirmation concept as the CLI through
 `/api/workspace`, `/api/workspace/confirm`, `/api/workspace/clear`,
@@ -138,6 +185,19 @@ HTTP mode exposes the same workspace confirmation concept as the CLI through
 workspace-scoped request arrives while the workspace is unconfirmed, JSON
 endpoints return `409 workspace_required` and SSE endpoints emit an error event
 instead of exposing read/write/exec tools.
+
+`GET /api/workspace` is also the browser contract for workspace lifecycle UI.
+It returns the workspace snapshot together with a capability matrix and action
+hints. Pure chat is marked available without workspace confirmation, while
+file, command, workflow, tool, and `@file` operations are marked
+workspace-required. Confirming or clearing the current workspace can happen in
+process. Selecting the same workspace confirms it. Selecting a different
+workspace returns a restart-required response with suggested `--workspace`
+arguments because MCP processes, session approvals, and workspace-scoped tool
+policy are initialized against the startup workspace root.
+The same capability matrix and action hints are mirrored in `/api/runtime` as
+`workspace_capabilities` and `workspace_actions`, allowing Studio dashboards to
+refresh runtime state and workspace UI affordances through one inventory call.
 
 HTTP mode also exposes workflow graph management endpoints plus the embedded
 Agent Studio at `/console` and `/workflows`. The Studio is implemented as
@@ -182,6 +242,108 @@ Behavior:
 - auditor reviews the completed implementation
 - the original active agent is restored after workflow execution
 - bounded workflow summaries are added to session history
+
+## Collaboration state
+
+The session store now includes two collaboration primitives that are independent of any specific frontend:
+
+- collaboration messages: a bounded, newest-first timeline with id, timestamp, run id, stage, source agent, target agent, kind, subject, content, and metadata
+- blackboard entries: shared durable notes with scope, run id, stage, owning agent, kind, title, content, status, tags, and metadata
+
+HTTP exposes these through:
+
+- `GET /api/collaboration/messages`
+- `POST /api/collaboration/messages`
+- `GET /api/collaboration/blackboard`
+- `POST /api/collaboration/blackboard`
+- `GET /api/collaboration/blackboard/{id}`
+- `PUT /api/collaboration/blackboard/{id}`
+- `DELETE /api/collaboration/blackboard/{id}`
+- `GET /api/team-templates`
+- `GET /api/team-templates/{name}`
+- `GET /api/resources/team-templates`
+- `GET /api/resources/team-templates/{name}`
+- `PUT /api/resources/team-templates/{name}`
+- `DELETE /api/resources/team-templates/{name}`
+- `GET /api/team-state`
+
+Both collections are persisted in `.goflow/session.json` with the rest of the session snapshot. This gives future team workflows and the Web Studio a stable place to record handoffs, observations, decisions, unresolved questions, and evidence without scraping natural-language stage output.
+
+Workflow execution writes to these stores automatically:
+
+- run start creates a `workflow_started` message and a blackboard `request`
+- each completed stage creates a `stage_completed` message and a `stage_output` blackboard entry
+- completed `team` stages also create structured `team_state`, `team_role`, `handoff`, and template blackboard slots plus `team_handoff` messages
+- structured findings create `findings` blackboard entries
+- pending approval creates an `approval_required` message and an open `approval` blackboard entry
+- completion creates a `workflow_finished` message and a `final_summary` blackboard entry
+- failure or cancellation creates an issue-style blackboard entry
+
+Team templates are a reusable collaboration catalog. Built-ins include
+software-task, audit/security, web research, binary triage, documentation, and
+operations/runbook teams. Custom templates are versioned YAML resources under
+`templates/teams/<name>.yaml` and are merged with built-ins; a custom template
+with the same name overrides the built-in for workflow options, validation,
+execution, and TeamState. Each template exposes role-to-agent/skill mappings,
+expected handoffs, shared blackboard slots, output contracts, and a recommended
+workflow template. They can be referenced by `team` workflow nodes, which record
+the selected team as stage context and can expand to executable role stages when
+`params.execute: true` is set. The templates are visible through `/teams`,
+`/teams <name>`, `/api/team-templates`, `/api/resources/team-templates`, and
+`/api/workflow-options`. Live team state is visible through
+`/team-state [run-id] [team]` and `GET /api/team-state`, which derive active
+owner, handoffs, blackboard entries, unresolved items, and pending
+approval/input state from the session snapshot.
+
+## Vertical kits
+
+Vertical Agent kits package reusable domain setups without compiling Go code.
+The backend stores kit manifests at `kits/<name>/kit.yaml` with the resource
+kind `goflow.kit`. A kit can reference configured providers and agents, skills,
+MCP tools, workflow graphs, workflow templates, team templates, policy rules,
+required environment variables, examples, tags, and free-form metadata.
+
+HTTP exposes the kit catalog through:
+
+- `GET /api/kits`
+- `GET /api/kits/{name}`
+- `GET /api/resources/kits`
+- `GET /api/resources/kits/{name}`
+- `PUT /api/resources/kits/{name}`
+- `DELETE /api/resources/kits/{name}`
+- `GET /api/resources/kits/{name}/validate`
+- `GET /api/resources/kits/scaffolds`
+- `GET /api/resources/kits/scaffolds/{preset}`
+- `POST /api/resources/kits/scaffolds/{preset}`
+- `GET /api/resources/kits/{name}/export`
+- `POST /api/resources/kits/import`
+
+Validation is compatibility-oriented rather than activation-oriented: missing
+agents, providers, skills, workflows, templates, and policy rules are errors;
+unseen tools and unset required environment variables are warnings. This lets a
+team version-control a vertical kit before every optional MCP server or secret
+is present, while Studio can still show clear readiness guidance.
+
+Kit scaffolding is a backend preset layer for Studio and the CLI
+`/new-kit <preset> <name>` command.
+The current presets cover software engineering, web security, broader security
+research, binary analysis, documentation, operations runbooks, and customer
+support. A scaffold creates only the kit manifest; it references existing
+agents, skills, tools, workflows, workflow templates, team templates, and
+policy rules rather than silently generating every dependency. This keeps the
+resource graph inspectable and lets users export a full bundle after they add
+or customize the referenced resources.
+
+Kit import/export is a portable resource bundle layer rather than a binary
+archive format. The exported `goflow.kit_bundle` document contains the kit
+manifest and available modular resource documents for referenced providers,
+agents, skills, tools, workflow graphs, workflow templates, team templates, and
+policy rules. Provider API keys are redacted unless `include_secrets=1` is
+requested. Import writes those documents back to runtime-home resource folders
+and returns saved/skipped/error rows plus kit validation. Runtime registries for
+providers, agents, and MCP tools are still built during bootstrap, so Studio
+should surface the import response's restart hint when those resource types are
+included.
 
 ## Built-in MCP servers
 

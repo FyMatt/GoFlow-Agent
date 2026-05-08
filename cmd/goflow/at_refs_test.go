@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -37,6 +38,22 @@ func TestExpandAtFileReferencesRejectsWorkspaceEscape(t *testing.T) {
 	_, _, err := expandAtFileReferences("read @../outside.txt", root)
 	if err == nil || !strings.Contains(err.Error(), "escapes workspace root") {
 		t.Fatalf("expected workspace escape rejection, got %v", err)
+	}
+}
+
+func TestExpandAtFileReferencesRejectsSymlinkEscape(t *testing.T) {
+	root := t.TempDir()
+	outside := filepath.Join(t.TempDir(), "outside.txt")
+	if err := os.WriteFile(outside, []byte("secret"), 0o644); err != nil {
+		t.Fatalf("write outside: %v", err)
+	}
+	link := filepath.Join(root, "outside-link.txt")
+	if err := os.Symlink(outside, link); err != nil {
+		t.Skipf("symlink unavailable: %v", err)
+	}
+	_, _, err := expandAtFileReferences("read @outside-link.txt", root)
+	if err == nil || !strings.Contains(err.Error(), "resolve real path") {
+		t.Fatalf("expected symlink escape rejection, got %v", err)
 	}
 }
 
@@ -102,6 +119,41 @@ func TestFormatAtReferenceSuggestionsShowsRootMatchesForAtOnly(t *testing.T) {
 	}
 	if !handled || !strings.Contains(output, "@README.md") {
 		t.Fatalf("expected @ root suggestions, handled=%t output=%q", handled, output)
+	}
+}
+
+func TestFormatAtReferenceSuggestionsSkipsLowValueDirectoriesBeforeVisitLimit(t *testing.T) {
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, ".venv", "Lib", "site-packages"), 0o755); err != nil {
+		t.Fatalf("mkdir venv: %v", err)
+	}
+	for i := 0; i < 3050; i++ {
+		if err := os.WriteFile(filepath.Join(root, ".venv", "Lib", "site-packages", fmt.Sprintf("ignored_%04d.py", i)), []byte("ignored"), 0o644); err != nil {
+			t.Fatalf("write ignored file: %v", err)
+		}
+	}
+	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatalf("mkdir node_modules: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "node_modules", "pkg", "index.js"), []byte("ignored"), 0o644); err != nil {
+		t.Fatalf("write ignored node module: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "app", "models"), 0o755); err != nil {
+		t.Fatalf("mkdir app models: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "app", "models", "user.py"), []byte("class User: pass\n"), 0o644); err != nil {
+		t.Fatalf("write user model: %v", err)
+	}
+
+	output, handled, err := formatAtReferenceSuggestions("@app", root)
+	if err != nil {
+		t.Fatalf("suggest refs: %v", err)
+	}
+	if !handled || !strings.Contains(output, "@app/") || !strings.Contains(output, "@app/models/user.py") {
+		t.Fatalf("expected app suggestions despite ignored dependency trees, handled=%t output=%q", handled, output)
+	}
+	if strings.Contains(output, ".venv") || strings.Contains(output, "node_modules") {
+		t.Fatalf("expected ignored directories to stay out of suggestions, got %q", output)
 	}
 }
 

@@ -27,6 +27,7 @@ DEFAULT_TARGETS = [
 GO_PROJECTS = [
     ("goflow", "./cmd/goflow"),
     ("file_tools", "./mcp_servers/file_tools"),
+    ("skill_runner", "./mcp_servers/skill_runner"),
     ("web_tools", "./mcp_servers/web_tools"),
 ]
 COMMON_DIRS = ["configs", "skills", "docs"]
@@ -34,7 +35,6 @@ COMMON_FILES = [
     ".env.example",
     "README.md",
     "README.zh-CN.md",
-    "MASTER-PLAN.md",
     "mcp_servers/python_notes.py",
 ]
 
@@ -101,6 +101,7 @@ setlocal
 chcp 65001 >nul
 set "ROOT=%~dp0"
 set "GOFLOW_FILE_TOOLS_CMD=%ROOT%bin\\file_tools.exe"
+set "GOFLOW_SKILL_RUNNER_CMD=%ROOT%bin\\skill_runner.exe"
 set "GOFLOW_WEB_TOOLS_CMD=%ROOT%bin\\web_tools.exe"
 if "%GOFLOW_PYTHON_CMD%"=="" set "GOFLOW_PYTHON_CMD=python"
 set "GOFLOW_PYTHON_NOTES_PATH=%ROOT%mcp_servers\\python_notes.py"
@@ -112,7 +113,7 @@ if "%~1"=="" (
 ) else (
   set "WORKSPACE=%~1"
 )
-"%ROOT%bin\\goflow.exe" --config "%ROOT%configs\\agent.binary.yaml" --workspace "%WORKSPACE%"
+"%ROOT%bin\\goflow.exe" --config "%ROOT%configs\\goflow.binary.yaml" --workspace "%WORKSPACE%"
 """,
             encoding="utf-8",
             newline="\r\n",
@@ -125,6 +126,7 @@ if "%~1"=="" (
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export GOFLOW_FILE_TOOLS_CMD="$ROOT/bin/file_tools"
+export GOFLOW_SKILL_RUNNER_CMD="$ROOT/bin/skill_runner"
 export GOFLOW_WEB_TOOLS_CMD="$ROOT/bin/web_tools"
 export GOFLOW_PYTHON_CMD="${GOFLOW_PYTHON_CMD:-python3}"
 export GOFLOW_PYTHON_NOTES_PATH="$ROOT/mcp_servers/python_notes.py"
@@ -132,7 +134,7 @@ export GOFLOW_BACKUP_BASE_URL="${GOFLOW_BACKUP_BASE_URL:-${GOFLOW_BASE_URL:-}}"
 export GOFLOW_BACKUP_API_KEY="${GOFLOW_BACKUP_API_KEY:-${GOFLOW_API_KEY:-}}"
 export GOFLOW_BACKUP_MODEL="${GOFLOW_BACKUP_MODEL:-${GOFLOW_MODEL:-}}"
 WORKSPACE="${1:-$PWD/workspace}"
-exec "$ROOT/bin/goflow" --config "$ROOT/configs/agent.binary.yaml" --workspace "$WORKSPACE"
+exec "$ROOT/bin/goflow" --config "$ROOT/configs/goflow.binary.yaml" --workspace "$WORKSPACE"
 """,
         encoding="utf-8",
     )

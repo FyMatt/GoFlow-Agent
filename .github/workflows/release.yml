@@ -64,10 +64,13 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Set image name
+      - name: Set image names
         id: image
         shell: bash
-        run: echo "name=ghcr.io/${GITHUB_REPOSITORY,,}" >> "$GITHUB_OUTPUT"
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "app=${repo}" >> "$GITHUB_OUTPUT"
+          echo "mcp_python=${repo}-mcp-python" >> "$GITHUB_OUTPUT"
 
       - name: Login to GHCR
         if: startsWith(github.ref, 'refs/tags/')
@@ -82,15 +85,30 @@ jobs:
         uses: sigstore/cosign-installer@v3
 
       - name: Build and optionally push Docker image
-        id: build
+        id: build-app
         uses: docker/build-push-action@v6
         with:
           context: .
           push: ${{ startsWith(github.ref, 'refs/tags/') }}
           tags: |
-            ${{ steps.image.outputs.name }}:${{ github.ref_name }}
-            ${{ steps.image.outputs.name }}:latest
+            ${{ steps.image.outputs.app }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.app }}:latest
+
+      - name: Build and optionally push MCP Python image
+        id: build-mcp-python
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/mcp-python/Dockerfile
+          push: ${{ startsWith(github.ref, 'refs/tags/') }}
+          tags: |
+            ${{ steps.image.outputs.mcp_python }}:${{ github.ref_name }}
+            ${{ steps.image.outputs.mcp_python }}:latest
 
       - name: Sign Docker image
         if: startsWith(github.ref, 'refs/tags/')
-        run: cosign sign --yes "${{ steps.image.outputs.name }}@${{ steps.build.outputs.digest }}"
+        run: cosign sign --yes "${{ steps.image.outputs.app }}@${{ steps.build-app.outputs.digest }}"
+
+      - name: Sign MCP Python image
+        if: startsWith(github.ref, 'refs/tags/')
+        run: cosign sign --yes "${{ steps.image.outputs.mcp_python }}@${{ steps.build-mcp-python.outputs.digest }}"

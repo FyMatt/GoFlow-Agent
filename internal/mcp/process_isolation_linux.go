@@ -15,9 +15,13 @@ const defaultLinuxCgroupParent = "/sys/fs/cgroup/goflow"
 
 type processIsolation struct {
 	cgroupPath string
+	cleanup    func() error
 }
 
 func attachProcessIsolation(isolation string, options map[string]string, cmd *exec.Cmd) (*processIsolation, error) {
+	if isolation == "linux_netns" {
+		return nil, nil
+	}
 	if isolation != "linux_cgroup" {
 		return nil, nil
 	}
@@ -47,7 +51,16 @@ func terminateProcessIsolation(handle *processIsolation, cmd *exec.Cmd) error {
 }
 
 func closeProcessIsolation(handle *processIsolation) error {
-	if handle == nil || strings.TrimSpace(handle.cgroupPath) == "" {
+	if handle == nil {
+		return nil
+	}
+	if handle.cleanup != nil {
+		if err := handle.cleanup(); err != nil {
+			return err
+		}
+		handle.cleanup = nil
+	}
+	if strings.TrimSpace(handle.cgroupPath) == "" {
 		return nil
 	}
 	err := os.Remove(handle.cgroupPath)
@@ -96,19 +109,95 @@ func isSafeCgroupName(name string) bool {
 }
 
 func writeLinuxCgroupLimits(cgroupPath string, options map[string]string) error {
-	files := map[string]string{
-		"memory_max": "memory.max",
-		"pids_max":   "pids.max",
-		"cpu_max":    "cpu.max",
+	limits := []struct {
+		option    string
+		file      string
+		normalize func(string) (string, error)
+	}{
+		{option: "memory_max", file: "memory.max", normalize: normalizeLinuxCgroupMemoryMax},
+		{option: "pids_max", file: "pids.max", normalize: normalizeLinuxCgroupMaxOrPositiveInteger},
+		{option: "cpu_max", file: "cpu.max", normalize: normalizeLinuxCgroupCPUMax},
 	}
-	for option, file := range files {
+	for _, limit := range limits {
+		option := limit.option
 		value := strings.TrimSpace(options[option])
 		if value == "" {
 			continue
 		}
-		if err := os.WriteFile(filepath.Join(cgroupPath, file), []byte(value), 0o644); err != nil {
-			return fmt.Errorf("write cgroup %s: %w", file, err)
+		normalized, err := limit.normalize(value)
+		if err != nil {
+			return fmt.Errorf("invalid cgroup %s: %w", option, err)
+		}
+		if err := os.WriteFile(filepath.Join(cgroupPath, limit.file), []byte(normalized), 0o644); err != nil {
+			return fmt.Errorf("write cgroup %s: %w", limit.file, err)
 		}
 	}
 	return nil
+}
+
+func normalizeLinuxCgroupMemoryMax(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "max") {
+		return "max", nil
+	}
+	if value == "" {
+		return "", fmt.Errorf("value is required")
+	}
+	multiplier := int64(1)
+	number := value
+	switch suffix := strings.ToLower(value[len(value)-1:]); suffix {
+	case "k":
+		multiplier = 1024
+		number = value[:len(value)-1]
+	case "m":
+		multiplier = 1024 * 1024
+		number = value[:len(value)-1]
+	case "g":
+		multiplier = 1024 * 1024 * 1024
+		number = value[:len(value)-1]
+	case "t":
+		multiplier = 1024 * 1024 * 1024 * 1024
+		number = value[:len(value)-1]
+	}
+	parsed, err := strconv.ParseInt(strings.TrimSpace(number), 10, 64)
+	if err != nil || parsed <= 0 {
+		return "", fmt.Errorf("memory_max must be max, a positive byte count, or a positive K/M/G/T size")
+	}
+	if parsed > (1<<63-1)/multiplier {
+		return "", fmt.Errorf("memory_max is too large")
+	}
+	return strconv.FormatInt(parsed*multiplier, 10), nil
+}
+
+func normalizeLinuxCgroupMaxOrPositiveInteger(value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if strings.EqualFold(value, "max") {
+		return "max", nil
+	}
+	parsed, err := strconv.ParseInt(value, 10, 64)
+	if err != nil || parsed <= 0 {
+		return "", fmt.Errorf("value must be max or a positive integer")
+	}
+	return strconv.FormatInt(parsed, 10), nil
+}
+
+func normalizeLinuxCgroupCPUMax(value string) (string, error) {
+	fields := strings.Fields(value)
+	if len(fields) == 1 && strings.EqualFold(fields[0], "max") {
+		return "max", nil
+	}
+	if len(fields) != 2 {
+		return "", fmt.Errorf("cpu_max must be max, or '<quota> <period>'")
+	}
+	quota := strings.ToLower(fields[0])
+	if quota != "max" {
+		if _, err := normalizeLinuxCgroupMaxOrPositiveInteger(quota); err != nil {
+			return "", fmt.Errorf("quota must be max or a positive integer")
+		}
+	}
+	period, err := normalizeLinuxCgroupMaxOrPositiveInteger(fields[1])
+	if err != nil || period == "max" {
+		return "", fmt.Errorf("period must be a positive integer")
+	}
+	return quota + " " + period, nil
 }

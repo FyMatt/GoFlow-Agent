@@ -205,6 +205,32 @@ func TestRefreshToolsKeepsAmbiguousShortNamesOutOfIndex(t *testing.T) {
 	}
 }
 
+func TestManagerCloseClearsClientsAndIndexes(t *testing.T) {
+	manager := &Manager{
+		clients: map[string]*Client{
+			"file_tools": {name: "file_tools"},
+		},
+		toolIndex: map[string]*Client{
+			"file_tools/read_file": {name: "file_tools"},
+		},
+		ambiguousShortNames: map[string][]string{
+			"read_file": {"alpha/read_file", "beta/read_file"},
+		},
+		cachedTools: []schema.Tool{{Name: "read_file", Server: "file_tools"}},
+	}
+
+	if err := manager.Close(); err != nil {
+		t.Fatalf("Close: %v", err)
+	}
+	if names := manager.ToolNames(); len(names) != 0 {
+		t.Fatalf("expected tool names to be cleared, got %#v", names)
+	}
+	status := manager.HealthStatus(context.Background())
+	if status["none"] != "disabled" || len(status) != 1 {
+		t.Fatalf("expected disabled health after close, got %#v", status)
+	}
+}
+
 func newHelperMCPManager(t *testing.T, name string, tools []schema.Tool) *Manager {
 	return newHelperMCPManagerWithServers(t, []string{name}, tools)
 }

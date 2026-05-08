@@ -53,17 +53,26 @@ def main() -> int:
         )
         (root / "data.json").write_text('{"app":{"name":"demo"}}', encoding="utf-8-sig")
         (root / "sample.bin").write_bytes(b"MZ\x00\x01Hello\x00World")
+        outside = Path(tempfile.mkdtemp(prefix="goflow-python-mcp-outside-"))
+        outside_file = outside / "outside.txt"
+        outside_file.write_text("outside", encoding="utf-8")
+        symlink_supported = True
+        try:
+            (root / "outside-link.txt").symlink_to(outside_file)
+        except OSError:
+            symlink_supported = False
 
-        requests = "\n".join(
-            [
-                request(1, "python_ast_summary", {"path": "sample.py"}),
-                request(2, "json_query", {"path": "data.json", "query": "app.name"}),
-                request(3, "binary_file_info", {"path": "sample.bin"}),
-                request(4, "binary_strings", {"path": "sample.bin", "min_length": 4, "max_results": 5}),
-                request(5, "hex_preview", {"path": "sample.bin", "length": 16}),
-                request(6, "read_note", {"path": "../outside.txt"}),
-            ]
-        )
+        request_lines = [
+            request(1, "python_ast_summary", {"path": "sample.py"}),
+            request(2, "json_query", {"path": "data.json", "query": "app.name"}),
+            request(3, "binary_file_info", {"path": "sample.bin"}),
+            request(4, "binary_strings", {"path": "sample.bin", "min_length": 4, "max_results": 5}),
+            request(5, "hex_preview", {"path": "sample.bin", "length": 16}),
+            request(6, "read_note", {"path": "../outside.txt"}),
+        ]
+        if symlink_supported:
+            request_lines.append(request(7, "read_note", {"path": "outside-link.txt"}))
+        requests = "\n".join(request_lines)
 
         env = os.environ.copy()
         env["GOFLOW_WORKSPACE_ROOT"] = str(root)
@@ -80,8 +89,9 @@ def main() -> int:
             raise SystemExit(f"server exited {proc.returncode}: {proc.stderr}")
 
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
-        if len(lines) != 6:
-            raise AssertionError(f"expected 6 responses, got {len(lines)}: {proc.stdout}")
+        expected_lines = 7 if symlink_supported else 6
+        if len(lines) != expected_lines:
+            raise AssertionError(f"expected {expected_lines} responses, got {len(lines)}: {proc.stdout}")
 
         decoded = {}
         for line in lines[:5]:
@@ -91,6 +101,10 @@ def main() -> int:
         escape = json.loads(lines[5])["result"]
         if not escape.get("is_error") or "escapes workspace root" not in escape.get("content", ""):
             raise AssertionError(f"expected workspace escape rejection, got {escape}")
+        if symlink_supported:
+            symlink_escape = json.loads(lines[6])["result"]
+            if not symlink_escape.get("is_error") or "resolves outside workspace root" not in symlink_escape.get("content", ""):
+                raise AssertionError(f"expected symlink escape rejection, got {symlink_escape}")
         if decoded[1]["functions"][0]["name"] != "hello":
             raise AssertionError(f"unexpected AST summary: {decoded[1]}")
         if decoded[2]["value"] != "demo":

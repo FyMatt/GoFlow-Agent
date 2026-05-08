@@ -26,6 +26,8 @@ For end-user installation and deployment commands, see [Installation And Deploym
 ## Key features
 
 - Multi-agent runtime with named agent profiles
+- Modular resource storage for agents, providers, MCP servers, skills,
+  workflows, workflow templates, team templates, policy rules, and kits
 - Registry-backed built-in workflows plus runtime-home custom workflow graphs
 - Branded CLI startup banner with runtime/workspace summary
 - Best-effort terminal title updates in interactive CLI sessions
@@ -34,11 +36,18 @@ For end-user installation and deployment commands, see [Installation And Deploym
 - stdio-based MCP tool execution
 - Cross-language MCP support with built-in Go and Python servers
 - Dynamic skill loading from `SKILL.md`
+- Complex skills can declare deterministic helper scripts that execute through
+  `skill_runner/run_script` as normal approved/audited `exec` tools
+- Durable ordinary Agent runs and Workflow runs with reconnectable event
+  streams, replay, diffs, export, explicit cancel/retry, and run-scoped
+  approvals
 - Per-workspace session persistence with workflow and pending approval snapshots
 - Workspace confirmation gate: pure chat can run from the default directory, while file reads/writes, `@file` references, command execution, and workflows require a confirmed workspace
 - Audit logging and CLI trace/status/session output
 - External workspace mode via `--workspace`
 - Windows, Linux, and Docker deployment paths
+- Docker/Podman is the recommended strong isolation path for generated,
+  third-party, write, exec, and network MCP tools
 - HTTP JSON API and SSE streaming via `--http`
 
 ## Quick start
@@ -47,6 +56,8 @@ For end-user installation and deployment commands, see [Installation And Deploym
 
 - Go 1.25+
 - Python 3 on `PATH` if you want the `python_notes` MCP server
+- Docker or Podman if you want the recommended container sandbox for risky MCP
+  tools
 - An OpenAI-compatible model endpoint
 - Environment variables for provider credentials and model
 
@@ -142,6 +153,17 @@ docker run --rm -it \
 ```
 
 Release archives and Docker images are covered in [Installation And Deployment](./docs/install.md).
+Containerized Python MCP tool presets use the companion
+`ghcr.io/fymatt/goflow-agent-mcp-python:<version>` image by default.
+
+## Current status
+
+The backend runtime baseline is complete for the current product scope: CLI,
+HTTP APIs, resource management, MCP tools, skills, workflows, durable runs,
+approvals, workspace lifecycle, cost diagnostics, Docker-first isolation, and
+CI/release packaging are implemented. Follow-up work is primarily frontend
+Studio polish, richer templates, and real deployment feedback; any backend
+follow-up is optional hardening or measurement-driven enhancement.
 
 ## Common CLI commands
 
@@ -152,13 +174,21 @@ CLI commands use the `/` prefix.
 /skills
 /tools
 /agents
+/teams [name]
+/team-state [run-id] [team]
 /use <agent>
 /mode <chat|plan|audit|fix>
 /workspace [status|confirm|clear|use <path>]
 /workflow plan-fix-audit [--approve] <request>
 /workflow skill-chain <request>
 /workflow <custom-name> <request>
+/workflow-templates [name]
+/workflow-node-metadata [type]
+/expression-helpers [name] [--mode <mode>] [--node-type <type>]
+/workflow-schemas [name] [--rebuild|--json|--export|--import <path>|--clear]
 /status
+/cost
+/config-diagnostics [--json]
 /session
 /trace on|off
 /approve <tool-call-id>
@@ -169,17 +199,56 @@ CLI commands use the `/` prefix.
 /new-skill <template> <name>
 /new-tool python <name>
 /new-agent <name>
-/new-workflow <name>
+/new-provider <name>
+/new-workflow <name> [--template <template>]
+/kits [name] [--export]
+/kits --import <path> [--replace]
+/new-kit <preset> <name> [--materialize|--full]
 exit
 ```
 
-`/workspace status` shows whether the active workspace is explicit or still the current-directory default. `/workspace confirm` enables workspace-scoped tools for the current session. `/workspace clear` removes that confirmation. `/workspace use <path>` validates the requested path and tells you to restart with `--workspace <path>` when switching would require rebinding MCP servers.
+`/workspace status` shows whether the active workspace is explicit or still the current-directory default. `/workspace confirm` enables workspace-scoped tools for the current session. `/workspace clear` removes that confirmation. `/workspace use <path>` dynamically rebinds the CLI to another workspace when the runtime is idle. The old workspace session is saved, old MCP child processes are closed, and a fresh workspace-scoped runtime/session/tool policy is loaded. If a tool approval, handoff, workflow pause, or durable run is still active, the command blocks the switch and prints a restart fallback.
 
 `--approve` pre-approves the planner -> fixer stage transition. Without it, GoFlow first asks whether to enter the fixer stage, then separately prompts again if a fixer tool call requires confirmation.
 
-`/new-workflow <name>` creates `workflows/<name>/workflow.yaml`. That file is executable through `/workflow <name> <request>` and can declare named stages with `agent`, `skill`, optional `approval`, optional `next_strategy`, and optional `next` edges.
+`/new-workflow <name> [--template <template>]` creates `workflows/<name>/workflow.yaml`. The default template is `plan-fix-audit`; richer built-ins include `agent-framework-extension`, `software-quality-gate`, `web-research-risk`, `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`, `docs-review-publish`, `operations-runbook`, `customer-support-triage`, `human-input-security-review`, and `software-team-review-gate`. That file is executable through `/workflow <name> <request>` and can declare named stages with `agent`, `skill`, explicit `input`/`outputs`, replay `artifacts`, control nodes such as `condition`, `policy_guard`, `quality_gate`, `parallel`/`join`, `for_each`, `loop`, and `sub_workflow`, approval gates, and `next` edges.
+
+`/workflow-templates`, `/workflow-node-metadata`, and `/expression-helpers`
+expose the workflow authoring catalog from the terminal. They mirror the
+Studio-facing workflow template, node metadata, and expression helper APIs so
+CLI users can inspect available node types, editable fields, outputs, helper
+signatures, examples, and custom metadata paths without opening the browser.
+
+`/kits` lists local vertical Agent packages from `kits/<name>/kit.yaml`, and `/kits <name>` shows one manifest's referenced providers, agents, skills, tools, workflows, teams, policies, examples, metadata, and environment warnings. `/kits <name> --export [--format json|yaml] [--include-secrets]` prints a portable kit bundle, and `/kits --import <path> [--replace]` imports one into the current runtime home. `/new-kit <preset> <name>` creates a starter kit manifest; add `--materialize` or `--full` to generate a linked starter bundle with its own agent, skill, Docker/Podman containerized MCP helper, workflow, workflow template, team template, policy rule, and kit manifest. Built-in presets include `software-engineering`, `agent-framework`, `web-security`, `security-research`, `binary-analysis`, `documentation`, `operations-runbook`, and `customer-support`. The manifest stays versionable and can later be validated, edited, exported, or imported through Studio resource APIs.
+
+`/workflow-schemas` lists observed workflow output schemas captured from
+completed runs. `/workflow-schemas <name>` shows stage output fields and types,
+`--json` prints the list or detail as JSON for scripts, `--export` prints a
+versioned bundle compatible with the HTTP import API, `--import <path>` imports
+that bundle or a raw schema JSON file, `--rebuild` rebuilds the catalog from
+retained run history, and `--clear` removes one schema or all schemas. The same
+catalog powers Studio expression suggestions and reusable schema resources under
+`schemas/workflows/*.json`.
+
+Custom `policy_guard` rules can be stored as YAML under `policies/workflow_rules/*.yaml`; they appear in `/api/workflow-options` alongside built-in guard rules for Studio forms and workflow execution.
+
+`/new-agent <name>`, `/new-provider <name>`, and the Studio tool builder create modular runtime config files under `configs/agents/`, `configs/providers/`, and `configs/mcp_servers/`. These files are loaded on startup, so custom agents, model providers, and MCP servers can stay versionable without bloating the main `configs/goflow.yaml`.
 
 Running `/workflow` without arguments prints usage plus discovered custom workflows.
+
+`/cost` shows the session's prompt budget and token usage history, including
+average/max estimated prompt size, cacheable/non-cacheable context, top agents,
+provider-reported token totals, cached-token hit rate, prompt-prefix reuse, and
+optimization hints. It uses already-recorded runtime diagnostics and does not
+call the model.
+
+`/config-diagnostics` reload-validates the saved `configs/goflow.yaml` plus
+modular agent/provider/MCP/workflow resource files, summarizes warnings/errors,
+and hides optional empty extension directories from the primary text list.
+Use `/config-diagnostics --json` for the full machine-readable envelope that
+matches `GET /api/config/diagnostics`. HTTP clients can request
+`/api/config/diagnostics?include_optional=0` to hide optional non-actionable
+info items in JSON responses.
 
 ## Workflow approvals
 
@@ -232,21 +301,51 @@ While that handoff is pending:
 ## HTTP API
 
 Current endpoints:
+- `GET /api/runtime`
+- `GET /api/runtime/cost`
+- `GET /api/help`
 - `GET /api/workspace`
 - `POST /api/workspace/confirm`
 - `POST /api/workspace/clear`
 - `POST /api/workspace/select`
 - `POST /api/run`
 - `POST /api/run/stream`
+- `GET /api/runs`
 - `GET /api/session`
+- `GET /api/session-artifacts`
+- `GET /api/session-artifacts/{id}`
 - `POST /api/workflows/{name}`
 - `POST /api/workflows/{name}/stream`
+- `GET /api/workflow-runs`
+- `GET /api/workflow-runs/{id}`
+- `GET /api/workflow-runs/{id}/actions`
+- `GET /api/workflow-runs/{id}/replay`
+- `POST /api/workflow-runs/{id}/approve`
+- `POST /api/workflow-runs/{id}/approve/stream`
+- `POST /api/workflow-runs/{id}/approve-tools`
+- `POST /api/workflow-runs/{id}/approve-tools/stream`
 - `GET /api/workflow-graphs`
 - `POST /api/workflow-graphs`
+- `POST /api/workflow-graphs/validate`
+- `POST /api/workflow-graphs/import`
 - `GET /api/workflow-graphs/{name}`
 - `PUT /api/workflow-graphs/{name}`
 - `DELETE /api/workflow-graphs/{name}`
+- `GET /api/workflow-graphs/{name}/export`
+- `POST /api/workflow-graphs/{name}/validate`
 - `GET /api/workflow-options`
+- `GET /api/workflow-templates`
+- `GET /api/workflow-templates/{name}`
+- `GET /api/team-templates`
+- `GET /api/team-templates/{name}`
+- `GET /api/team-state`
+- `GET /api/resources/skills`, `GET/PUT /api/resources/skills/{name}`
+- `GET/PUT/DELETE /api/resources/skills/{name}/files/...`
+- `GET /api/resources/agents`, `GET/PUT/DELETE /api/resources/agents/{name}`
+- `GET /api/resources/providers`, `GET/PUT/DELETE /api/resources/providers/{name}`
+- `GET /api/resources/tools`, `GET/PUT/DELETE /api/resources/tools/{name}`
+- `GET /api/resources/policy-rules`, `GET/PUT/DELETE /api/resources/policy-rules/{name}`
+- `GET /api/resources/team-templates`, `GET/PUT/DELETE /api/resources/team-templates/{name}`
 - `POST /api/approvals/{callID}/approve`
 - `POST /api/approvals/{callID}/approve/stream`
 - `POST /api/approvals/{callID}/deny`
@@ -255,8 +354,30 @@ Current endpoints:
 
 HTTP mode also serves a basic workspace page at `GET /workspace`. It shows the
 current workspace root, whether it is confirmed, and actions for confirm, clear,
-or selecting another path. Selecting a different path returns a restart-required
-response so MCP servers are rebound safely under the new workspace root.
+or selecting another path. Packaged HTTP mode supports dynamic workspace rebind
+when execution is idle; fallback responses include explicit restart guidance and
+blocker codes so browser clients can explain why a switch is unavailable.
+
+`GET /api/runtime` includes a `cost` block with the latest prompt budget,
+bounded prompt-budget history, average/max estimated input size, cacheable
+prefix average, non-cacheable context average, prompt-prefix hash counts, stored
+token usage samples, per-agent/per-mode/per-stage trend rows, and compact
+recommendations for likely avoidable context in Studio cost diagnostics.
+Recommendations include machine-readable `measurement`, `action`,
+`requires_config`, and `expected_savings_kind` fields so Studio can distinguish
+observed waste from optional configuration changes such as low-cost router or
+summarizer routes.
+`GET /api/runtime/cost` returns the same cost block alone for lightweight
+polling.
+Large compacted tool observations are stored as session artifacts with refs like
+`goflow://session-artifacts/<id>`; include that ref in a later CLI/HTTP request
+to rehydrate the artifact content into prompt context only when needed.
+The same endpoint includes a `verifier` block showing the effective verifier
+agent/provider/model route, so deployments can send low-risk post-run checks to
+a cheaper model without changing the main fixer or auditor profile.
+Optional `cost_control.router` and `cost_control.summarizer` routes are exposed
+as `auxiliary_models`; they can move unmatched intent classification and
+iteration-budget final summaries to cheaper configured providers.
 
 ### Example: final JSON response
 
@@ -281,6 +402,7 @@ SSE clients should handle these event types:
 - `text`, `status`, `done`, and `final_message` for model output and turn completion
 - `task_stage` for high-level stage changes such as inspect, plan, modify, verify, and summarize
 - `tool_call`, `tool_result`, and `approval` for tool execution and confirmation pauses
+- `prompt_budget` for pre-call estimated prompt cost by system prompt, compacted session history, messages, tool schemas, matched skill, filtered tool count, and stable prompt-prefix/cache diagnostics
 - `token_usage` for provider-reported prompt/output/cache token counts
 - `workflow_result` for final or paused workflow state from `/api/workflows/{name}/stream` and streamed approval resumes
 
@@ -290,10 +412,10 @@ HTTP mode also serves the embedded Agent Studio at `GET /console` and
 `GET /workflows`. The Studio is a modern visual workflow surface with a
 workflow list, node palette, draggable stage canvas, property panel, run
 preview, approvals, resource catalog, workspace controls, observability, and
-settings/update guidance. The Playground can choose a specific agent before a
+settings/update guidance. The workflow APIs expose reusable graph templates
+and multi-agent team templates for Studio scaffolding. The Playground can choose a specific agent before a
 run, the resource catalog includes a validated Skill editor, and the main UI supports English and Chinese. Custom workflow graphs are persisted under
 `workflows/<name>/workflow.yaml`. See [Workflow Graphs](./docs/workflows.md).
-
 ## Built-in MCP tools
 
 - `file_tools/list_dir`
@@ -314,7 +436,13 @@ run, the resource catalog includes a validated Skill editor, and the main UI sup
 - `python_notes/binary_strings`
 - `python_notes/hex_preview`
 
-File, note, source-inspection, and binary-inspection tools resolve every path under the active workspace root and reject path traversal or symlink escapes. If the workspace was only defaulted from the current directory, GoFlow hides workspace-scoped read/write/exec tools from the model until you confirm it. Write operations render git-like CLI summaries with status letters, added/deleted line counts, changed line ranges, byte counts, and compact colored diff hunks. In the interactive CLI, type `@` to show workspace file suggestions, then type a prefix and press `Tab` to complete a unique match or show candidates. You can reference workspace files inline with `@relative/path.ext`; GoFlow reads the file through the normal `file_tools/read_file` path, prints the same tool logs, and attaches the file content before the request reaches the agent. In non-interactive input, type `@prefix` as a full line to list matching references.
+File, note, source-inspection, and binary-inspection tools resolve every path under the active workspace root and reject path traversal or symlink escapes. If the workspace was only defaulted from the current directory, GoFlow hides workspace-scoped read/write/exec tools from the model until you confirm it. Write operations render git-like CLI summaries with status letters, added/deleted line counts, changed line ranges, byte counts, and compact colored diff hunks. In the interactive CLI, type `@` to show workspace file suggestions, then type a prefix and press `Tab` to complete a unique match or show candidates. Workspace file suggestions skip dependency/build directories such as `.venv`, `node_modules`, `.git`, `__pycache__`, `vendor`, `dist`, and `build` before result limits are applied, and filename fragments work as contains searches. You can reference workspace files inline with `@relative/path.ext`; GoFlow reads the file through the normal `file_tools/read_file` path, prints the same tool logs, and attaches the file content before the request reaches the agent. In non-interactive input, type `@prefix` as a full line to list matching references.
+
+Workspace switching is intentionally conservative. The CLI `/workspace use
+<path>` and packaged HTTP `/api/workspace/select` can dynamically rebind only
+while execution is idle. `/api/workspace` and `/api/runtime` expose
+`switch_mode`, blockers, action hints, and restart guidance so clients can show a
+folder picker, submit the selected path, and explain when a restart is safer.
 
 Interactive CLI input also supports `Tab` completion for `/` commands and consumes arrow/Home/End/Delete key sequences so those keys do not appear as literal escape text in ordinary prompts.
 
@@ -346,9 +474,11 @@ Please generate an initial README and docs/overview.md for this empty project.
 
 ## Documentation
 
+- [Installation And Deployment](./docs/install.md)
 - [Architecture](./docs/architecture.md)
 - [Configuration](./docs/configuration.md)
 - [Deployment](./docs/deployment.md)
+- [Release Packaging](./docs/release.md)
 - [MCP Integration](./docs/mcp.md)
 - [MCP Isolation Strategy](./docs/mcp-isolation.md)
 - [MCP Tool Authoring](./docs/mcp-authoring.md)

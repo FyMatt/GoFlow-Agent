@@ -1,5 +1,7 @@
 ﻿# Skill Authoring
 
+[English](./skill-authoring.md) | [简体中文](./skill-authoring.zh-CN.md)
+
 Skills are reusable workflow instructions stored under `skills/<name>/SKILL.md`.
 
 Use skills when a task needs domain procedure, tool preferences, output structure, or repeatable workflow guidance.
@@ -38,6 +40,99 @@ want an agent to create a more specialized skill, agent, or tool through the
 normal tool-approval path.
 
 ## Minimal Shape
+
+Portable Claude/Codex-style skills only need `name`, `description`, and Markdown
+instructions. GoFlow derives activation keywords from the name and description
+when `activation.keywords` is omitted:
+
+```markdown
+---
+name: image-workflow
+description: Use when the user asks to generate, edit, or evaluate bitmap images.
+metadata:
+  short-description: Image workflow helper
+---
+
+# Image Workflow
+
+Use this skill for image tasks. Keep generated assets and references organized.
+```
+
+GoFlow also accepts Claude-style `allowed-tools` / `allowed_tools` frontmatter
+and maps common tool names into GoFlow tool metadata and tool-kind envelopes:
+
+```yaml
+allowed-tools: Read, Grep, WebFetch, WebSearch
+```
+
+The mapped values narrow the selected agent's tool-kind envelope by
+intersection. They cannot grant tool kinds the agent did not already have, and
+all calls still go through runtime approval policy.
+
+## Complex Skill Scripts
+
+Complex skills can declare deterministic helper scripts in frontmatter instead
+of hiding them in prose. Use them for repeatable collection, parsing, or
+normalization tasks that belong to the skill package but should still be routed
+through normal approval and isolation policy.
+
+Example:
+
+```yaml
+scripts:
+  - name: collect-assets
+    description: Fetch and summarize page assets for review.
+    path: scripts/collect_assets.py
+    runtime: python
+    output: json
+    timeout: 30s
+    isolation: container
+    workspace_mount: ro
+    network: disabled
+    approval: required
+    args_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+      required: [url]
+```
+
+GoFlow validates and exposes these declarations through the normal runtime:
+
+- the script path must stay under `scripts/` in the skill folder
+- the runtime, isolation, network, approval, timeout, and output fields are validated
+- the arguments schema must stay object-shaped and closed by default
+- declared scripts are exposed to the runtime prompt and resource APIs
+- matched skills with declared scripts expose `skill_runner/run_script` only when the active agent profile still allows `exec`
+
+Script execution is intentionally a normal tool call, not a hidden runtime
+shortcut. The model must call:
+
+```json
+{"skill":"my-skill","script":"collect-assets","args":{"url":"https://example.test"}}
+```
+
+through `skill_runner/run_script`. That call then goes through the same agent
+tool permission checks, approval policy, audit logging, risk metadata, and MCP
+server isolation as any other `exec` tool.
+
+The script receives `args` as JSON on stdin and in `GOFLOW_SKILL_ARGS_JSON`.
+The result is a JSON object containing the skill name, script name, declared
+runtime/output/network metadata, stdout, exit code, duration, timeout status,
+and JSON-output validation status when `output: json` is declared.
+
+The `isolation`, `network`, and `workspace_mount` fields document the script's
+intent. The real boundary is the MCP server configuration. Use MCP
+`isolation: container` for a strong Docker/Podman sandbox; the default local
+binary config uses `process_group`, which is a lifecycle boundary rather than a
+security sandbox.
+
+This makes it possible to build complex skills with deterministic helper code
+without letting `SKILL.md` become an executable code wrapper.
+
+For native GoFlow skills, prefer the richer shape below:
 
 ```markdown
 ---
@@ -82,10 +177,13 @@ State the specialist role in one paragraph.
 
 ## Required Metadata
 
-Required fields:
+Portable fields:
 
 - `name`
 - `description`
+
+Native GoFlow fields:
+
 - `version`
 - `author`
 - `activation.keywords`
@@ -99,6 +197,12 @@ Recommended fields:
 - `allowed_tool_kinds`
 - `output_kind`
 - `next_skills`
+
+`version`, `author`, and `activation.keywords` are required only for strict
+native GoFlow skills. Imported Claude/Codex-style skills can omit them; GoFlow
+will mark the skill as `claude-compatible`, `codex-compatible`, or
+`portable-skill` and derive basic activation keywords from `name` and
+`description`.
 
 Supported modes:
 
@@ -216,6 +320,53 @@ Keep `SKILL.md` concise and procedural:
 - avoid long tutorials or generic background
 
 Use separate reference files only when the skill needs bulky domain material.
+
+## Complex Skill Layout
+
+Skills can be full directories, not only one prompt file:
+
+```text
+skills/domain-review/
+  SKILL.md
+  references/
+    policy.md
+    schemas.md
+  scripts/
+    collect_context.py
+  assets/
+    report-template.md
+  agents/
+    openai.yaml
+```
+
+GoFlow indexes bundled files under `references/`, `scripts/`, `assets/`,
+`templates/`, and `agents/` and exposes that resource manifest on the loaded
+skill and in the matched-skill prompt. Keep `SKILL.md` as the routing and
+workflow guide, then move large domain knowledge, deterministic scripts, and
+templates into bundled resources.
+
+HTTP Studio can manage those bundled files through the skill resource file API:
+
+```text
+GET    /api/resources/skills/{name}/files
+GET    /api/resources/skills/{name}/files/{relative-path}
+PUT    /api/resources/skills/{name}/files/{relative-path}
+DELETE /api/resources/skills/{name}/files/{relative-path}
+```
+
+`relative-path` must stay inside one of the resource directories:
+`references/`, `scripts/`, `assets/`, `templates/`, or `agents/`. `SKILL.md`
+itself is managed only by `GET/PUT /api/resources/skills/{name}` so the skill's
+main metadata and instructions continue to be validated as one document.
+
+Example write request:
+
+```json
+{"content":"# Review Policy\n\nEscalate high-risk findings with evidence."}
+```
+
+The file API rejects absolute paths, `..` traversal, backslash paths, symlinks,
+directories, and resource paths outside the skill folder.
 
 ## Built-In Skill Patterns
 

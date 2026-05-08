@@ -15,9 +15,8 @@ services:
       - ./workspace:/workspace
     command:
       - --config
-      - /app/configs/agent.docker.yaml
+      - /app/configs/goflow.docker.yaml
       - --workspace
       - /workspace
       - --http
       - :8080
-

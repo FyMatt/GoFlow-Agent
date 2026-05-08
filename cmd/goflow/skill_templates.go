@@ -175,7 +175,7 @@ You perform static binary triage for defensive vulnerability research.
 			{Name: "web_tools/web_search"},
 		},
 		Keywords:       []string{"plan", "roadmap", "execution plan", "\u5236\u5b9a\u8ba1\u5212", "\u6267\u884c\u8ba1\u5212", "\u8ba1\u5212", "\u65b9\u6848"},
-		ExampleRequest: `Compare the current code against MASTER-PLAN.md and propose the next executable task.`,
+		ExampleRequest: `Compare the current code against the current project plan and propose the next executable task.`,
 		Body: `## Role
 
 You create execution plans that another agent can implement.

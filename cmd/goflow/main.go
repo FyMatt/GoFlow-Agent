@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
@@ -16,6 +17,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode"
@@ -24,11 +26,23 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	apipkg "github.com/FyMatt/GoFlow-Agent/internal/api"
 	apppkg "github.com/FyMatt/GoFlow-Agent/internal/app"
+	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/internal/skill"
+	"github.com/FyMatt/GoFlow-Agent/internal/workspace"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 	"golang.org/x/term"
+	"gopkg.in/yaml.v3"
+)
+
+const (
+	defaultConfigFileName = "goflow.yaml"
+	binaryConfigFileName  = "goflow.binary.yaml"
+
+	cliWorkflowSchemaBundleKind                = "goflow.workflow_schemas"
+	cliWorkflowSchemaBundleVersion             = 2
+	cliWorkflowSchemaBundleMinSupportedVersion = 1
 )
 
 var terminalInputSupported = func(input io.Reader, output io.Writer) bool {
@@ -89,6 +103,17 @@ func main() {
 		fmt.Fprintf(os.Stderr, "bootstrap runtime error: %v\n", err)
 		os.Exit(1)
 	}
+	var appMu sync.Mutex
+	currentApp := app
+	defer func() {
+		appMu.Lock()
+		appToClose := currentApp
+		currentApp = nil
+		appMu.Unlock()
+		if err := appToClose.Close(); err != nil {
+			fmt.Fprintf(os.Stderr, "close runtime error: %v\n", err)
+		}
+	}()
 	cfg := app.Config
 	sessionState := app.SessionState
 	agentRuntime := app.Runtime
@@ -98,16 +123,62 @@ func main() {
 
 	if strings.TrimSpace(paths.HTTPAddr) != "" {
 		server := &http.Server{
-			Addr:    paths.HTTPAddr,
-			Handler: apipkg.NewServerWithWorkspace(agentRuntime, workspaceState),
+			Addr: paths.HTTPAddr,
+			Handler: apipkg.NewServerWithWorkspaceRebinder(agentRuntime, workspaceState, func(ctx context.Context, path string) (*agent.Runtime, *workspaceLifecycle, error) {
+				appMu.Lock()
+				activeApp := currentApp
+				appMu.Unlock()
+				if activeApp == nil || activeApp.Config == nil {
+					return nil, nil, fmt.Errorf("runtime app is not available")
+				}
+				newApp, err := apppkg.Bootstrap(ctx, apppkg.BootstrapOptions{
+					RuntimeHome:   activeApp.Config.RuntimeHome,
+					WorkspaceRoot: path,
+					ConfigPath:    activeApp.ConfigPath,
+				})
+				if err != nil {
+					return nil, nil, err
+				}
+				newWorkspace := newWorkspaceLifecycle(path, true)
+				newApp.Runtime.SetWorkspaceConfirmed(newWorkspace.Confirmed())
+				appMu.Lock()
+				oldApp := currentApp
+				appMu.Unlock()
+				if oldApp != nil {
+					if err := oldApp.SaveSession(); err != nil {
+						_ = newApp.Close()
+						return nil, nil, err
+					}
+					if err := oldApp.Close(); err != nil {
+						_ = newApp.Close()
+						return nil, nil, err
+					}
+				}
+				appMu.Lock()
+				currentApp = newApp
+				appMu.Unlock()
+				return newApp.Runtime, newWorkspace, nil
+			}),
 		}
+		consoleURL := displayHTTPURL(paths.HTTPAddr, "/console")
+		workflowURL := displayHTTPURL(paths.HTTPAddr, "/workflows")
 		fmt.Printf("GoFlow HTTP API ready. runtime=%s workspace=%s addr=%s\n", cfg.RuntimeHome, workspaceState.DisplayRoot(), paths.HTTPAddr)
+		fmt.Printf("Open Web Studio: %s\n", consoleURL)
+		fmt.Printf("Workflow Studio: %s\n", workflowURL)
+		fmt.Println("Note: this local server uses plain HTTP, not HTTPS.")
 		fmt.Println("Press Ctrl+C to stop the HTTP server.")
 		if err := runHTTPServer(ctx, server, os.Stdout); err != nil {
 			fmt.Fprintf(os.Stderr, "http server error: %v\n", err)
 			os.Exit(1)
 		}
-		if err := sessionState.Save(cfg.Session.PersistPath); err != nil {
+		appMu.Lock()
+		activeApp := currentApp
+		appMu.Unlock()
+		if activeApp != nil {
+			if err := activeApp.SaveSession(); err != nil {
+				fmt.Fprintf(os.Stderr, "save session error: %v\n", err)
+			}
+		} else if err := sessionState.Save(cfg.Session.PersistPath); err != nil {
 			fmt.Fprintf(os.Stderr, "save session error: %v\n", err)
 		}
 		return
@@ -135,6 +206,57 @@ func main() {
 				fmt.Fprintf(os.Stderr, "save session error: %v\n", err)
 			}
 			return
+		}
+		if parseWorkspaceChooseInput(input) {
+			selectedPath, cancelled, err := workspace.PickFolder(ctx, workspaceState.Root())
+			if err != nil {
+				fmt.Println(formatCommandWarning(err.Error()))
+				continue
+			}
+			if cancelled || strings.TrimSpace(selectedPath) == "" {
+				fmt.Println(formatCommandWarning("workspace folder selection cancelled"))
+				continue
+			}
+			input = "/workspace use " + selectedPath
+		}
+		if workspacePath, ok, usageErr := parseWorkspaceUseInput(input); ok {
+			if usageErr != "" {
+				fmt.Fprintln(os.Stderr, usageErr)
+				continue
+			}
+			if workspaceSamePath(workspacePath, workspaceState.Root()) {
+				workspaceState.Confirm()
+				agentRuntime.SetWorkspaceConfirmed(true)
+				fmt.Println(formatCommandSuccess("workspace", workspaceState.Root()))
+				if err := sessionState.Save(cfg.Session.PersistPath); err != nil {
+					fmt.Fprintf(os.Stderr, "save session error: %v\n", err)
+				}
+				continue
+			}
+			appMu.Lock()
+			activeApp := currentApp
+			appMu.Unlock()
+			newApp, newWorkspace, err := rebindCLIWorkspace(ctx, activeApp, workspacePath)
+			if err != nil {
+				fmt.Println(formatCLIWorkspaceSwitchError(workspacePath, err))
+				continue
+			}
+			appMu.Lock()
+			currentApp = newApp
+			appMu.Unlock()
+			cfg = newApp.Config
+			sessionState = newApp.SessionState
+			agentRuntime = newApp.Runtime
+			agentRuntime.SetWorkspaceConfirmed(true)
+			skillManager = newApp.SkillManager.(*skill.Manager)
+			mcpManager = newApp.MCPClient
+			workspaceState = newWorkspace
+			updateCLIInputWorkspaceRoot(lineReader, cfg.WorkspaceRoot)
+			fmt.Println(formatCommandSuccess("workspace rebound", workspaceState.Root()))
+			if err := sessionState.Save(cfg.Session.PersistPath); err != nil {
+				fmt.Fprintf(os.Stderr, "save session error: %v\n", err)
+			}
+			continue
 		}
 		if isCommandInput(input) {
 			if handled := handleCommand(ctx, input, skillManager, mcpManager, agentRuntime, workspaceState); handled {
@@ -189,12 +311,20 @@ func main() {
 			fmt.Fprintf(os.Stderr, "reference error: %v\n", err)
 			continue
 		}
+		expandedInput, artifactRefs, err := expandSessionArtifactReferencesForCLI(expandedInput, agentRuntime, renderer)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "artifact reference error: %v\n", err)
+			continue
+		}
 		if len(refs) > 0 {
 			names := make([]string, 0, len(refs))
 			for _, ref := range refs {
 				names = append(names, "@"+ref.RelativePath)
 			}
 			fmt.Println(formatCommandSuccess("attached", strings.Join(names, ", ")))
+		}
+		if len(artifactRefs) > 0 {
+			fmt.Println(formatCommandSuccess("attached artifacts", strings.Join(artifactRefs, ", ")))
 		}
 		taskAgent := agentRuntime.ActiveAgent()
 		taskMode := agentRuntime.Mode()
@@ -266,6 +396,34 @@ func runHTTPServer(ctx context.Context, server *http.Server, output io.Writer) e
 	}
 }
 
+func displayHTTPURL(addr, route string) string {
+	addr = strings.TrimSpace(addr)
+	if addr == "" {
+		addr = ":8080"
+	}
+	route = "/" + strings.TrimLeft(route, "/")
+	if strings.HasPrefix(addr, "http://") || strings.HasPrefix(addr, "https://") {
+		return strings.TrimRight(addr, "/") + route
+	}
+	host, port, err := net.SplitHostPort(addr)
+	if err != nil {
+		if strings.HasPrefix(addr, ":") {
+			host, port = "", strings.TrimPrefix(addr, ":")
+		} else if !strings.Contains(addr, ":") {
+			host, port = "", addr
+		} else {
+			return "http://" + addr + route
+		}
+	}
+	if host == "" || host == "0.0.0.0" || host == "::" || host == "[::]" {
+		host = "127.0.0.1"
+	}
+	if port == "" {
+		return "http://" + host + route
+	}
+	return "http://" + net.JoinHostPort(host, port) + route
+}
+
 type cliInputLineReader interface {
 	ReadLine(prompt string) (string, bool, error)
 	Err() error
@@ -276,6 +434,12 @@ func newCLIInputLineReader(input *os.File, output io.Writer, workspaceRoot strin
 		return &scannerInputLineReader{scanner: bufio.NewScanner(input), output: output}
 	}
 	return &interactiveInputLineReader{input: input, output: output, workspaceRoot: workspaceRoot}
+}
+
+func updateCLIInputWorkspaceRoot(reader cliInputLineReader, workspaceRoot string) {
+	if interactive, ok := reader.(*interactiveInputLineReader); ok && interactive != nil {
+		interactive.workspaceRoot = workspaceRoot
+	}
 }
 
 type scannerInputLineReader struct {
@@ -626,6 +790,11 @@ func completeCommandToken(buffer []rune, cursor int) ([]rune, bool, string) {
 	if len(matches) == 0 && prefix != commandPrefix {
 		matches = fuzzyFilterStrings(commands, prefix, len(commands))
 		fuzzy = len(matches) > 0
+		if fuzzy {
+			if completion := closeEditDistanceCommandMatch(matches, prefix); completion != "" {
+				matches = []string{completion}
+			}
+		}
 	}
 	if len(matches) == 0 {
 		return buffer, false, formatCommandWarning(fmt.Sprintf("No commands match %s", prefix)) + "\n"
@@ -654,6 +823,32 @@ func completeCommandToken(buffer []rune, cursor int) ([]rune, bool, string) {
 	return buffer, false, b.String()
 }
 
+func closeEditDistanceCommandMatch(matches []string, prefix string) string {
+	query := stripCommandPrefix(prefix)
+	if strings.TrimSpace(query) == "" {
+		return ""
+	}
+	best := ""
+	bestDistance := 3
+	ties := 0
+	for _, match := range matches {
+		distance := editDistance(strings.ToLower(query), strings.ToLower(stripCommandPrefix(match)))
+		if distance < bestDistance {
+			best = match
+			bestDistance = distance
+			ties = 1
+			continue
+		}
+		if distance == bestDistance {
+			ties++
+		}
+	}
+	if best != "" && ties == 1 {
+		return best
+	}
+	return ""
+}
+
 const commandPrefix = "/"
 
 func isCommandInput(input string) bool {
@@ -671,23 +866,38 @@ func commandCompletionNames() []string {
 	names := []string{
 		"/agents",
 		"/approve",
+		"/config-diagnostics",
+		"/cost",
 		"/deny",
 		"/help",
 		"/mode",
 		"/new-agent",
+		"/new-kit",
+		"/new-policy-rule",
+		"/new-provider",
 		"/new-skill",
+		"/new-team",
 		"/new-tool",
 		"/new-workflow",
+		"/new-workflow-template",
+		"/expression-helpers",
+		"/policy-rules",
 		"/reload",
 		"/reload-tools",
 		"/session",
 		"/skill-templates",
 		"/skills",
 		"/status",
+		"/team-state",
+		"/teams",
 		"/tools",
 		"/trace",
 		"/use",
 		"/workflow",
+		"/workflow-expression-functions",
+		"/workflow-node-metadata",
+		"/workflow-schemas",
+		"/workflow-templates",
 	}
 	sort.Strings(names)
 	return names
@@ -892,7 +1102,7 @@ func runtimeHomeFromBinDir(dir string) (runtimeHomeInfo, bool) {
 	if !hasRuntimeConfig(parent) {
 		return runtimeHomeInfo{}, false
 	}
-	return runtimeHomeInfo{Root: parent, BinaryArchive: fileExists(filepath.Join(parent, "configs", "agent.binary.yaml"))}, true
+	return runtimeHomeInfo{Root: parent, BinaryArchive: fileExists(filepath.Join(parent, "configs", binaryConfigFileName))}, true
 }
 
 func hasRuntimeConfig(root string) bool {
@@ -900,7 +1110,7 @@ func hasRuntimeConfig(root string) bool {
 	if root == "" {
 		return false
 	}
-	return fileExists(filepath.Join(root, "configs", "agent.yaml")) || fileExists(filepath.Join(root, "configs", "agent.binary.yaml"))
+	return fileExists(filepath.Join(root, "configs", defaultConfigFileName)) || fileExists(filepath.Join(root, "configs", binaryConfigFileName))
 }
 
 func fileExists(path string) bool {
@@ -912,11 +1122,11 @@ func defaultConfigPathForRuntime(info runtimeHomeInfo) string {
 	if strings.TrimSpace(info.Root) == "" {
 		return ""
 	}
-	binaryConfig := filepath.Join(info.Root, "configs", "agent.binary.yaml")
+	binaryConfig := filepath.Join(info.Root, "configs", binaryConfigFileName)
 	if info.BinaryArchive && fileExists(binaryConfig) {
 		return binaryConfig
 	}
-	return filepath.Join(info.Root, "configs", "agent.yaml")
+	return filepath.Join(info.Root, "configs", defaultConfigFileName)
 }
 
 func applyStartupEnvDefaults(info runtimeHomeInfo) {
@@ -966,13 +1176,13 @@ func resolvePaths(runtimeHome string, args []string) (string, string, string, er
 }
 
 func resolvePathSettings(runtimeHome string, args []string) (pathSettings, error) {
-	return resolvePathSettingsWithDefault(runtimeHome, args, filepath.Join(runtimeHome, "configs", "agent.yaml"))
+	return resolvePathSettingsWithDefault(runtimeHome, args, filepath.Join(runtimeHome, "configs", defaultConfigFileName))
 }
 
 func resolvePathSettingsWithDefault(runtimeHome string, args []string, defaultConfigPath string) (pathSettings, error) {
 	configPath := strings.TrimSpace(defaultConfigPath)
 	if configPath == "" {
-		configPath = filepath.Join(runtimeHome, "configs", "agent.yaml")
+		configPath = filepath.Join(runtimeHome, "configs", defaultConfigFileName)
 	}
 	workspaceRoot := ""
 	httpAddr := ""
@@ -1075,8 +1285,18 @@ func handleCommand(ctx context.Context, input string, skillManager *skill.Manage
 		return handleNewToolCommand(fields, skillManager)
 	case "/new-agent":
 		return handleNewAgentCommand(fields, skillManager)
+	case "/new-kit":
+		return handleNewKitCommand(fields, skillManager)
+	case "/new-policy-rule":
+		return handleNewPolicyRuleCommand(fields, skillManager)
+	case "/new-provider":
+		return handleNewProviderCommand(fields, skillManager)
+	case "/new-team":
+		return handleNewTeamCommand(fields, skillManager)
 	case "/new-workflow":
 		return handleNewWorkflowCommand(fields, skillManager)
+	case "/new-workflow-template":
+		return handleNewWorkflowTemplateCommand(fields, skillManager)
 	case "/tools":
 		tools, err := mcpClient.ListTools(ctx)
 		if err != nil {
@@ -1085,17 +1305,29 @@ func handleCommand(ctx context.Context, input string, skillManager *skill.Manage
 		}
 		health := mcpClient.HealthStatus(ctx)
 		diagnosticsByTool := buildToolDiagnosticsByQualifiedName(tools)
+		serverRisks := buildCLIMCPServerRiskMap(agentRuntime.MCPServerRefs())
 		rows := make([]toolDisplayRow, 0, len(tools))
 		for _, tool := range tools {
 			qualifiedName := formatToolName(tool)
+			risk := buildCLIToolRiskProfile(tool, serverRisks[tool.Server])
 			rows = append(rows, toolDisplayRow{
-				Name:               qualifiedName,
-				Description:        tool.Description,
-				Server:             tool.Server,
-				Kind:               tool.Kind,
-				Health:             health[tool.Server],
-				InputSchemaSummary: summarizeToolSchema(tool.InputSchema),
-				Diagnostics:        diagnosticsByTool[qualifiedName],
+				Name:                   qualifiedName,
+				Description:            tool.Description,
+				Server:                 tool.Server,
+				Kind:                   tool.Kind,
+				Health:                 health[tool.Server],
+				InputSchemaSummary:     summarizeToolSchema(tool.InputSchema),
+				Diagnostics:            diagnosticsByTool[qualifiedName],
+				RiskLevel:              risk.RiskLevel,
+				IsolationLevel:         risk.IsolationLevel,
+				Sandboxed:              risk.Sandboxed,
+				RequiresSandbox:        risk.RequiresSandbox,
+				SandboxFeatures:        risk.SandboxFeatures,
+				MissingSandboxFeatures: risk.MissingSandboxFeatures,
+				WindowsIsolation:       risk.WindowsIsolation,
+				EnvAllowlistSet:        risk.EnvAllowlistSet,
+				EnvAllowlist:           risk.EnvAllowlist,
+				SensitiveEnv:           risk.SensitiveEnv,
 			})
 		}
 		sort.Slice(rows, func(i, j int) bool {
@@ -1127,6 +1359,20 @@ func handleCommand(ctx context.Context, input string, skillManager *skill.Manage
 		}
 		fmt.Print(formatAgentsOutput(rows))
 		return true
+	case "/config-diagnostics":
+		return handleConfigDiagnosticsCommand(fields, agentRuntime, workspaceState)
+	case "/teams":
+		return handleTeamsCommand(fields, agentRuntime)
+	case "/kits":
+		return handleKitsCommand(fields, agentRuntime)
+	case "/team-state":
+		return handleTeamStateCommand(fields, agentRuntime)
+	case "/policy-rules":
+		return handlePolicyRulesCommand(fields, agentRuntime)
+	case "/workflow-node-metadata":
+		return handleWorkflowNodeMetadataCommand(fields, agentRuntime)
+	case "/expression-helpers", "/workflow-expression-functions":
+		return handleExpressionHelpersCommand(fields, agentRuntime)
 	case "/use":
 		if len(fields) < 2 {
 			fmt.Fprintln(os.Stderr, "usage: /use <agent>")
@@ -1154,8 +1400,15 @@ func handleCommand(ctx context.Context, input string, skillManager *skill.Manage
 			return true
 		}
 		return handleWorkflowCommand(ctx, fields[1:], agentRuntime)
+	case "/workflow-schemas":
+		return handleWorkflowSchemasCommand(fields, agentRuntime)
+	case "/workflow-templates":
+		return handleWorkflowTemplatesCommand(fields, agentRuntime)
 	case "/status":
 		fmt.Print(formatStatusLines(agentRuntime.StatusLines(ctx)))
+		return true
+	case "/cost":
+		fmt.Print(formatCostOutput(agentRuntime.SessionSnapshot()))
 		return true
 	case "/session":
 		snapshot := agentRuntime.SessionSnapshot()
@@ -1261,6 +1514,340 @@ func handleCommand(ctx context.Context, input string, skillManager *skill.Manage
 	}
 }
 
+func handleTeamsCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	if len(fields) < 2 {
+		if agentRuntime != nil {
+			fmt.Print(formatTeamTemplatesOutput(agentRuntime.TeamTemplates()))
+		} else {
+			fmt.Print(formatTeamTemplatesOutput(agent.TeamTemplates()))
+		}
+		return true
+	}
+	name := strings.TrimSpace(fields[1])
+	var (
+		template agent.TeamTemplate
+		ok       bool
+	)
+	if agentRuntime != nil {
+		template, ok = agentRuntime.TeamTemplate(name)
+	} else {
+		template, ok = agent.LoadTeamTemplate(name)
+	}
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown team template: %s\n", name)
+		return true
+	}
+	fmt.Print(formatTeamTemplateDetailOutput(template))
+	return true
+}
+
+func handleKitsCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	runtimeHome := ""
+	if agentRuntime != nil {
+		runtimeHome = agentRuntime.RuntimeHome()
+	}
+	if strings.TrimSpace(runtimeHome) == "" {
+		fmt.Fprintln(os.Stderr, "kits unavailable: runtime home is not configured")
+		return true
+	}
+	if len(fields) < 2 {
+		rows, warnings := loadCLIKitSummaries(runtimeHome)
+		for _, warning := range warnings {
+			fmt.Fprintf(os.Stderr, "kit warning: %s\n", warning)
+		}
+		fmt.Print(formatKitsOutput(rows))
+		return true
+	}
+	if fields[1] == "--import" || fields[1] == "import" {
+		return handleKitBundleImportCommand(fields, agentRuntime)
+	}
+	exportBundle := false
+	exportFormat := "json"
+	includeSecrets := false
+	for i := 2; i < len(fields); i++ {
+		switch strings.TrimSpace(fields[i]) {
+		case "--export", "export":
+			exportBundle = true
+		case "--json":
+			exportFormat = "json"
+		case "--yaml", "--yml":
+			exportFormat = "yaml"
+		case "--format", "format":
+			if i+1 >= len(fields) {
+				fmt.Fprintln(os.Stderr, "usage: /kits <name> --export [--format json|yaml] [--include-secrets]")
+				return true
+			}
+			i++
+			exportFormat = strings.TrimSpace(fields[i])
+		case "--include-secrets":
+			includeSecrets = true
+		case "":
+		default:
+			fmt.Fprintln(os.Stderr, "usage: /kits [name] [--export [--format json|yaml] [--include-secrets]] or /kits --import <path> [--replace]")
+			return true
+		}
+	}
+	if exportBundle {
+		data, _, _, err := apipkg.ExportKitBundle(agentRuntime, fields[1], exportFormat, includeSecrets)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kit export error: %v\n", err)
+			return true
+		}
+		fmt.Print(string(data))
+		return true
+	}
+	doc, ok, err := loadCLIKitDocument(runtimeHome, fields[1])
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kit error: %v\n", err)
+		return true
+	}
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown kit: %s\n", fields[1])
+		return true
+	}
+	fmt.Print(formatKitDetailOutput(doc))
+	return true
+}
+
+func handleKitBundleImportCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	if agentRuntime == nil {
+		fmt.Fprintln(os.Stderr, "kit import unavailable: runtime not initialized")
+		return true
+	}
+	if len(fields) < 3 {
+		fmt.Fprintln(os.Stderr, "usage: /kits --import <path> [--replace]")
+		return true
+	}
+	importPath := strings.TrimSpace(fields[2])
+	overwrite := false
+	for _, field := range fields[3:] {
+		switch strings.TrimSpace(field) {
+		case "--replace", "--overwrite":
+			overwrite = true
+		case "--keep-existing", "":
+		default:
+			fmt.Fprintln(os.Stderr, "usage: /kits --import <path> [--replace]")
+			return true
+		}
+	}
+	data, err := os.ReadFile(importPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kit import error: %v\n", err)
+		return true
+	}
+	contentType := "application/json"
+	switch strings.ToLower(filepath.Ext(importPath)) {
+	case ".yaml", ".yml":
+		contentType = "application/yaml"
+	}
+	summary, err := apipkg.ImportKitBundleData(agentRuntime, data, contentType, overwrite)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kit import error: %v\n", err)
+		return true
+	}
+	fmt.Print(formatKitBundleImportSummaryOutput(summary, overwrite))
+	return true
+}
+
+func handlePolicyRulesCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	if agentRuntime == nil {
+		fmt.Fprintln(os.Stderr, "policy rules unavailable: runtime not initialized")
+		return true
+	}
+	rules := agentRuntime.WorkflowRunner().WorkflowPolicyRules()
+	rows := make([]policyRuleDisplayRow, 0, len(rules))
+	for _, rule := range rules {
+		rows = append(rows, policyRuleDisplayRow{
+			Name:        rule.Name,
+			Label:       rule.Label,
+			Description: rule.Description,
+			Source:      rule.Source,
+			Operator:    rule.Operator,
+			Custom:      rule.Custom,
+			Params:      append([]agent.WorkflowNodeFieldOption(nil), rule.Params...),
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Source != rows[j].Source {
+			return rows[i].Source < rows[j].Source
+		}
+		return rows[i].Name < rows[j].Name
+	})
+	if len(fields) < 2 {
+		fmt.Print(formatPolicyRulesOutput(rows))
+		return true
+	}
+	target := strings.ToLower(strings.TrimSpace(fields[1]))
+	for _, row := range rows {
+		if strings.EqualFold(row.Name, target) {
+			fmt.Print(formatPolicyRuleDetailOutput(row))
+			return true
+		}
+	}
+	fmt.Fprintf(os.Stderr, "unknown policy rule: %s\n", fields[1])
+	return true
+}
+
+func handleWorkflowNodeMetadataCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	if agentRuntime == nil {
+		fmt.Fprintln(os.Stderr, "workflow node metadata unavailable: runtime not initialized")
+		return true
+	}
+	nodes := agentRuntime.WorkflowRunner().WorkflowNodeTypes()
+	sort.Slice(nodes, func(i, j int) bool {
+		if nodes[i].Category != nodes[j].Category {
+			return nodes[i].Category < nodes[j].Category
+		}
+		return nodes[i].Type < nodes[j].Type
+	})
+	if len(fields) < 2 {
+		fmt.Print(formatWorkflowNodeMetadataOutput(nodes))
+		return true
+	}
+	target := strings.ToLower(strings.TrimSpace(fields[1]))
+	for _, node := range nodes {
+		if strings.EqualFold(node.Type, target) {
+			fmt.Print(formatWorkflowNodeMetadataDetailOutput(node))
+			return true
+		}
+	}
+	fmt.Fprintf(os.Stderr, "unknown workflow node type: %s\n", fields[1])
+	return true
+}
+
+func handleExpressionHelpersCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	if agentRuntime == nil {
+		fmt.Fprintln(os.Stderr, "expression helpers unavailable: runtime not initialized")
+		return true
+	}
+	args := append([]string(nil), fields[1:]...)
+	mode := ""
+	nodeType := ""
+	filtered := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := strings.TrimSpace(args[i])
+		switch arg {
+		case "--mode":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: /expression-helpers [name] [--mode <mode>] [--node-type <type>]")
+				return true
+			}
+			i++
+			mode = strings.TrimSpace(args[i])
+		case "--node-type", "--node":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: /expression-helpers [name] [--mode <mode>] [--node-type <type>]")
+				return true
+			}
+			i++
+			nodeType = strings.TrimSpace(args[i])
+		case "":
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+	helpers := agentRuntime.WorkflowRunner().WorkflowExpressionFunctions()
+	helpers = filterExpressionHelpers(helpers, mode, nodeType)
+	sort.Slice(helpers, func(i, j int) bool {
+		if helpers[i].Category != helpers[j].Category {
+			return helpers[i].Category < helpers[j].Category
+		}
+		return helpers[i].Name < helpers[j].Name
+	})
+	if len(filtered) == 0 {
+		fmt.Print(formatExpressionHelpersOutput(helpers, mode, nodeType))
+		return true
+	}
+	target := strings.ToLower(strings.TrimSpace(filtered[0]))
+	for _, helper := range helpers {
+		if strings.EqualFold(helper.Name, target) {
+			fmt.Print(formatExpressionHelperDetailOutput(helper))
+			return true
+		}
+	}
+	fmt.Fprintf(os.Stderr, "unknown expression helper: %s\n", filtered[0])
+	return true
+}
+
+func filterExpressionHelpers(helpers []agent.WorkflowExpressionFunctionOption, mode, nodeType string) []agent.WorkflowExpressionFunctionOption {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	nodeType = strings.ToLower(strings.TrimSpace(nodeType))
+	if mode == "" && nodeType == "" {
+		return helpers
+	}
+	filtered := make([]agent.WorkflowExpressionFunctionOption, 0, len(helpers))
+	for _, helper := range helpers {
+		if mode != "" && !cliStringListContains(helper.Modes, mode) {
+			continue
+		}
+		if nodeType != "" && !cliStringListContains(helper.NodeTypes, nodeType) {
+			continue
+		}
+		filtered = append(filtered, helper)
+	}
+	return filtered
+}
+
+func cliStringListContains(values []string, needle string) bool {
+	needle = strings.ToLower(strings.TrimSpace(needle))
+	if needle == "" {
+		return true
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func handleConfigDiagnosticsCommand(fields []string, agentRuntime *agent.Runtime, workspaceState *workspaceLifecycle) bool {
+	if agentRuntime == nil {
+		fmt.Fprintln(os.Stderr, "config diagnostics unavailable: runtime not initialized")
+		return true
+	}
+	jsonOutput := false
+	for _, field := range fields[1:] {
+		switch strings.TrimSpace(field) {
+		case "--json", "json":
+			jsonOutput = true
+		case "":
+		default:
+			fmt.Fprintln(os.Stderr, "usage: /config-diagnostics [--json]")
+			return true
+		}
+	}
+	diagnostics := apipkg.ConfigDiagnostics(agentRuntime, workspaceState)
+	if jsonOutput {
+		data, err := json.MarshalIndent(diagnostics, "", "  ")
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "config diagnostics json error: %v\n", err)
+			return true
+		}
+		fmt.Println(string(data))
+		return true
+	}
+	fmt.Print(formatConfigDiagnosticsOutput(diagnostics))
+	return true
+}
+
+func handleTeamStateCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	if agentRuntime == nil {
+		fmt.Fprintln(os.Stderr, "team state unavailable: runtime not initialized")
+		return true
+	}
+	runID := ""
+	team := ""
+	if len(fields) > 1 {
+		runID = fields[1]
+	}
+	if len(fields) > 2 {
+		team = fields[2]
+	}
+	fmt.Print(formatTeamStateOutput(agentRuntime.TeamState(runID, team)))
+	return true
+}
+
 func runCancelableAgentOperation(ctx context.Context, input io.Reader, output io.Writer, operation func(context.Context) (schema.AgentResult, error)) (schema.AgentResult, error) {
 	taskCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1301,12 +1888,10 @@ func isContinuationOnlyInput(input string) bool {
 	if text == "" {
 		return false
 	}
-	text = strings.Trim(text, " \t\r\n.!！?？。")
-	text = strings.ReplaceAll(text, "，", ",")
-	text = strings.ReplaceAll(text, "、", ",")
+	text = strings.Trim(text, " \t\r\n.!！？。，")
 	text = strings.Join(strings.Fields(text), " ")
 	switch text {
-	case "继续", "继续吧", "继续执行", "继续任务", "可以继续", "可以,继续", "继续上次任务", "重试", "重新执行", "再试一次":
+	case "继续", "继续吧", "继续执行", "继续任务", "可以继续", "可以,继续", "可以，继续", "继续上次任务", "重试", "重新执行", "再试一次":
 		return true
 	case "continue", "continue please", "go ahead", "keep going", "proceed", "retry", "try again", "rerun":
 		return true
@@ -1314,7 +1899,6 @@ func isContinuationOnlyInput(input string) bool {
 		return false
 	}
 }
-
 func formatRetryingCancelledTask(state cancelledTaskState) string {
 	request := truncateCLISummaryValue(state.Request)
 	if request == "" {
@@ -1645,6 +2229,262 @@ func handleWorkflowCommand(ctx context.Context, args []string, agentRuntime *age
 	return true
 }
 
+func handleWorkflowTemplatesCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	if agentRuntime == nil {
+		fmt.Fprintln(os.Stderr, "workflow templates unavailable: runtime not initialized")
+		return true
+	}
+	runner := agentRuntime.WorkflowRunner()
+	if len(fields) < 2 {
+		rows := make([]workflowTemplateDisplayRow, 0)
+		for _, template := range runner.WorkflowTemplates() {
+			rows = append(rows, workflowTemplateDisplayRow{
+				Name:        template.Name,
+				Title:       template.Title,
+				Description: template.Description,
+				Category:    template.Category,
+				Tags:        append([]string(nil), template.Tags...),
+				Stages:      template.Stages,
+				Source:      template.Source,
+				Custom:      template.Custom,
+				Path:        template.Path,
+			})
+		}
+		sort.Slice(rows, func(i, j int) bool {
+			if rows[i].Category != rows[j].Category {
+				return rows[i].Category < rows[j].Category
+			}
+			return rows[i].Name < rows[j].Name
+		})
+		fmt.Print(formatWorkflowTemplatesOutput(rows))
+		return true
+	}
+	template, ok := runner.WorkflowTemplate(fields[1])
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown workflow template: %s\n", fields[1])
+		return true
+	}
+	stageNames := make([]string, 0, len(template.Graph.Stages))
+	for _, stage := range template.Graph.Stages {
+		if strings.TrimSpace(stage.Name) != "" {
+			stageNames = append(stageNames, stage.Name)
+		}
+	}
+	fmt.Print(formatWorkflowTemplateDetailOutput(workflowTemplateDisplayRow{
+		Name:        template.Name,
+		Title:       template.Title,
+		Description: template.Description,
+		Category:    template.Category,
+		Tags:        append([]string(nil), template.Tags...),
+		Stages:      len(template.Graph.Stages),
+		Source:      template.Source,
+		Custom:      template.Custom,
+		Path:        template.Path,
+		StageNames:  stageNames,
+	}))
+	return true
+}
+
+func handleWorkflowSchemasCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	if agentRuntime == nil {
+		fmt.Fprintln(os.Stderr, "workflow schemas unavailable: runtime not initialized")
+		return true
+	}
+	args := append([]string(nil), fields[1:]...)
+	rebuild := false
+	jsonOutput := false
+	exportBundle := false
+	clearAll := false
+	importPath := ""
+	mergeImport := true
+	filtered := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		arg := args[i]
+		switch strings.TrimSpace(arg) {
+		case "--rebuild", "rebuild":
+			rebuild = true
+		case "--json", "json":
+			jsonOutput = true
+		case "--export", "export":
+			exportBundle = true
+			jsonOutput = true
+		case "--import", "import":
+			if i+1 >= len(args) {
+				fmt.Fprintln(os.Stderr, "usage: /workflow-schemas --import <path> [--replace]")
+				return true
+			}
+			i++
+			importPath = strings.TrimSpace(args[i])
+		case "--replace", "replace":
+			mergeImport = false
+		case "--clear", "clear":
+			clearAll = true
+		case "":
+		default:
+			filtered = append(filtered, arg)
+		}
+	}
+	if importPath != "" {
+		imported, err := importWorkflowSchemaBundleFile(agentRuntime, importPath, mergeImport)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "workflow schema import error: %v\n", err)
+			return true
+		}
+		fmt.Println(formatCommandSuccess("workflow schemas imported", strconv.Itoa(len(imported))))
+		return true
+	}
+	if clearAll {
+		if len(filtered) == 0 {
+			fmt.Println(formatCommandSuccess("workflow schemas cleared", strconv.Itoa(agentRuntime.ClearWorkflowSchemas())))
+			return true
+		}
+		name := strings.TrimSpace(filtered[0])
+		if !agentRuntime.ClearWorkflowSchema(name) {
+			fmt.Fprintf(os.Stderr, "unknown workflow schema: %s\n", name)
+			return true
+		}
+		fmt.Println(formatCommandSuccess("workflow schema cleared", name))
+		return true
+	}
+	if rebuild {
+		schemas := agentRuntime.RebuildWorkflowSchemas()
+		if exportBundle {
+			printWorkflowSchemaJSON(newCLIWorkflowSchemaExportBundle(schemas))
+		} else if jsonOutput {
+			printWorkflowSchemaJSON(schemas)
+		} else {
+			fmt.Print(formatWorkflowSchemasOutput(schemas))
+		}
+		return true
+	}
+	if len(filtered) == 0 {
+		schemas := agentRuntime.WorkflowSchemas()
+		if exportBundle {
+			printWorkflowSchemaJSON(newCLIWorkflowSchemaExportBundle(schemas))
+		} else if jsonOutput {
+			printWorkflowSchemaJSON(schemas)
+		} else {
+			fmt.Print(formatWorkflowSchemasOutput(schemas))
+		}
+		return true
+	}
+	name := strings.TrimSpace(filtered[0])
+	schema, ok := agentRuntime.WorkflowSchema(name)
+	if !ok {
+		fmt.Fprintf(os.Stderr, "unknown workflow schema: %s\n", name)
+		return true
+	}
+	if exportBundle {
+		printWorkflowSchemaJSON(newCLIWorkflowSchemaExportBundle([]session.WorkflowSchemaSnapshot{schema}))
+	} else if jsonOutput {
+		printWorkflowSchemaJSON(schema)
+	} else {
+		fmt.Print(formatWorkflowSchemaDetailOutput(schema))
+	}
+	return true
+}
+
+func printWorkflowSchemaJSON(value any) {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "workflow schema json error: %v\n", err)
+		return
+	}
+	fmt.Println(string(data))
+}
+
+type cliWorkflowSchemaBundle struct {
+	Kind       string                           `json:"kind,omitempty"`
+	Version    int                              `json:"version"`
+	MinVersion int                              `json:"min_supported_version,omitempty"`
+	Merge      *bool                            `json:"merge,omitempty"`
+	Schema     *session.WorkflowSchemaSnapshot  `json:"schema,omitempty"`
+	Schemas    []session.WorkflowSchemaSnapshot `json:"schemas,omitempty"`
+}
+
+func newCLIWorkflowSchemaExportBundle(schemas []session.WorkflowSchemaSnapshot) cliWorkflowSchemaBundle {
+	return cliWorkflowSchemaBundle{
+		Kind:       cliWorkflowSchemaBundleKind,
+		Version:    cliWorkflowSchemaBundleVersion,
+		MinVersion: cliWorkflowSchemaBundleMinSupportedVersion,
+		Schemas:    schemas,
+	}
+}
+
+func importWorkflowSchemaBundleFile(agentRuntime *agent.Runtime, path string, merge bool) ([]session.WorkflowSchemaSnapshot, error) {
+	if agentRuntime == nil {
+		return nil, fmt.Errorf("runtime not initialized")
+	}
+	path = strings.TrimSpace(path)
+	if path == "" {
+		return nil, fmt.Errorf("import path is required")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	schemas, effectiveMerge, err := decodeCLIWorkflowSchemaImport(data, merge)
+	if err != nil {
+		return nil, err
+	}
+	return agentRuntime.ImportWorkflowSchemas(schemas, effectiveMerge)
+}
+
+func decodeCLIWorkflowSchemaImport(data []byte, merge bool) ([]session.WorkflowSchemaSnapshot, bool, error) {
+	data = []byte(strings.TrimSpace(string(data)))
+	if len(data) == 0 {
+		return nil, merge, fmt.Errorf("workflow schema import file is empty")
+	}
+	var bundle cliWorkflowSchemaBundle
+	if err := json.Unmarshal(data, &bundle); err == nil && (bundle.Schema != nil || len(bundle.Schemas) > 0 || strings.TrimSpace(bundle.Kind) != "" || bundle.Version != 0 || bundle.Merge != nil) {
+		if err := validateCLIWorkflowSchemaBundle(bundle.Kind, bundle.Version, bundle.MinVersion); err != nil {
+			return nil, merge, err
+		}
+		if bundle.Merge != nil {
+			merge = *bundle.Merge
+		}
+		schemas := append([]session.WorkflowSchemaSnapshot(nil), bundle.Schemas...)
+		if bundle.Schema != nil {
+			schemas = append(schemas, *bundle.Schema)
+		}
+		if len(schemas) == 0 {
+			return nil, merge, fmt.Errorf("workflow schema import requires schema or schemas")
+		}
+		return schemas, merge, nil
+	}
+	var schemas []session.WorkflowSchemaSnapshot
+	if err := json.Unmarshal(data, &schemas); err == nil && len(schemas) > 0 {
+		return schemas, merge, nil
+	}
+	var schema session.WorkflowSchemaSnapshot
+	if err := json.Unmarshal(data, &schema); err != nil {
+		return nil, merge, fmt.Errorf("invalid workflow schema import json")
+	}
+	if strings.TrimSpace(schema.Workflow) == "" {
+		return nil, merge, fmt.Errorf("workflow schema import requires workflow")
+	}
+	return []session.WorkflowSchemaSnapshot{schema}, merge, nil
+}
+
+func validateCLIWorkflowSchemaBundle(kind string, version, minVersion int) error {
+	if strings.TrimSpace(kind) != "" && strings.TrimSpace(kind) != cliWorkflowSchemaBundleKind {
+		return fmt.Errorf("unsupported workflow schema bundle kind %q", kind)
+	}
+	if version == 0 {
+		version = 1
+	}
+	if version < cliWorkflowSchemaBundleMinSupportedVersion {
+		return fmt.Errorf("workflow schema bundle version %d is no longer supported", version)
+	}
+	if version > cliWorkflowSchemaBundleVersion {
+		return fmt.Errorf("workflow schema bundle version %d is newer than supported version %d", version, cliWorkflowSchemaBundleVersion)
+	}
+	if minVersion > cliWorkflowSchemaBundleVersion {
+		return fmt.Errorf("workflow schema bundle requires reader version %d, supported version is %d", minVersion, cliWorkflowSchemaBundleVersion)
+	}
+	return nil
+}
+
 func workflowUsage(agentRuntime *agent.Runtime) string {
 	var b strings.Builder
 	b.WriteString("usage: /workflow <plan-fix-audit|skill-chain|custom-name> [--approve] <request>")
@@ -1653,7 +2493,7 @@ func workflowUsage(agentRuntime *agent.Runtime) string {
 		b.WriteString("\navailable workflows: ")
 		b.WriteString(strings.Join(names, ", "))
 	}
-	b.WriteString("\ncustom workflows load from workflows/<name>/workflow.yaml; create one with /new-workflow <name>")
+	b.WriteString("\ncustom workflows load from workflows/<name>/workflow.yaml; create one with /new-workflow <name> [--template <template>]")
 	return b.String()
 }
 
@@ -1701,6 +2541,163 @@ func availableWorkflowNamesFromRoot(runtimeHome string) []string {
 	}
 	sort.Strings(custom)
 	return append(names, custom...)
+}
+
+func loadCLIKitSummaries(runtimeHome string) ([]kitDisplayRow, []string) {
+	root := filepath.Join(strings.TrimSpace(runtimeHome), "kits")
+	entries, err := os.ReadDir(root)
+	if err != nil {
+		return nil, nil
+	}
+	rows := make([]kitDisplayRow, 0, len(entries))
+	warnings := make([]string, 0)
+	for _, entry := range entries {
+		if !entry.IsDir() && !isCLIYAMLFile(entry.Name()) {
+			continue
+		}
+		name := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+		if entry.IsDir() {
+			name = entry.Name()
+		}
+		doc, ok, err := loadCLIKitDocument(runtimeHome, name)
+		if err != nil {
+			warnings = append(warnings, err.Error())
+			continue
+		}
+		if !ok {
+			continue
+		}
+		rows = append(rows, kitDisplayRow{
+			Name:        doc.Name,
+			Title:       doc.Title,
+			Description: doc.Description,
+			Category:    doc.Category,
+			Tags:        append([]string(nil), doc.Tags...),
+			Path:        doc.Path,
+			Providers:   len(doc.Providers),
+			Agents:      len(doc.Agents),
+			Skills:      len(doc.Skills),
+			Tools:       len(doc.Tools),
+			Workflows:   len(doc.Workflows) + len(doc.WorkflowTemplates),
+			Warnings:    append([]string(nil), doc.Warnings...),
+		})
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		if rows[i].Category != rows[j].Category {
+			return rows[i].Category < rows[j].Category
+		}
+		return rows[i].Name < rows[j].Name
+	})
+	return rows, warnings
+}
+
+func loadCLIKitDocument(runtimeHome, name string) (cliKitDocument, bool, error) {
+	runtimeHome = strings.TrimSpace(runtimeHome)
+	if runtimeHome == "" {
+		return cliKitDocument{}, false, fmt.Errorf("runtime home is not configured")
+	}
+	normalized := normalizeCLIResourceName(name)
+	if normalized == "" {
+		return cliKitDocument{}, false, fmt.Errorf("kit name is required")
+	}
+	root := filepath.Join(runtimeHome, "kits")
+	path := filepath.Clean(filepath.Join(root, normalized, "kit.yaml"))
+	if !referenceWithinBase(root, path) {
+		return cliKitDocument{}, false, fmt.Errorf("kit path escapes runtime kit directory")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		legacyPath := filepath.Clean(filepath.Join(root, normalized+".yaml"))
+		if !referenceWithinBase(root, legacyPath) {
+			return cliKitDocument{}, false, fmt.Errorf("kit path escapes runtime kit directory")
+		}
+		data, err = os.ReadFile(legacyPath)
+		if err != nil {
+			if os.IsNotExist(err) {
+				return cliKitDocument{}, false, nil
+			}
+			return cliKitDocument{}, false, fmt.Errorf("read kit %s: %w", normalized, err)
+		}
+		path = legacyPath
+	}
+	var doc cliKitDocument
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return cliKitDocument{}, false, fmt.Errorf("parse kit %s: %w", normalized, err)
+	}
+	doc = normalizeCLIKitDocument(doc, normalized)
+	doc.Path = path
+	doc.Warnings = append(doc.Warnings, validateCLIKitDocument(doc)...)
+	return doc, true, nil
+}
+
+func normalizeCLIKitDocument(doc cliKitDocument, fallbackName string) cliKitDocument {
+	doc.Name = normalizeCLIResourceName(firstNonEmptyString(doc.Name, fallbackName))
+	if strings.TrimSpace(doc.Kind) == "" {
+		doc.Kind = "goflow.kit"
+	}
+	if doc.Version == 0 {
+		doc.Version = 1
+	}
+	doc.Tags = normalizeCLIStringList(doc.Tags)
+	doc.Providers = normalizeCLIStringList(doc.Providers)
+	doc.Agents = normalizeCLIStringList(doc.Agents)
+	doc.Skills = normalizeCLIStringList(doc.Skills)
+	doc.Tools = normalizeCLIStringList(doc.Tools)
+	doc.Workflows = normalizeCLIStringList(doc.Workflows)
+	doc.WorkflowTemplates = normalizeCLIStringList(doc.WorkflowTemplates)
+	doc.TeamTemplates = normalizeCLIStringList(doc.TeamTemplates)
+	doc.PolicyRules = normalizeCLIStringList(doc.PolicyRules)
+	doc.RequiredEnv = normalizeCLIStringList(doc.RequiredEnv)
+	return doc
+}
+
+func validateCLIKitDocument(doc cliKitDocument) []string {
+	warnings := make([]string, 0)
+	if doc.Kind != "goflow.kit" {
+		warnings = append(warnings, fmt.Sprintf("unsupported kind %q; expected goflow.kit", doc.Kind))
+	}
+	if doc.Version > 1 {
+		warnings = append(warnings, fmt.Sprintf("kit version %d is newer than this CLI supports", doc.Version))
+	}
+	if doc.Name == "" {
+		warnings = append(warnings, "kit name is required")
+	}
+	if len(doc.Providers)+len(doc.Agents)+len(doc.Skills)+len(doc.Tools)+len(doc.Workflows)+len(doc.WorkflowTemplates)+len(doc.TeamTemplates)+len(doc.PolicyRules) == 0 {
+		warnings = append(warnings, "kit has no referenced resources")
+	}
+	for _, envName := range doc.RequiredEnv {
+		if strings.TrimSpace(os.Getenv(envName)) == "" {
+			warnings = append(warnings, "required environment variable "+envName+" is not set")
+		}
+	}
+	return warnings
+}
+
+func normalizeCLIResourceName(name string) string {
+	return strings.Trim(strings.ToLower(strings.ReplaceAll(strings.TrimSpace(name), " ", "-")), "-")
+}
+
+func normalizeCLIStringList(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{})
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func isCLIYAMLFile(name string) bool {
+	ext := strings.ToLower(filepath.Ext(name))
+	return ext == ".yaml" || ext == ".yml"
 }
 
 const (
@@ -1769,6 +2766,10 @@ var knownCLICommands = []string{
 	"/skills",
 	"/tools",
 	"/agents",
+	"/kits",
+	"/config-diagnostics",
+	"/team-state",
+	"/teams",
 	"/status",
 	"/session",
 	"/workspace",
@@ -1776,6 +2777,7 @@ var knownCLICommands = []string{
 	"/mode",
 	"/workflow",
 	"/trace",
+	"/cost",
 	"/approve",
 	"/deny",
 	"/reload",
@@ -1784,7 +2786,18 @@ var knownCLICommands = []string{
 	"/new-skill",
 	"/new-tool",
 	"/new-agent",
+	"/new-kit",
+	"/new-policy-rule",
+	"/new-provider",
+	"/new-team",
 	"/new-workflow",
+	"/new-workflow-template",
+	"/expression-helpers",
+	"/policy-rules",
+	"/workflow-expression-functions",
+	"/workflow-node-metadata",
+	"/workflow-schemas",
+	"/workflow-templates",
 }
 
 func suggestCommand(command string) string {
@@ -1889,13 +2902,23 @@ type startupDisplayRow struct {
 }
 
 type toolDisplayRow struct {
-	Name               string
-	Description        string
-	Server             string
-	Kind               string
-	Health             string
-	InputSchemaSummary string
-	Diagnostics        []string
+	Name                   string
+	Description            string
+	Server                 string
+	Kind                   string
+	Health                 string
+	InputSchemaSummary     string
+	Diagnostics            []string
+	RiskLevel              string
+	IsolationLevel         string
+	Sandboxed              bool
+	RequiresSandbox        bool
+	SandboxFeatures        []string
+	MissingSandboxFeatures []string
+	WindowsIsolation       *schema.WindowsIsolationProfile
+	EnvAllowlistSet        bool
+	EnvAllowlist           []string
+	SensitiveEnv           []string
 }
 
 type skillDisplayRow struct {
@@ -1906,6 +2929,92 @@ type skillDisplayRow struct {
 	OutputKind     string
 	Keywords       []string
 	NextSkills     []string
+}
+
+type policyRuleDisplayRow struct {
+	Name        string
+	Label       string
+	Description string
+	Source      string
+	Operator    string
+	Custom      bool
+	Params      []agent.WorkflowNodeFieldOption
+}
+
+type workflowTemplateDisplayRow struct {
+	Name        string
+	Title       string
+	Description string
+	Category    string
+	Tags        []string
+	Stages      int
+	Source      string
+	Custom      bool
+	Path        string
+	StageNames  []string
+}
+
+type workflowNodeMetadataSummary struct {
+	Total      int
+	Categories map[string]int
+	Controls   int
+	VisualOnly int
+	Custom     int
+}
+
+type workflowSchemaDisplayRow struct {
+	Workflow string
+	Updated  string
+	Runs     int
+	Stages   int
+	Outputs  int
+}
+
+type kitDisplayRow struct {
+	Name        string
+	Title       string
+	Description string
+	Category    string
+	Tags        []string
+	Path        string
+	Agents      int
+	Providers   int
+	Skills      int
+	Tools       int
+	Workflows   int
+	Warnings    []string
+}
+
+type cliKitDocument struct {
+	Kind              string            `yaml:"kind"`
+	Version           int               `yaml:"version"`
+	MinVersion        int               `yaml:"min_supported_version"`
+	Name              string            `yaml:"name"`
+	Title             string            `yaml:"title"`
+	Description       string            `yaml:"description"`
+	Category          string            `yaml:"category"`
+	Tags              []string          `yaml:"tags"`
+	Providers         []string          `yaml:"providers"`
+	Agents            []string          `yaml:"agents"`
+	Skills            []string          `yaml:"skills"`
+	Tools             []string          `yaml:"tools"`
+	Workflows         []string          `yaml:"workflows"`
+	WorkflowTemplates []string          `yaml:"workflow_templates"`
+	TeamTemplates     []string          `yaml:"team_templates"`
+	PolicyRules       []string          `yaml:"policy_rules"`
+	RequiredEnv       []string          `yaml:"required_env"`
+	Examples          []cliKitExample   `yaml:"examples"`
+	Metadata          map[string]string `yaml:"metadata"`
+	Path              string            `yaml:"-"`
+	Warnings          []string          `yaml:"-"`
+}
+
+type cliKitExample struct {
+	Title       string `yaml:"title"`
+	Description string `yaml:"description"`
+	Request     string `yaml:"request"`
+	Workflow    string `yaml:"workflow"`
+	Agent       string `yaml:"agent"`
 }
 
 type workflowDisplayRow struct {
@@ -1956,13 +3065,23 @@ func formatHelpOutput() string {
 		{Command: "/skills", Description: "List loaded skills and activation hints"},
 		{Command: "/tools", Description: "List MCP tools with server, health, and schema"},
 		{Command: "/agents", Description: "List configured agents and tool policies"},
+		{Command: "/kits [name] [--export] | /kits --import <path>", Description: "List, inspect, export, or import vertical Agent kits"},
+		{Command: "/policy-rules [name]", Description: "List workflow policy rules or show one rule"},
+		{Command: "/teams [name]", Description: "List reusable multi-agent team templates or show one template"},
+		{Command: "/workflow-templates [name]", Description: "List workflow templates or show one template"},
+		{Command: "/workflow-node-metadata [type]", Description: "List workflow node editor metadata or show one node type"},
+		{Command: "/expression-helpers [name]", Description: "List workflow expression helpers or show one helper"},
+		{Command: "/workflow-schemas [name] [--rebuild|--json|--export|--import <path>|--clear]", Description: "List, inspect, import, export, rebuild, or clear observed workflow output schemas"},
+		{Command: "/team-state [run-id] [team]", Description: "Show live collaboration state for a workflow team"},
+		{Command: "/cost", Description: "Show prompt/token cost diagnostics and tuning hints"},
+		{Command: "/config-diagnostics [--json]", Description: "Validate saved config modules and show setup/safety diagnostics"},
 		{Command: "/status", Description: "Show runtime, routing, workflow, and MCP state"},
 		{Command: "/session", Description: "Show persisted session memory"},
 	})
 	writeCommandGroup(&b, "Control", []commandHelpRow{
 		{Command: "/use <agent>", Description: "Switch active agent"},
 		{Command: "/mode <chat|plan|audit|fix>", Description: "Switch session mode"},
-		{Command: "/workspace [status|confirm|clear|use <path>]", Description: "Show or confirm the active workspace"},
+		{Command: "/workspace [status|confirm|clear|use <path>|choose]", Description: "Show, confirm, switch, or choose the active workspace"},
 		{Command: "/workflow plan-fix-audit [--approve] <request>", Description: "Run planner -> fixer -> auditor"},
 		{Command: "/workflow skill-chain <request>", Description: "Run matched skill and declared next_skills"},
 		{Command: "/workflow <custom-name> <request>", Description: "Run workflows/<name>/workflow.yaml"},
@@ -1979,7 +3098,12 @@ func formatHelpOutput() string {
 		{Command: "/new-skill <template> <name>", Description: "Create skills/<name>/SKILL.md from a scaffold"},
 		{Command: "/new-tool python <name>", Description: "Create a Python MCP server scaffold"},
 		{Command: "/new-agent <name>", Description: "Create an agent config snippet"},
-		{Command: "/new-workflow <name>", Description: "Create a workflow blueprint"},
+		{Command: "/new-policy-rule <preset> <name>", Description: "Create a workflow policy rule"},
+		{Command: "/new-provider <name>", Description: "Create a provider config snippet"},
+		{Command: "/new-team <preset> <name>", Description: "Create a team template resource"},
+		{Command: "/new-workflow <name> [--template <template>]", Description: "Create a workflow blueprint"},
+		{Command: "/new-workflow-template <source> <name>", Description: "Fork a workflow template resource"},
+		{Command: "/new-kit <preset> <name>", Description: "Create a vertical kit manifest"},
 		{Command: "exit", Description: "Quit the CLI"},
 	})
 	return b.String()
@@ -2033,6 +3157,1030 @@ func formatAgentsOutput(rows []agentDisplayRow) string {
 			if strings.TrimSpace(row.Description) != "" {
 				fmt.Fprintf(&b, "    %s\n", row.Description)
 			}
+		}
+	}
+	return b.String()
+}
+
+func formatTeamTemplatesOutput(rows []agent.TeamTemplateSummary) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Team Templates"))
+	b.WriteString("\n")
+	if len(rows) == 0 {
+		b.WriteString(styleMuted("  none configured\n"))
+		return b.String()
+	}
+	categories := make(map[string]int)
+	for _, row := range rows {
+		categories[fallbackDisplayText(row.Category, "uncategorized")]++
+	}
+	fmt.Fprintf(&b, "%s total=%d  categories=%s\n", styleMuted("summary"), len(rows), formatCountMap(categories))
+	for _, row := range rows {
+		source := fallbackDisplayText(row.Source, "built_in")
+		fmt.Fprintf(&b, "\n%s %s %s %s\n", styleStatus(row.Name, "ready"), styleMuted(fmt.Sprintf("roles=%d", row.Roles)), styleMuted(fallbackDisplayText(row.Category, "-")), styleMuted(source))
+		if strings.TrimSpace(row.Title) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("title"), row.Title)
+		}
+		if strings.TrimSpace(row.Description) != "" {
+			fmt.Fprintf(&b, "  %s\n", row.Description)
+		}
+		if strings.TrimSpace(row.RecommendedWorkflow) != "" || strings.TrimSpace(row.RecommendedEntryAgent) != "" {
+			fmt.Fprintf(&b, "  %s %s  %s %s\n", styleLabel("workflow"), fallbackDisplayText(row.RecommendedWorkflow, "-"), styleLabel("entry"), fallbackDisplayText(row.RecommendedEntryAgent, "-"))
+		}
+		if strings.TrimSpace(row.Path) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("path"), row.Path)
+		}
+		if len(row.Tags) > 0 {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("tags"), strings.Join(row.Tags, ", "))
+		}
+	}
+	return b.String()
+}
+
+func formatTeamTemplateDetailOutput(template agent.TeamTemplate) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Team Template"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%s %s\n", styleLabel("name"), template.Name)
+	fmt.Fprintf(&b, "%s %s\n", styleLabel("title"), fallbackDisplayText(template.Title, "-"))
+	fmt.Fprintf(&b, "%s %s", styleLabel("source"), fallbackDisplayText(template.Source, "built_in"))
+	if template.Version > 0 {
+		fmt.Fprintf(&b, "  %s v%d", styleLabel("version"), template.Version)
+	}
+	b.WriteString("\n")
+	if strings.TrimSpace(template.Path) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("path"), template.Path)
+	}
+	if strings.TrimSpace(template.Description) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("description"), template.Description)
+	}
+	fmt.Fprintf(&b, "%s %s  %s %s  %s %s\n",
+		styleLabel("category"), fallbackDisplayText(template.Category, "-"),
+		styleLabel("workflow"), fallbackDisplayText(template.RecommendedWorkflow, "-"),
+		styleLabel("entry"), fallbackDisplayText(template.RecommendedEntryAgent, "-"))
+	if len(template.Tags) > 0 {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("tags"), strings.Join(template.Tags, ", "))
+	}
+	if len(template.RoleTemplates) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("roles"))
+		b.WriteString("\n")
+		for _, role := range template.RoleTemplates {
+			fmt.Fprintf(&b, "  %s  %s=%s  %s=%s\n", styleStatus(role.Name, "ready"), styleLabel("agent"), fallbackDisplayText(role.Agent, "-"), styleLabel("skill"), fallbackDisplayText(role.Skill, "-"))
+			if len(role.Responsibilities) > 0 {
+				fmt.Fprintf(&b, "    %s %s\n", styleLabel("does"), strings.Join(role.Responsibilities, "; "))
+			}
+			if len(role.Consumes) > 0 || len(role.Produces) > 0 {
+				fmt.Fprintf(&b, "    %s %s  %s %s\n", styleLabel("consumes"), fallbackDisplayText(strings.Join(role.Consumes, ", "), "-"), styleLabel("produces"), fallbackDisplayText(strings.Join(role.Produces, ", "), "-"))
+			}
+		}
+	}
+	if len(template.Handoffs) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("handoffs"))
+		b.WriteString("\n")
+		for _, handoff := range template.Handoffs {
+			fmt.Fprintf(&b, "  %s -> %s  %s=%s\n", handoff.From, handoff.To, styleLabel("kind"), fallbackDisplayText(handoff.Kind, "-"))
+			if strings.TrimSpace(handoff.Subject) != "" {
+				fmt.Fprintf(&b, "    %s\n", handoff.Subject)
+			}
+		}
+	}
+	if len(template.BlackboardTemplates) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("blackboard"))
+		b.WriteString("\n")
+		for _, item := range template.BlackboardTemplates {
+			fmt.Fprintf(&b, "  %s  %s=%s  %s=%s\n", item.Kind, styleLabel("owner"), fallbackDisplayText(item.OwnerRole, "-"), styleLabel("status"), fallbackDisplayText(item.Status, "-"))
+		}
+	}
+	if len(template.OutputContract) > 0 {
+		fmt.Fprintf(&b, "\n%s %s\n", styleLabel("outputs"), strings.Join(template.OutputContract, ", "))
+	}
+	return b.String()
+}
+
+func formatPolicyRulesOutput(rows []policyRuleDisplayRow) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Workflow Policy Rules"))
+	b.WriteString("\n")
+	if len(rows) == 0 {
+		b.WriteString(styleMuted("  none configured\n"))
+		return b.String()
+	}
+	sources := make(map[string]int)
+	operators := make(map[string]int)
+	for _, row := range rows {
+		sources[fallbackDisplayText(row.Source, "built_in")]++
+		operators[fallbackDisplayText(row.Operator, "expression")]++
+	}
+	fmt.Fprintf(&b, "%s total=%d  sources=%s  operators=%s\n", styleMuted("summary"), len(rows), formatCountMap(sources), formatCountMap(operators))
+	for _, row := range rows {
+		source := fallbackDisplayText(row.Source, "built_in")
+		operator := fallbackDisplayText(row.Operator, "expression")
+		fmt.Fprintf(&b, "\n%s %s %s\n", styleStatus(row.Name, "ready"), styleMuted(operator), styleMuted(source))
+		if strings.TrimSpace(row.Label) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("label"), row.Label)
+		}
+		if strings.TrimSpace(row.Description) != "" {
+			fmt.Fprintf(&b, "  %s\n", row.Description)
+		}
+		if len(row.Params) > 0 {
+			names := make([]string, 0, len(row.Params))
+			for _, param := range row.Params {
+				if strings.TrimSpace(param.Name) != "" {
+					names = append(names, param.Name)
+				}
+			}
+			if len(names) > 0 {
+				fmt.Fprintf(&b, "  %s %s\n", styleLabel("params"), strings.Join(names, ", "))
+			}
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleMuted("custom policy rules load from policies/workflow_rules/*.yaml; create one with /new-policy-rule <preset> <name>\n"))
+	return b.String()
+}
+
+func formatPolicyRuleDetailOutput(row policyRuleDisplayRow) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Workflow Policy Rule"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%s %s\n", styleLabel("name"), row.Name)
+	fmt.Fprintf(&b, "%s %s  %s %s  %s %s\n",
+		styleLabel("operator"), fallbackDisplayText(row.Operator, "expression"),
+		styleLabel("source"), fallbackDisplayText(row.Source, "built_in"),
+		styleLabel("custom"), strconv.FormatBool(row.Custom))
+	if strings.TrimSpace(row.Label) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("label"), row.Label)
+	}
+	if strings.TrimSpace(row.Description) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("description"), row.Description)
+	}
+	if len(row.Params) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("params"))
+		b.WriteString("\n")
+		for _, param := range row.Params {
+			fmt.Fprintf(&b, "  %s  %s=%s", fallbackDisplayText(param.Name, "-"), styleLabel("type"), fallbackDisplayText(param.Type, "-"))
+			if param.Required {
+				fmt.Fprintf(&b, "  %s", styleStatus("required", "approval"))
+			}
+			b.WriteString("\n")
+			if strings.TrimSpace(param.Description) != "" {
+				fmt.Fprintf(&b, "    %s\n", param.Description)
+			}
+			if len(param.Options) > 0 {
+				fmt.Fprintf(&b, "    %s %s\n", styleLabel("options"), strings.Join(param.Options, ", "))
+			}
+		}
+	}
+	return b.String()
+}
+
+func formatWorkflowTemplatesOutput(rows []workflowTemplateDisplayRow) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Workflow Templates"))
+	b.WriteString("\n")
+	if len(rows) == 0 {
+		b.WriteString(styleMuted("  none configured\n"))
+		return b.String()
+	}
+	categories := make(map[string]int)
+	sources := make(map[string]int)
+	for _, row := range rows {
+		categories[fallbackDisplayText(row.Category, "uncategorized")]++
+		sources[fallbackDisplayText(row.Source, "built_in")]++
+	}
+	fmt.Fprintf(&b, "%s total=%d  categories=%s  sources=%s\n", styleMuted("summary"), len(rows), formatCountMap(categories), formatCountMap(sources))
+	for _, row := range rows {
+		fmt.Fprintf(&b, "\n%s %s %s %s\n", styleStatus(row.Name, "ready"), styleMuted(fmt.Sprintf("stages=%d", row.Stages)), styleMuted(fallbackDisplayText(row.Category, "-")), styleMuted(fallbackDisplayText(row.Source, "built_in")))
+		if strings.TrimSpace(row.Title) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("title"), row.Title)
+		}
+		if strings.TrimSpace(row.Description) != "" {
+			fmt.Fprintf(&b, "  %s\n", row.Description)
+		}
+		if len(row.Tags) > 0 {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("tags"), strings.Join(row.Tags, ", "))
+		}
+		if strings.TrimSpace(row.Path) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("path"), row.Path)
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleMuted("custom workflow templates load from templates/workflows/*.yaml; fork one with /new-workflow-template <source> <name>\n"))
+	return b.String()
+}
+
+func formatWorkflowTemplateDetailOutput(row workflowTemplateDisplayRow) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Workflow Template"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%s %s\n", styleLabel("name"), row.Name)
+	fmt.Fprintf(&b, "%s %s  %s %s  %s %s\n",
+		styleLabel("category"), fallbackDisplayText(row.Category, "-"),
+		styleLabel("source"), fallbackDisplayText(row.Source, "built_in"),
+		styleLabel("stages"), strconv.Itoa(row.Stages))
+	if strings.TrimSpace(row.Title) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("title"), row.Title)
+	}
+	if strings.TrimSpace(row.Description) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("description"), row.Description)
+	}
+	if len(row.Tags) > 0 {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("tags"), strings.Join(row.Tags, ", "))
+	}
+	if strings.TrimSpace(row.Path) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("path"), row.Path)
+	}
+	if len(row.StageNames) > 0 {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("stage_order"), strings.Join(row.StageNames, " -> "))
+	}
+	return b.String()
+}
+
+func formatWorkflowNodeMetadataOutput(nodes []agent.WorkflowNodeTypeOption) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Workflow Node Metadata"))
+	b.WriteString("\n")
+	if len(nodes) == 0 {
+		b.WriteString(styleMuted("  no workflow node metadata available\n"))
+		return b.String()
+	}
+	summary := summarizeWorkflowNodeMetadata(nodes)
+	fmt.Fprintf(&b, "%s total=%d  categories=%s  control=%d  visual=%d",
+		styleMuted("summary"), summary.Total, formatCountMap(summary.Categories), summary.Controls, summary.VisualOnly)
+	if summary.Custom > 0 {
+		fmt.Fprintf(&b, "  custom=%d", summary.Custom)
+	}
+	b.WriteString("\n")
+	for _, node := range nodes {
+		flags := make([]string, 0, 3)
+		if node.Control {
+			flags = append(flags, "control")
+		}
+		if node.VisualOnly {
+			flags = append(flags, "visual")
+		}
+		if node.Custom {
+			flags = append(flags, "custom")
+		}
+		name := styleStatus(node.Type, "ready")
+		if node.VisualOnly {
+			name = styleMuted(node.Type)
+		}
+		fmt.Fprintf(&b, "\n%s %s %s\n", name, styleMuted(fallbackDisplayText(node.Category, "-")), styleMuted(strings.Join(flags, ",")))
+		if strings.TrimSpace(node.Label) != "" && !strings.EqualFold(node.Label, node.Type) {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("label"), node.Label)
+		}
+		if strings.TrimSpace(node.Description) != "" {
+			fmt.Fprintf(&b, "  %s\n", node.Description)
+		}
+		if len(node.Fields) > 0 || len(node.Outputs) > 0 {
+			fmt.Fprintf(&b, "  %s fields=%d outputs=%d examples=%d\n", styleLabel("schema"), len(node.Fields), len(node.Outputs), len(node.Examples))
+		}
+		if strings.TrimSpace(node.Path) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("path"), node.Path)
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleMuted("custom metadata loads from metadata/workflow_nodes/*.yaml; details: /workflow-node-metadata <type>\n"))
+	return b.String()
+}
+
+func summarizeWorkflowNodeMetadata(nodes []agent.WorkflowNodeTypeOption) workflowNodeMetadataSummary {
+	summary := workflowNodeMetadataSummary{Total: len(nodes), Categories: make(map[string]int)}
+	for _, node := range nodes {
+		summary.Categories[fallbackDisplayText(node.Category, "uncategorized")]++
+		if node.Control {
+			summary.Controls++
+		}
+		if node.VisualOnly {
+			summary.VisualOnly++
+		}
+		if node.Custom {
+			summary.Custom++
+		}
+	}
+	return summary
+}
+
+func formatWorkflowNodeMetadataDetailOutput(node agent.WorkflowNodeTypeOption) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Workflow Node Metadata"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%s %s\n", styleLabel("type"), node.Type)
+	fmt.Fprintf(&b, "%s %s  %s %s", styleLabel("label"), fallbackDisplayText(node.Label, "-"), styleLabel("category"), fallbackDisplayText(node.Category, "-"))
+	if node.Control {
+		fmt.Fprintf(&b, "  %s", styleStatus("control", "approval"))
+	}
+	if node.VisualOnly {
+		fmt.Fprintf(&b, "  %s", styleMuted("visual"))
+	}
+	if node.Custom {
+		fmt.Fprintf(&b, "  %s", styleStatus("custom", "ready"))
+	}
+	b.WriteString("\n")
+	if strings.TrimSpace(node.Description) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("description"), node.Description)
+	}
+	if strings.TrimSpace(node.Path) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("path"), node.Path)
+	}
+	writeWorkflowNodeFields(&b, "fields", node.Fields)
+	writeWorkflowNodeOutputs(&b, node.Outputs)
+	if len(node.Tags) > 0 {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("tags"), strings.Join(node.Tags, ", "))
+	}
+	for _, hint := range node.Hints {
+		if strings.TrimSpace(hint) != "" {
+			fmt.Fprintf(&b, "%s %s\n", styleLabel("hint"), hint)
+		}
+	}
+	for _, warning := range node.Warnings {
+		if strings.TrimSpace(warning) != "" {
+			fmt.Fprintf(&b, "%s %s\n", styleStatus("warning", "approval"), warning)
+		}
+	}
+	if len(node.Examples) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("examples"))
+		b.WriteString("\n")
+		for _, example := range node.Examples {
+			fmt.Fprintf(&b, "  %s\n", fallbackDisplayText(example.Title, "Example"))
+			if strings.TrimSpace(example.Description) != "" {
+				fmt.Fprintf(&b, "    %s\n", example.Description)
+			}
+		}
+	}
+	return b.String()
+}
+
+func writeWorkflowNodeFields(b *strings.Builder, title string, fields []agent.WorkflowNodeFieldOption) {
+	if b == nil || len(fields) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	b.WriteString(styleLabel(title))
+	b.WriteString("\n")
+	for _, field := range fields {
+		fmt.Fprintf(b, "  %s  %s=%s", fallbackDisplayText(field.Name, "-"), styleLabel("type"), fallbackDisplayText(field.Type, "-"))
+		if field.Required {
+			fmt.Fprintf(b, "  %s", styleStatus("required", "approval"))
+		}
+		b.WriteString("\n")
+		if strings.TrimSpace(field.Description) != "" {
+			fmt.Fprintf(b, "    %s\n", field.Description)
+		}
+		if len(field.Options) > 0 {
+			fmt.Fprintf(b, "    %s %s\n", styleLabel("options"), strings.Join(field.Options, ", "))
+		}
+	}
+}
+
+func writeWorkflowNodeOutputs(b *strings.Builder, outputs []agent.WorkflowNodeVariableOption) {
+	if b == nil || len(outputs) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	b.WriteString(styleLabel("outputs"))
+	b.WriteString("\n")
+	for _, output := range outputs {
+		fmt.Fprintf(b, "  %s", fallbackDisplayText(output.Name, "-"))
+		if strings.TrimSpace(output.Description) != "" {
+			fmt.Fprintf(b, "  %s", output.Description)
+		}
+		b.WriteString("\n")
+	}
+}
+
+func formatExpressionHelpersOutput(helpers []agent.WorkflowExpressionFunctionOption, mode, nodeType string) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Expression Helpers"))
+	b.WriteString("\n")
+	if len(helpers) == 0 {
+		b.WriteString(styleMuted("  no expression helpers match the filters\n"))
+		return b.String()
+	}
+	categories := make(map[string]int)
+	custom := 0
+	for _, helper := range helpers {
+		categories[fallbackDisplayText(helper.Category, "uncategorized")]++
+		if helper.Custom {
+			custom++
+		}
+	}
+	fmt.Fprintf(&b, "%s total=%d  categories=%s", styleMuted("summary"), len(helpers), formatCountMap(categories))
+	if custom > 0 {
+		fmt.Fprintf(&b, "  custom=%d", custom)
+	}
+	if strings.TrimSpace(mode) != "" || strings.TrimSpace(nodeType) != "" {
+		fmt.Fprintf(&b, "  %s mode=%s node_type=%s", styleLabel("filter"), fallbackDisplayText(mode, "-"), fallbackDisplayText(nodeType, "-"))
+	}
+	b.WriteString("\n")
+	for _, helper := range helpers {
+		source := fallbackDisplayText(helper.Source, "built_in")
+		fmt.Fprintf(&b, "\n%s %s %s\n", styleStatus(helper.Name, "ready"), styleMuted(fallbackDisplayText(helper.Category, "-")), styleMuted(source))
+		if strings.TrimSpace(helper.Signature) != "" {
+			fmt.Fprintf(&b, "  %s %s  %s %s\n", styleLabel("signature"), helper.Signature, styleLabel("returns"), fallbackDisplayText(helper.ReturnType, "-"))
+		}
+		if strings.TrimSpace(helper.Description) != "" {
+			fmt.Fprintf(&b, "  %s\n", helper.Description)
+		}
+		if len(helper.Modes) > 0 || len(helper.NodeTypes) > 0 {
+			fmt.Fprintf(&b, "  %s %s  %s %s\n", styleLabel("modes"), strings.Join(helper.Modes, ", "), styleLabel("nodes"), strings.Join(limitStrings(helper.NodeTypes, 6), ", "))
+		}
+		if strings.TrimSpace(helper.Path) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("path"), helper.Path)
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleMuted("custom helper metadata loads from metadata/expression_helpers/*.yaml; details: /expression-helpers <name>\n"))
+	return b.String()
+}
+
+func formatExpressionHelperDetailOutput(helper agent.WorkflowExpressionFunctionOption) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Expression Helper"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%s %s\n", styleLabel("name"), helper.Name)
+	fmt.Fprintf(&b, "%s %s  %s %s  %s %s\n",
+		styleLabel("category"), fallbackDisplayText(helper.Category, "-"),
+		styleLabel("source"), fallbackDisplayText(helper.Source, "built_in"),
+		styleLabel("returns"), fallbackDisplayText(helper.ReturnType, "-"))
+	if strings.TrimSpace(helper.Label) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("label"), helper.Label)
+	}
+	if strings.TrimSpace(helper.Signature) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("signature"), helper.Signature)
+	}
+	if strings.TrimSpace(helper.InsertText) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("insert"), helper.InsertText)
+	}
+	if strings.TrimSpace(helper.Description) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("description"), helper.Description)
+	}
+	fmt.Fprintf(&b, "%s min=%d max=%d\n", styleLabel("args"), helper.MinArgs, helper.MaxArgs)
+	if len(helper.Modes) > 0 {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("modes"), strings.Join(helper.Modes, ", "))
+	}
+	if len(helper.NodeTypes) > 0 {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("node_types"), strings.Join(helper.NodeTypes, ", "))
+	}
+	if strings.TrimSpace(helper.Path) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("path"), helper.Path)
+	}
+	writeExpressionHelperArgs(&b, helper.Args)
+	if len(helper.Examples) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("examples"))
+		b.WriteString("\n")
+		for _, example := range helper.Examples {
+			if strings.TrimSpace(example) != "" {
+				fmt.Fprintf(&b, "  %s\n", example)
+			}
+		}
+	}
+	for _, hint := range helper.Hints {
+		if strings.TrimSpace(hint) != "" {
+			fmt.Fprintf(&b, "%s %s\n", styleLabel("hint"), hint)
+		}
+	}
+	for _, warning := range helper.Warnings {
+		if strings.TrimSpace(warning) != "" {
+			fmt.Fprintf(&b, "%s %s\n", styleStatus("warning", "approval"), warning)
+		}
+	}
+	return b.String()
+}
+
+func writeExpressionHelperArgs(b *strings.Builder, args []agent.WorkflowExpressionFunctionArgument) {
+	if b == nil || len(args) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	b.WriteString(styleLabel("arguments"))
+	b.WriteString("\n")
+	for _, arg := range args {
+		fmt.Fprintf(b, "  %s  %s=%s", fallbackDisplayText(arg.Name, "-"), styleLabel("type"), fallbackDisplayText(arg.Type, "-"))
+		if arg.Required {
+			fmt.Fprintf(b, "  %s", styleStatus("required", "approval"))
+		}
+		b.WriteString("\n")
+		if strings.TrimSpace(arg.Description) != "" {
+			fmt.Fprintf(b, "    %s\n", arg.Description)
+		}
+		if len(arg.Accepts) > 0 {
+			fmt.Fprintf(b, "    %s %s\n", styleLabel("accepts"), strings.Join(arg.Accepts, ", "))
+		}
+	}
+}
+
+func formatConfigDiagnosticsOutput(diagnostics apipkg.ConfigDiagnosticsResponse) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Config Diagnostics"))
+	b.WriteString("\n")
+	statusKind := "ready"
+	if diagnostics.Status == "error" {
+		statusKind = "failed"
+	} else if diagnostics.Status == "warning" || diagnostics.Diagnostics.Warnings > 0 {
+		statusKind = "approval"
+	}
+	fmt.Fprintf(&b, "%s %s  %s providers=%d agents=%d mcp=%d skills=%d workflows=%d policies=%d kits=%d\n",
+		styleLabel("status"), styleStatus(fallbackDisplayText(diagnostics.Status, "ok"), statusKind),
+		styleMuted("summary"),
+		diagnostics.Summary.Providers,
+		diagnostics.Summary.Agents,
+		diagnostics.Summary.MCPServers,
+		diagnostics.Summary.Skills,
+		diagnostics.Summary.Workflows,
+		diagnostics.Summary.PolicyRules,
+		diagnostics.Summary.Kits)
+	fmt.Fprintf(&b, "%s errors=%d warnings=%d info=%d total=%d\n",
+		styleLabel("diagnostics"),
+		diagnostics.Diagnostics.Errors,
+		diagnostics.Diagnostics.Warnings,
+		diagnostics.Diagnostics.Info,
+		diagnostics.Diagnostics.Total)
+	if diagnostics.RestartRequired {
+		fmt.Fprintf(&b, "%s %s\n", styleStatus("restart_required", "approval"), "saved config differs from the active runtime")
+	}
+	if strings.TrimSpace(diagnostics.ConfigPath) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("config"), diagnostics.ConfigPath)
+	}
+	if strings.TrimSpace(diagnostics.RuntimeHome) != "" || strings.TrimSpace(diagnostics.WorkspaceRoot) != "" {
+		fmt.Fprintf(&b, "%s %s  %s %s\n", styleLabel("runtime"), fallbackDisplayText(diagnostics.RuntimeHome, "-"), styleLabel("workspace"), fallbackDisplayText(diagnostics.WorkspaceRoot, "-"))
+	}
+	if len(diagnostics.Modules) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("modules"))
+		b.WriteString("\n")
+		for i, module := range diagnostics.Modules {
+			if i >= 12 {
+				fmt.Fprintf(&b, "  %s\n", styleMuted(fmt.Sprintf("... %d more modules", len(diagnostics.Modules)-i)))
+				break
+			}
+			fmt.Fprintf(&b, "  %s  %s=%d", fallbackDisplayText(module.Kind, "-"), styleLabel("files"), len(module.Files))
+			if len(module.Files) > 0 && strings.TrimSpace(module.Root) != "" {
+				fmt.Fprintf(&b, "  %s=%s", styleLabel("root"), module.Root)
+			}
+			b.WriteString("\n")
+		}
+	}
+	displayItems, hiddenOptional := visibleConfigDiagnosticItems(diagnostics.Items)
+	if len(displayItems) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("items"))
+		b.WriteString("\n")
+		for i, item := range displayItems {
+			if i >= 15 {
+				fmt.Fprintf(&b, "  %s\n", styleMuted(fmt.Sprintf("... %d more visible items", len(displayItems)-i)))
+				break
+			}
+			writeConfigDiagnosticItem(&b, item)
+		}
+	}
+	if hiddenOptional > 0 {
+		fmt.Fprintf(&b, "\n%s\n", styleMuted(fmt.Sprintf("%d optional extension-directory info items hidden; use --json for the full envelope", hiddenOptional)))
+	}
+	b.WriteString("\n")
+	b.WriteString(styleMuted("json: /config-diagnostics --json\n"))
+	return b.String()
+}
+
+func visibleConfigDiagnosticItems(items []apipkg.ConfigDiagnosticItem) ([]apipkg.ConfigDiagnosticItem, int) {
+	visible := make([]apipkg.ConfigDiagnosticItem, 0, len(items))
+	hiddenOptional := 0
+	for _, item := range items {
+		if item.Optional && item.Actionable != nil && !*item.Actionable {
+			hiddenOptional++
+			continue
+		}
+		visible = append(visible, item)
+	}
+	sort.SliceStable(visible, func(i, j int) bool {
+		return configDiagnosticSeverityRank(visible[i].Severity) < configDiagnosticSeverityRank(visible[j].Severity)
+	})
+	return visible, hiddenOptional
+}
+
+func configDiagnosticSeverityRank(severity string) int {
+	switch strings.ToLower(strings.TrimSpace(severity)) {
+	case "error":
+		return 0
+	case "warning":
+		return 1
+	default:
+		return 2
+	}
+}
+
+func writeConfigDiagnosticItem(b *strings.Builder, item apipkg.ConfigDiagnosticItem) {
+	if b == nil {
+		return
+	}
+	severity := fallbackDisplayText(item.Severity, "info")
+	statusKind := "ready"
+	switch severity {
+	case "error":
+		statusKind = "failed"
+	case "warning":
+		statusKind = "approval"
+	}
+	fmt.Fprintf(b, "  %s %s", styleStatus(severity, statusKind), fallbackDisplayText(item.Code, "diagnostic"))
+	if strings.TrimSpace(item.TargetKind) != "" || strings.TrimSpace(item.TargetName) != "" {
+		fmt.Fprintf(b, "  %s=%s/%s", styleLabel("target"), fallbackDisplayText(item.TargetKind, "-"), fallbackDisplayText(item.TargetName, "-"))
+	}
+	if strings.TrimSpace(item.Field) != "" {
+		fmt.Fprintf(b, "  %s=%s", styleLabel("field"), item.Field)
+	}
+	if item.Optional {
+		fmt.Fprintf(b, "  %s", styleMuted("optional"))
+	}
+	if item.Actionable != nil && !*item.Actionable {
+		fmt.Fprintf(b, "  %s", styleMuted("not-actionable"))
+	}
+	b.WriteString("\n")
+	if strings.TrimSpace(item.Message) != "" {
+		fmt.Fprintf(b, "    %s\n", item.Message)
+	}
+	if strings.TrimSpace(item.Recommendation) != "" {
+		fmt.Fprintf(b, "    %s %s\n", styleLabel("fix"), item.Recommendation)
+	}
+	if strings.TrimSpace(item.Path) != "" {
+		fmt.Fprintf(b, "    %s %s\n", styleLabel("path"), item.Path)
+	}
+}
+
+func formatWorkflowSchemasOutput(schemas []session.WorkflowSchemaSnapshot) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Workflow Schemas"))
+	b.WriteString("\n")
+	if len(schemas) == 0 {
+		b.WriteString(styleMuted("  no observed workflow schemas yet\n"))
+		b.WriteString(styleMuted("  run a workflow with structured outputs, then use /workflow-schemas --rebuild if needed\n"))
+		return b.String()
+	}
+	rows := make([]workflowSchemaDisplayRow, 0, len(schemas))
+	totalStages := 0
+	totalOutputs := 0
+	for _, schema := range schemas {
+		row := workflowSchemaDisplayRow{
+			Workflow: schema.Workflow,
+			Updated:  schema.UpdatedAt,
+			Runs:     len(schema.RunIDs),
+			Stages:   len(schema.Stages),
+			Outputs:  countWorkflowSchemaOutputs(schema),
+		}
+		totalStages += row.Stages
+		totalOutputs += row.Outputs
+		rows = append(rows, row)
+	}
+	sort.Slice(rows, func(i, j int) bool {
+		return strings.ToLower(rows[i].Workflow) < strings.ToLower(rows[j].Workflow)
+	})
+	fmt.Fprintf(&b, "%s total=%d  stages=%d  outputs=%d\n", styleMuted("summary"), len(rows), totalStages, totalOutputs)
+	for _, row := range rows {
+		fmt.Fprintf(&b, "\n%s %s %s %s\n", styleStatus(row.Workflow, "ready"), styleMuted(fmt.Sprintf("stages=%d", row.Stages)), styleMuted(fmt.Sprintf("outputs=%d", row.Outputs)), styleMuted(fmt.Sprintf("runs=%d", row.Runs)))
+		if strings.TrimSpace(row.Updated) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("updated"), row.Updated)
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleMuted("details: /workflow-schemas <workflow>; refresh from retained runs: /workflow-schemas --rebuild\n"))
+	return b.String()
+}
+
+func formatWorkflowSchemaDetailOutput(schema session.WorkflowSchemaSnapshot) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Workflow Schema"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%s %s\n", styleLabel("workflow"), schema.Workflow)
+	fmt.Fprintf(&b, "%s stages=%d  outputs=%d  runs=%d\n", styleMuted("summary"), len(schema.Stages), countWorkflowSchemaOutputs(schema), len(schema.RunIDs))
+	if strings.TrimSpace(schema.UpdatedAt) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("updated"), schema.UpdatedAt)
+	}
+	if len(schema.RunIDs) > 0 {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("runs"), strings.Join(schema.RunIDs, ", "))
+	}
+	stageNames := make([]string, 0, len(schema.Stages))
+	for name := range schema.Stages {
+		stageNames = append(stageNames, name)
+	}
+	sort.Strings(stageNames)
+	for _, name := range stageNames {
+		stage := schema.Stages[name]
+		fmt.Fprintf(&b, "\n%s %s", styleStatus(fallbackDisplayText(stage.Stage, name), "ready"), styleMuted(fallbackDisplayText(stage.NodeType, "stage")))
+		if strings.TrimSpace(stage.AgentID) != "" {
+			fmt.Fprintf(&b, "  %s=%s", styleLabel("agent"), stage.AgentID)
+		}
+		if strings.TrimSpace(stage.Skill) != "" {
+			fmt.Fprintf(&b, "  %s=%s", styleLabel("skill"), stage.Skill)
+		}
+		if strings.TrimSpace(stage.Tool) != "" {
+			fmt.Fprintf(&b, "  %s=%s", styleLabel("tool"), stage.Tool)
+		}
+		b.WriteString("\n")
+		outputNames := make([]string, 0, len(stage.Outputs))
+		for output := range stage.Outputs {
+			outputNames = append(outputNames, output)
+		}
+		sort.Strings(outputNames)
+		if len(outputNames) == 0 {
+			b.WriteString(styleMuted("  no typed outputs recorded\n"))
+			continue
+		}
+		for _, output := range outputNames {
+			writeWorkflowSchemaValue(&b, "  ", output, stage.Outputs[output])
+		}
+	}
+	return b.String()
+}
+
+func countWorkflowSchemaOutputs(schema session.WorkflowSchemaSnapshot) int {
+	total := 0
+	for _, stage := range schema.Stages {
+		total += len(stage.Outputs)
+	}
+	return total
+}
+
+func writeWorkflowSchemaValue(b *strings.Builder, indent, name string, value session.WorkflowValueSchemaSnapshot) {
+	if b == nil {
+		return
+	}
+	fmt.Fprintf(b, "%s%s  %s=%s", indent, name, styleLabel("type"), fallbackDisplayText(value.Type, "unknown"))
+	if value.Observed > 0 {
+		fmt.Fprintf(b, "  %s=%d", styleLabel("observed"), value.Observed)
+	}
+	if strings.TrimSpace(value.LastRunID) != "" {
+		fmt.Fprintf(b, "  %s=%s", styleLabel("last_run"), value.LastRunID)
+	}
+	b.WriteString("\n")
+	fieldNames := make([]string, 0, len(value.Fields))
+	for field := range value.Fields {
+		fieldNames = append(fieldNames, field)
+	}
+	sort.Strings(fieldNames)
+	for i, field := range fieldNames {
+		if i >= 8 {
+			fmt.Fprintf(b, "%s  %s\n", indent, styleMuted("..."))
+			break
+		}
+		writeWorkflowSchemaValue(b, indent+"  ", field, value.Fields[field])
+	}
+	if value.Items != nil {
+		writeWorkflowSchemaValue(b, indent+"  ", "items", *value.Items)
+	}
+}
+
+func formatKitsOutput(rows []kitDisplayRow) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Vertical Kits"))
+	b.WriteString("\n")
+	if len(rows) == 0 {
+		b.WriteString(styleMuted("  none configured\n"))
+		b.WriteString(styleMuted("  create one with /new-kit <preset> <name>\n"))
+		return b.String()
+	}
+	categories := make(map[string]int)
+	warnings := 0
+	for _, row := range rows {
+		categories[fallbackDisplayText(row.Category, "uncategorized")]++
+		warnings += len(row.Warnings)
+	}
+	fmt.Fprintf(&b, "%s total=%d  categories=%s", styleMuted("summary"), len(rows), formatCountMap(categories))
+	if warnings > 0 {
+		fmt.Fprintf(&b, "  %s", styleStatus(fmt.Sprintf("warnings=%d", warnings), "approval"))
+	}
+	b.WriteString("\n")
+	for _, row := range rows {
+		statusKind := "ready"
+		if len(row.Warnings) > 0 {
+			statusKind = "approval"
+		}
+		totalRefs := row.Providers + row.Agents + row.Skills + row.Tools + row.Workflows
+		fmt.Fprintf(&b, "\n%s %s %s\n", styleStatus(row.Name, statusKind), styleMuted(fallbackDisplayText(row.Category, "-")), styleMuted(fmt.Sprintf("refs=%d", totalRefs)))
+		if strings.TrimSpace(row.Title) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("title"), row.Title)
+		}
+		if strings.TrimSpace(row.Description) != "" {
+			fmt.Fprintf(&b, "  %s\n", row.Description)
+		}
+		if len(row.Tags) > 0 {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("tags"), strings.Join(row.Tags, ", "))
+		}
+		fmt.Fprintf(&b, "  %s providers=%d agents=%d skills=%d tools=%d workflows=%d\n", styleLabel("contains"), row.Providers, row.Agents, row.Skills, row.Tools, row.Workflows)
+		if strings.TrimSpace(row.Path) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("path"), row.Path)
+		}
+		for _, warning := range row.Warnings {
+			fmt.Fprintf(&b, "  %s %s\n", styleStatus("warning", "approval"), warning)
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleMuted("custom kits load from kits/<name>/kit.yaml; create one with /new-kit <preset> <name>\n"))
+	return b.String()
+}
+
+func formatKitDetailOutput(doc cliKitDocument) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Vertical Kit"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%s %s\n", styleLabel("name"), doc.Name)
+	fmt.Fprintf(&b, "%s %s  %s %s  %s %d\n",
+		styleLabel("category"), fallbackDisplayText(doc.Category, "-"),
+		styleLabel("kind"), fallbackDisplayText(doc.Kind, "goflow.kit"),
+		styleLabel("version"), doc.Version)
+	if strings.TrimSpace(doc.Title) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("title"), doc.Title)
+	}
+	if strings.TrimSpace(doc.Description) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("description"), doc.Description)
+	}
+	if strings.TrimSpace(doc.Path) != "" {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("path"), doc.Path)
+	}
+	if len(doc.Tags) > 0 {
+		fmt.Fprintf(&b, "%s %s\n", styleLabel("tags"), strings.Join(doc.Tags, ", "))
+	}
+	writeKitReferenceSection(&b, "providers", doc.Providers)
+	writeKitReferenceSection(&b, "agents", doc.Agents)
+	writeKitReferenceSection(&b, "skills", doc.Skills)
+	writeKitReferenceSection(&b, "tools", doc.Tools)
+	writeKitReferenceSection(&b, "workflows", doc.Workflows)
+	writeKitReferenceSection(&b, "workflow_templates", doc.WorkflowTemplates)
+	writeKitReferenceSection(&b, "team_templates", doc.TeamTemplates)
+	writeKitReferenceSection(&b, "policy_rules", doc.PolicyRules)
+	writeKitReferenceSection(&b, "required_env", doc.RequiredEnv)
+	if len(doc.Examples) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("examples"))
+		b.WriteString("\n")
+		for _, example := range doc.Examples {
+			fmt.Fprintf(&b, "  %s", fallbackDisplayText(example.Title, "Example"))
+			if strings.TrimSpace(example.Agent) != "" {
+				fmt.Fprintf(&b, "  %s=%s", styleLabel("agent"), example.Agent)
+			}
+			if strings.TrimSpace(example.Workflow) != "" {
+				fmt.Fprintf(&b, "  %s=%s", styleLabel("workflow"), example.Workflow)
+			}
+			b.WriteString("\n")
+			if strings.TrimSpace(example.Description) != "" {
+				fmt.Fprintf(&b, "    %s\n", example.Description)
+			}
+			if strings.TrimSpace(example.Request) != "" {
+				fmt.Fprintf(&b, "    %s %s\n", styleLabel("request"), example.Request)
+			}
+		}
+	}
+	if len(doc.Metadata) > 0 {
+		keys := make([]string, 0, len(doc.Metadata))
+		for key := range doc.Metadata {
+			keys = append(keys, key)
+		}
+		sort.Strings(keys)
+		b.WriteString("\n")
+		b.WriteString(styleLabel("metadata"))
+		b.WriteString("\n")
+		for _, key := range keys {
+			fmt.Fprintf(&b, "  %s=%s\n", key, doc.Metadata[key])
+		}
+	}
+	if len(doc.Warnings) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("warnings"))
+		b.WriteString("\n")
+		for _, warning := range doc.Warnings {
+			fmt.Fprintf(&b, "  %s %s\n", styleStatus("warning", "approval"), warning)
+		}
+	}
+	return b.String()
+}
+
+func formatKitBundleImportSummaryOutput(summary apipkg.KitBundleImportSummary, overwrite bool) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Kit Bundle Import"))
+	b.WriteString("\n")
+	fmt.Fprintf(&b, "%s %s  %s %s\n",
+		styleLabel("kit"),
+		fallbackDisplayText(summary.KitName, "-"),
+		styleLabel("mode"),
+		map[bool]string{true: "replace", false: "keep-existing"}[overwrite])
+	fmt.Fprintf(&b, "%s saved=%d skipped=%d errors=%d warnings=%d\n",
+		styleMuted("summary"),
+		len(summary.Saved),
+		len(summary.Skipped),
+		len(summary.Errors),
+		len(summary.Warnings)+len(summary.ValidationIssues))
+	if summary.RestartRequired {
+		fmt.Fprintf(&b, "%s %s\n", styleStatus("restart_required", "approval"), "provider, agent, or tool modules were imported")
+	}
+	writeKitBundleStatusRows(&b, "saved", summary.Saved, "ready")
+	writeKitBundleStatusRows(&b, "skipped", summary.Skipped, "approval")
+	writeKitBundleStatusRows(&b, "errors", summary.Errors, "failed")
+	if len(summary.Warnings) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("warnings"))
+		b.WriteString("\n")
+		for _, warning := range summary.Warnings {
+			fmt.Fprintf(&b, "  %s %s\n", styleStatus("warning", "approval"), warning)
+		}
+	}
+	if len(summary.ValidationIssues) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("validation"))
+		b.WriteString("\n")
+		for _, issue := range summary.ValidationIssues {
+			statusKind := "ready"
+			if issue.Severity == "error" {
+				statusKind = "failed"
+			} else if issue.Severity == "warning" {
+				statusKind = "approval"
+			}
+			fmt.Fprintf(&b, "  %s %s", styleStatus(fallbackDisplayText(issue.Severity, "info"), statusKind), fallbackDisplayText(issue.Code, "issue"))
+			if strings.TrimSpace(issue.Ref) != "" {
+				fmt.Fprintf(&b, "  %s=%s", styleLabel("ref"), issue.Ref)
+			}
+			if strings.TrimSpace(issue.Field) != "" {
+				fmt.Fprintf(&b, "  %s=%s", styleLabel("field"), issue.Field)
+			}
+			fmt.Fprintf(&b, "\n    %s\n", issue.Message)
+		}
+	}
+	return b.String()
+}
+
+func writeKitBundleStatusRows(b *strings.Builder, label string, rows []apipkg.KitBundleResourceStatus, statusKind string) {
+	if b == nil || len(rows) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	b.WriteString(styleLabel(label))
+	b.WriteString("\n")
+	for _, row := range rows {
+		fmt.Fprintf(b, "  %s %s/%s  %s", styleStatus(row.Status, statusKind), fallbackDisplayText(row.Kind, "-"), fallbackDisplayText(row.Name, "-"), fallbackDisplayText(row.Message, "ok"))
+		b.WriteString("\n")
+	}
+}
+
+func writeKitReferenceSection(b *strings.Builder, label string, values []string) {
+	if b == nil || len(values) == 0 {
+		return
+	}
+	items := append([]string(nil), values...)
+	sort.Strings(items)
+	fmt.Fprintf(b, "%s %s\n", styleLabel(label), strings.Join(items, ", "))
+}
+
+func formatTeamStateOutput(state agent.TeamState) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Team State"))
+	b.WriteString("\n")
+	if strings.TrimSpace(state.RunID) == "" && strings.TrimSpace(state.Team) == "" && len(state.Messages) == 0 && len(state.Blackboard) == 0 {
+		b.WriteString(styleMuted("  no team state recorded yet\n"))
+		return b.String()
+	}
+	fmt.Fprintf(&b, "%s %s  %s %s  %s %s\n", styleLabel("run"), fallbackDisplayText(state.RunID, "-"), styleLabel("workflow"), fallbackDisplayText(state.Workflow, "-"), styleLabel("status"), fallbackDisplayText(state.Status, "-"))
+	fmt.Fprintf(&b, "%s %s  %s %s  %s %s\n", styleLabel("team"), fallbackDisplayText(state.Team, "-"), styleLabel("owner"), fallbackDisplayText(state.ActiveOwner, "-"), styleLabel("next"), fallbackDisplayText(state.NextStage, "-"))
+	if state.Template != nil {
+		fmt.Fprintf(&b, "%s %s  %s %s\n", styleLabel("template"), fallbackDisplayText(state.Template.Title, state.Template.Name), styleLabel("recommended"), fallbackDisplayText(state.Template.RecommendedWorkflow, "-"))
+	}
+	fmt.Fprintf(&b, "%s messages=%d  handoffs=%d  blackboard=%d  unresolved=%d\n", styleMuted("summary"), len(state.Messages), len(state.Handoffs), len(state.Blackboard), len(state.UnresolvedItems))
+	if len(state.Handoffs) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("handoffs"))
+		b.WriteString("\n")
+		for i, message := range state.Handoffs {
+			if i >= 6 {
+				fmt.Fprintf(&b, "  %s\n", styleMuted("..."))
+				break
+			}
+			fmt.Fprintf(&b, "  %s -> %s  %s\n", fallbackDisplayText(message.FromAgent, "-"), fallbackDisplayText(message.ToAgent, "-"), fallbackDisplayText(message.Subject, message.Kind))
+		}
+	}
+	if len(state.UnresolvedItems) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("unresolved"))
+		b.WriteString("\n")
+		for i, item := range state.UnresolvedItems {
+			if i >= 8 {
+				fmt.Fprintf(&b, "  %s\n", styleMuted("..."))
+				break
+			}
+			fmt.Fprintf(&b, "  %s  %s=%s  %s\n", fallbackDisplayText(item.Kind, "item"), styleLabel("status"), fallbackDisplayText(item.Status, "-"), fallbackDisplayText(item.Title, item.ID))
+		}
+	}
+	if len(state.PendingApprovals) > 0 || state.PendingInput {
+		b.WriteString("\n")
+		b.WriteString(styleLabel("pending"))
+		b.WriteString("\n")
+		if state.PendingInput {
+			fmt.Fprintf(&b, "  %s\n", styleStatus("input required", "approval"))
+		}
+		for _, approval := range state.PendingApprovals {
+			fmt.Fprintf(&b, "  %s %s  %s=%s\n", styleStatus("approval", "approval"), fallbackDisplayText(approval.CallID, "-"), styleLabel("tool"), fallbackDisplayText(approval.ToolName, "-"))
 		}
 	}
 	return b.String()
@@ -2214,6 +4362,23 @@ func formatToolsOutput(rows []toolDisplayRow) string {
 			if strings.TrimSpace(row.Health) != "" {
 				fmt.Fprintf(&b, "  %s=%s", styleLabel("health"), styleStatus(row.Health, toolHealthStatusKind(row.Health)))
 			}
+			if strings.TrimSpace(row.RiskLevel) != "" {
+				fmt.Fprintf(&b, "  %s=%s", styleLabel("risk"), styleStatus(row.RiskLevel, toolRiskStatusKind(row.RiskLevel)))
+			}
+			if strings.TrimSpace(row.IsolationLevel) != "" {
+				fmt.Fprintf(&b, "  %s=%s", styleLabel("isolation"), row.IsolationLevel)
+			}
+			if row.Sandboxed {
+				fmt.Fprintf(&b, "  %s=true", styleLabel("sandboxed"))
+			} else if row.RequiresSandbox {
+				fmt.Fprintf(&b, "  %s=%s", styleLabel("sandbox"), styleStatus("recommended", "approval"))
+			}
+			if row.EnvAllowlistSet {
+				fmt.Fprintf(&b, "  %s=%d", styleLabel("env"), len(row.EnvAllowlist))
+			}
+			if len(row.SensitiveEnv) > 0 {
+				fmt.Fprintf(&b, "  %s=%s", styleLabel("sensitive_env"), styleStatus(strings.Join(row.SensitiveEnv, ","), "approval"))
+			}
 			if warningCount > 0 {
 				fmt.Fprintf(&b, "  %s=%s", styleLabel("warnings"), styleStatus(strconv.Itoa(warningCount), "approval"))
 			}
@@ -2223,6 +4388,21 @@ func formatToolsOutput(rows []toolDisplayRow) string {
 			}
 			if strings.TrimSpace(row.InputSchemaSummary) != "" {
 				fmt.Fprintf(&b, "    %s %s\n", styleLabel("schema"), row.InputSchemaSummary)
+			}
+			if row.EnvAllowlistSet {
+				fmt.Fprintf(&b, "    %s %s\n", styleLabel("env_allowlist"), strings.Join(row.EnvAllowlist, ", "))
+			}
+			if len(row.SandboxFeatures) > 0 {
+				fmt.Fprintf(&b, "    %s %s\n", styleLabel("sandbox_features"), strings.Join(row.SandboxFeatures, ", "))
+			}
+			if len(row.MissingSandboxFeatures) > 0 {
+				fmt.Fprintf(&b, "    %s %s\n", styleLabel("missing_sandbox"), strings.Join(row.MissingSandboxFeatures, ", "))
+			}
+			if row.WindowsIsolation != nil && row.WindowsIsolation.JobObject && row.WindowsIsolation.LifecycleOnly && !row.WindowsIsolation.RestrictedToken && !row.WindowsIsolation.AppContainer {
+				fmt.Fprintf(&b, "    %s windows_job uses Job Object lifecycle cleanup only; restricted token and AppContainer are not enabled\n", styleStatus("warning", "approval"))
+			}
+			if len(row.SensitiveEnv) > 0 {
+				fmt.Fprintf(&b, "    %s env_allowlist includes sensitive variable names: %s\n", styleStatus("warning", "approval"), strings.Join(row.SensitiveEnv, ", "))
 			}
 			for _, diagnostic := range row.Diagnostics {
 				if strings.TrimSpace(diagnostic) == "" {
@@ -2238,13 +4418,20 @@ func formatToolsOutput(rows []toolDisplayRow) string {
 func formatToolSummary(rows []toolDisplayRow) string {
 	servers := make(map[string]int)
 	kinds := make(map[string]int)
+	risks := make(map[string]int)
 	warnings := 0
 	for _, row := range rows {
 		servers[fallbackDisplayText(row.Server, "unknown")]++
 		kinds[fallbackDisplayText(row.Kind, "unknown")]++
+		if strings.TrimSpace(row.RiskLevel) != "" {
+			risks[row.RiskLevel]++
+		}
 		warnings += nonEmptyCount(row.Diagnostics)
 	}
 	parts := []string{fmt.Sprintf("total=%d", len(rows)), fmt.Sprintf("servers=%d", len(servers)), "kinds=" + formatCountMap(kinds)}
+	if len(risks) > 0 {
+		parts = append(parts, "risk="+formatCountMap(risks))
+	}
 	if warnings > 0 {
 		parts = append(parts, styleStatus(fmt.Sprintf("warnings=%d", warnings), "approval"))
 	}
@@ -2281,12 +4468,19 @@ func filterToolsByServer(rows []toolDisplayRow, server string) []toolDisplayRow 
 
 func formatToolServerSummary(rows []toolDisplayRow) string {
 	health := make(map[string]int)
+	risks := make(map[string]int)
 	warnings := 0
 	for _, row := range rows {
 		health[fallbackDisplayText(row.Health, "unknown")]++
+		if strings.TrimSpace(row.RiskLevel) != "" {
+			risks[row.RiskLevel]++
+		}
 		warnings += nonEmptyCount(row.Diagnostics)
 	}
 	summary := "health=" + formatCountMap(health)
+	if len(risks) > 0 {
+		summary += "  risk=" + formatCountMap(risks)
+	}
 	if warnings > 0 {
 		summary += "  warnings=" + strconv.Itoa(warnings)
 	}
@@ -2305,6 +4499,17 @@ func serverHealthStatusKind(rows []toolDisplayRow) string {
 		}
 	}
 	return "ready"
+}
+
+func toolRiskStatusKind(risk string) string {
+	switch strings.ToLower(strings.TrimSpace(risk)) {
+	case "high":
+		return "failed"
+	case "medium":
+		return "approval"
+	default:
+		return "ready"
+	}
 }
 
 func nonEmptyCount(values []string) int {
@@ -2448,6 +4653,278 @@ func formatSessionOutput(activeAgent, mode, lastSkill string, prompts, tools []s
 		b.WriteString("\n")
 	}
 	return b.String()
+}
+
+type cliCostTrend struct {
+	Key                          string
+	PromptBudgetSamples          int
+	TokenUsageSamples            int
+	AverageEstimatedPromptTokens int
+	MaxEstimatedPromptTokens     int
+	AverageNonCacheableTokens    int
+	HistoryEstimatedSavedTokens  int
+	HistoryDeduplicatedItems     int
+	HistoryCompactedOlderItems   int
+	TotalPromptTokens            int
+	TotalOutputTokens            int
+	TotalCachedTokens            int
+	TotalTokens                  int
+}
+
+func formatCostOutput(snapshot session.Snapshot) string {
+	budgets := append([]schema.PromptBudget(nil), snapshot.PromptBudgets...)
+	latest := snapshot.PromptBudget
+	if latest == nil && len(budgets) > 0 {
+		copied := budgets[len(budgets)-1]
+		latest = &copied
+	}
+	if latest != nil && len(budgets) == 0 {
+		budgets = append(budgets, *latest)
+	}
+	usages := append([]schema.TokenUsageSample(nil), snapshot.TokenUsages...)
+
+	var b strings.Builder
+	b.WriteString(styleHeader("Cost Diagnostics"))
+	b.WriteString("\n")
+	if len(budgets) == 0 && len(usages) == 0 {
+		b.WriteString(styleMuted("  no prompt budget or token usage samples recorded yet\n"))
+		b.WriteString(styleMuted("  run a task with a provider that reports usage, then try /cost again\n"))
+		return b.String()
+	}
+
+	avgPrompt, maxPrompt, avgCacheable, avgNonCacheable, uniquePrefixes := summarizePromptBudgets(budgets)
+	historySavedTokens, historyDeduped, historyCompacted := summarizePromptHistorySavings(budgets)
+	promptTotal, outputTotal, cachedTotal, totalTokens := summarizeTokenUsages(usages)
+	fmt.Fprintf(&b, "%s prompt_samples=%d  token_samples=%d  avg_prompt=%d  max_prompt=%d\n", styleMuted("summary"), len(budgets), len(usages), avgPrompt, maxPrompt)
+	fmt.Fprintf(&b, "%s cacheable_avg=%d  non_cacheable_avg=%d  prompt_prefixes=%d\n", styleMuted("cache"), avgCacheable, avgNonCacheable, uniquePrefixes)
+	if historySavedTokens > 0 || historyDeduped > 0 || historyCompacted > 0 {
+		fmt.Fprintf(&b, "%s saved_est=%d  deduped=%d  compacted_old=%d\n", styleMuted("history"), historySavedTokens, historyDeduped, historyCompacted)
+	}
+	if len(usages) > 0 {
+		fmt.Fprintf(&b, "%s input=%d  output=%d  cached=%d  total=%d\n", styleMuted("tokens"), promptTotal, outputTotal, cachedTotal, totalTokens)
+	}
+
+	if latest != nil {
+		b.WriteString(styleLabel("latest"))
+		b.WriteString("\n")
+		fmt.Fprintf(&b, "  %s=%s  %s=%s  %s=%s", styleLabel("agent"), fallbackDisplayText(latest.AgentID, "-"), styleLabel("mode"), fallbackDisplayText(latest.Mode, "-"), styleLabel("stage"), fallbackDisplayText(latest.TaskStage, "-"))
+		if strings.TrimSpace(latest.WorkflowName) != "" {
+			fmt.Fprintf(&b, "  %s=%s", styleLabel("workflow"), latest.WorkflowName)
+		}
+		b.WriteString("\n")
+		fmt.Fprintf(&b, "  %s estimated=%d  system=%d  messages=%d  tools=%d  cacheable=%d\n", styleMuted("breakdown"), latest.EstimatedPromptTokens, latest.SystemTokens, latest.MessageTokens, latest.ToolSchemaTokens, latest.CacheablePrefixTokens)
+		if latest.HistoryEstimatedSavedTokens > 0 || latest.HistoryPromptDeduplicatedItems+latest.HistoryToolDeduplicatedItems > 0 || latest.HistoryPromptCompactedOlderItems+latest.HistoryToolCompactedOlderItems > 0 {
+			fmt.Fprintf(&b, "  %s saved_est=%d  prompts=%d/%d  tools=%d/%d  deduped=%d  compacted_old=%d\n",
+				styleMuted("history"),
+				latest.HistoryEstimatedSavedTokens,
+				latest.HistoryPromptRetainedItems,
+				latest.HistoryPromptItems,
+				latest.HistoryToolRetainedItems,
+				latest.HistoryToolItems,
+				latest.HistoryPromptDeduplicatedItems+latest.HistoryToolDeduplicatedItems,
+				latest.HistoryPromptCompactedOlderItems+latest.HistoryToolCompactedOlderItems)
+		}
+		fmt.Fprintf(&b, "  %s exposed_tools=%d/%d  filtered=%d  prefix=%s\n", styleMuted("visibility"), latest.ExposedToolCount, latest.TotalToolCount, latest.FilteredToolCount, fallbackDisplayText(latest.PromptPrefixHash, "-"))
+	}
+
+	trends := buildCLICostTrends(budgets, usages)
+	if len(trends) > 0 {
+		b.WriteString(styleLabel("top agents"))
+		b.WriteString("\n")
+		for _, trend := range limitCLICostTrends(trends, 5) {
+			fmt.Fprintf(&b, "  %s  %s=%d  %s=%d  %s=%d  %s=%d\n",
+				styleStatus(trend.Key, "ready"),
+				styleLabel("avg_prompt"), trend.AverageEstimatedPromptTokens,
+				styleLabel("max_prompt"), trend.MaxEstimatedPromptTokens,
+				styleLabel("total_tokens"), trend.TotalTokens,
+				styleLabel("samples"), trend.PromptBudgetSamples+trend.TokenUsageSamples)
+		}
+	}
+
+	recommendations := buildCLICostRecommendations(budgets, trends)
+	if len(recommendations) > 0 {
+		b.WriteString(styleLabel("recommendations"))
+		b.WriteString("\n")
+		for _, recommendation := range recommendations {
+			fmt.Fprintf(&b, "  %s %s\n", styleStatus(recommendation.code, recommendation.kind), recommendation.message)
+		}
+	}
+	return b.String()
+}
+
+type cliCostRecommendation struct {
+	kind    string
+	code    string
+	message string
+}
+
+func summarizePromptBudgets(budgets []schema.PromptBudget) (avgPrompt, maxPrompt, avgCacheable, avgNonCacheable, uniquePrefixes int) {
+	if len(budgets) == 0 {
+		return 0, 0, 0, 0, 0
+	}
+	prefixes := make(map[string]struct{})
+	totalPrompt := 0
+	totalCacheable := 0
+	totalNonCacheable := 0
+	for _, budget := range budgets {
+		totalPrompt += budget.EstimatedPromptTokens
+		totalCacheable += budget.CacheablePrefixTokens
+		totalNonCacheable += promptBudgetNonCacheableTokens(budget)
+		if budget.EstimatedPromptTokens > maxPrompt {
+			maxPrompt = budget.EstimatedPromptTokens
+		}
+		if strings.TrimSpace(budget.PromptPrefixHash) != "" {
+			prefixes[budget.PromptPrefixHash] = struct{}{}
+		}
+	}
+	return totalPrompt / len(budgets), maxPrompt, totalCacheable / len(budgets), totalNonCacheable / len(budgets), len(prefixes)
+}
+
+func summarizePromptHistorySavings(budgets []schema.PromptBudget) (savedTokens, deduplicatedItems, compactedOlderItems int) {
+	for _, budget := range budgets {
+		savedTokens += budget.HistoryEstimatedSavedTokens
+		deduplicatedItems += budget.HistoryPromptDeduplicatedItems + budget.HistoryToolDeduplicatedItems
+		compactedOlderItems += budget.HistoryPromptCompactedOlderItems + budget.HistoryToolCompactedOlderItems
+	}
+	return savedTokens, deduplicatedItems, compactedOlderItems
+}
+
+func summarizeTokenUsages(usages []schema.TokenUsageSample) (prompt, output, cached, total int) {
+	for _, usage := range usages {
+		prompt += usage.PromptTokens
+		output += usage.OutputTokens
+		cached += usage.CachedTokens
+		if usage.TotalTokens > 0 {
+			total += usage.TotalTokens
+		} else {
+			total += usage.PromptTokens + usage.OutputTokens
+		}
+	}
+	return prompt, output, cached, total
+}
+
+func buildCLICostTrends(budgets []schema.PromptBudget, usages []schema.TokenUsageSample) []cliCostTrend {
+	items := make(map[string]*cliCostTrend)
+	for _, budget := range budgets {
+		key := strings.TrimSpace(budget.AgentID)
+		if key == "" {
+			key = "(unknown)"
+		}
+		item := ensureCLICostTrend(items, key)
+		item.PromptBudgetSamples++
+		item.AverageEstimatedPromptTokens += budget.EstimatedPromptTokens
+		item.AverageNonCacheableTokens += promptBudgetNonCacheableTokens(budget)
+		item.HistoryEstimatedSavedTokens += budget.HistoryEstimatedSavedTokens
+		item.HistoryDeduplicatedItems += budget.HistoryPromptDeduplicatedItems + budget.HistoryToolDeduplicatedItems
+		item.HistoryCompactedOlderItems += budget.HistoryPromptCompactedOlderItems + budget.HistoryToolCompactedOlderItems
+		if budget.EstimatedPromptTokens > item.MaxEstimatedPromptTokens {
+			item.MaxEstimatedPromptTokens = budget.EstimatedPromptTokens
+		}
+	}
+	for _, usage := range usages {
+		key := strings.TrimSpace(usage.AgentID)
+		if key == "" {
+			key = "(unknown)"
+		}
+		item := ensureCLICostTrend(items, key)
+		item.TokenUsageSamples++
+		item.TotalPromptTokens += usage.PromptTokens
+		item.TotalOutputTokens += usage.OutputTokens
+		item.TotalCachedTokens += usage.CachedTokens
+		if usage.TotalTokens > 0 {
+			item.TotalTokens += usage.TotalTokens
+		} else {
+			item.TotalTokens += usage.PromptTokens + usage.OutputTokens
+		}
+	}
+	out := make([]cliCostTrend, 0, len(items))
+	for _, item := range items {
+		if item.PromptBudgetSamples > 0 {
+			item.AverageEstimatedPromptTokens /= item.PromptBudgetSamples
+			item.AverageNonCacheableTokens /= item.PromptBudgetSamples
+		}
+		out = append(out, *item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].TotalTokens == out[j].TotalTokens {
+			if out[i].AverageEstimatedPromptTokens == out[j].AverageEstimatedPromptTokens {
+				return out[i].Key < out[j].Key
+			}
+			return out[i].AverageEstimatedPromptTokens > out[j].AverageEstimatedPromptTokens
+		}
+		return out[i].TotalTokens > out[j].TotalTokens
+	})
+	return out
+}
+
+func ensureCLICostTrend(items map[string]*cliCostTrend, key string) *cliCostTrend {
+	if item, ok := items[key]; ok {
+		return item
+	}
+	item := &cliCostTrend{Key: key}
+	items[key] = item
+	return item
+}
+
+func limitCLICostTrends(items []cliCostTrend, max int) []cliCostTrend {
+	if max <= 0 || len(items) <= max {
+		return items
+	}
+	return items[:max]
+}
+
+func buildCLICostRecommendations(budgets []schema.PromptBudget, trends []cliCostTrend) []cliCostRecommendation {
+	if len(budgets) == 0 {
+		return nil
+	}
+	latest := budgets[len(budgets)-1]
+	out := make([]cliCostRecommendation, 0, 4)
+	if latest.MessageTokens >= 2000 {
+		out = append(out, cliCostRecommendation{
+			kind:    "approval",
+			code:    "message_context_high",
+			message: "Recent session/tool context is large; prefer artifact refs, shorter stage inputs, or a fresh focused workflow.",
+		})
+	}
+	if latest.ToolSchemaTokens >= 1000 && latest.FilteredToolCount > 0 {
+		out = append(out, cliCostRecommendation{
+			kind:    "approval",
+			code:    "tool_schema_high",
+			message: "Visible tool schemas are costly; narrow allowed_tools or skill tool declarations.",
+		})
+	}
+	nonCacheable := promptBudgetNonCacheableTokens(latest)
+	if latest.EstimatedPromptTokens > 0 && nonCacheable >= 1000 && nonCacheable*2 >= latest.EstimatedPromptTokens {
+		out = append(out, cliCostRecommendation{
+			kind:    "approval",
+			code:    "non_cacheable_context_high",
+			message: "Most prompt tokens are outside the stable cacheable prefix; keep repeated instructions/tool visibility stable.",
+		})
+	}
+	_, _, _, _, uniquePrefixes := summarizePromptBudgets(budgets)
+	if len(budgets) >= 4 && uniquePrefixes > len(budgets)/2 {
+		out = append(out, cliCostRecommendation{
+			kind:    "approval",
+			code:    "prompt_prefix_churn",
+			message: "Prompt prefixes are changing frequently; stable prompts and tool schemas improve provider prompt-cache behavior.",
+		})
+	}
+	if len(trends) > 0 && trends[0].AverageEstimatedPromptTokens >= 6000 {
+		out = append(out, cliCostRecommendation{
+			kind:    "approval",
+			code:    "agent_prompt_high",
+			message: fmt.Sprintf("%s has a high average prompt size; consider a narrower profile or smaller workflow stages.", trends[0].Key),
+		})
+	}
+	return out
+}
+
+func promptBudgetNonCacheableTokens(budget schema.PromptBudget) int {
+	value := budget.EstimatedPromptTokens - budget.CacheablePrefixTokens
+	if value < 0 {
+		return 0
+	}
+	return value
 }
 
 func runBlockingApprovalPrompt(input io.Reader, output io.Writer, prompt string, approve func() error, deny func() error, approveAll func() error, remember ...func() error) error {
@@ -2968,6 +5445,241 @@ func buildToolDiagnosticsByQualifiedName(tools []schema.Tool) map[string][]strin
 	return diagnostics
 }
 
+type cliMCPServerRisk struct {
+	IsolationLevel         string
+	RiskLevel              string
+	Sandboxed              bool
+	RequiresSandbox        bool
+	SandboxFeatures        []string
+	MissingSandboxFeatures []string
+	WindowsIsolation       *schema.WindowsIsolationProfile
+	EnvAllowlistSet        bool
+	EnvAllowlist           []string
+	SensitiveEnv           []string
+}
+
+type cliToolRisk struct {
+	RiskLevel              string
+	IsolationLevel         string
+	Sandboxed              bool
+	RequiresSandbox        bool
+	SandboxFeatures        []string
+	MissingSandboxFeatures []string
+	WindowsIsolation       *schema.WindowsIsolationProfile
+	EnvAllowlistSet        bool
+	EnvAllowlist           []string
+	SensitiveEnv           []string
+}
+
+func buildCLIMCPServerRiskMap(refs []config.MCPServerRef) map[string]cliMCPServerRisk {
+	out := make(map[string]cliMCPServerRisk, len(refs))
+	for _, ref := range refs {
+		name := strings.TrimSpace(ref.Name)
+		if name == "" {
+			continue
+		}
+		isolation := strings.ToLower(strings.TrimSpace(ref.Isolation))
+		if isolation == "" {
+			isolation = "none"
+		}
+		risk := cliMCPServerRisk{
+			RiskLevel:              "high",
+			IsolationLevel:         "none",
+			RequiresSandbox:        true,
+			MissingSandboxFeatures: []string{"process_lifecycle_isolation", "filesystem_policy", "network_policy", "privilege_reduction"},
+			EnvAllowlistSet:        len(ref.EnvAllowlist) > 0,
+			EnvAllowlist:           cliSanitizedEnvAllowlist(ref.EnvAllowlist),
+			SensitiveEnv:           cliSensitiveEnvAllowlistEntries(ref.EnvAllowlist),
+		}
+		switch isolation {
+		case "linux_cgroup":
+			risk.RiskLevel = "medium"
+			risk.IsolationLevel = "resource_control"
+			risk.SandboxFeatures = []string{"cgroup_resource_limits"}
+			risk.MissingSandboxFeatures = []string{"filesystem_policy", "network_policy", "privilege_reduction"}
+		case "linux_netns":
+			risk.RiskLevel = "medium"
+			risk.IsolationLevel = "network_namespace"
+			risk.Sandboxed = true
+			risk.SandboxFeatures = []string{"network_namespace"}
+			risk.MissingSandboxFeatures = []string{"filesystem_policy", "privilege_reduction"}
+		case "process_group":
+			risk.RiskLevel = "high"
+			risk.IsolationLevel = "lifecycle"
+			risk.SandboxFeatures = []string{"process_group_lifecycle"}
+			risk.MissingSandboxFeatures = []string{"filesystem_policy", "network_policy", "privilege_reduction"}
+		case "windows_job":
+			risk.RiskLevel = "high"
+			risk.IsolationLevel = "lifecycle"
+			risk.SandboxFeatures = []string{"windows_job_object_lifecycle"}
+			risk.MissingSandboxFeatures = []string{"windows_restricted_token", "windows_appcontainer", "filesystem_policy", "network_policy", "privilege_reduction"}
+			risk.WindowsIsolation = &schema.WindowsIsolationProfile{
+				JobObject:       true,
+				RestrictedToken: false,
+				AppContainer:    false,
+				LifecycleOnly:   true,
+			}
+		case "container":
+			risk.RiskLevel = "medium"
+			risk.IsolationLevel = "container_configured"
+			risk.Sandboxed = true
+			risk.RequiresSandbox = false
+			risk.SandboxFeatures = []string{"container_runtime", "filesystem_mount_policy", "privilege_reduction"}
+			risk.MissingSandboxFeatures = nil
+			if cliContainerNetworkEnforced(ref.IsolationOptions, ref.NetworkDisabled) {
+				risk.SandboxFeatures = append(risk.SandboxFeatures, "network_policy")
+			} else {
+				risk.MissingSandboxFeatures = append(risk.MissingSandboxFeatures, "network_policy")
+			}
+			if cliContainerResourceLimited(ref.IsolationOptions) {
+				risk.SandboxFeatures = append(risk.SandboxFeatures, "resource_limits")
+			} else {
+				risk.MissingSandboxFeatures = append(risk.MissingSandboxFeatures, "resource_limits")
+			}
+			if cliContainerNetworkEnforced(ref.IsolationOptions, ref.NetworkDisabled) && cliContainerResourceLimited(ref.IsolationOptions) {
+				risk.RiskLevel = "low"
+			}
+		}
+		out[name] = risk
+	}
+	return out
+}
+
+func cliContainerNetworkEnforced(options map[string]string, networkDisabled bool) bool {
+	network := strings.ToLower(strings.TrimSpace(options["network"]))
+	if network == "" || network == "default" {
+		return networkDisabled
+	}
+	return network == "disabled" || network == "none"
+}
+
+func cliContainerResourceLimited(options map[string]string) bool {
+	return strings.TrimSpace(options["memory"]) != "" || strings.TrimSpace(options["cpus"]) != "" || strings.TrimSpace(options["pids_limit"]) != ""
+}
+
+func buildCLIToolRiskProfile(tool schema.Tool, server cliMCPServerRisk) cliToolRisk {
+	kind := strings.ToLower(strings.TrimSpace(tool.Kind))
+	if kind == "" {
+		kind = "unknown"
+	}
+	risk := cliToolRisk{
+		RiskLevel:              cliToolKindRiskLevel(kind),
+		IsolationLevel:         fallbackDisplayText(server.IsolationLevel, "unknown"),
+		Sandboxed:              server.Sandboxed,
+		RequiresSandbox:        cliToolKindNeedsSandbox(kind) && !server.Sandboxed,
+		SandboxFeatures:        append([]string(nil), server.SandboxFeatures...),
+		MissingSandboxFeatures: append([]string(nil), server.MissingSandboxFeatures...),
+		EnvAllowlistSet:        server.EnvAllowlistSet,
+		EnvAllowlist:           append([]string(nil), server.EnvAllowlist...),
+		SensitiveEnv:           append([]string(nil), server.SensitiveEnv...),
+	}
+	if server.WindowsIsolation != nil {
+		windowsIsolation := *server.WindowsIsolation
+		risk.WindowsIsolation = &windowsIsolation
+	}
+	if cliToolLooksDestructive(tool) {
+		risk.RiskLevel = "high"
+		risk.RequiresSandbox = true
+	}
+	return risk
+}
+
+func cliSanitizedEnvAllowlist(values []string) []string {
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		name := strings.TrimSpace(value)
+		if name == "" {
+			continue
+		}
+		key := strings.ToUpper(name)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, name)
+	}
+	sort.Slice(out, func(i, j int) bool { return strings.ToUpper(out[i]) < strings.ToUpper(out[j]) })
+	return out
+}
+
+func cliSensitiveEnvAllowlistEntries(values []string) []string {
+	var sensitive []string
+	for _, name := range cliSanitizedEnvAllowlist(values) {
+		if cliIsSensitiveEnvName(name) {
+			sensitive = append(sensitive, name)
+		}
+	}
+	return sensitive
+}
+
+func cliIsSensitiveEnvName(name string) bool {
+	upper := strings.ToUpper(strings.TrimSpace(name))
+	if upper == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"API_KEY",
+		"APP_KEY",
+		"AUTH_TOKEN",
+		"ACCESS_TOKEN",
+		"REFRESH_TOKEN",
+		"BEARER_TOKEN",
+		"SECRET",
+		"PASSWORD",
+		"PASSWD",
+		"PRIVATE_KEY",
+		"CREDENTIAL",
+		"CREDENTIALS",
+		"SESSION_TOKEN",
+		"CLIENT_SECRET",
+	} {
+		if strings.Contains(upper, marker) {
+			return true
+		}
+	}
+	return strings.HasSuffix(upper, "_TOKEN") ||
+		strings.HasSuffix(upper, "_KEY") ||
+		strings.HasSuffix(upper, "_SECRET") ||
+		strings.HasSuffix(upper, "_PASSWORD")
+}
+
+func cliToolKindRiskLevel(kind string) string {
+	switch kind {
+	case "read":
+		return "low"
+	case "network":
+		return "medium"
+	case "write", "exec", "unknown":
+		return "high"
+	default:
+		return "high"
+	}
+}
+
+func cliToolKindNeedsSandbox(kind string) bool {
+	switch kind {
+	case "write", "exec", "network", "unknown":
+		return true
+	default:
+		return false
+	}
+}
+
+func cliToolLooksDestructive(tool schema.Tool) bool {
+	kind := strings.ToLower(strings.TrimSpace(tool.Kind))
+	if kind == "write" || kind == "exec" || kind == "unknown" || kind == "" {
+		return true
+	}
+	name := strings.ToLower(formatToolName(tool))
+	for _, marker := range []string{"delete", "remove", "write", "patch", "move", "rename", "exec", "run", "shell", "upload", "deploy"} {
+		if strings.Contains(name, marker) {
+			return true
+		}
+	}
+	return false
+}
+
 func uniqueSortedStrings(values []string) []string {
 	seen := make(map[string]struct{}, len(values))
 	unique := make([]string, 0, len(values))
@@ -3034,6 +5746,17 @@ func (r *cliStreamRenderer) Handle(event schema.StreamEvent) error {
 		fmt.Print(event.Content)
 		r.printedText = true
 		r.streamedContent.WriteString(event.Content)
+	case schema.StreamEventFinalMessage:
+		if strings.TrimSpace(event.Content) == "" {
+			return nil
+		}
+		r.ensureLineBreak()
+		fmt.Print(event.Content)
+		r.printedText = true
+		r.streamedContent.WriteString(event.Content)
+	case schema.StreamEventWorkflowResult:
+		r.ensureLineBreak()
+		fmt.Println(formatWorkflowResultEventLine(event))
 	case schema.StreamEventToolCall:
 		key := strings.TrimSpace(event.ToolCallID)
 		kind := strings.TrimSpace(event.Content)
@@ -3099,6 +5822,8 @@ func (r *cliStreamRenderer) Handle(event schema.StreamEvent) error {
 		fmt.Printf("%s %s requires confirmation %s\n", styleStatus("[approval]", "approval"), event.ToolName, styleLabel(summary))
 	case schema.StreamEventTokenUsage:
 		r.recordTokenUsage(event)
+	case schema.StreamEventPromptBudget:
+		r.printPromptBudget(event)
 	case schema.StreamEventTaskStage:
 		r.printTaskStage(event)
 	case schema.StreamEventStatus:
@@ -3116,6 +5841,42 @@ func (r *cliStreamRenderer) Handle(event schema.StreamEvent) error {
 		fmt.Printf("%s %s\n", styleStatus("[error]", "error"), event.Content)
 	}
 	return nil
+}
+
+func formatWorkflowResultEventLine(event schema.StreamEvent) string {
+	parts := make([]string, 0, 4)
+	if strings.TrimSpace(event.WorkflowName) != "" {
+		parts = append(parts, event.WorkflowName)
+	}
+	if strings.TrimSpace(event.WorkflowStatus) != "" {
+		parts = append(parts, "status="+event.WorkflowStatus)
+	}
+	if strings.TrimSpace(event.RunID) != "" {
+		parts = append(parts, "run="+event.RunID)
+	}
+	if strings.TrimSpace(event.NextStage) != "" {
+		parts = append(parts, "next="+event.NextStage)
+	}
+	if len(parts) == 0 && event.WorkflowResult != nil {
+		if strings.TrimSpace(event.WorkflowResult.Name) != "" {
+			parts = append(parts, event.WorkflowResult.Name)
+		}
+		if strings.TrimSpace(event.WorkflowResult.Status) != "" {
+			parts = append(parts, "status="+event.WorkflowResult.Status)
+		}
+	}
+	if len(parts) == 0 {
+		parts = append(parts, "workflow result")
+	}
+	return fmt.Sprintf("%s %s", styleLabel("[workflow]"), strings.Join(parts, " | "))
+}
+
+func (r *cliStreamRenderer) printPromptBudget(event schema.StreamEvent) {
+	if r == nil || !r.traceEnabled || event.PromptBudget == nil {
+		return
+	}
+	r.ensureLineBreak()
+	fmt.Println(formatPromptBudgetLine(*event.PromptBudget))
 }
 
 func (r *cliStreamRenderer) printTaskStage(event schema.StreamEvent) {
@@ -3360,6 +6121,31 @@ func formatTokenUsageSummary(promptTokens, outputTokens, cachedTokens int) strin
 		parts = append(parts, "cached="+formatCount(cachedTokens))
 	}
 	return fmt.Sprintf("%s %s", styleLabel("[tokens]"), strings.Join(parts, " "+styleMuted("|")+" "))
+}
+
+func formatPromptBudgetLine(budget schema.PromptBudget) string {
+	parts := []string{
+		"est_input=" + formatCount(budget.EstimatedPromptTokens),
+		"system=" + formatCount(budget.SystemTokens),
+		"messages=" + formatCount(budget.MessageTokens),
+		"tools=" + formatCount(budget.ToolSchemaTokens),
+	}
+	if budget.SkillTokens > 0 {
+		parts = append(parts, "skill="+formatCount(budget.SkillTokens))
+	}
+	if budget.TotalToolCount > 0 {
+		parts = append(parts, fmt.Sprintf("tool_schemas=%d/%d", budget.ExposedToolCount, budget.TotalToolCount))
+	}
+	if budget.FilteredToolCount > 0 {
+		parts = append(parts, "filtered="+formatCount(budget.FilteredToolCount))
+	}
+	if budget.CacheablePrefixTokens > 0 {
+		parts = append(parts, "cacheable_prefix="+formatCount(budget.CacheablePrefixTokens))
+	}
+	if strings.TrimSpace(budget.PromptPrefixHash) != "" {
+		parts = append(parts, "prefix="+budget.PromptPrefixHash)
+	}
+	return fmt.Sprintf("%s %s", styleLabel("[budget]"), strings.Join(parts, " "+styleMuted("|")+" "))
 }
 
 func formatTaskStageLine(event schema.StreamEvent) string {

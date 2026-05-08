@@ -4,19 +4,22 @@ import "time"
 
 // Config is the root runtime configuration.
 type Config struct {
-	Agent         AgentConfig             `yaml:"agent"`
-	LLM           LLMConfig               `yaml:"llm"`
-	MCP           []MCPServerRef          `yaml:"mcp_servers"`
-	Skill         SkillConfig             `yaml:"skill"`
-	Log           LogConfig               `yaml:"log"`
-	Providers     map[string]LLMConfig    `yaml:"providers"`
-	Agents        map[string]AgentProfile `yaml:"agents"`
-	DefaultAgent  string                  `yaml:"default_agent"`
-	Audit         AuditConfig             `yaml:"audit"`
-	Verifier      VerifierConfig          `yaml:"verifier"`
-	Session       SessionConfig           `yaml:"session"`
-	RuntimeHome   string                  `yaml:"-"`
-	WorkspaceRoot string                  `yaml:"-"`
+	Agent          AgentConfig             `yaml:"agent"`
+	LLM            LLMConfig               `yaml:"llm"`
+	MCP            []MCPServerRef          `yaml:"mcp_servers"`
+	Skill          SkillConfig             `yaml:"skill"`
+	Log            LogConfig               `yaml:"log"`
+	Providers      map[string]LLMConfig    `yaml:"providers"`
+	Agents         map[string]AgentProfile `yaml:"agents"`
+	DefaultAgent   string                  `yaml:"default_agent"`
+	Audit          AuditConfig             `yaml:"audit"`
+	Verifier       VerifierConfig          `yaml:"verifier"`
+	CostControl    CostControlConfig       `yaml:"cost_control"`
+	ToolRiskPolicy ToolRiskPolicyConfig    `yaml:"tool_risk_policy"`
+	Session        SessionConfig           `yaml:"session"`
+	RuntimeHome    string                  `yaml:"-"`
+	WorkspaceRoot  string                  `yaml:"-"`
+	ConfigPath     string                  `yaml:"-"`
 }
 
 // AgentConfig controls agent loop behaviour.
@@ -68,6 +71,7 @@ type MCPServerRef struct {
 	EnvAllowlist        []string          `yaml:"env_allowlist"`
 	NetworkDisabled     bool              `yaml:"network_disabled"`
 	Isolation           string            `yaml:"isolation"`
+	IsolationProfile    string            `yaml:"isolation_profile"`
 	IsolationOptions    map[string]string `yaml:"isolation_options"`
 	RestartLimit        int               `yaml:"restart_limit"`
 	Cooldown            time.Duration     `yaml:"cooldown"`
@@ -102,8 +106,33 @@ type AuditConfig struct {
 type VerifierConfig struct {
 	Enabled   bool     `yaml:"enabled"`
 	Agent     string   `yaml:"agent"`
+	Provider  string   `yaml:"provider"`
+	Model     string   `yaml:"model"`
 	Modes     []string `yaml:"modes"`
 	MaxTokens int      `yaml:"max_tokens"`
+}
+
+// CostControlConfig controls low-cost auxiliary model routes.
+type CostControlConfig struct {
+	Router     AuxiliaryModelConfig `yaml:"router"`
+	Summarizer AuxiliaryModelConfig `yaml:"summarizer"`
+}
+
+// AuxiliaryModelConfig describes an optional cheap model route for helper calls.
+type AuxiliaryModelConfig struct {
+	Enabled     bool    `yaml:"enabled"`
+	Provider    string  `yaml:"provider"`
+	Model       string  `yaml:"model"`
+	MaxTokens   int     `yaml:"max_tokens"`
+	Temperature float64 `yaml:"temperature"`
+}
+
+// ToolRiskPolicyConfig adds optional risk-aware approval controls on top of
+// agent tool kind/name policy. It is disabled by default for compatibility.
+type ToolRiskPolicyConfig struct {
+	RequireApprovalForUnsandboxedRiskyTools bool `yaml:"require_approval_for_unsandboxed_risky_tools"`
+	DisableRememberForUnsandboxedRiskyTools bool `yaml:"disable_remember_for_unsandboxed_risky_tools"`
+	RejectUnsandboxedRiskyTools             bool `yaml:"reject_unsandboxed_risky_tools"`
 }
 
 // SessionConfig controls session behavior.

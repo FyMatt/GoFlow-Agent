@@ -10,6 +10,7 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
@@ -141,6 +142,51 @@ func buildAtReferencePrompt(input string, refs []atReference) string {
 	return b.String()
 }
 
+func expandSessionArtifactReferencesForCLI(input string, runtimeRef *agent.Runtime, renderer *cliStreamRenderer) (string, []string, error) {
+	refs := parseSessionArtifactRefs(input)
+	if len(refs) == 0 {
+		return input, nil, nil
+	}
+	var b strings.Builder
+	b.WriteString(input)
+	b.WriteString("\n\nReferenced GoFlow artifacts:\n")
+	attached := make([]string, 0, len(refs))
+	seen := make(map[string]struct{}, len(refs))
+	for index, ref := range refs {
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		artifact, ok := runtimeRef.SessionArtifact(ref)
+		if !ok {
+			return "", nil, fmt.Errorf("%s: session artifact not found", ref)
+		}
+		callID := fmt.Sprintf("artifact-ref-%d", index+1)
+		if renderer != nil {
+			_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventToolCall, ToolName: "session_artifact", ToolCallID: callID, Content: "read", ArgumentsSummary: "ref=" + ref})
+			_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: "session_artifact", ToolCallID: callID, Content: artifact.Summary, ArgumentsSummary: "ref=" + ref})
+		}
+		fmt.Fprintf(&b, "\n--- %s (%s, %d bytes) ---\n", artifact.Ref, artifact.Title, artifact.ContentBytes)
+		b.WriteString(artifact.Content)
+		if !strings.HasSuffix(artifact.Content, "\n") {
+			b.WriteString("\n")
+		}
+		attached = append(attached, artifact.Ref)
+	}
+	return b.String(), attached, nil
+}
+
+func parseSessionArtifactRefs(input string) []string {
+	var refs []string
+	for _, field := range strings.Fields(input) {
+		field = strings.TrimRight(strings.TrimSpace(field), ".,;:!?)]}")
+		if strings.HasPrefix(field, "goflow://session-artifacts/") {
+			refs = append(refs, field)
+		}
+	}
+	return refs
+}
+
 func parseAtReferencePaths(input string) []string {
 	var paths []string
 	runes := []rune(input)
@@ -225,7 +271,7 @@ func suggestAtReferencePaths(prefix, workspaceRoot string, limit int) ([]string,
 		if err != nil {
 			return nil
 		}
-		if path != root && entry.Name() == ".goflow" {
+		if path != root && shouldSkipAtReferenceSuggestionDir(entry) {
 			if entry.IsDir() {
 				return filepath.SkipDir
 			}
@@ -269,6 +315,22 @@ func suggestAtReferencePaths(prefix, workspaceRoot string, limit int) ([]string,
 	return matchAtReferenceCandidates(candidates, normalizedPrefix, limit), nil
 }
 
+func shouldSkipAtReferenceSuggestionDir(entry os.DirEntry) bool {
+	if entry == nil || !entry.IsDir() {
+		return false
+	}
+	switch strings.ToLower(entry.Name()) {
+	case ".git", ".hg", ".svn", ".goflow",
+		".venv", "venv", "env",
+		"node_modules", "__pycache__", "vendor",
+		"dist", "build", "target", "coverage",
+		".next", ".nuxt", ".cache", ".pytest_cache", ".mypy_cache":
+		return true
+	default:
+		return false
+	}
+}
+
 func matchAtReferenceCandidates(candidates []string, normalizedPrefix string, limit int) []string {
 	if limit <= 0 {
 		limit = len(candidates)
@@ -308,9 +370,9 @@ func resolveWorkspaceReferencePath(raw, root string) (string, string, error) {
 	if !referenceWithinBase(cleanRoot, cleanCandidate) {
 		return "", "", fmt.Errorf("path escapes workspace root")
 	}
-	realPath, err := filepath.EvalSymlinks(cleanCandidate)
+	realPath, err := resolveReferenceRealPath(cleanRoot, cleanCandidate)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve real path: %w", err)
+		return "", "", err
 	}
 	realPath, err = filepath.Abs(filepath.Clean(realPath))
 	if err != nil {
@@ -324,6 +386,49 @@ func resolveWorkspaceReferencePath(raw, root string) (string, string, error) {
 		return "", "", fmt.Errorf("relative path: %w", err)
 	}
 	return realPath, filepath.ToSlash(rel), nil
+}
+
+func resolveReferenceRealPath(cleanRoot, cleanCandidate string) (string, error) {
+	realPath, err := filepath.EvalSymlinks(cleanCandidate)
+	if err == nil {
+		return realPath, nil
+	}
+	if _, statErr := os.Stat(cleanCandidate); statErr != nil {
+		return "", fmt.Errorf("resolve real path: %w", err)
+	}
+	hasLink, linkErr := referencePathHasSymlink(cleanRoot, cleanCandidate)
+	if linkErr != nil {
+		return "", linkErr
+	}
+	if hasLink {
+		return "", fmt.Errorf("resolve real path: %w", err)
+	}
+	return cleanCandidate, nil
+}
+
+func referencePathHasSymlink(cleanRoot, cleanCandidate string) (bool, error) {
+	rel, err := filepath.Rel(cleanRoot, cleanCandidate)
+	if err != nil {
+		return false, fmt.Errorf("relative path: %w", err)
+	}
+	if rel == "." {
+		return false, nil
+	}
+	current := cleanRoot
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return false, fmt.Errorf("resolve real path: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func canonicalReferenceRoot(root string) (string, error) {

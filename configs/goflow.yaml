@@ -1,0 +1,53 @@
+agent:
+  name: GoFlow Agent
+  max_iterations: 8
+  timeout: 2m
+
+default_agent: chat
+
+skill:
+  directory: ./skills
+  match_threshold: 1
+  hot_reload: false
+
+audit:
+  enabled: true
+  redact_content: false
+  show_trace_in_cli: false
+
+verifier:
+  enabled: true
+  agent: auditor
+  # Optional: route the verifier pass to a cheaper configured provider/model.
+  # provider: backup
+  # model: ${GOFLOW_VERIFIER_MODEL}
+  modes: [fix, audit]
+  max_tokens: 768
+
+cost_control:
+  router:
+    enabled: false
+    # Optional: classify otherwise-unmatched requests with a cheaper model.
+    # provider: backup
+    # model: ${GOFLOW_ROUTER_MODEL}
+    max_tokens: 96
+    temperature: 0
+  summarizer:
+    enabled: false
+    # Optional: summarize exhausted tool loops with a cheaper model.
+    # provider: backup
+    # model: ${GOFLOW_SUMMARIZER_MODEL}
+    max_tokens: 512
+    temperature: 0
+
+tool_risk_policy:
+  require_approval_for_unsandboxed_risky_tools: true
+  disable_remember_for_unsandboxed_risky_tools: true
+  reject_unsandboxed_risky_tools: false
+
+session:
+  max_history: 8
+
+log:
+  level: info
+  format: text

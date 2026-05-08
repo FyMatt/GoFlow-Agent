@@ -1,0 +1,48 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: software-engineering-kit
+title: Software Engineering Kit
+description: Plan, implement, review, and hand off scoped software changes.
+category: software
+tags:
+    - coding
+    - review
+    - planning
+agents:
+    - chat
+    - planner
+    - fixer
+    - auditor
+providers:
+    - primary
+skills:
+    - execution-plan
+    - code-writing
+    - code-audit
+tools:
+    - read_file
+    - search_files
+    - write_file
+workflows:
+    - plan-fix-audit
+workflow_templates:
+    - plan-fix-audit
+    - software-team-review-gate
+    - parallel-research-review
+team_templates:
+    - software-task-team
+policy_rules:
+    - expression
+    - team_approval_gate
+examples:
+    - title: Improve a project
+      description: Plan, edit, and review a code change under approval.
+      request: Optimize this project and add focused tests.
+      workflow: plan-fix-audit
+      agent: chat
+metadata:
+    preset: software-engineering
+    recommended_agent: chat
+    recommended_workflow: plan-fix-audit
+    scaffold_preset: software-engineering

@@ -1,0 +1,8 @@
+planner:
+  name: Planner
+  description: Produces scoped implementation plans before changes are made.
+  provider: primary
+  mode: plan
+  tool_policy: confirm
+  allowed_tool_kinds: [read, network]
+  max_iterations: 6

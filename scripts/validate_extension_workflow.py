@@ -99,6 +99,7 @@ def assert_workspace_summary(response: dict[str, Any]) -> None:
 def assert_example_references() -> None:
     skill = read_text(EXAMPLE_ROOT / "skills" / "workspace-report" / "SKILL.md")
     agent = read_text(EXAMPLE_ROOT / "configs" / "agents" / "workspace-reporter.yaml")
+    mcp_config = read_text(EXAMPLE_ROOT / "configs" / "mcp_servers" / "workspace_report.yaml")
     workflow = read_text(EXAMPLE_ROOT / "workflows" / "workspace-review" / "workflow.yaml")
     readme = read_text(EXAMPLE_ROOT / "README.md")
 
@@ -114,6 +115,11 @@ def assert_example_references() -> None:
             "allowed_tool_kinds: [read]",
             "workspace_report/workspace_summary",
         ],
+        "mcp_config": [
+            "name: workspace_report",
+            "command: python",
+            "./mcp_servers/workspace_report.py",
+        ],
         "workflow": [
             "name: workspace-review",
             "agent: workspace-reporter",
@@ -127,7 +133,7 @@ def assert_example_references() -> None:
             "workspace_report/workspace_summary",
         ],
     }
-    contents = {"skill": skill, "agent": agent, "workflow": workflow, "readme": readme}
+    contents = {"skill": skill, "agent": agent, "mcp_config": mcp_config, "workflow": workflow, "readme": readme}
     for label, needles in required.items():
         for needle in needles:
             if needle not in contents[label]:
@@ -160,4 +166,3 @@ def main() -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main())
-

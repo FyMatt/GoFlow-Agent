@@ -4,39 +4,78 @@
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>GoFlow Console</title>
+  <script>
+    (function () {
+      try {
+        var stored = localStorage.getItem("goflow.theme");
+        var theme = stored === "dark" ? "dark" : "light";
+        document.documentElement.dataset.theme = theme;
+      } catch (error) {
+        document.documentElement.dataset.theme = "light";
+      }
+    }());
+  </script>
   <link rel="stylesheet" href="/assets/styles.css">
 </head>
 <body>
-  <div class="shell">
-    <aside class="sidebar">
-      <div class="brand">
+  <a class="skip-link" href="#mainContent" data-i18n="common.skipToMain">Skip to main content</a>
+  <div class="shell" data-app-shell>
+    <aside class="sidebar" data-tour-id="shell-sidebar">
+      <div class="brand" data-tour-id="shell-brand">
         <div class="brand-mark">GF</div>
         <div>
           <strong>GoFlow</strong>
-          <span>Agent Studio</span>
+          <span data-i18n="brand.subtitle">Agent Studio</span>
         </div>
       </div>
-      <nav class="nav" aria-label="Console sections">
-        <button data-view="overview" class="active" data-i18n="nav.overview">Overview</button>
-        <button data-view="workflows" data-i18n="nav.workflows">Workflow Studio</button>
-        <button data-view="playground" data-i18n="nav.playground">Playground</button>
-        <button data-view="workspace" data-i18n="nav.workspace">Workspace</button>
-        <button data-view="approvals" data-i18n="nav.approvals">Approvals</button>
-        <button data-view="catalog" data-i18n="nav.catalog">Resources</button>
-        <button data-view="status" data-i18n="nav.status">Observability</button>
-        <button data-view="settings" data-i18n="nav.settings">Settings</button>
-      </nav>
-      <div class="side-status" id="sideStatus" data-i18n="common.loading">Loading...</div>
+
+      <div class="nav-group">
+        <p class="nav-group-label" data-i18n="nav.group.discover">Discover</p>
+        <nav class="nav" aria-label="Console sections" data-i18n-aria-label="nav.sections.console">
+          <button data-view="overview" class="active" data-i18n="nav.overview" data-tour-id="nav-overview">Overview</button>
+        </nav>
+      </div>
+
+      <div class="nav-group">
+        <p class="nav-group-label" data-i18n="nav.group.build">Build</p>
+        <nav class="nav" aria-label="Build sections" data-i18n-aria-label="nav.sections.build">
+          <button data-view="workflows" data-i18n="nav.workflows" data-tour-id="nav-workflows">Workflow Studio</button>
+          <button data-view="catalog" data-i18n="nav.catalog" data-tour-id="nav-catalog">Resources</button>
+        </nav>
+      </div>
+
+      <div class="nav-group">
+        <p class="nav-group-label" data-i18n="nav.group.run">Run</p>
+        <nav class="nav" aria-label="Run sections" data-i18n-aria-label="nav.sections.run">
+          <button data-view="playground" data-i18n="nav.playground" data-tour-id="nav-playground">Playground</button>
+          <button data-view="approvals" data-i18n="nav.approvals" data-tour-id="nav-approvals">Approvals</button>
+        </nav>
+      </div>
+
+      <div class="nav-group">
+        <p class="nav-group-label" data-i18n="nav.group.observe">Observe & Setup</p>
+        <nav class="nav" aria-label="Observe and setup sections" data-i18n-aria-label="nav.sections.observe">
+          <button data-view="status" data-i18n="nav.status" data-tour-id="nav-status">Observability</button>
+          <button data-view="workspace" data-i18n="nav.workspace" data-tour-id="nav-workspace">Workspace</button>
+          <button data-view="settings" data-i18n="nav.settings" data-tour-id="nav-settings">Settings</button>
+        </nav>
+      </div>
+
+      <div class="sidebar-footer">
+        <div class="side-status" id="sideStatus" data-i18n="common.loading">Loading...</div>
+      </div>
     </aside>
 
-    <main class="main">
-      <header class="topbar">
-        <div>
+    <main id="mainContent" class="main" tabindex="-1">
+      <header class="topbar" data-tour-id="shell-topbar">
+        <div class="topbar-copy">
           <p class="eyebrow" id="sectionEyebrow">Visual orchestration</p>
           <h1 id="sectionTitle">Workflow Studio</h1>
         </div>
         <div class="top-actions">
-          <select id="languageSelect" aria-label="Language">
+          <button id="tourToggle" class="ghost-button" data-tour-id="tour-toggle" data-i18n="tour.start">Start tour</button>
+          <button id="themeToggle" class="ghost-button theme-toggle" type="button" aria-live="polite">Theme</button>
+          <select id="languageSelect" aria-label="Language" data-i18n-aria-label="common.language">
             <option value="en">English</option>
             <option value="zh">中文</option>
           </select>
@@ -45,6 +84,25 @@
       </header>
       <section id="app" class="view"></section>
     </main>
+  </div>
+
+  <div id="tourOverlay" class="tour-overlay hidden" aria-hidden="true">
+    <div class="tour-backdrop"></div>
+    <div class="tour-hole"></div>
+    <aside class="tour-popover" role="dialog" aria-live="polite" aria-label="Guided tour" data-i18n-aria-label="tour.dialogLabel">
+      <div class="tour-popover-head">
+        <span id="tourBadge" class="badge badge-tour" data-i18n="settings.guidedTour">Guided tour</span>
+        <strong id="tourStepCounter">1 / 1</strong>
+      </div>
+      <h2 id="tourTitle">Title</h2>
+      <p id="tourBody"></p>
+      <div id="tourMeta" class="tour-meta"></div>
+      <div class="tour-actions">
+        <button id="tourSkip" class="ghost-button" data-i18n="tour.skip">Skip</button>
+        <button id="tourPrev" data-i18n="tour.back">Back</button>
+        <button id="tourNext" class="primary" data-i18n="tour.next">Next</button>
+      </div>
+    </aside>
   </div>
 
   <script type="module" src="/assets/app.js"></script>

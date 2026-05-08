@@ -203,6 +203,199 @@ func TestExecutorAllowsToolWhenKindAndAllowlistBothMatch(t *testing.T) {
 	}
 }
 
+func TestRiskPolicyRequiresApprovalForUnsandboxedRiskyToolUnderAllowPolicy(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	executor := NewExecutor(mcp)
+	runtimeRef := &Runtime{approvals: newApprovalStore()}
+	execCtx := newExecutionContext("fixer", config.AgentProfile{
+		ToolPolicy:       config.ToolPolicyAllow,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindWrite},
+	}, []schema.Tool{{
+		Name:        "write_file",
+		Server:      "stub",
+		Kind:        "write",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}}, nil, "C:/repo")
+	execCtx.RiskPolicy = config.ToolRiskPolicyConfig{RequireApprovalForUnsandboxedRiskyTools: true}
+	execCtx.MCPServers = []config.MCPServerRef{{Name: "stub", Isolation: "process_group"}}
+
+	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
+		ID:        "call-risk",
+		Name:      "write_file",
+		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
+	}}, runtimeRef, nil)
+	if err != nil {
+		t.Fatalf("RunToolCalls: %v", err)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected no immediate MCP call for unsandboxed risky tool, got %d", mcp.calls)
+	}
+	if len(results) != 1 || !results[0].Suspended {
+		t.Fatalf("expected suspended approval result, got %#v", results)
+	}
+	pending := runtimeRef.PendingApprovals()
+	if len(pending) != 1 || pending[0].ID != "call-risk" {
+		t.Fatalf("expected pending approval for risky tool, got %#v", pending)
+	}
+}
+
+func TestRiskPolicyRejectsUnsandboxedRiskyToolBeforeApproval(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	executor := NewExecutor(mcp)
+	runtimeRef := &Runtime{approvals: newApprovalStore()}
+	execCtx := newExecutionContext("fixer", config.AgentProfile{
+		ToolPolicy:       config.ToolPolicyAllow,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindWrite},
+	}, []schema.Tool{{
+		Name:        "write_file",
+		Server:      "stub",
+		Kind:        "write",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}}, nil, "C:/repo")
+	execCtx.RiskPolicy = config.ToolRiskPolicyConfig{RejectUnsandboxedRiskyTools: true}
+	execCtx.MCPServers = []config.MCPServerRef{{Name: "stub", Isolation: "process_group"}}
+
+	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
+		ID:        "call-risk-reject",
+		Name:      "write_file",
+		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
+	}}, runtimeRef, nil)
+	if err != nil {
+		t.Fatalf("RunToolCalls: %v", err)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected rejected risky tool not to call MCP, got %d", mcp.calls)
+	}
+	if len(results) != 1 || !results[0].Denied || !results[0].IsError || results[0].Suspended {
+		t.Fatalf("expected denied non-suspended risk-policy result, got %#v", results)
+	}
+	if !strings.Contains(results[0].Content, "reject_unsandboxed_risky_tools") {
+		t.Fatalf("expected risk-policy rejection detail, got %#v", results[0])
+	}
+	if len(runtimeRef.PendingApprovals()) != 0 {
+		t.Fatalf("expected no pending approval for rejected tool, got %#v", runtimeRef.PendingApprovals())
+	}
+}
+
+func TestRiskPolicyDoesNotForceApprovalForContainerizedRiskyTool(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	executor := NewExecutor(mcp)
+	runtimeRef := &Runtime{approvals: newApprovalStore()}
+	execCtx := newExecutionContext("fixer", config.AgentProfile{
+		ToolPolicy:       config.ToolPolicyAllow,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindWrite},
+	}, []schema.Tool{{
+		Name:        "write_file",
+		Server:      "stub",
+		Kind:        "write",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}}, nil, "C:/repo")
+	execCtx.RiskPolicy = config.ToolRiskPolicyConfig{RequireApprovalForUnsandboxedRiskyTools: true}
+	execCtx.MCPServers = []config.MCPServerRef{{Name: "stub", Isolation: "container"}}
+
+	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
+		ID:        "call-container",
+		Name:      "write_file",
+		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
+	}}, runtimeRef, nil)
+	if err != nil {
+		t.Fatalf("RunToolCalls: %v", err)
+	}
+	if mcp.calls != 1 {
+		t.Fatalf("expected immediate MCP call for containerized risky tool under allow policy, got %d", mcp.calls)
+	}
+	if len(results) != 1 || results[0].Suspended || results[0].IsError {
+		t.Fatalf("expected successful direct result, got %#v", results)
+	}
+	if len(runtimeRef.PendingApprovals()) != 0 {
+		t.Fatalf("expected no pending approval, got %#v", runtimeRef.PendingApprovals())
+	}
+}
+
+func TestRiskPolicyDoesNotRejectContainerizedRiskyTool(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	executor := NewExecutor(mcp)
+	runtimeRef := &Runtime{approvals: newApprovalStore()}
+	execCtx := newExecutionContext("fixer", config.AgentProfile{
+		ToolPolicy:       config.ToolPolicyAllow,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindWrite},
+	}, []schema.Tool{{
+		Name:        "write_file",
+		Server:      "stub",
+		Kind:        "write",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}}, nil, "C:/repo")
+	execCtx.RiskPolicy = config.ToolRiskPolicyConfig{RejectUnsandboxedRiskyTools: true}
+	execCtx.MCPServers = []config.MCPServerRef{{Name: "stub", Isolation: "container"}}
+
+	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
+		ID:        "call-container-risk",
+		Name:      "write_file",
+		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
+	}}, runtimeRef, nil)
+	if err != nil {
+		t.Fatalf("RunToolCalls: %v", err)
+	}
+	if mcp.calls != 1 {
+		t.Fatalf("expected containerized risky tool to execute, got %d calls", mcp.calls)
+	}
+	if len(results) != 1 || results[0].Denied || results[0].IsError || results[0].Suspended {
+		t.Fatalf("expected successful direct result, got %#v", results)
+	}
+}
+
+func TestRiskPolicyAllowsLinuxNetworkNamespaceForNetworkToolOnly(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	executor := NewExecutor(mcp)
+	runtimeRef := &Runtime{approvals: newApprovalStore()}
+	execCtx := newExecutionContext("auditor", config.AgentProfile{
+		ToolPolicy:       config.ToolPolicyAllow,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindNetwork, config.ToolKindWrite},
+	}, []schema.Tool{
+		{
+			Name:        "web_search",
+			Server:      "stub",
+			Kind:        "network",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}`),
+		},
+		{
+			Name:        "write_file",
+			Server:      "stub",
+			Kind:        "write",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+		},
+	}, nil, "C:/repo")
+	execCtx.RiskPolicy = config.ToolRiskPolicyConfig{RejectUnsandboxedRiskyTools: true}
+	execCtx.MCPServers = []config.MCPServerRef{{Name: "stub", Isolation: "linux_netns"}}
+
+	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
+		ID:        "call-netns-network",
+		Name:      "web_search",
+		Arguments: json.RawMessage(`{"query":"goflow"}`),
+	}}, runtimeRef, nil)
+	if err != nil {
+		t.Fatalf("RunToolCalls network: %v", err)
+	}
+	if mcp.calls != 1 || len(results) != 1 || results[0].Denied || results[0].IsError {
+		t.Fatalf("expected linux_netns network tool to execute, calls=%d results=%#v", mcp.calls, results)
+	}
+
+	results, err = executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
+		ID:        "call-netns-write",
+		Name:      "write_file",
+		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
+	}}, runtimeRef, nil)
+	if err != nil {
+		t.Fatalf("RunToolCalls write: %v", err)
+	}
+	if mcp.calls != 1 {
+		t.Fatalf("expected linux_netns write tool to be rejected before MCP call, got calls=%d", mcp.calls)
+	}
+	if len(results) != 1 || !results[0].Denied || !results[0].IsError || !strings.Contains(results[0].Content, "reject_unsandboxed_risky_tools") {
+		t.Fatalf("expected linux_netns write tool risk rejection, got %#v", results)
+	}
+}
+
 func TestExecutorRememberedApprovalDoesNotBypassToolAllowlist(t *testing.T) {
 	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
 	executor := NewExecutor(mcp)
@@ -354,6 +547,94 @@ func TestRuntimeApproveToolCallAndRememberStoresScopedToolApproval(t *testing.T)
 	}
 	if !state.HasApprovedToolScope("C:/repo", "write", "write_file") {
 		t.Fatal("expected scoped write_file approval to be remembered")
+	}
+}
+
+func TestRiskPolicyRejectsRememberForUnsandboxedRiskyTool(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	state := session.New(4)
+	runtimeRef := &Runtime{
+		cfg: &config.Config{
+			WorkspaceRoot: "C:/repo",
+			ToolRiskPolicy: config.ToolRiskPolicyConfig{
+				DisableRememberForUnsandboxedRiskyTools: true,
+			},
+			MCP: []config.MCPServerRef{{Name: "stub", Isolation: "process_group"}},
+		},
+		mcp:       mcp,
+		session:   state,
+		approvals: newApprovalStore(),
+	}
+	runtimeRef.queueApproval(schema.ToolCall{
+		ID:        "call-risk-remember",
+		Name:      "write_file",
+		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
+	}, schema.Tool{Name: "write_file", Server: "stub", Kind: "write"}, "fixer")
+
+	if _, err := runtimeRef.ApproveToolCallAndRemember(context.Background(), "call-risk-remember"); err == nil || !strings.Contains(err.Error(), "tool_risk_policy") {
+		t.Fatalf("expected tool_risk_policy remember rejection, got %v", err)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected rejected remember attempt not to call MCP, got %d calls", mcp.calls)
+	}
+	if len(runtimeRef.PendingApprovals()) != 1 {
+		t.Fatalf("expected pending approval to remain queued, got %#v", runtimeRef.PendingApprovals())
+	}
+	if len(state.Snapshot().PendingApprovals) != 1 {
+		t.Fatalf("expected session pending approval to remain queued, got %#v", state.Snapshot().PendingApprovals)
+	}
+
+	result, err := runtimeRef.ApproveToolCall(context.Background(), "call-risk-remember")
+	if err != nil {
+		t.Fatalf("ApproveToolCall: %v", err)
+	}
+	if result.CallID != "call-risk-remember" || mcp.calls != 1 {
+		t.Fatalf("expected approve-once to execute after remember rejection, result=%#v calls=%d", result, mcp.calls)
+	}
+	if state.HasApprovedToolScope("C:/repo", "write", "write_file") {
+		t.Fatal("expected risky unsandboxed tool not to be remembered")
+	}
+}
+
+func TestRiskPolicyRejectsApproveForQueuedUnsandboxedRiskyTool(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	state := session.New(4)
+	runtimeRef := &Runtime{
+		cfg: &config.Config{
+			WorkspaceRoot: "C:/repo",
+			ToolRiskPolicy: config.ToolRiskPolicyConfig{
+				RejectUnsandboxedRiskyTools: true,
+			},
+			MCP: []config.MCPServerRef{{Name: "stub", Isolation: "process_group"}},
+		},
+		mcp:       mcp,
+		session:   state,
+		approvals: newApprovalStore(),
+	}
+	runtimeRef.queueApproval(schema.ToolCall{
+		ID:        "call-risk-approve",
+		Name:      "write_file",
+		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
+	}, schema.Tool{Name: "write_file", Server: "stub", Kind: "write"}, "fixer")
+
+	if ok, reason := runtimeRef.CanApprovePendingToolApproval("call-risk-approve"); ok || !strings.Contains(reason, "reject_unsandboxed_risky_tools") {
+		t.Fatalf("expected approve action unavailable by risk policy, ok=%v reason=%q", ok, reason)
+	}
+	if _, err := runtimeRef.ApproveToolCall(context.Background(), "call-risk-approve"); err == nil || !strings.Contains(err.Error(), "reject_unsandboxed_risky_tools") {
+		t.Fatalf("expected risk-policy approve rejection, got %v", err)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected rejected approval not to call MCP, got %d calls", mcp.calls)
+	}
+	if len(runtimeRef.PendingApprovals()) != 1 {
+		t.Fatalf("expected pending approval to remain queued for deny/cancel, got %#v", runtimeRef.PendingApprovals())
+	}
+	denied, err := runtimeRef.DenyToolCall("call-risk-approve")
+	if err != nil {
+		t.Fatalf("DenyToolCall: %v", err)
+	}
+	if !denied.Denied || !denied.IsError {
+		t.Fatalf("expected deny to remain available, got %#v", denied)
 	}
 }
 
@@ -526,6 +807,41 @@ func TestRuntimeApprovePendingToolCallsForWorkflowExecutesOnlyMatchingQueuedCall
 	pending := runtimeRef.PendingApprovals()
 	if len(pending) != 1 || pending[0].ID != "call-2" {
 		t.Fatalf("expected unrelated approval to remain pending, got %#v", pending)
+	}
+}
+
+func TestRiskPolicyRejectsWorkflowRememberForUnsandboxedRiskyTool(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	runtimeRef := &Runtime{
+		cfg: &config.Config{
+			ToolRiskPolicy: config.ToolRiskPolicyConfig{
+				DisableRememberForUnsandboxedRiskyTools: true,
+			},
+			MCP: []config.MCPServerRef{{Name: "stub", Isolation: "process_group"}},
+		},
+		mcp:       mcp,
+		approvals: newApprovalStore(),
+	}
+	runtimeRef.approvals.Add(pendingApproval{
+		call:     schema.ToolCall{ID: "call-workflow-risk", Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`)},
+		tool:     schema.Tool{Name: "write_file", Server: "stub", Kind: "write"},
+		agent:    "fixer",
+		workflow: workflowNamePlanFixAudit,
+		stage:    WorkflowStageFix,
+		request:  "build flask hello world",
+	})
+
+	if err := runtimeRef.RememberPendingWorkflowToolApproval("call-workflow-risk"); err == nil || !strings.Contains(err.Error(), "tool_risk_policy") {
+		t.Fatalf("expected workflow remember rejection, got %v", err)
+	}
+	if _, err := runtimeRef.ApprovePendingToolCallsForWorkflow(context.Background(), workflowNamePlanFixAudit); err == nil || !strings.Contains(err.Error(), "tool_risk_policy") {
+		t.Fatalf("expected approve-tools remember rejection before execution, got %v", err)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected workflow approve-tools rejection not to execute MCP, got %d calls", mcp.calls)
+	}
+	if len(runtimeRef.PendingApprovals()) != 1 {
+		t.Fatalf("expected workflow pending approval to remain queued, got %#v", runtimeRef.PendingApprovals())
 	}
 }
 

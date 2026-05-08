@@ -9,26 +9,35 @@ import (
 )
 
 func TestWindowsJobIsolationCanAttachAndTerminateProcess(t *testing.T) {
+	assertWindowsJobBackedIsolationCanTerminate(t, "windows_job")
+}
+
+func TestWindowsRestrictedTokenIsolationGetsJobLifecycleCleanup(t *testing.T) {
+	assertWindowsJobBackedIsolationCanTerminate(t, "windows_restricted_token")
+}
+
+func assertWindowsJobBackedIsolationCanTerminate(t *testing.T, isolation string) {
+	t.Helper()
 	cmd := exec.Command("powershell", "-NoProfile", "-Command", "Start-Sleep -Seconds 30")
 	if err := cmd.Start(); err != nil {
 		t.Fatalf("start process: %v", err)
 	}
-	handle, err := attachProcessIsolation("windows_job", nil, cmd)
+	handle, err := attachProcessIsolation(isolation, nil, cmd)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		t.Fatalf("attach windows job isolation: %v", err)
+		t.Fatalf("attach %s isolation: %v", isolation, err)
 	}
 	if handle == nil || handle.job == 0 {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		t.Fatalf("expected job handle, got %#v", handle)
+		t.Fatalf("expected %s job handle, got %#v", isolation, handle)
 	}
 	if err := terminateProcessIsolation(handle, cmd); err != nil {
 		_ = closeProcessIsolation(handle)
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		t.Fatalf("terminate job: %v", err)
+		t.Fatalf("terminate %s job: %v", isolation, err)
 	}
 	done := make(chan error, 1)
 	go func() {

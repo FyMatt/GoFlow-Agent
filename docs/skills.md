@@ -1,5 +1,7 @@
 ﻿# Skills
 
+[English](./skills.md) | [简体中文](./skills.zh-CN.md)
+
 ## Overview
 
 Skills are stored as folders under `skills/`, each containing a `SKILL.md` file.
@@ -28,8 +30,11 @@ Current frontmatter fields include:
 - `description`
 - `version`
 - `author`
+- `format`
 - `tools`
+- `allowed-tools` / `allowed_tools`
 - `params`
+- `scripts`
 - `activation`
 - `mode`
 - `preferred_agent`
@@ -37,6 +42,13 @@ Current frontmatter fields include:
 - `output_kind`
 - `next_skills`
 - `metadata`
+
+GoFlow accepts native GoFlow skills as well as portable Claude/Codex-style
+skills. The portable baseline is a folder with `SKILL.md` whose frontmatter has
+`name` and `description`; GoFlow derives activation keywords when
+`activation.keywords` is omitted. Native GoFlow skills can add the richer fields
+above for explicit matching, workflow composition, tool envelopes, and output
+contracts.
 
 ## Example
 
@@ -55,7 +67,7 @@ params:
     description: File or directory to inspect
     required: true
 activation:
-  keywords: ["audit", "瀹¤", "security review"]
+  keywords: ["audit", "审计", "security review"]
   embedding_description: Audit source code for vulnerabilities.
 mode: audit
 preferred_agent: auditor
@@ -76,10 +88,65 @@ metadata:
 ## Validation rules
 
 - skill folders and skill `name` fields may use letters, numbers, spaces, underscores, or hyphens
-- folder name and normalized skill name must align
-- `name`, `description`, `version`, and `author` are required
-- at least one activation keyword is required
+- `name` and `description` are always required
+- folder name and normalized skill name must align for strict native GoFlow skills
+- `version`, `author`, and at least one activation keyword are required for strict native GoFlow skills
+- portable Claude/Codex-style skills may omit `version`, `author`, and `activation`; basic activation keywords are derived from `name` and `description`
 - referenced tools must have non-empty names
+- bundled resources under `references/`, `scripts/`, `assets/`, `templates/`, and `agents/` are indexed as skill resources
+- declared `scripts` must point under the skill's `scripts/` directory and are executable only through `skill_runner/run_script` when the active agent still allows `exec`
+
+## Bundled resource API
+
+HTTP Studio and external clients can edit complex skill resources without
+rewriting `SKILL.md`:
+
+```text
+GET    /api/resources/skills/{name}/files
+GET    /api/resources/skills/{name}/files/{relative-path}
+PUT    /api/resources/skills/{name}/files/{relative-path}
+DELETE /api/resources/skills/{name}/files/{relative-path}
+```
+
+The file API is scoped to the runtime skill directory and only accepts resource
+paths under `references/`, `scripts/`, `assets/`, `templates/`, or `agents/`.
+Use `GET/PUT /api/resources/skills/{name}` for the main `SKILL.md` metadata and
+instructions. Resource writes reload skills when hot reload is available, so
+new files appear in the loaded skill resource manifest.
+
+## Declared helper scripts
+
+Complex skills may declare deterministic helper scripts in `SKILL.md`:
+
+```yaml
+scripts:
+  - name: collect-assets
+    path: scripts/collect_assets.py
+    runtime: python
+    output: json
+    timeout: 30s
+    workspace_mount: ro
+    approval: required
+    args_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+      required: [url]
+```
+
+When such a skill matches, GoFlow can expose `skill_runner/run_script` as an
+`exec` tool. The active agent profile and runtime policy still decide whether
+that tool is available, whether approval is required, and how the MCP server is
+isolated. The script receives JSON arguments on stdin and in
+`GOFLOW_SKILL_ARGS_JSON`; the tool returns a JSON payload with stdout, exit
+code, duration, timeout status, declared metadata, and JSON-output validation
+when requested.
+
+Use `isolation: container` in the `skill_runner` MCP server configuration when
+script execution needs a real Docker/Podman sandbox. Script metadata documents
+intent, but enforcement comes from the MCP server configuration.
 
 ## Matching
 
@@ -109,10 +176,12 @@ When a skill matches, it can influence:
 - `/status` skill-match diagnostics
 - `/skills` follow-up skill hints from `next_skills`
 - the workflow and session information later surfaced through CLI or HTTP inspection
+- the matched-skill prompt with a manifest of bundled skill resources
+- declared helper scripts through `skill_runner/run_script`, subject to the active agent's `exec` permission and normal approval policy
 
 Skill metadata does not override runtime agent authorization. In particular:
 - `preferred_agent` is advisory; the runtime may still execute with a different active agent and records mismatches in the audit trail
-- `allowed_tool_kinds` on the skill describes the workflow's intended envelope, but actual MCP execution still depends on the current runtime agent profile
+- `allowed_tool_kinds` on the skill narrows the selected agent's tool-kind envelope by intersection; it cannot grant tool kinds the agent did not already have
 - the active agent's `tool_policy`, `allowed_tool_kinds`, and `allowed_tools` remain the final gate for tool execution
 
 ## Built-in baseline skills

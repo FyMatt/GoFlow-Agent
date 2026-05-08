@@ -1,0 +1,122 @@
+name: skill-chain
+description: Route a request through the most relevant specialist path, then consolidate the result into a reviewed final output.
+stages:
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next:
+        - route-request
+      position:
+        x: 80
+        "y": 380
+    - name: route-request
+      node_type: agent
+      agent: planner
+      skill: execution-plan
+      params:
+        output: 'Select the most relevant next stage by ending with Next skill: <stage-name>.'
+        routing_targets: implementation-path for code changes, audit-path for code review, vulnerability-path for general security, web-security-path for client/web targets, binary-analysis-path for binaries or reverse engineering.
+      next_strategy: select
+      next:
+        - implementation-path
+        - audit-path
+        - vulnerability-path
+        - web-security-path
+        - binary-analysis-path
+      position:
+        x: 350
+        "y": 350
+    - name: implementation-path
+      node_type: agent
+      agent: fixer
+      skill: code-writing
+      params:
+        guardrails: Use workspace-safe edits and preserve unrelated work.
+        output: Implement the requested change, keep scope tight, and summarize files changed plus verification.
+      approval: true
+      next:
+        - consolidate
+      position:
+        x: 668
+        "y": 27
+    - name: audit-path
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        evidence: Point to concrete files, behavior, and missing tests.
+        output: Review code, configuration, tests, and operational risk with severity-ordered findings.
+      next:
+        - consolidate
+      position:
+        x: 710
+        "y": 290
+    - name: vulnerability-path
+      node_type: skill
+      agent: auditor
+      skill: vulnerability-research
+      params:
+        evidence: Separate confirmed behavior from inference.
+        output: Investigate attack surface, exploitability, mitigations, and verification steps.
+      next:
+        - consolidate
+      position:
+        x: 710
+        "y": 460
+    - name: web-security-path
+      node_type: tool
+      agent: auditor
+      skill: web-vulnerability-research
+      tool: web_tools/fetch_page_assets
+      params:
+        evidence: List fetched targets or note when network access was not used.
+        output: Inspect web-facing behavior, client assets, exposed routes, and browser-side security signals.
+      next:
+        - consolidate
+      position:
+        x: 710
+        "y": 630
+    - name: binary-analysis-path
+      node_type: skill
+      agent: auditor
+      skill: reverse-engineering
+      params:
+        evidence: Keep reverse-engineering observations factual and reproducible.
+        output: Summarize binary format, interesting strings/symbols, control flow, and follow-up targets.
+      next:
+        - binary-risk-review
+      position:
+        x: 710
+        "y": 800
+    - name: binary-risk-review
+      node_type: skill
+      agent: auditor
+      skill: binary-vulnerability-research
+      params:
+        evidence: Mark uncertainty explicitly.
+        output: Assess parser, memory-safety, privilege, protocol, and exploitability risks from the binary analysis.
+      next:
+        - consolidate
+      position:
+        x: 1050
+        "y": 800
+    - name: consolidate
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        final_shape: Use the completed stage evidence; do not invent unperformed checks.
+        output: Merge prior stage results into a concise final answer with findings, changes, verification, and residual risk.
+      next:
+        - output
+      position:
+        x: 1390
+        "y": 380
+    - name: output
+      node_type: end
+      agent: ""
+      skill: ""
+      position:
+        x: 1710
+        "y": 409

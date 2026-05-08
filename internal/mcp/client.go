@@ -49,6 +49,8 @@ type Client struct {
 	timeout          time.Duration
 	workDir          string
 	env              []string
+	envAllowlist     []string
+	workspaceRoot    string
 	networkDisabled  bool
 	isolation        string
 	isolationOptions map[string]string
@@ -87,6 +89,8 @@ func NewClient(cfg config.MCPServerRef) *Client {
 		timeout:          cfg.Timeout,
 		workDir:          cfg.WorkDir,
 		env:              buildClientEnv(cfg.EnvAllowlist, cfg.WorkspaceRoot),
+		envAllowlist:     append([]string(nil), cfg.EnvAllowlist...),
+		workspaceRoot:    cfg.WorkspaceRoot,
 		networkDisabled:  cfg.NetworkDisabled,
 		isolation:        normalizeIsolationMode(cfg.Isolation),
 		isolationOptions: cloneStringMap(cfg.IsolationOptions),
@@ -125,12 +129,28 @@ func (c *Client) restartLocked() error {
 		return err
 	}
 
-	cmd := exec.Command(c.command, c.args...)
-	cmd.Env = c.env
-	cmd.SysProcAttr = newSysProcAttr(c.isolation)
-	if strings.TrimSpace(c.workDir) != "" {
+	cmd, err := c.newServerCommand()
+	if err != nil {
+		wrapped := fmt.Errorf("prepare mcp server %s command: %w", c.name, err)
+		c.recordFailureLocked(wrapped)
+		return wrapped
+	}
+	processAttr, attrCleanup, err := newSysProcAttr(c.processIsolationMode())
+	if err != nil {
+		wrapped := fmt.Errorf("prepare mcp server %s isolation %s: %w", c.name, c.isolation, err)
+		c.recordFailureLocked(wrapped)
+		return wrapped
+	}
+	attrCleanupTransferred := false
+	defer func() {
+		if attrCleanup != nil && !attrCleanupTransferred {
+			_ = attrCleanup()
+		}
+	}()
+	cmd.SysProcAttr = processAttr
+	if c.isolation != "container" && strings.TrimSpace(c.workDir) != "" {
 		cmd.Dir = c.workDir
-	} else if filepath.IsAbs(c.command) {
+	} else if c.isolation != "container" && filepath.IsAbs(c.command) {
 		cmd.Dir = filepath.Dir(c.command)
 	}
 	cmd.Stderr = os.Stderr
@@ -152,13 +172,23 @@ func (c *Client) restartLocked() error {
 		c.recordFailureLocked(wrapped)
 		return wrapped
 	}
+	attrCleanupTransferred = true
 	isolationHandle, err := attachProcessIsolation(c.isolation, c.isolationOptions, cmd)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
+		if attrCleanup != nil {
+			_ = attrCleanup()
+		}
 		wrapped := fmt.Errorf("apply mcp server %s isolation %s: %w", c.name, c.isolation, err)
 		c.recordFailureLocked(wrapped)
 		return wrapped
+	}
+	if isolationHandle == nil && attrCleanup != nil {
+		isolationHandle = &processIsolation{}
+	}
+	if isolationHandle != nil && attrCleanup != nil {
+		isolationHandle.cleanup = attrCleanup
 	}
 	c.cmd = cmd
 	c.isolationHandle = isolationHandle
@@ -169,6 +199,60 @@ func (c *Client) restartLocked() error {
 	c.lastHealth = c.readyHealthLabel()
 	c.lastHealthAt = time.Now()
 	return nil
+}
+
+func (c *Client) newServerCommand() (*exec.Cmd, error) {
+	if c.isolation == "linux_netns" {
+		runtimeCommand, runtimeArgs, runtimeEnv, err := buildLinuxNetworkNamespaceCommand(linuxNetworkNamespaceConfig{
+			Command: c.command,
+			Args:    c.args,
+			Options: c.isolationOptions,
+			Env:     c.env,
+		})
+		if err != nil {
+			return nil, err
+		}
+		cmd := exec.Command(runtimeCommand, runtimeArgs...)
+		cmd.Env = runtimeEnv
+		return cmd, nil
+	}
+	if c.isolation != "container" {
+		cmd := exec.Command(c.command, c.args...)
+		cmd.Env = c.env
+		return cmd, nil
+	}
+	runtimeCommand, runtimeArgs, runtimeEnv, err := buildContainerRunCommand(containerRunConfig{
+		ServerName:      c.name,
+		Command:         c.command,
+		Args:            c.args,
+		Options:         c.isolationOptions,
+		EnvAllowlist:    c.envAllowlist,
+		WorkspaceRoot:   c.workspaceRoot,
+		NetworkDisabled: c.networkDisabled,
+	})
+	if err != nil {
+		return nil, err
+	}
+	cmd := exec.Command(runtimeCommand, runtimeArgs...)
+	cmd.Env = runtimeEnv
+	return cmd, nil
+}
+
+func (c *Client) processIsolationMode() string {
+	if c.isolation == "container" || c.isolation == "linux_netns" {
+		return "process_group"
+	}
+	return c.isolation
+}
+
+// Close stops the MCP server process if it is running.
+func (c *Client) Close() error {
+	if c == nil {
+		return nil
+	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return c.stopProcessLocked()
 }
 
 func (c *Client) stopProcessLocked() error {

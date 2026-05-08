@@ -3,6 +3,22 @@
 !.env.example
 
 .goflow/
+.claude/
+.codex/
+.gocache/
+.gotmp/
+
+# Local planning and agent handoff notes. Keep them beside the repo during
+# development, but do not publish them as end-user project documentation.
+Backend-PLAN.md
+Web-PLAN.md
+FRONTEND-HANDOFF.md
+FRONTEND-CONTRACT.md
+FRONTEND-BACKEND-FEEDBACK.md
+
+# Local screenshots captured during manual review.
+1.png
+
 dist/
 bin/
 /workspace/

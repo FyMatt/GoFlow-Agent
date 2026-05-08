@@ -41,12 +41,30 @@ func (e *Executor) RunToolCalls(ctx context.Context, execCtx ExecutionContext, c
 				return nil, err
 			}
 		}
+		if err := execCtx.rejectByRiskPolicy(tool); err != nil {
+			result := execCtx.validationErrorResult(call, err)
+			execCtx.annotateResult(&result, tool)
+			execCtx.recordAudit(schema.AuditEntry{Type: "tool_call", ToolName: tool.Name, Outcome: "denied", Detail: err.Error()})
+			if handler != nil {
+				_ = handler(schema.StreamEvent{Type: schema.StreamEventError, ToolName: tool.Name, ToolCallID: call.ID, Content: err.Error(), AgentID: execCtx.AgentID, IsError: true})
+			}
+			results = append(results, result)
+			continue
+		}
 		if err := execCtx.emitApproval(handler, call, tool); err != nil {
 			return nil, err
 		}
 		if execCtx.requiresApproval(tool) {
 			if runtimeRef != nil {
-				runtimeRef.queueApproval(call, tool, execCtx.AgentID)
+				if execCtx.AgentRunID != "" {
+					if scoped, ok := runtimeRef.(agentRunApprovalQueuer); ok {
+						scoped.queueApprovalForAgentRun(call, tool, execCtx.AgentID, execCtx.AgentRunID)
+					} else {
+						runtimeRef.queueApproval(call, tool, execCtx.AgentID)
+					}
+				} else {
+					runtimeRef.queueApproval(call, tool, execCtx.AgentID)
+				}
 			}
 			result := execCtx.approvalResult(call, tool)
 			execCtx.recordAudit(schema.AuditEntry{Type: "tool_call", ToolName: tool.Name, Outcome: "approval_required", Detail: result.Content})
@@ -75,6 +93,10 @@ func (e *Executor) RunToolCalls(ctx context.Context, execCtx ExecutionContext, c
 
 type approvalQueuer interface {
 	queueApproval(call schema.ToolCall, tool schema.Tool, agentID string)
+}
+
+type agentRunApprovalQueuer interface {
+	queueApprovalForAgentRun(call schema.ToolCall, tool schema.Tool, agentID, agentRunID string)
 }
 
 func validationErrorOutcome(result schema.ToolResult) string {

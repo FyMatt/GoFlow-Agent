@@ -1,5 +1,7 @@
 # Release Packaging
 
+[English](./release.md) | [简体中文](./release.zh-CN.md)
+
 GoFlow release delivery has two paths:
 
 - binary archives for Windows and Linux users
@@ -49,30 +51,23 @@ Each archive contains:
 - `bin/file_tools`
 - `bin/web_tools`
 - `mcp_servers/python_notes.py`
-- `configs/agent.binary.yaml`
+- `configs/goflow.binary.yaml`
 - `skills/`
 - `docs/`
 - launcher script: `run-goflow.sh` or `run-goflow.cmd`
 
-The launcher sets the MCP binary paths and defaults `GOFLOW_BACKUP_*` to the
-primary provider values when backup variables are not set. It then starts:
-
-```text
-goflow --config configs/agent.binary.yaml --workspace <workspace>
-```
-
-The Python MCP server still requires Python on the target machine. Linux launchers default to `python3`; Windows launchers default to `python`. Override `GOFLOW_PYTHON_CMD` when needed.
+The launcher sets MCP binary paths and defaults `GOFLOW_BACKUP_*` to the primary
+Provider values when backup variables are unset.
 
 Direct execution from `bin/goflow` or `bin/goflow.exe` is also supported. When
 the executable is launched from an archive `bin` directory, GoFlow resolves
-runtime home to the archive root and defaults to `configs/agent.binary.yaml`
-instead of looking for `bin/configs/agent.yaml`.
+runtime home to the archive root and defaults to `configs/goflow.binary.yaml`
+instead of looking for `bin/configs/goflow.yaml`.
 
 The build script writes `dist/SHA256SUMS` for archive integrity checks. The SBOM
-script writes `dist/SBOM.spdx.json` and can append its checksum to `SHA256SUMS`.
-The release workflow signs each archive, `SHA256SUMS`, and `SBOM.spdx.json`
-with Sigstore/Cosign keyless signing and uploads one `.sigstore.json` bundle per
-signed artifact.
+script writes `dist/SBOM.spdx.json` and can append its checksum to
+`SHA256SUMS`. The release workflow signs archives, `SHA256SUMS`, and
+`SBOM.spdx.json` with Sigstore/Cosign keyless signing.
 
 ## GitHub Release
 
@@ -85,20 +80,24 @@ git push origin v0.1.3
 
 The workflow:
 
-1. builds the binary archives with `scripts/build_release_assets.py`
+1. builds binary archives with `scripts/build_release_assets.py`
 2. generates `SBOM.spdx.json` with `scripts/generate_sbom.py`
-3. signs archives, `SHA256SUMS`, and `SBOM.spdx.json` with `scripts/sign_release_artifacts.py`
-4. validates the expected OS/architecture archive names, `SHA256SUMS`, SBOM, and signature bundles
+3. signs archives, `SHA256SUMS`, and `SBOM.spdx.json`
+4. validates expected OS/architecture archive names, checksums, SBOM, and signatures
 5. uploads workflow artifacts
-6. attaches the archives, `SHA256SUMS`, `SBOM.spdx.json`, and `.sigstore.json` bundles to the GitHub Release
-7. builds the Docker image
-8. pushes the Docker image to GHCR when the run is tag-triggered
-9. signs the pushed Docker image digest with Cosign keyless signing
+6. attaches release files to the GitHub Release
+7. builds the main Docker image and the MCP Python tool-runtime image
+8. pushes both images to GHCR when the run is tag-triggered
+9. signs pushed Docker image digests with Cosign keyless signing
+
+GitHub Actions runs these scripts on GitHub-hosted runners, not on your local
+machine. The runner checks out the repository, installs the requested toolchain,
+runs the workflow steps, then uploads artifacts or pushes images using the
+workflow permissions.
 
 ## Signature Verification
 
-Release assets are signed by the GitHub Actions release workflow through
-Sigstore keyless signing. Verify a downloaded file with its adjacent bundle:
+Verify a downloaded archive with its adjacent Sigstore bundle:
 
 ```bash
 cosign verify-blob \
@@ -117,6 +116,15 @@ cosign verify \
   ghcr.io/fymatt/goflow-agent:<tag>
 ```
 
+Verify the MCP Python tool-runtime image the same way:
+
+```bash
+cosign verify \
+  --certificate-identity-regexp "https://github.com/FyMatt/GoFlow-Agent/.github/workflows/release.yml@refs/tags/v.*" \
+  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
+  ghcr.io/fymatt/goflow-agent-mcp-python:<tag>
+```
+
 ## Docker Image
 
 The release workflow publishes:
@@ -124,13 +132,19 @@ The release workflow publishes:
 ```text
 ghcr.io/fymatt/goflow-agent:<tag>
 ghcr.io/fymatt/goflow-agent:latest
+ghcr.io/fymatt/goflow-agent-mcp-python:<tag>
+ghcr.io/fymatt/goflow-agent-mcp-python:latest
 ```
 
-The Docker image uses `configs/agent.docker.yaml` and starts HTTP mode by default:
+The Docker image uses `configs/goflow.docker.yaml` and starts HTTP mode:
 
 ```text
-goflow --config /app/configs/agent.docker.yaml --workspace /workspace --http :8080
+goflow --config /app/configs/goflow.docker.yaml --workspace /workspace --http :8080
 ```
+
+The MCP Python image is a minimal Python runtime for containerized tool
+scaffold presets. GoFlow mounts the generated `mcp_servers/<name>.py` file into
+`/goflow-tools/<name>.py` and runs it inside that image.
 
 For local Docker usage, see [Deployment](./deployment.md).
 
@@ -142,7 +156,7 @@ Run static release/deployment validation without Docker:
 python scripts/validate_deployment_assets.py
 ```
 
-Run the full Go and Python smoke tests before cutting a release:
+Run the full smoke checks before cutting a release:
 
 ```bash
 go test ./...

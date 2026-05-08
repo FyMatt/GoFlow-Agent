@@ -1,0 +1,11 @@
+primary:
+  provider: openai-compatible
+  base_url: ${GOFLOW_BASE_URL}
+  api_key: ${GOFLOW_API_KEY}
+  model: ${GOFLOW_MODEL}
+  fallback_provider: backup
+  timeout: 60s
+  temperature: 0.2
+  max_tokens: 2048
+  retry_count: 2
+  retry_backoff: 2s

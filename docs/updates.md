@@ -1,5 +1,7 @@
 # Updates
 
+[English](./updates.md) | [简体中文](./updates.zh-CN.md)
+
 GoFlow publishes release archives and Docker images from GitHub Actions when a
 version tag is pushed. The runtime can expose update guidance through
 `GET /api/update-policy` and the Studio settings page.
@@ -39,7 +41,7 @@ Implemented:
 - Studio settings page displays update strategy metadata
 - release build script injects the release version into the binary
 
-Remaining:
+Optional follow-up:
 
 - direct GitHub Releases check endpoint with opt-in network access
 - checksum/signature verification flow

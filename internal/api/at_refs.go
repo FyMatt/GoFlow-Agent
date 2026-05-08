@@ -25,16 +25,29 @@ type httpAtReference struct {
 
 func (s *Server) expandAtReferences(ctx context.Context, input string, handler func(schema.StreamEvent) error) (string, error) {
 	paths := parseHTTPAtReferencePaths(input)
-	if len(paths) == 0 {
-		return input, nil
+	artifactRefs := parseSessionArtifactRefs(input)
+	expanded := input
+	if len(paths) > 0 {
+		if s == nil || s.workspace == nil || strings.TrimSpace(s.workspace.Root()) == "" {
+			return "", fmt.Errorf("workspace is required before resolving @file references")
+		}
+		if !s.workspace.Confirmed() {
+			return "", fmt.Errorf("workspace confirmation required before resolving @file references")
+		}
+		next, err := expandHTTPAtFileReferences(ctx, expanded, s.workspace.Root(), handler)
+		if err != nil {
+			return "", err
+		}
+		expanded = next
 	}
-	if s == nil || s.workspace == nil || strings.TrimSpace(s.workspace.Root()) == "" {
-		return "", fmt.Errorf("workspace is required before resolving @file references")
+	if len(artifactRefs) > 0 {
+		next, err := s.expandSessionArtifactReferences(expanded, artifactRefs, handler)
+		if err != nil {
+			return "", err
+		}
+		expanded = next
 	}
-	if !s.workspace.Confirmed() {
-		return "", fmt.Errorf("workspace confirmation required before resolving @file references")
-	}
-	return expandHTTPAtFileReferences(ctx, input, s.workspace.Root(), handler)
+	return expanded, nil
 }
 
 func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string, handler func(schema.StreamEvent) error) (string, error) {
@@ -111,6 +124,48 @@ func buildHTTPAtReferencePrompt(input string, refs []httpAtReference) string {
 	return b.String()
 }
 
+func (s *Server) expandSessionArtifactReferences(input string, refs []string, handler func(schema.StreamEvent) error) (string, error) {
+	if len(refs) == 0 {
+		return input, nil
+	}
+	var b strings.Builder
+	b.WriteString(input)
+	b.WriteString("\n\nReferenced GoFlow artifacts:\n")
+	seen := make(map[string]struct{}, len(refs))
+	for index, ref := range refs {
+		if _, ok := seen[ref]; ok {
+			continue
+		}
+		seen[ref] = struct{}{}
+		artifact, ok := s.runtime.SessionArtifact(ref)
+		if !ok {
+			return "", fmt.Errorf("%s: session artifact not found", ref)
+		}
+		callID := fmt.Sprintf("http-artifact-ref-%d", index+1)
+		if handler != nil {
+			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolCall, ToolName: "session_artifact", ToolCallID: callID, Content: "read", ArgumentsSummary: "ref=" + ref})
+			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: "session_artifact", ToolCallID: callID, Content: artifact.Summary, ArgumentsSummary: "ref=" + ref})
+		}
+		fmt.Fprintf(&b, "\n--- %s (%s, %d bytes) ---\n", artifact.Ref, artifact.Title, artifact.ContentBytes)
+		b.WriteString(artifact.Content)
+		if !strings.HasSuffix(artifact.Content, "\n") {
+			b.WriteString("\n")
+		}
+	}
+	return b.String(), nil
+}
+
+func parseSessionArtifactRefs(input string) []string {
+	var refs []string
+	for _, field := range strings.Fields(input) {
+		field = strings.TrimRight(strings.TrimSpace(field), ".,;:!?)]}")
+		if strings.HasPrefix(field, "goflow://session-artifacts/") {
+			refs = append(refs, field)
+		}
+	}
+	return refs
+}
+
 func parseHTTPAtReferencePaths(input string) []string {
 	var paths []string
 	runes := []rune(input)
@@ -169,9 +224,9 @@ func resolveWorkspaceReferencePath(raw, root string) (string, string, error) {
 	if !referenceWithinBase(cleanRoot, cleanCandidate) {
 		return "", "", fmt.Errorf("path escapes workspace root")
 	}
-	realPath, err := filepath.EvalSymlinks(cleanCandidate)
+	realPath, err := resolveWorkspaceReferenceRealPath(cleanRoot, cleanCandidate)
 	if err != nil {
-		return "", "", fmt.Errorf("resolve real path: %w", err)
+		return "", "", err
 	}
 	realPath, err = filepath.Abs(filepath.Clean(realPath))
 	if err != nil {
@@ -185,6 +240,49 @@ func resolveWorkspaceReferencePath(raw, root string) (string, string, error) {
 		return "", "", fmt.Errorf("relative path: %w", err)
 	}
 	return realPath, filepath.ToSlash(rel), nil
+}
+
+func resolveWorkspaceReferenceRealPath(cleanRoot, cleanCandidate string) (string, error) {
+	realPath, err := filepath.EvalSymlinks(cleanCandidate)
+	if err == nil {
+		return realPath, nil
+	}
+	if _, statErr := os.Stat(cleanCandidate); statErr != nil {
+		return "", fmt.Errorf("resolve real path: %w", err)
+	}
+	hasLink, linkErr := workspaceReferencePathHasSymlink(cleanRoot, cleanCandidate)
+	if linkErr != nil {
+		return "", linkErr
+	}
+	if hasLink {
+		return "", fmt.Errorf("resolve real path: %w", err)
+	}
+	return cleanCandidate, nil
+}
+
+func workspaceReferencePathHasSymlink(cleanRoot, cleanCandidate string) (bool, error) {
+	rel, err := filepath.Rel(cleanRoot, cleanCandidate)
+	if err != nil {
+		return false, fmt.Errorf("relative path: %w", err)
+	}
+	if rel == "." {
+		return false, nil
+	}
+	current := cleanRoot
+	for _, part := range strings.Split(rel, string(filepath.Separator)) {
+		if part == "" || part == "." {
+			continue
+		}
+		current = filepath.Join(current, part)
+		info, err := os.Lstat(current)
+		if err != nil {
+			return false, fmt.Errorf("resolve real path: %w", err)
+		}
+		if info.Mode()&os.ModeSymlink != 0 {
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func canonicalWorkspaceReferenceRoot(root string) (string, error) {

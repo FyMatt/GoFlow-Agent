@@ -1,4 +1,6 @@
-﻿# MCP Tool Authoring
+# MCP Tool Authoring
+
+[English](./mcp-authoring.md) | [简体中文](./mcp-authoring.zh-CN.md)
 
 This guide describes how to add a custom MCP server to GoFlow.
 
@@ -14,7 +16,67 @@ The scaffold is written to `mcp_servers/<name>.py`. It includes stdio JSON-RPC h
 
 GoFlow validates the generated scaffold before writing it. The generated file must contain the workspace boundary, JSON-RPC tool methods, and schema `additionalProperties` guards.
 
-The generated Python server includes `ping`, `read_text`, and `write_text` examples so both read and write tool shapes are visible. See [Scaffold Commands](./scaffolds.md) for the generated-file workflow, config snippet, and verification checklist.
+The generated Python server includes `ping`, `read_text`, and `write_text` examples so both read and write tool shapes are visible. Its path helper follows the built-in Python MCP safety pattern: it resolves relative and absolute inputs under `GOFLOW_WORKSPACE_ROOT`, rejects traversal, rejects symlink escapes for existing paths and write parents, returns `relative_path` metadata, bounds text reads, and reports tool-level failures as `is_error` results instead of crashing the JSON-RPC loop. See [Scaffold Commands](./scaffolds.md) for the generated-file workflow, config snippet, and verification checklist.
+
+## HTTP And Studio Scaffold Presets
+
+Browser Studio and API clients can create the same kind of Python MCP starter
+without shell access:
+
+```text
+GET /api/resources/tools/scaffolds
+GET /api/resources/tools/scaffolds/{preset}?name=<tool-name>
+POST /api/resources/tools/scaffolds/{preset}
+```
+
+Available presets are:
+
+- `python-local`: local Python stdio server using `isolation: process_group`
+- `python-container-readonly`: Docker/Podman server with read-only workspace
+  access and network disabled
+- `python-container-writer`: Docker/Podman server with write-capable workspace
+  access and network disabled
+- `python-container-network`: Docker/Podman server with read-only workspace
+  access and explicit network egress
+
+Preset responses include Studio-facing guidance fields:
+
+- `capabilities`: what the generated server is meant to demonstrate
+- `safety_guards`: concrete backend/runtime checks included in the generated
+  code and config
+- `generated_paths`: files the scaffold will write under the runtime home
+- `activation_steps`: operator steps before the new MCP server is active
+- `recommendations`: permission and approval guidance for the selected preset
+- `default_image` and `default_isolation_options`: container preset defaults
+  suitable for list-card previews before a named document is generated
+
+The `POST` body may be JSON or YAML and can set `name`, `description`, `image`,
+`runtime`, `workspace_mount`, `network`, `overwrite`, and extra
+`isolation_options`. When `image` is omitted, release builds default to the
+matching `ghcr.io/fymatt/goflow-agent-mcp-python:<version>` image tag, while
+development builds fall back to `latest`. Container presets generate
+`mcp_servers/<name>.py` and a matching
+`configs/mcp_servers/<name>.yaml` that mounts only that generated tool file into
+the container through `tool_source`, `tool_target`, and `tool_mount: ro`. The
+generated server uses the same workspace-root and symlink-escape checks as the
+CLI scaffold. The new server is visible as a saved resource immediately and
+becomes active after restart or a future MCP rebootstrap.
+
+Container presets also generate hardened defaults for resource limits,
+read-only rootfs, `no_new_privileges`, `cap_drop: all`, tmpfs scratch mounts,
+`init: "true"`, `ipc: none`, and `userns: auto`. Override `userns` with
+`nomap`, `keep-id`, or remove it when the selected Docker/Podman runtime does
+not support automatic user namespaces.
+
+`POST /api/resources/tools/{name}/validate` and `PUT
+/api/resources/tools/{name}` reuse the same MCP server config checks as runtime
+startup. Studio/API clients therefore get early validation for missing startup
+allowlists, invalid `isolation_options`, and unsupported isolation values such
+as `windows_appcontainer` before any MCP module is saved. Validation responses
+include field-level issue metadata such as `isolation`,
+`isolation_options.network`, or `allowed_commands` plus stable issue codes, so
+forms can highlight the exact invalid MCP field. A failed `PUT` returns the
+same validation envelope with HTTP 400 rather than a plain-text-only error.
 
 For a full extension that wires a custom Python MCP server into a custom agent and workflow graph, see `examples/extension-workflow`.
 
@@ -111,16 +173,31 @@ Required behavior:
 - Keep reads and binary previews bounded.
 - Make destructive operations explicit in the schema, such as `recursive: true`.
 
+GoFlow inspects discovered schemas for path-like inputs such as `path`, `file`,
+`directory`, `folder`, and `workdir`. The inspection walks nested `properties`,
+array `items`, `oneOf` / `anyOf` / `allOf`, `definitions`, and `$defs` so batch
+or object-shaped tools are still flagged when a nested field carries a path.
+Matching tools are annotated with `risk.workspace_scoped_inputs=true` in
+`/api/resources/tools`, approval events, and durable run snapshots. Built-in
+workspace-scoped servers such as `file_tools` are marked with
+`workspace_scope_enforced=true`; third-party tools are conservatively marked
+false unless the backend can recognize their safety boundary, so the tool
+implementation itself must enforce `GOFLOW_WORKSPACE_ROOT` and reject traversal
+or symlink escapes.
+
 The built-in Go and Python tools are reference implementations:
 
 - `mcp_servers/file_tools/main.go`
+- `mcp_servers/skill_runner/main.go`
 - `mcp_servers/python_notes.py`
 
 ## Config
 
-Add the server to `configs/agent.yaml`:
+Add the server as a modular MCP config, for example
+`configs/mcp_servers/my_tools.yaml`:
 
 ```yaml
+# Loaded automatically from configs/mcp_servers/*.yaml.
 mcp_servers:
   - name: my_tools
     command: python
@@ -176,6 +253,7 @@ Use that script as a template for custom Python MCP server checks:
 - send JSON-RPC lines over stdin
 - validate structured responses
 - validate workspace escape rejection
+- validate symlink escape rejection where the platform supports symlinks
 
 ## Testing Checklist
 

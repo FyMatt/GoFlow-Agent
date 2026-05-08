@@ -50,6 +50,9 @@ jobs:
       - name: Build Docker image
         run: docker build -t goflow-agent:ci .
 
+      - name: Build MCP Python image
+        run: docker build -f docker/mcp-python/Dockerfile -t goflow-agent-mcp-python:ci .
+
       - name: Smoke-test HTTP container startup
         run: |
           mkdir -p .ci-workspace
@@ -75,4 +78,3 @@ jobs:
           docker logs goflow-ci || true
           docker stop goflow-ci || true
           exit 1
-

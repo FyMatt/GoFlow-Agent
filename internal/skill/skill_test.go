@@ -83,6 +83,192 @@ activation:
 	}
 }
 
+func TestParseFileAcceptsCodexStyleMinimalSkill(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "imagegen")
+	if err := os.MkdirAll(filepath.Join(dir, "references"), 0o755); err != nil {
+		t.Fatalf("mkdir references: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "references", "style.md"), []byte("style reference"), 0o644); err != nil {
+		t.Fatalf("write reference: %v", err)
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	content := `---
+name: imagegen
+description: Generate or edit raster images when the task needs bitmap visuals.
+metadata:
+  short-description: Create or update images
+---
+
+# Image Generation
+
+Use this skill for bitmap image work.
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	skill, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("parse codex-style skill: %v", err)
+	}
+	if skill.Format != "codex-compatible" {
+		t.Fatalf("unexpected format: %q", skill.Format)
+	}
+	if len(skill.Activation.Keywords) == 0 || !stringSliceContains(skill.Activation.Keywords, "imagegen") || !stringSliceContains(skill.Activation.Keywords, "generate") {
+		t.Fatalf("expected derived activation keywords, got %#v", skill.Activation.Keywords)
+	}
+	if skill.Version != "" || skill.Author != "" {
+		t.Fatalf("expected optional version/author for portable skill, got version=%q author=%q", skill.Version, skill.Author)
+	}
+	if len(skill.Resources) != 1 || skill.Resources[0].Path != "references/style.md" || skill.Resources[0].Kind != "references" {
+		t.Fatalf("unexpected resources: %#v", skill.Resources)
+	}
+}
+
+func TestParseFileAcceptsClaudeStyleAllowedTools(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "web-review")
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "fetch.py"), []byte("print('fetch')"), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	content := `---
+name: web-review
+description: Review fetched web pages and linked scripts for client-side security issues.
+allowed-tools: Read, Grep, WebFetch, WebSearch
+---
+
+# Web Review
+
+Fetch and inspect page assets.
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	skill, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("parse claude-style skill: %v", err)
+	}
+	if skill.Format != "claude-compatible" {
+		t.Fatalf("unexpected format: %q", skill.Format)
+	}
+	for _, kind := range []string{"read", "network"} {
+		if !stringSliceContains(skill.AllowedToolKinds, kind) {
+			t.Fatalf("expected kind %q in %#v", kind, skill.AllowedToolKinds)
+		}
+	}
+	requireSkillTool(t, *skill, "file_tools/read_file", false)
+	requireSkillTool(t, *skill, "file_tools/search_files", false)
+	requireSkillTool(t, *skill, "web_tools/fetch_url", false)
+	requireSkillTool(t, *skill, "web_tools/web_search", false)
+	if skill.Metadata["source_allowed_tools"] != "Read, Grep, WebFetch, WebSearch" {
+		t.Fatalf("expected source allowed tools metadata, got %#v", skill.Metadata)
+	}
+	if len(skill.Resources) != 1 || skill.Resources[0].Path != "scripts/fetch.py" || skill.Resources[0].Kind != "scripts" {
+		t.Fatalf("unexpected resources: %#v", skill.Resources)
+	}
+}
+
+func TestParseFileParsesDeclaredScripts(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "web-review")
+	if err := os.MkdirAll(filepath.Join(dir, "scripts"), 0o755); err != nil {
+		t.Fatalf("mkdir scripts: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "scripts", "collect.py"), []byte("print('ok')"), 0o644); err != nil {
+		t.Fatalf("write script: %v", err)
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	content := `---
+name: web-review
+description: Review web assets.
+version: 1.0.0
+author: GoFlow
+activation:
+  keywords: ["web review"]
+scripts:
+  - name: collect-assets
+    description: Collect page assets for review.
+    path: scripts/collect.py
+    runtime: python
+    output: json
+    timeout: 30s
+    isolation: container
+    workspace_mount: ro
+    network: disabled
+    approval: required
+    args_schema:
+      type: object
+      additionalProperties: false
+      properties:
+        url:
+          type: string
+      required: [url]
+---
+
+## Workflow
+
+Use the declared collector only through an approved tool path.
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	skill, err := ParseFile(path)
+	if err != nil {
+		t.Fatalf("parse skill: %v", err)
+	}
+	if len(skill.Scripts) != 1 {
+		t.Fatalf("expected one script, got %#v", skill.Scripts)
+	}
+	script := skill.Scripts[0]
+	if script.Name != "collect-assets" || script.Path != "scripts/collect.py" || script.Runtime != "python" {
+		t.Fatalf("unexpected script: %#v", script)
+	}
+	if script.Approval != "required" || script.Isolation != "container" || script.Network != "disabled" {
+		t.Fatalf("unexpected script safety fields: %#v", script)
+	}
+	if script.ArgsSchema["type"] != "object" {
+		t.Fatalf("expected args_schema object, got %#v", script.ArgsSchema)
+	}
+}
+
+func TestParseFileRejectsUnsafeDeclaredScriptPath(t *testing.T) {
+	root := t.TempDir()
+	dir := filepath.Join(root, "unsafe")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	path := filepath.Join(dir, "SKILL.md")
+	content := `---
+name: unsafe
+description: Unsafe script path.
+version: 1.0.0
+author: GoFlow
+activation:
+  keywords: ["unsafe"]
+scripts:
+  - name: escape
+    path: ../escape.py
+---
+
+## Workflow
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+
+	_, err := ParseFile(path)
+	if err == nil || !strings.Contains(err.Error(), "scripts directory") {
+		t.Fatalf("expected scripts directory validation error, got %v", err)
+	}
+}
+
 func TestParseFileParsesExtendedMetadata(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "code-audit")

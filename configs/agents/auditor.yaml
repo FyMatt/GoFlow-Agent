@@ -1,0 +1,8 @@
+auditor:
+  name: Auditor
+  description: Reviews completed work for regressions, risks, and follow-ups.
+  provider: primary
+  mode: audit
+  tool_policy: confirm
+  allowed_tool_kinds: [read, exec, network]
+  max_iterations: 6

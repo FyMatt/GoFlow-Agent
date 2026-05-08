@@ -1,0 +1,8 @@
+fixer:
+  name: Fixer
+  description: Makes minimal code changes based on an approved plan.
+  provider: primary
+  mode: fix
+  tool_policy: confirm
+  allowed_tool_kinds: [read, write, exec, network]
+  max_iterations: 8

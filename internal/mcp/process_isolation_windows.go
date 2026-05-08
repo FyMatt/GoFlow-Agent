@@ -11,11 +11,12 @@ import (
 )
 
 type processIsolation struct {
-	job windows.Handle
+	job     windows.Handle
+	cleanup func() error
 }
 
 func attachProcessIsolation(isolation string, _ map[string]string, cmd *exec.Cmd) (*processIsolation, error) {
-	if isolation != "windows_job" {
+	if isolation != "windows_job" && isolation != "windows_restricted_token" {
 		return nil, nil
 	}
 	if cmd == nil || cmd.Process == nil {
@@ -65,9 +66,20 @@ func terminateProcessIsolation(handle *processIsolation, cmd *exec.Cmd) error {
 
 func closeProcessIsolation(handle *processIsolation) error {
 	if handle == nil || handle.job == 0 {
+		if handle != nil && handle.cleanup != nil {
+			err := handle.cleanup()
+			handle.cleanup = nil
+			return err
+		}
 		return nil
 	}
 	err := windows.CloseHandle(handle.job)
 	handle.job = 0
+	if handle.cleanup != nil {
+		if cleanupErr := handle.cleanup(); err == nil {
+			err = cleanupErr
+		}
+		handle.cleanup = nil
+	}
 	return err
 }

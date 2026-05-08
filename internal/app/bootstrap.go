@@ -24,6 +24,25 @@ type RuntimeApp struct {
 	MCPClient     interfaces.MCPClient
 }
 
+// SaveSession persists the current workspace-scoped session when configured.
+func (a *RuntimeApp) SaveSession() error {
+	if a == nil || a.SessionState == nil || a.Config == nil {
+		return nil
+	}
+	return a.SessionState.Save(a.Config.Session.PersistPath)
+}
+
+// Close releases runtime-owned resources such as MCP child processes.
+func (a *RuntimeApp) Close() error {
+	if a == nil || a.MCPClient == nil {
+		return nil
+	}
+	if closer, ok := a.MCPClient.(interface{ Close() error }); ok {
+		return closer.Close()
+	}
+	return nil
+}
+
 type BootstrapOptions struct {
 	RuntimeHome   string
 	WorkspaceRoot string
@@ -47,7 +66,7 @@ func LoadRuntimeConfig(runtimeHome, workspaceRoot string) (*config.Config, strin
 
 func LoadRuntimeConfigFromPath(runtimeHome, workspaceRoot, configPath string) (*config.Config, string, error) {
 	if configPath == "" {
-		configPath = filepath.Join(runtimeHome, "configs", "agent.yaml")
+		configPath = filepath.Join(runtimeHome, "configs", "goflow.yaml")
 	}
 	cfg, err := config.LoadForWorkspace(configPath, workspaceRoot)
 	if err != nil {

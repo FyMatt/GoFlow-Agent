@@ -1,0 +1,10 @@
+backup:
+  provider: openai-compatible
+  base_url: ${GOFLOW_BACKUP_BASE_URL}
+  api_key: ${GOFLOW_BACKUP_API_KEY}
+  model: ${GOFLOW_BACKUP_MODEL}
+  timeout: 60s
+  temperature: 0.2
+  max_tokens: 2048
+  retry_count: 1
+  retry_backoff: 1s

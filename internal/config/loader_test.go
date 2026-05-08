@@ -7,6 +7,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestLoadExpandsEnvAndDefaults(t *testing.T) {
@@ -15,7 +16,7 @@ func TestLoadExpandsEnvAndDefaults(t *testing.T) {
 	t.Setenv("GOFLOW_MODEL", "test-model")
 
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   provider: openai-compatible
   base_url: ${GOFLOW_BASE_URL}
@@ -64,7 +65,7 @@ func TestLoadExpandsBackupAPIKeyFromEnvironment(t *testing.T) {
 	t.Setenv("GOFLOW_BACKUP_MODEL", "deepseek-chat")
 
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`providers:
   primary:
     provider: openai-compatible
@@ -99,6 +100,196 @@ skill:
 	}
 }
 
+func TestLoadNormalizesVerifierProviderAndModel(t *testing.T) {
+	t.Setenv("GOFLOW_VERIFIER_MODEL", "cheap-checker")
+
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`providers:
+  primary:
+    base_url: http://localhost:9999/v1
+    model: primary-model
+  cheap:
+    base_url: http://localhost:9998/v1
+    model: provider-cheap-model
+agents:
+  fixer:
+    provider: primary
+    mode: fix
+  auditor:
+    provider: primary
+    mode: audit
+default_agent: fixer
+verifier:
+  enabled: true
+  agent: auditor
+  provider: cheap
+  model: ${GOFLOW_VERIFIER_MODEL}
+  modes: [fix]
+  max_tokens: 256
+skill:
+  directory: ./skills
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Verifier.Provider != "cheap" {
+		t.Fatalf("expected verifier provider override, got %#v", cfg.Verifier)
+	}
+	if cfg.Verifier.Model != "cheap-checker" {
+		t.Fatalf("expected expanded verifier model override, got %#v", cfg.Verifier)
+	}
+	if cfg.Verifier.MaxTokens != 256 {
+		t.Fatalf("expected verifier max tokens, got %#v", cfg.Verifier)
+	}
+}
+
+func TestLoadFillsVerifierModelFromProvider(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`providers:
+  primary:
+    base_url: http://localhost:9999/v1
+    model: primary-model
+  cheap:
+    base_url: http://localhost:9998/v1
+    model: provider-cheap-model
+agents:
+  fixer:
+    provider: primary
+    mode: fix
+  auditor:
+    provider: primary
+    mode: audit
+default_agent: fixer
+verifier:
+  enabled: true
+  agent: auditor
+  provider: cheap
+  modes: [fix]
+skill:
+  directory: ./skills
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.Verifier.Model != "provider-cheap-model" {
+		t.Fatalf("expected verifier model from provider, got %#v", cfg.Verifier)
+	}
+}
+
+func TestLoadRejectsUnknownVerifierProvider(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`providers:
+  primary:
+    base_url: http://localhost:9999/v1
+    model: primary-model
+agents:
+  fixer:
+    provider: primary
+    mode: fix
+  auditor:
+    provider: primary
+    mode: audit
+default_agent: fixer
+verifier:
+  enabled: true
+  agent: auditor
+  provider: missing
+  modes: [fix]
+skill:
+  directory: ./skills
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "unknown provider") {
+		t.Fatalf("expected unknown verifier provider validation error, got %v", err)
+	}
+}
+
+func TestLoadNormalizesCostControlRoutes(t *testing.T) {
+	t.Setenv("GOFLOW_SUMMARIZER_MODEL", "cheap-summary")
+
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`providers:
+  primary:
+    base_url: http://localhost:9999/v1
+    model: primary-model
+  cheap:
+    base_url: http://localhost:9998/v1
+    model: cheap-router
+agents:
+  chat:
+    provider: primary
+default_agent: chat
+cost_control:
+  router:
+    enabled: true
+    provider: cheap
+  summarizer:
+    enabled: true
+    provider: cheap
+    model: ${GOFLOW_SUMMARIZER_MODEL}
+skill:
+  directory: ./skills
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.CostControl.Router.Model != "cheap-router" || cfg.CostControl.Router.MaxTokens != 96 {
+		t.Fatalf("expected router route defaults, got %#v", cfg.CostControl.Router)
+	}
+	if cfg.CostControl.Summarizer.Model != "cheap-summary" || cfg.CostControl.Summarizer.MaxTokens != 512 {
+		t.Fatalf("expected summarizer route defaults, got %#v", cfg.CostControl.Summarizer)
+	}
+}
+
+func TestLoadRejectsUnknownCostControlProvider(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`providers:
+  primary:
+    base_url: http://localhost:9999/v1
+    model: primary-model
+agents:
+  chat:
+    provider: primary
+default_agent: chat
+cost_control:
+  router:
+    enabled: true
+    provider: missing
+skill:
+  directory: ./skills
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "cost_control.router") {
+		t.Fatalf("expected cost control provider validation error, got %v", err)
+	}
+}
+
 func TestLoadExpandsBootstrapEnvExampleValues(t *testing.T) {
 	t.Setenv("GOFLOW_BASE_URL", "https://api.deepseek.com/v1")
 	t.Setenv("GOFLOW_API_KEY", "example-primary")
@@ -108,7 +299,7 @@ func TestLoadExpandsBootstrapEnvExampleValues(t *testing.T) {
 	t.Setenv("GOFLOW_BACKUP_MODEL", "deepseek-chat")
 
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`providers:
   primary:
     provider: openai-compatible
@@ -145,7 +336,7 @@ skill:
 
 func TestLoadNormalizesLegacyLLMIntoProviderAndDefaultAgent(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`agent:
   name: Legacy Agent
   max_iterations: 5
@@ -197,7 +388,7 @@ skill:
 
 func TestLoadDefaultsToFirstSortedAgent(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`providers:
   primary:
     base_url: http://localhost:9999/v1
@@ -225,7 +416,7 @@ skill:
 
 func TestLoadParsesAllowedToolsForAgentProfiles(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`providers:
   primary:
     base_url: http://localhost:9999/v1
@@ -254,9 +445,166 @@ skill:
 	}
 }
 
+func TestLoadParsesToolRiskPolicy(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`providers:
+  primary:
+    base_url: http://localhost:9999/v1
+    model: test-model
+agents:
+  fixer:
+    provider: primary
+    mode: fix
+skill:
+  directory: ./skills
+tool_risk_policy:
+  require_approval_for_unsandboxed_risky_tools: true
+  disable_remember_for_unsandboxed_risky_tools: true
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.ToolRiskPolicy.RequireApprovalForUnsandboxedRiskyTools {
+		t.Fatal("expected require_approval_for_unsandboxed_risky_tools to parse")
+	}
+	if !cfg.ToolRiskPolicy.DisableRememberForUnsandboxedRiskyTools {
+		t.Fatal("expected disable_remember_for_unsandboxed_risky_tools to parse")
+	}
+}
+
+func TestLoadMergesModularProvidersAndAgents(t *testing.T) {
+	runtimeHome := t.TempDir()
+	configDir := filepath.Join(runtimeHome, "configs")
+	if err := os.MkdirAll(filepath.Join(configDir, "providers"), 0o755); err != nil {
+		t.Fatalf("mkdir providers: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(configDir, "agents"), 0o755); err != nil {
+		t.Fatalf("mkdir agents: %v", err)
+	}
+	configPath := filepath.Join(configDir, "goflow.yaml")
+	if err := os.WriteFile(configPath, []byte(`providers:
+  primary:
+    base_url: http://localhost:9999/v1
+    model: base-model
+agents:
+  chat:
+    provider: primary
+default_agent: custom
+skill:
+  directory: ./skills
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "providers", "custom.yaml"), []byte(`custom:
+  provider: openai-compatible
+  base_url: http://localhost:9998/v1
+  api_key: ${CUSTOM_PROVIDER_KEY}
+  model: custom-model
+  timeout: 45s
+`), 0o644); err != nil {
+		t.Fatalf("write provider module: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "agents", "custom.yaml"), []byte(`custom:
+  name: Custom Agent
+  provider: custom
+  mode: audit
+  allowed_tool_kinds: [read, network]
+  tool_policy: confirm
+`), 0o644); err != nil {
+		t.Fatalf("write agent module: %v", err)
+	}
+	t.Setenv("CUSTOM_PROVIDER_KEY", "custom-secret")
+
+	cfg, err := LoadForWorkspace(configPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadForWorkspace: %v", err)
+	}
+	if cfg.Providers["custom"].APIKey != "custom-secret" {
+		t.Fatalf("expected expanded modular provider api key, got %#v", cfg.Providers["custom"])
+	}
+	if cfg.Providers["custom"].Model != "custom-model" {
+		t.Fatalf("expected modular provider model, got %#v", cfg.Providers["custom"])
+	}
+	if cfg.Agents["custom"].Provider != "custom" || cfg.Agents["custom"].Mode != "audit" {
+		t.Fatalf("expected modular agent, got %#v", cfg.Agents["custom"])
+	}
+	if cfg.DefaultAgent != "custom" {
+		t.Fatalf("expected modular default agent to validate, got %q", cfg.DefaultAgent)
+	}
+}
+
+func TestLoadMergesModularMCPServers(t *testing.T) {
+	runtimeHome := t.TempDir()
+	configDir := filepath.Join(runtimeHome, "configs")
+	if err := os.MkdirAll(filepath.Join(configDir, "mcp_servers"), 0o755); err != nil {
+		t.Fatalf("mkdir mcp servers: %v", err)
+	}
+	configPath := filepath.Join(configDir, "goflow.yaml")
+	if err := os.WriteFile(configPath, []byte(`providers:
+  primary:
+    base_url: http://localhost:9999/v1
+    model: test-model
+agents:
+  chat:
+    provider: primary
+default_agent: chat
+mcp_servers:
+  - name: helper
+    command: python
+    args: [./mcp_servers/helper_override.py]
+    enabled: true
+    allowed_commands: [python]
+skill:
+  directory: ./skills
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(configDir, "mcp_servers", "helper.yaml"), []byte(`mcp_servers:
+  - name: helper
+    command: python
+    args: [./mcp_servers/helper.py]
+    enabled: true
+    allowed_commands: [python]
+  - name: extra
+    command: python
+    args: [./mcp_servers/extra.py]
+    enabled: true
+    allowed_commands: [python]
+`), 0o644); err != nil {
+		t.Fatalf("write mcp server module: %v", err)
+	}
+
+	cfg, err := LoadForWorkspace(configPath, t.TempDir())
+	if err != nil {
+		t.Fatalf("LoadForWorkspace: %v", err)
+	}
+	if cfg.ConfigPath != filepath.Clean(configPath) {
+		t.Fatalf("expected config path %q, got %q", filepath.Clean(configPath), cfg.ConfigPath)
+	}
+	servers := map[string]MCPServerRef{}
+	for _, server := range cfg.MCP {
+		servers[server.Name] = server
+	}
+	if len(servers) != 2 {
+		t.Fatalf("expected merged mcp servers, got %#v", cfg.MCP)
+	}
+	if got := servers["helper"].Args; len(got) != 1 || !strings.HasSuffix(got[0], filepath.Join("mcp_servers", "helper_override.py")) {
+		t.Fatalf("expected main config to override modular helper args, got %#v", got)
+	}
+	if _, ok := servers["extra"]; !ok {
+		t.Fatalf("expected modular extra mcp server, got %#v", servers)
+	}
+}
+
 func TestLoadRejectsDefaultAgentMissingFromAgents(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`providers:
   primary:
     base_url: http://localhost:9999/v1
@@ -279,7 +627,7 @@ skill:
 
 func TestLoadRejectsUnknownAgentProvider(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`providers:
   primary:
     base_url: http://localhost:9999/v1
@@ -307,7 +655,7 @@ func TestLoadRejectsCommandOutsideAllowedPath(t *testing.T) {
 	defer func() { execLookPath = original }()
 
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -331,7 +679,7 @@ mcp_servers:
 
 func TestLoadAppliesMCPIsolationDefaults(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -364,7 +712,7 @@ mcp_servers:
 
 func TestLoadAcceptsMCPProcessGroupIsolation(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -395,7 +743,7 @@ func TestLoadAcceptsMCPWindowsJobIsolationOnWindows(t *testing.T) {
 		t.Skip("windows_job isolation is Windows-only")
 	}
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -421,6 +769,92 @@ mcp_servers:
 	}
 }
 
+func TestLoadAcceptsMCPWindowsRestrictedTokenIsolationOnWindows(t *testing.T) {
+	if runtime.GOOS != "windows" {
+		t.Skip("windows_restricted_token isolation is Windows-only")
+	}
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    isolation: windows_restricted_token
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.MCP[0].Isolation != "windows_restricted_token" {
+		t.Fatalf("expected windows_restricted_token isolation, got %q", cfg.MCP[0].Isolation)
+	}
+}
+
+func TestLoadRejectsMCPWindowsRestrictedTokenIsolationOffWindows(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("windows_restricted_token isolation is supported on Windows")
+	}
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    isolation: windows_restricted_token
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "only supported on Windows") {
+		t.Fatalf("expected Windows-only validation error, got %v", err)
+	}
+}
+
+func TestLoadRejectsUnimplementedMCPWindowsAppContainerIsolation(t *testing.T) {
+	for _, isolation := range []string{"appcontainer", "app_container", "windows_appcontainer", "windows_app_container"} {
+		t.Run(isolation, func(t *testing.T) {
+			tmp := t.TempDir()
+			configPath := filepath.Join(tmp, "goflow.yaml")
+			content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    isolation: ` + isolation + `
+`)
+			if err := os.WriteFile(configPath, content, 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+
+			if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "use isolation: container") {
+				t.Fatalf("expected AppContainer unsupported validation error, got %v", err)
+			}
+		})
+	}
+}
+
 func TestLoadAcceptsMCPLinuxCgroupIsolationOnLinux(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("linux_cgroup isolation is Linux-only")
@@ -428,7 +862,7 @@ func TestLoadAcceptsMCPLinuxCgroupIsolationOnLinux(t *testing.T) {
 	t.Setenv("GOFLOW_CGROUP_PARENT", "/sys/fs/cgroup/goflow-test")
 
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -463,13 +897,51 @@ mcp_servers:
 	}
 }
 
+func TestLoadAcceptsMCPLinuxNetworkNamespaceIsolationOnLinux(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("linux_netns isolation is Linux-only")
+	}
+
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    isolation: linux_netns
+    isolation_options:
+      unshare_command: /usr/bin/unshare
+      map_root_user: true
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.MCP[0].Isolation != "linux_netns" {
+		t.Fatalf("expected linux_netns isolation, got %q", cfg.MCP[0].Isolation)
+	}
+	if cfg.MCP[0].IsolationOptions["unshare_command"] != "/usr/bin/unshare" {
+		t.Fatalf("expected unshare command option, got %#v", cfg.MCP[0].IsolationOptions)
+	}
+}
+
 func TestLoadRejectsMCPLinuxCgroupIsolationOffLinux(t *testing.T) {
 	if runtime.GOOS == "linux" {
 		t.Skip("linux_cgroup is supported on Linux")
 	}
 
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -491,9 +963,37 @@ mcp_servers:
 	}
 }
 
+func TestLoadRejectsMCPLinuxNetworkNamespaceIsolationOffLinux(t *testing.T) {
+	if runtime.GOOS == "linux" {
+		t.Skip("linux_netns is supported on Linux")
+	}
+
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    isolation: linux_netns
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "only supported on Linux") {
+		t.Fatalf("expected Linux-only validation error, got %v", err)
+	}
+}
+
 func TestLoadRejectsUnknownMCPIsolationOption(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -519,7 +1019,7 @@ mcp_servers:
 
 func TestLoadRejectsIsolationOptionsWithoutLinuxCgroup(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -538,7 +1038,7 @@ mcp_servers:
 		t.Fatalf("write config: %v", err)
 	}
 
-	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "only supported with linux_cgroup") {
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "only supported with linux_cgroup, linux_netns, or container") {
 		t.Fatalf("expected isolation_options mode validation error, got %v", err)
 	}
 }
@@ -554,7 +1054,7 @@ func TestDockerConfigLoadsWithCompiledMCPCommands(t *testing.T) {
 	originalLookPath := execLookPath
 	execLookPath = func(file string) (string, error) {
 		switch file {
-		case "/app/bin/file_tools", "/app/bin/web_tools":
+		case "/app/bin/file_tools", "/app/bin/skill_runner", "/app/bin/web_tools":
 			return file, nil
 		case "python3":
 			return "/usr/bin/python3", nil
@@ -565,7 +1065,7 @@ func TestDockerConfigLoadsWithCompiledMCPCommands(t *testing.T) {
 	t.Cleanup(func() { execLookPath = originalLookPath })
 
 	repoRoot := filepath.Join("..", "..")
-	configPath := filepath.Join(repoRoot, "configs", "agent.docker.yaml")
+	configPath := filepath.Join(repoRoot, "configs", "goflow.docker.yaml")
 	workspaceRoot := t.TempDir()
 	cfg, err := LoadForWorkspace(configPath, workspaceRoot)
 	if err != nil {
@@ -577,8 +1077,8 @@ func TestDockerConfigLoadsWithCompiledMCPCommands(t *testing.T) {
 	if cfg.Session.PersistPath != filepath.Clean("/workspace/.goflow/session.json") {
 		t.Fatalf("expected docker session path, got %q", cfg.Session.PersistPath)
 	}
-	if len(cfg.MCP) != 3 {
-		t.Fatalf("expected 3 docker MCP servers, got %d", len(cfg.MCP))
+	if len(cfg.MCP) != 4 {
+		t.Fatalf("expected 4 docker MCP servers, got %d", len(cfg.MCP))
 	}
 	servers := map[string]MCPServerRef{}
 	for _, server := range cfg.MCP {
@@ -589,6 +1089,9 @@ func TestDockerConfigLoadsWithCompiledMCPCommands(t *testing.T) {
 	}
 	if servers["web_tools"].Command != "/app/bin/web_tools" {
 		t.Fatalf("expected compiled web_tools command, got %#v", servers["web_tools"])
+	}
+	if servers["skill_runner"].Command != "/app/bin/skill_runner" {
+		t.Fatalf("expected compiled skill_runner command, got %#v", servers["skill_runner"])
 	}
 	if servers["python_notes"].Command != "python3" {
 		t.Fatalf("expected python3 command, got %#v", servers["python_notes"])
@@ -603,12 +1106,13 @@ func TestBinaryConfigLoadsWithLauncherEnv(t *testing.T) {
 	t.Setenv("GOFLOW_BACKUP_API_KEY", "secret")
 	t.Setenv("GOFLOW_BACKUP_MODEL", "test-model")
 	t.Setenv("GOFLOW_FILE_TOOLS_CMD", "/opt/goflow/bin/file_tools")
+	t.Setenv("GOFLOW_SKILL_RUNNER_CMD", "/opt/goflow/bin/skill_runner")
 	t.Setenv("GOFLOW_WEB_TOOLS_CMD", "/opt/goflow/bin/web_tools")
 	t.Setenv("GOFLOW_PYTHON_CMD", "python3")
 	t.Setenv("GOFLOW_PYTHON_NOTES_PATH", "/opt/goflow/mcp_servers/python_notes.py")
 
 	repoRoot := filepath.Join("..", "..")
-	configPath := filepath.Join(repoRoot, "configs", "agent.binary.yaml")
+	configPath := filepath.Join(repoRoot, "configs", "goflow.binary.yaml")
 	workspaceRoot := t.TempDir()
 	cfg, err := LoadForWorkspace(configPath, workspaceRoot)
 	if err != nil {
@@ -624,6 +1128,9 @@ func TestBinaryConfigLoadsWithLauncherEnv(t *testing.T) {
 	if servers["web_tools"].Command != "/opt/goflow/bin/web_tools" {
 		t.Fatalf("expected binary web_tools command, got %#v", servers["web_tools"])
 	}
+	if servers["skill_runner"].Command != "/opt/goflow/bin/skill_runner" {
+		t.Fatalf("expected binary skill_runner command, got %#v", servers["skill_runner"])
+	}
 	if servers["python_notes"].Command != "python3" {
 		t.Fatalf("expected python3 command, got %#v", servers["python_notes"])
 	}
@@ -632,9 +1139,143 @@ func TestBinaryConfigLoadsWithLauncherEnv(t *testing.T) {
 	}
 }
 
-func TestLoadRejectsUnknownMCPIsolation(t *testing.T) {
+func TestLoadAcceptsMCPContainerIsolation(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    isolation: container
+    network_disabled: true
+    isolation_options:
+      image: goflow/mcp-tools:latest
+      runtime: docker
+      workspace_mount: ro
+      workspace_target: /workspace
+      container_workdir: /app
+      network: disabled
+      ipc: none
+      userns: auto
+      memory: 256m
+      memory_swap: 256m
+      cpus: "0.5"
+      pids_limit: "64"
+      pull_policy: missing
+      readonly_rootfs: "true"
+      no_new_privileges: "true"
+      cap_drop: all
+      security_opt: seccomp=/etc/goflow/seccomp.json;apparmor=goflow-mcp
+      tmpfs: /tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m
+      init: "true"
+      tool_source: ${TOOL_SOURCE}
+      tool_target: /goflow-tools/helper.py
+      tool_mount: ro
+`)
+	t.Setenv("TOOL_SOURCE", filepath.Join(tmp, "mcp_servers", "helper.py"))
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.MCP[0].Isolation != "container" || cfg.MCP[0].IsolationOptions["image"] != "goflow/mcp-tools:latest" {
+		t.Fatalf("expected container isolation options, got %#v", cfg.MCP[0])
+	}
+	if cfg.MCP[0].IsolationOptions["tool_source"] != filepath.Join(tmp, "mcp_servers", "helper.py") {
+		t.Fatalf("expected expanded tool_source, got %#v", cfg.MCP[0].IsolationOptions)
+	}
+	if cfg.MCP[0].IsolationOptions["tmpfs"] != "/tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m" {
+		t.Fatalf("expected tmpfs option, got %#v", cfg.MCP[0].IsolationOptions)
+	}
+	if cfg.MCP[0].IsolationOptions["ipc"] != "none" || cfg.MCP[0].IsolationOptions["userns"] != "auto" || cfg.MCP[0].IsolationOptions["memory_swap"] != "256m" || cfg.MCP[0].IsolationOptions["pull_policy"] != "missing" {
+		t.Fatalf("expected container hardening options, got %#v", cfg.MCP[0].IsolationOptions)
+	}
+}
+
+func TestLoadAppliesMCPContainerIsolationProfileDefaultsAndOverrides(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: python
+    enabled: true
+    allowed_commands: [python]
+    isolation: container
+    isolation_profile: readonly
+    isolation_options:
+      image: goflow/mcp-helper:1.0.0
+      memory: 512m
+      tool_source: ${TOOL_SOURCE}
+      tool_target: /goflow-tools/helper.py
+`)
+	t.Setenv("TOOL_SOURCE", filepath.Join(tmp, "mcp_servers", "helper.py"))
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	server := cfg.MCP[0]
+	if server.IsolationProfile != "readonly" {
+		t.Fatalf("expected readonly profile, got %#v", server)
+	}
+	if server.IsolationOptions["workspace_mount"] != "ro" ||
+		server.IsolationOptions["network"] != "disabled" ||
+		server.IsolationOptions["ipc"] != "none" ||
+		server.IsolationOptions["user"] != "65532:65532" ||
+		server.IsolationOptions["memory_swap"] != "256m" ||
+		server.IsolationOptions["tool_mount"] != "ro" {
+		t.Fatalf("expected readonly profile defaults, got %#v", server.IsolationOptions)
+	}
+	if server.IsolationOptions["memory"] != "512m" {
+		t.Fatalf("expected explicit memory override to win, got %#v", server.IsolationOptions)
+	}
+	if server.IsolationOptions["tool_source"] != filepath.Join(tmp, "mcp_servers", "helper.py") {
+		t.Fatalf("expected expanded tool_source, got %#v", server.IsolationOptions)
+	}
+}
+
+func TestValidateMCPServerRefAcceptsContainerIsolationProfile(t *testing.T) {
+	server := MCPServerRef{
+		Name:             "helper",
+		Command:          "python",
+		Enabled:          true,
+		WorkDir:          ".",
+		Isolation:        "container",
+		IsolationProfile: "production",
+		AllowedCommands:  []string{"python"},
+		RestartLimit:     1,
+		Cooldown:         time.Second,
+		MaxRequestBytes:  1,
+		MaxResponseBytes: 1,
+		IsolationOptions: map[string]string{
+			"image": "goflow/mcp-helper@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		},
+	}
+	if err := ValidateMCPServerRef(server); err != nil {
+		t.Fatalf("expected production profile to validate, got %v", err)
+	}
+}
+
+func TestLoadRejectsMCPContainerIsolationWithoutImage(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -651,14 +1292,158 @@ mcp_servers:
 		t.Fatalf("write config: %v", err)
 	}
 
-	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "isolation") || !strings.Contains(err.Error(), "linux_cgroup") {
-		t.Fatalf("expected invalid isolation validation error, got %v", err)
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "isolation_options.image") {
+		t.Fatalf("expected missing container image validation error, got %v", err)
+	}
+}
+
+func TestLoadRejectsMCPContainerNetworkConflict(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    isolation: container
+    network_disabled: true
+    isolation_options:
+      image: goflow/mcp-tools:latest
+      network: bridge
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "conflicts with network_disabled") {
+		t.Fatalf("expected container network conflict validation error, got %v", err)
+	}
+}
+
+func TestLoadRejectsMCPContainerInvalidMemory(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    isolation: container
+    isolation_options:
+      image: goflow/mcp-tools:latest
+      memory: many
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "isolation_options.memory is invalid") {
+		t.Fatalf("expected invalid container memory validation error, got %v", err)
+	}
+}
+
+func TestLoadRejectsMCPContainerInvalidIPCAndUserNamespace(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+		want string
+	}{
+		{
+			name: "ipc host",
+			body: "      ipc: host\n",
+			want: "isolation_options.ipc is invalid",
+		},
+		{
+			name: "userns host",
+			body: "      userns: host\n",
+			want: "isolation_options.userns is invalid",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			configPath := filepath.Join(tmp, "goflow.yaml")
+			content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: helper
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    isolation: container
+    isolation_options:
+      image: goflow/mcp-tools:latest
+` + tc.body)
+			if err := os.WriteFile(configPath, content, 0o644); err != nil {
+				t.Fatalf("write config: %v", err)
+			}
+			if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("expected %s validation error, got %v", tc.want, err)
+			}
+		})
+	}
+}
+
+func TestValidateContainerMemory(t *testing.T) {
+	valid := []string{"", "1", "256m", "512M", "1g", "64k", "1024b", "2T"}
+	for _, value := range valid {
+		if err := validateContainerMemory(value); err != nil {
+			t.Fatalf("expected memory value %q to be valid, got %v", value, err)
+		}
+	}
+	invalid := []string{"0", "-1", "1.5g", "many", "1mb", "g"}
+	for _, value := range invalid {
+		if err := validateContainerMemory(value); err == nil {
+			t.Fatalf("expected memory value %q to be invalid", value)
+		}
+	}
+}
+
+func TestValidateContainerUser(t *testing.T) {
+	valid := []string{"", "65532", "65532:65532", "nobody", "app-user:app.group", "root:root"}
+	for _, value := range valid {
+		if err := validateContainerUser(value); err != nil {
+			t.Fatalf("expected user value %q to be valid, got %v", value, err)
+		}
+	}
+	invalid := []string{"user name", "user:group:extra", ":1000", "1000:", "user/name", "user\nname"}
+	for _, value := range invalid {
+		if err := validateContainerUser(value); err == nil {
+			t.Fatalf("expected user value %q to be invalid", value)
+		}
+	}
+}
+
+func TestValidateContainerCapDrop(t *testing.T) {
+	valid := []string{"", "all", "ALL", "NET_ADMIN", "net_admin,sys_admin", "CHOWN;DAC_OVERRIDE"}
+	for _, value := range valid {
+		if err := validateContainerCapDrop(value); err != nil {
+			t.Fatalf("expected cap_drop value %q to be valid, got %v", value, err)
+		}
+	}
+	invalid := []string{"CAP-NET", "NET/ADMIN", "NET_ADMIN=1", "\"ALL\""}
+	for _, value := range invalid {
+		if err := validateContainerCapDrop(value); err == nil {
+			t.Fatalf("expected cap_drop value %q to be invalid", value)
+		}
 	}
 }
 
 func TestLoadRejectsEnabledMCPWithoutCommandAllowlist(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -680,7 +1465,7 @@ mcp_servers:
 
 func TestLoadRejectsDuplicateEnabledMCPServerNames(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -707,7 +1492,7 @@ mcp_servers:
 
 func TestLoadDefaultsSessionPersistPath(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`providers:
   primary:
     base_url: http://localhost:9999/v1
@@ -744,7 +1529,7 @@ func TestLoadExpandsMCPIsolationEnv(t *testing.T) {
 	t.Setenv("GOFLOW_ALLOWED_ENV", "PATH")
 
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`llm:
   base_url: http://localhost:9999/v1
   model: test-model
@@ -783,7 +1568,7 @@ mcp_servers:
 func TestLoadResolvesRuntimeRelativePathsFromConfigDirectory(t *testing.T) {
 	tmp := t.TempDir()
 	configDir := filepath.Join(tmp, "runtime")
-	configPath := filepath.Join(configDir, "configs", "agent.yaml")
+	configPath := filepath.Join(configDir, "configs", "goflow.yaml")
 	if err := os.MkdirAll(filepath.Dir(configPath), 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
@@ -822,7 +1607,7 @@ mcp_servers:
 
 func TestLoadResolvesSessionPersistPathFromWorkspaceRoot(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`providers:
   primary:
     base_url: http://localhost:9999/v1
@@ -854,7 +1639,7 @@ skill:
 
 func TestLoadForWorkspaceRejectsRelativeWorkspaceRoot(t *testing.T) {
 	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "agent.yaml")
+	configPath := filepath.Join(tmp, "goflow.yaml")
 	content := []byte(`providers:
   primary:
     base_url: http://localhost:9999/v1

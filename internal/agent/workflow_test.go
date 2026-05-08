@@ -190,6 +190,21 @@ func TestWorkflowRunnerSkillChainUsesNextSkillsAndPreferredAgents(t *testing.T) 
 	if runtimeRef.ActiveAgent() != "chat" {
 		t.Fatalf("expected default agent restored after skill-chain, got %s", runtimeRef.ActiveAgent())
 	}
+	messages := runtimeRef.CollaborationMessages(session.CollaborationFilter{RunID: result.RunID})
+	if len(messages) < 5 {
+		t.Fatalf("expected workflow collaboration messages, got %#v", messages)
+	}
+	if got := messages[len(messages)-1]; got.Kind != "workflow_started" || got.RunID != result.RunID {
+		t.Fatalf("expected workflow_started message, got %#v", got)
+	}
+	stageEntries := runtimeRef.BlackboardEntries(session.CollaborationFilter{RunID: result.RunID, Kind: "stage_output"})
+	if len(stageEntries) != 3 {
+		t.Fatalf("expected one stage_output entry per stage, got %#v", stageEntries)
+	}
+	finalEntries := runtimeRef.BlackboardEntries(session.CollaborationFilter{RunID: result.RunID, Kind: "final_summary", Status: "completed"})
+	if len(finalEntries) != 1 || !strings.Contains(finalEntries[0].Content, "audit output") {
+		t.Fatalf("expected completed final summary entry, got %#v", finalEntries)
+	}
 }
 
 func TestWorkflowRunnerSkillChainResumesSuspendedStage(t *testing.T) {

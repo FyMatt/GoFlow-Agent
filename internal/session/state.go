@@ -11,6 +11,11 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
+const (
+	maxPromptBudgetHistory = 60
+	maxTokenUsageHistory   = 60
+)
+
 // State keeps lightweight in-memory session context.
 type State struct {
 	mu               sync.RWMutex
@@ -21,11 +26,20 @@ type State struct {
 	toolSummaries    []string
 	lastSkill        string
 	lastSkillMatch   *schema.SkillMatchDiagnostic
+	agentRuns        []AgentRunSnapshot
 	workflow         WorkflowSnapshot
+	workflowRuns     []WorkflowRunSnapshot
+	workflowSchemas  map[string]WorkflowSchemaSnapshot
+	messages         []CollaborationMessageSnapshot
+	blackboard       []BlackboardEntrySnapshot
+	artifacts        []SessionArtifactSnapshot
 	pendingApprovals []PendingApprovalSnapshot
 	pendingHandoff   PendingHandoffSnapshot
 	lastRouting      RoutingSnapshot
 	taskStage        TaskStageSnapshot
+	promptBudget     *schema.PromptBudget
+	promptBudgets    []schema.PromptBudget
+	tokenUsages      []schema.TokenUsageSample
 	approvedTools    map[string]map[string]struct{}
 }
 
@@ -121,13 +135,13 @@ func (s *State) SetLastSkillMatch(skill *schema.Skill, diagnostic schema.SkillMa
 func (s *State) SetWorkflow(snapshot WorkflowSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.workflow = snapshot
+	s.workflow = copyWorkflowSnapshot(snapshot)
 }
 
 func (s *State) SetPendingApprovals(approvals []PendingApprovalSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pendingApprovals = append([]PendingApprovalSnapshot(nil), approvals...)
+	s.pendingApprovals = copyPendingApprovalSnapshots(approvals)
 }
 
 func (s *State) SetPendingHandoff(handoff PendingHandoffSnapshot) {
@@ -146,6 +160,26 @@ func (s *State) SetTaskStage(stage TaskStageSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.taskStage = stage
+}
+
+func (s *State) SetPromptBudget(budget schema.PromptBudget) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	copied := budget
+	s.promptBudget = &copied
+	s.promptBudgets = appendPromptBudgetHistory(s.promptBudgets, budget)
+}
+
+func (s *State) AddTokenUsage(sample schema.TokenUsageSample) {
+	if s == nil || sample.PromptTokens+sample.OutputTokens+sample.CachedTokens <= 0 {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if sample.TotalTokens <= 0 {
+		sample.TotalTokens = sample.PromptTokens + sample.OutputTokens
+	}
+	s.tokenUsages = appendTokenUsageHistory(s.tokenUsages, sample)
 }
 
 func (s *State) ClearLastRouting() {
@@ -263,7 +297,13 @@ func (s *State) Snapshot() Snapshot {
 	defer s.mu.RUnlock()
 	prompts := append([]string(nil), s.prompts...)
 	tools := append([]string(nil), s.toolSummaries...)
-	pendingApprovals := append([]PendingApprovalSnapshot(nil), s.pendingApprovals...)
+	pendingApprovals := copyPendingApprovalSnapshots(s.pendingApprovals)
+	agentRuns := copyAgentRunSnapshots(s.agentRuns)
+	workflowRuns := copyWorkflowRunSnapshots(s.workflowRuns)
+	workflowSchemas := copyWorkflowSchemaCatalog(s.workflowSchemas)
+	messages := copyCollaborationMessages(s.messages)
+	blackboard := copyBlackboardEntries(s.blackboard)
+	artifacts := copySessionArtifacts(s.artifacts)
 	approvedTools := make(map[string][]string, len(s.approvedTools))
 	for workspace, toolSet := range s.approvedTools {
 		list := make([]string, 0, len(toolSet))
@@ -277,6 +317,16 @@ func (s *State) Snapshot() Snapshot {
 		copied := *s.lastSkillMatch
 		lastSkillMatch = &copied
 	}
+	var promptBudget *schema.PromptBudget
+	if s.promptBudget != nil {
+		copied := *s.promptBudget
+		promptBudget = &copied
+	}
+	promptBudgets := append([]schema.PromptBudget(nil), s.promptBudgets...)
+	if len(promptBudgets) == 0 && promptBudget != nil {
+		promptBudgets = []schema.PromptBudget{*promptBudget}
+	}
+	tokenUsages := append([]schema.TokenUsageSample(nil), s.tokenUsages...)
 	return Snapshot{
 		ActiveAgent:      s.activeAgent,
 		Mode:             s.mode,
@@ -284,11 +334,20 @@ func (s *State) Snapshot() Snapshot {
 		RecentTools:      tools,
 		LastSkill:        s.lastSkill,
 		LastSkillMatch:   lastSkillMatch,
-		Workflow:         s.workflow,
+		AgentRuns:        agentRuns,
+		Workflow:         copyWorkflowSnapshot(s.workflow),
+		WorkflowRuns:     workflowRuns,
+		WorkflowSchemas:  workflowSchemas,
+		Messages:         messages,
+		Blackboard:       blackboard,
+		Artifacts:        artifacts,
 		PendingApprovals: pendingApprovals,
 		PendingHandoff:   s.pendingHandoff,
 		LastRouting:      s.lastRouting,
 		TaskStage:        s.taskStage,
+		PromptBudget:     promptBudget,
+		PromptBudgets:    promptBudgets,
+		TokenUsages:      tokenUsages,
 		ApprovedTools:    approvedTools,
 	}
 }
@@ -346,11 +405,54 @@ func (s *State) Load(path string) error {
 	} else {
 		s.lastSkillMatch = nil
 	}
-	s.workflow = snapshot.Workflow
-	s.pendingApprovals = append([]PendingApprovalSnapshot(nil), snapshot.PendingApprovals...)
+	s.workflow = copyWorkflowSnapshot(snapshot.Workflow)
+	s.agentRuns = copyAgentRunSnapshots(snapshot.AgentRuns)
+	if len(s.agentRuns) > maxAgentRuns {
+		s.agentRuns = append([]AgentRunSnapshot(nil), s.agentRuns[:maxAgentRuns]...)
+	}
+	s.workflowRuns = copyWorkflowRunSnapshots(snapshot.WorkflowRuns)
+	if len(s.workflowRuns) > maxWorkflowRuns {
+		s.workflowRuns = append([]WorkflowRunSnapshot(nil), s.workflowRuns[:maxWorkflowRuns]...)
+	}
+	s.workflowSchemas = copyWorkflowSchemaCatalog(snapshot.WorkflowSchemas)
+	if len(s.workflowSchemas) == 0 && len(s.workflowRuns) > 0 {
+		for i := len(s.workflowRuns) - 1; i >= 0; i-- {
+			s.mergeWorkflowSchemaFromRunLocked(s.workflowRuns[i])
+		}
+	}
+	s.messages = copyCollaborationMessages(snapshot.Messages)
+	if len(s.messages) > maxCollaborationMessages {
+		s.messages = append([]CollaborationMessageSnapshot(nil), s.messages[:maxCollaborationMessages]...)
+	}
+	s.blackboard = copyBlackboardEntries(snapshot.Blackboard)
+	if len(s.blackboard) > maxBlackboardEntries {
+		s.blackboard = append([]BlackboardEntrySnapshot(nil), s.blackboard[:maxBlackboardEntries]...)
+	}
+	s.artifacts = copySessionArtifacts(snapshot.Artifacts)
+	if len(s.artifacts) > maxSessionArtifacts {
+		s.artifacts = append([]SessionArtifactSnapshot(nil), s.artifacts[:maxSessionArtifacts]...)
+	}
+	s.pendingApprovals = copyPendingApprovalSnapshots(snapshot.PendingApprovals)
 	s.pendingHandoff = snapshot.PendingHandoff
 	s.lastRouting = snapshot.LastRouting
 	s.taskStage = snapshot.TaskStage
+	if snapshot.PromptBudget != nil {
+		copied := *snapshot.PromptBudget
+		s.promptBudget = &copied
+	} else {
+		s.promptBudget = nil
+	}
+	s.promptBudgets = append([]schema.PromptBudget(nil), snapshot.PromptBudgets...)
+	if len(s.promptBudgets) == 0 && s.promptBudget != nil {
+		s.promptBudgets = []schema.PromptBudget{*s.promptBudget}
+	}
+	if len(s.promptBudgets) > maxPromptBudgetHistory {
+		s.promptBudgets = append([]schema.PromptBudget(nil), s.promptBudgets[len(s.promptBudgets)-maxPromptBudgetHistory:]...)
+	}
+	s.tokenUsages = append([]schema.TokenUsageSample(nil), snapshot.TokenUsages...)
+	if len(s.tokenUsages) > maxTokenUsageHistory {
+		s.tokenUsages = append([]schema.TokenUsageSample(nil), s.tokenUsages[len(s.tokenUsages)-maxTokenUsageHistory:]...)
+	}
 	s.approvedTools = make(map[string]map[string]struct{}, len(snapshot.ApprovedTools))
 	for workspace, toolNames := range snapshot.ApprovedTools {
 		if workspace == "" {
@@ -372,29 +474,139 @@ func (s *State) Load(path string) error {
 
 // WorkflowSnapshot is a read-only view of current workflow state.
 type WorkflowSnapshot struct {
-	Name             string `json:"name,omitempty"`
-	Status           string `json:"status,omitempty"`
-	NextStage        string `json:"next_stage,omitempty"`
-	Request          string `json:"request,omitempty"`
-	Summary          string `json:"summary,omitempty"`
-	LastApproval     string `json:"last_approval,omitempty"`
-	PendingCallID    string `json:"pending_call_id,omitempty"`
-	PendingToolName  string `json:"pending_tool_name,omitempty"`
-	PendingAgentID   string `json:"pending_agent_id,omitempty"`
-	PendingArguments string `json:"pending_arguments,omitempty"`
+	RunID                    string                  `json:"run_id,omitempty"`
+	Name                     string                  `json:"name,omitempty"`
+	Status                   string                  `json:"status,omitempty"`
+	NextStage                string                  `json:"next_stage,omitempty"`
+	Request                  string                  `json:"request,omitempty"`
+	Summary                  string                  `json:"summary,omitempty"`
+	LastApproval             string                  `json:"last_approval,omitempty"`
+	PendingCallID            string                  `json:"pending_call_id,omitempty"`
+	PendingToolName          string                  `json:"pending_tool_name,omitempty"`
+	PendingToolRisk          *schema.ToolRiskProfile `json:"pending_tool_risk,omitempty"`
+	PendingAgentID           string                  `json:"pending_agent_id,omitempty"`
+	PendingArguments         string                  `json:"pending_arguments,omitempty"`
+	PendingSubWorkflowName   string                  `json:"pending_sub_workflow_name,omitempty"`
+	PendingSubWorkflowRunID  string                  `json:"pending_sub_workflow_run_id,omitempty"`
+	PendingSubWorkflowStatus string                  `json:"pending_sub_workflow_status,omitempty"`
+}
+
+// WorkflowRunSnapshot is a durable, replayable view of one workflow execution.
+type WorkflowRunSnapshot struct {
+	ID                       string                      `json:"id"`
+	Name                     string                      `json:"name,omitempty"`
+	Status                   string                      `json:"status,omitempty"`
+	Request                  string                      `json:"request,omitempty"`
+	StartedAt                string                      `json:"started_at,omitempty"`
+	UpdatedAt                string                      `json:"updated_at,omitempty"`
+	CompletedAt              string                      `json:"completed_at,omitempty"`
+	CancelledAt              string                      `json:"cancelled_at,omitempty"`
+	RetryOf                  string                      `json:"retry_of,omitempty"`
+	Attempt                  int                         `json:"attempt,omitempty"`
+	NextStage                string                      `json:"next_stage,omitempty"`
+	Summary                  string                      `json:"summary,omitempty"`
+	ApprovalPrompt           string                      `json:"approval_prompt,omitempty"`
+	PendingFields            []schema.WorkflowInputField `json:"pending_input_fields,omitempty"`
+	PendingCallID            string                      `json:"pending_call_id,omitempty"`
+	PendingToolName          string                      `json:"pending_tool_name,omitempty"`
+	PendingToolRisk          *schema.ToolRiskProfile     `json:"pending_tool_risk,omitempty"`
+	PendingAgentID           string                      `json:"pending_agent_id,omitempty"`
+	PendingArgs              string                      `json:"pending_arguments,omitempty"`
+	PendingSubWorkflowName   string                      `json:"pending_sub_workflow_name,omitempty"`
+	PendingSubWorkflowRunID  string                      `json:"pending_sub_workflow_run_id,omitempty"`
+	PendingSubWorkflowStatus string                      `json:"pending_sub_workflow_status,omitempty"`
+	CompletedStages          []WorkflowRunStageSnapshot  `json:"completed_stages,omitempty"`
+	Artifacts                []WorkflowRunArtifact       `json:"artifacts,omitempty"`
+	Events                   []WorkflowRunEventSnapshot  `json:"events,omitempty"`
+}
+
+// WorkflowRunStageSnapshot captures the latest persisted output for a stage.
+type WorkflowRunStageSnapshot struct {
+	Stage        string                          `json:"stage"`
+	AgentID      string                          `json:"agent_id,omitempty"`
+	NodeType     string                          `json:"node_type,omitempty"`
+	Skill        string                          `json:"skill,omitempty"`
+	Tool         string                          `json:"tool,omitempty"`
+	Status       string                          `json:"status,omitempty"`
+	StartedAt    string                          `json:"started_at,omitempty"`
+	CompletedAt  string                          `json:"completed_at,omitempty"`
+	Attempts     int                             `json:"attempts,omitempty"`
+	Summary      string                          `json:"summary,omitempty"`
+	Inputs       map[string]string               `json:"inputs,omitempty"`
+	InputValues  map[string]any                  `json:"input_values,omitempty"`
+	Outputs      map[string]string               `json:"outputs,omitempty"`
+	OutputValues map[string]any                  `json:"output_values,omitempty"`
+	Result       schema.AgentResult              `json:"result"`
+	Artifacts    []WorkflowRunArtifact           `json:"artifacts,omitempty"`
+	Acceptance   []WorkflowRunAcceptanceSnapshot `json:"acceptance,omitempty"`
+	Metadata     map[string]string               `json:"metadata,omitempty"`
+}
+
+// WorkflowRunAcceptanceSnapshot captures pass/fail evidence for a stage criterion.
+type WorkflowRunAcceptanceSnapshot struct {
+	Name        string `json:"name,omitempty"`
+	Description string `json:"description,omitempty"`
+	Ref         string `json:"ref,omitempty"`
+	Expected    string `json:"expected,omitempty"`
+	Actual      string `json:"actual,omitempty"`
+	Status      string `json:"status,omitempty"`
+	Reason      string `json:"reason,omitempty"`
+}
+
+// WorkflowRunArtifact captures a replayable stage output or evidence item.
+type WorkflowRunArtifact struct {
+	ID         string            `json:"id"`
+	Stage      string            `json:"stage,omitempty"`
+	Kind       string            `json:"kind,omitempty"`
+	Title      string            `json:"title,omitempty"`
+	Summary    string            `json:"summary,omitempty"`
+	Content    string            `json:"content,omitempty"`
+	ToolName   string            `json:"tool_name,omitempty"`
+	ToolCallID string            `json:"tool_call_id,omitempty"`
+	IsError    bool              `json:"is_error,omitempty"`
+	Metadata   map[string]string `json:"metadata,omitempty"`
+}
+
+// WorkflowRunEventSnapshot captures a replayable workflow stream/status event.
+type WorkflowRunEventSnapshot struct {
+	Seq              int                     `json:"seq,omitempty"`
+	At               string                  `json:"at,omitempty"`
+	Stage            string                  `json:"stage,omitempty"`
+	Type             string                  `json:"type,omitempty"`
+	Content          string                  `json:"content,omitempty"`
+	ToolName         string                  `json:"tool_name,omitempty"`
+	ToolCallID       string                  `json:"tool_call_id,omitempty"`
+	ArgumentsSummary string                  `json:"arguments_summary,omitempty"`
+	AgentID          string                  `json:"agent_id,omitempty"`
+	Mode             string                  `json:"mode,omitempty"`
+	IsError          bool                    `json:"is_error,omitempty"`
+	NeedsAction      bool                    `json:"needs_action,omitempty"`
+	Suspended        bool                    `json:"suspended,omitempty"`
+	TaskStage        string                  `json:"task_stage,omitempty"`
+	PromptTokens     int                     `json:"prompt_tokens,omitempty"`
+	OutputTokens     int                     `json:"output_tokens,omitempty"`
+	CachedTokens     int                     `json:"cached_tokens,omitempty"`
+	WorkflowName     string                  `json:"workflow_name,omitempty"`
+	WorkflowStatus   string                  `json:"workflow_status,omitempty"`
+	NextStage        string                  `json:"next_stage,omitempty"`
+	PendingApproval  bool                    `json:"pending_approval,omitempty"`
+	PromptBudget     *schema.PromptBudget    `json:"prompt_budget,omitempty"`
+	Risk             *schema.ToolRiskProfile `json:"risk,omitempty"`
 }
 
 // PendingApprovalSnapshot is a read-only view of pending tool approval state.
 type PendingApprovalSnapshot struct {
-	CallID           string `json:"call_id,omitempty"`
-	ToolName         string `json:"tool_name,omitempty"`
-	AgentID          string `json:"agent_id,omitempty"`
-	ArgumentsSummary string `json:"arguments_summary,omitempty"`
-	Arguments        string `json:"arguments,omitempty"`
-	WorkflowName     string `json:"workflow_name,omitempty"`
-	Stage            string `json:"stage,omitempty"`
-	Request          string `json:"request,omitempty"`
-	CompletedSummary string `json:"completed_summary,omitempty"`
+	CallID           string                  `json:"call_id,omitempty"`
+	ToolName         string                  `json:"tool_name,omitempty"`
+	AgentID          string                  `json:"agent_id,omitempty"`
+	ArgumentsSummary string                  `json:"arguments_summary,omitempty"`
+	Arguments        string                  `json:"arguments,omitempty"`
+	WorkflowName     string                  `json:"workflow_name,omitempty"`
+	Stage            string                  `json:"stage,omitempty"`
+	Request          string                  `json:"request,omitempty"`
+	CompletedSummary string                  `json:"completed_summary,omitempty"`
+	AgentRunID       string                  `json:"agent_run_id,omitempty"`
+	Risk             *schema.ToolRiskProfile `json:"risk,omitempty"`
 }
 
 // PendingHandoffSnapshot is a read-only view of an ordinary-chat plan->execution handoff.
@@ -427,18 +639,35 @@ type TaskStageSnapshot struct {
 
 // Snapshot is a read-only view of current session state.
 type Snapshot struct {
-	ActiveAgent      string                       `json:"active_agent"`
-	Mode             string                       `json:"mode"`
-	RecentPrompts    []string                     `json:"recent_prompts"`
-	RecentTools      []string                     `json:"recent_tools"`
-	LastSkill        string                       `json:"last_skill"`
-	LastSkillMatch   *schema.SkillMatchDiagnostic `json:"last_skill_match,omitempty"`
-	Workflow         WorkflowSnapshot             `json:"workflow,omitempty"`
-	PendingApprovals []PendingApprovalSnapshot    `json:"pending_approvals,omitempty"`
-	PendingHandoff   PendingHandoffSnapshot       `json:"pending_handoff,omitempty"`
-	LastRouting      RoutingSnapshot              `json:"last_routing,omitempty"`
-	TaskStage        TaskStageSnapshot            `json:"task_stage,omitempty"`
-	ApprovedTools    map[string][]string          `json:"approved_tools,omitempty"`
+	ActiveAgent      string                            `json:"active_agent"`
+	Mode             string                            `json:"mode"`
+	RecentPrompts    []string                          `json:"recent_prompts"`
+	RecentTools      []string                          `json:"recent_tools"`
+	LastSkill        string                            `json:"last_skill"`
+	LastSkillMatch   *schema.SkillMatchDiagnostic      `json:"last_skill_match,omitempty"`
+	AgentRuns        []AgentRunSnapshot                `json:"agent_runs,omitempty"`
+	Workflow         WorkflowSnapshot                  `json:"workflow,omitempty"`
+	WorkflowRuns     []WorkflowRunSnapshot             `json:"workflow_runs,omitempty"`
+	WorkflowSchemas  map[string]WorkflowSchemaSnapshot `json:"workflow_schemas,omitempty"`
+	Messages         []CollaborationMessageSnapshot    `json:"messages,omitempty"`
+	Blackboard       []BlackboardEntrySnapshot         `json:"blackboard,omitempty"`
+	Artifacts        []SessionArtifactSnapshot         `json:"artifacts,omitempty"`
+	PendingApprovals []PendingApprovalSnapshot         `json:"pending_approvals,omitempty"`
+	PendingHandoff   PendingHandoffSnapshot            `json:"pending_handoff,omitempty"`
+	LastRouting      RoutingSnapshot                   `json:"last_routing,omitempty"`
+	TaskStage        TaskStageSnapshot                 `json:"task_stage,omitempty"`
+	PromptBudget     *schema.PromptBudget              `json:"prompt_budget,omitempty"`
+	PromptBudgets    []schema.PromptBudget             `json:"prompt_budget_history,omitempty"`
+	TokenUsages      []schema.TokenUsageSample         `json:"token_usage_history,omitempty"`
+	ApprovedTools    map[string][]string               `json:"approved_tools,omitempty"`
+}
+
+func copyWorkflowSnapshot(snapshot WorkflowSnapshot) WorkflowSnapshot {
+	if snapshot.PendingToolRisk != nil {
+		risk := copyToolRiskProfile(*snapshot.PendingToolRisk)
+		snapshot.PendingToolRisk = &risk
+	}
+	return snapshot
 }
 
 func appendBounded(values []string, value string, max int) []string {
@@ -447,6 +676,50 @@ func appendBounded(values []string, value string, max int) []string {
 		return values
 	}
 	return append([]string(nil), values[len(values)-max:]...)
+}
+
+func appendPromptBudgetHistory(values []schema.PromptBudget, value schema.PromptBudget) []schema.PromptBudget {
+	values = append(values, value)
+	if len(values) <= maxPromptBudgetHistory {
+		return values
+	}
+	return append([]schema.PromptBudget(nil), values[len(values)-maxPromptBudgetHistory:]...)
+}
+
+func appendTokenUsageHistory(values []schema.TokenUsageSample, value schema.TokenUsageSample) []schema.TokenUsageSample {
+	values = append(values, value)
+	if len(values) <= maxTokenUsageHistory {
+		return values
+	}
+	return append([]schema.TokenUsageSample(nil), values[len(values)-maxTokenUsageHistory:]...)
+}
+
+func copyPendingApprovalSnapshots(items []PendingApprovalSnapshot) []PendingApprovalSnapshot {
+	if len(items) == 0 {
+		return nil
+	}
+	copied := make([]PendingApprovalSnapshot, len(items))
+	for i, item := range items {
+		copied[i] = item
+		if item.Risk != nil {
+			risk := copyToolRiskProfile(*item.Risk)
+			copied[i].Risk = &risk
+		}
+	}
+	return copied
+}
+
+func copyToolRiskProfile(profile schema.ToolRiskProfile) schema.ToolRiskProfile {
+	profile.Capabilities = append([]string(nil), profile.Capabilities...)
+	profile.SandboxFeatures = append([]string(nil), profile.SandboxFeatures...)
+	profile.MissingSandboxFeatures = append([]string(nil), profile.MissingSandboxFeatures...)
+	if profile.WindowsIsolation != nil {
+		windowsIsolation := *profile.WindowsIsolation
+		profile.WindowsIsolation = &windowsIsolation
+	}
+	profile.Warnings = append([]string(nil), profile.Warnings...)
+	profile.Recommendations = append([]string(nil), profile.Recommendations...)
+	return profile
 }
 
 func approvedToolScopeKey(kind, toolName string) string {

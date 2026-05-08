@@ -1,58 +1,111 @@
-import { escapeHTML } from "../api.js";
-import { t } from "../i18n.js";
+import { escapeHTML, request } from "../api.js";
+import { runtimeVisibleApprovalCount } from "../approval_counts.js";
+import { localizedText, t } from "../i18n.js";
+import { getOnboardingState, resumeOnboarding, startOnboarding, stopOnboarding } from "../onboarding.js";
 
-let tourTimer = 0;
-
-export async function renderOverview(root, runtime) {
-  window.clearInterval(tourTimer);
-  const pending = runtime.session?.pending_approvals?.length || 0;
+export async function renderOverview(root, runtime, refreshRuntime) {
+  const pending = runtimeVisibleApprovalCount(runtime);
   const workflow = runtime.session?.workflow || {};
   const envReady = (runtime.setup?.env || []).filter(item => item.required).every(item => item.set);
-  const steps = tourSteps();
+  const onboarding = getOnboardingState();
+  const launchpad = launchpadState(onboarding);
+  const nextSteps = recommendedNextSteps(runtime, launchpad);
   root.innerHTML = `
-    <div class="hero">
-      <div>
+    <section class="overview-launchpad panel" data-tour-id="overview-launchpad">
+      <div class="overview-launchpad-copy">
         <p class="eyebrow">${t("overview.eyebrow")}</p>
         <h2>${t("overview.title")}</h2>
-        <p>${t("overview.copy")}</p>
+        <p class="overview-lead">${t("overview.copy")}</p>
+        <div class="overview-learn-list">
+          <span>${t("overview.learn.workflow")}</span>
+          <span>${t("overview.learn.catalog")}</span>
+          <span>${t("overview.learn.execution")}</span>
+          <span>${t("overview.learn.observe")}</span>
+        </div>
       </div>
-      <div class="hero-actions">
-        <button class="primary" id="newWorkflow">${t("overview.createWorkflow")}</button>
-        <button id="openSettings">${t("overview.firstRun")}</button>
+      <div class="overview-launchpad-actions">
+        <span class="badge ${launchpad.badgeClass}">${launchpad.badge}</span>
+        <div class="hero-actions">
+          <button class="primary" id="overviewTourPrimary">${launchpad.primaryLabel}</button>
+          <button id="overviewTourSecondary">${launchpad.secondaryLabel}</button>
+        </div>
       </div>
-    </div>
+    </section>
+
     <div class="metric-grid">
-      ${metric(t("overview.workspace"), runtime.workspace?.confirmed ? t("overview.workspaceConfirmed") : t("overview.workspaceNeedsConfirmation"), runtime.workspace?.display || t("common.none"), runtime.workspace?.confirmed ? "good" : "warn")}
+      ${metric(t("overview.workspace"), runtime.workspace?.confirmed ? t("overview.workspaceConfirmed") : t("overview.workspaceNeedsConfirmation"), overviewDisplayValue(runtime.workspace?.display || t("common.none")), runtime.workspace?.confirmed ? "good" : "warn")}
       ${metric(t("overview.approvals"), String(pending), pending ? t("overview.approvalsWaiting") : t("overview.approvalsEmpty"), pending ? "warn" : "good")}
-      ${metric(t("overview.runtime"), `${escapeHTML(runtime.active_agent || "-")} / ${escapeHTML(runtime.mode || "-")}`, `${t("overview.version")} ${escapeHTML(runtime.version || "dev")}`, "neutral")}
+      ${metric(t("overview.runtime"), `${escapeHTML(overviewDisplayValue(runtime.active_agent || "-"))} / ${escapeHTML(modeLabel(runtime.mode))}`, `${t("overview.version")} ${escapeHTML(runtime.version || "dev")}`, "neutral")}
       ${metric(t("overview.setup"), envReady ? t("overview.setupReady") : t("overview.setupNeedsEnv"), t("overview.setupHelp"), envReady ? "good" : "warn")}
     </div>
-    <div class="grid">
-      <section class="panel span-8 quickstart-panel">
+
+    <div class="grid overview-grid">
+      <section class="panel span-7 spotlight-panel" data-tour-id="overview-spotlight-card">
         <div class="panel-head">
           <div>
-            <h2>${t("overview.quickStart")}</h2>
-            <p class="muted">${t("overview.quickStartHelp")}</p>
+            <h2>${t("overview.spotlightTitle")}</h2>
+            <p class="muted">${t("overview.spotlightHelp")}</p>
           </div>
-          <span class="badge">${t("overview.guided")}</span>
+          <span class="badge">${launchpad.progress}</span>
         </div>
-        <div class="tour-progress"><span></span></div>
-        <div class="tour">
-          ${steps.map((step, index) => tourStep(step, index)).join("")}
+        <div class="spotlight-card">
+          <div class="spotlight-orbit" aria-hidden="true">
+            <span></span>
+            <span></span>
+            <span></span>
+          </div>
+          <div class="spotlight-content">
+            <strong>${launchpad.title}</strong>
+            <p>${launchpad.body}</p>
+            <div class="spotlight-actions">
+              <button class="primary" id="overviewSpotlightAction">${launchpad.primaryLabel}</button>
+              <button id="overviewSpotlightFallback">${t("overview.openWorkflowStudio")}</button>
+            </div>
+          </div>
         </div>
       </section>
-      <section class="panel span-4">
-        <h2>${t("overview.currentWorkflow")}</h2>
+
+      <section class="panel span-5 overview-snapshot" data-tour-id="overview-runtime-snapshot">
+        <div class="panel-head">
+          <h2>${t("overview.currentWorkflow")}</h2>
+          <span class="badge ${workflow.status ? "good" : "warn"}">${workflow.status ? escapeHTML(overviewDisplayValue(workflow.status)) : t("common.none")}</span>
+        </div>
         <table class="kv compact">
-          <tr><th>${t("overview.workflowName")}</th><td>${escapeHTML(workflow.name || "-")}</td></tr>
-          <tr><th>${t("overview.workflowStatus")}</th><td>${escapeHTML(workflow.status || "-")}</td></tr>
-          <tr><th>${t("overview.workflowNext")}</th><td>${escapeHTML(workflow.next_stage || "-")}</td></tr>
+          <tr><th>${t("overview.workflowName")}</th><td>${escapeHTML(overviewDisplayValue(workflow.name || "-"))}</td></tr>
+          <tr><th>${t("overview.workflowStatus")}</th><td>${escapeHTML(workflow.status ? overviewDisplayValue(workflow.status) : "-")}</td></tr>
+          <tr><th>${t("overview.workflowNext")}</th><td>${escapeHTML(overviewDisplayValue(workflow.next_stage || "-"))}</td></tr>
         </table>
       </section>
+
+      <section class="panel span-7" data-tour-id="overview-next-steps">
+        <div class="panel-head">
+          <div>
+            <h2>${t("overview.recommendedNext")}</h2>
+            <p class="muted">${t("overview.recommendedHelp")}</p>
+          </div>
+        </div>
+        <div class="next-step-list">
+          ${nextSteps.map(item => nextStepCard(item)).join("")}
+        </div>
+      </section>
+
+      <section class="panel span-5" data-tour-id="overview-learn-by-doing">
+        <div class="panel-head">
+          <div>
+            <h2>${t("overview.learnByDoing")}</h2>
+            <p class="muted">${t("overview.learnByDoingHelp")}</p>
+          </div>
+        </div>
+        <div class="learning-actions">
+          ${learnAction("workflows", t("overview.learnAction.workflow"), t("overview.learnAction.workflowBody"))}
+          ${learnAction("catalog", t("overview.learnAction.catalog"), t("overview.learnAction.catalogBody"))}
+          ${learnAction("playground", t("overview.learnAction.playground"), t("overview.learnAction.playgroundBody"))}
+          ${learnAction("approvals", t("overview.learnAction.approvals"), t("overview.learnAction.approvalsBody"))}
+        </div>
+      </section>
     </div>`;
-  root.querySelector("#newWorkflow").onclick = () => { location.hash = "workflows"; };
-  root.querySelector("#openSettings").onclick = () => { location.hash = "settings"; };
-  bindTour(root, steps.length);
+
+  bindOverviewActions(root, launchpad, refreshRuntime);
 }
 
 function metric(label, value, detail, kind) {
@@ -63,38 +116,217 @@ function metric(label, value, detail, kind) {
   </section>`;
 }
 
-function tourSteps() {
+function modeLabel(value) {
+  const raw = String(value || "");
+  if (!raw) return "-";
+  const key = `catalog.mode.${raw}`;
+  const translated = t(key);
+  return translated === key ? overviewDisplayValue(raw) : translated;
+}
+
+function launchpadState(onboarding) {
+  if (onboarding.active) {
+    return {
+      badge: t("overview.launchpad.active"),
+      badgeClass: "good",
+      progress: t("overview.launchpad.progressActive"),
+      title: t("overview.launchpad.activeTitle"),
+      body: t("overview.launchpad.activeBody"),
+      primaryLabel: t("overview.continueTour"),
+      secondaryLabel: t("overview.pauseTour"),
+      primaryAction: () => resumeOnboarding(),
+      secondaryAction: () => stopOnboarding(true)
+    };
+  }
+  if (onboarding.completed) {
+    return {
+      badge: t("overview.launchpad.completed"),
+      badgeClass: "good",
+      progress: t("overview.launchpad.progressCompleted"),
+      title: t("overview.launchpad.completedTitle"),
+      body: t("overview.launchpad.completedBody"),
+      primaryLabel: t("overview.restartTour"),
+      secondaryLabel: t("overview.openWorkflowStudio"),
+      primaryAction: () => startOnboarding("shell", 0),
+      secondaryAction: () => { location.hash = "workflows"; }
+    };
+  }
+  if (onboarding.tourId || onboarding.stepIndex) {
+    return {
+      badge: t("overview.launchpad.paused"),
+      badgeClass: "warn",
+      progress: t("overview.launchpad.progressPaused"),
+      title: t("overview.launchpad.pausedTitle"),
+      body: t("overview.launchpad.pausedBody"),
+      primaryLabel: t("overview.continueTour"),
+      secondaryLabel: t("overview.restartTour"),
+      primaryAction: () => resumeOnboarding(),
+      secondaryAction: () => startOnboarding("shell", 0)
+    };
+  }
+  return {
+    badge: t("overview.launchpad.ready"),
+    badgeClass: "neutral",
+    progress: t("overview.launchpad.progressReady"),
+    title: t("overview.launchpad.readyTitle"),
+    body: t("overview.launchpad.readyBody"),
+    primaryLabel: t("overview.startTour"),
+    secondaryLabel: t("overview.firstRun"),
+    primaryAction: () => startOnboarding("shell", 0),
+    secondaryAction: () => { location.hash = "settings"; }
+  };
+}
+
+function recommendedNextSteps(runtime, launchpad) {
+  const pending = runtimeVisibleApprovalCount(runtime);
+  const workspaceReady = !!runtime.workspace?.confirmed;
+  const workspaceActions = overviewWorkspaceActions(runtime);
+  const confirmAction = workspaceActions.find(action => action?.name === "confirm") || null;
+  const canConfirmWorkspace = !workspaceReady && overviewWorkspaceActionAvailable(workspaceActions, "confirm", Boolean(runtime.workspace?.root));
   return [
-    { target: "workspace", title: t("overview.step1.title"), body: t("overview.step1.body"), action: t("overview.step1.action") },
-    { target: "workflows", title: t("overview.step2.title"), body: t("overview.step2.body"), action: t("overview.step2.action") },
-    { target: "playground", title: t("overview.step3.title"), body: t("overview.step3.body"), action: t("overview.step3.action") },
-    { target: "catalog", title: t("overview.step4.title"), body: t("overview.step4.body"), action: t("overview.step4.action") }
+    {
+      tone: workspaceReady ? "good" : "warn",
+      badge: workspaceReady ? t("overview.next.readyBadge") : t("overview.next.safetyBadge"),
+      title: workspaceReady ? t("overview.next.workspaceReady") : t("overview.next.workspaceSetup"),
+      body: workspaceReady ? t("overview.next.workspaceReadyBody") : t("overview.next.workspaceSetupBody"),
+      target: "workspace",
+      action: canConfirmWorkspace ? "confirm-workspace" : "",
+      actionPath: confirmAction?.path || "",
+      actionMethod: confirmAction?.method || ""
+    },
+    {
+      tone: "neutral",
+      badge: t("overview.next.practiceBadge"),
+      title: t("overview.next.workflowTour"),
+      body: launchpad.body,
+      target: "workflows"
+    },
+    {
+      tone: pending ? "warn" : "good",
+      badge: pending ? t("overview.next.approvalBadge") : t("overview.next.runBadge"),
+      title: pending ? t("overview.next.approvalsPending") : t("overview.next.executionReady"),
+      body: pending ? t("overview.next.approvalsPendingBody") : t("overview.next.executionReadyBody"),
+      target: pending ? "approvals" : "playground"
+    }
   ];
 }
 
-function tourStep(step, index) {
-  return `<button class="tour-step ${index === 0 ? "active" : ""}" data-tour-index="${index}" data-tour-target="${step.target}">
-    <em>${String(index + 1).padStart(2, "0")}</em>
-    <strong>${step.title}</strong>
-    <span>${step.body}</span>
-    <small>${step.action}</small>
+function nextStepCard(item) {
+  const target = escapeHTML(item.target || "overview");
+  const primaryAction = item.action === "confirm-workspace"
+    ? `<button type="button" class="primary" data-overview-action="confirm-workspace" data-overview-action-path="${escapeHTML(item.actionPath || "/api/workspace/confirm")}" data-overview-action-method="${escapeHTML(item.actionMethod || "POST")}">${escapeHTML(t("overview.next.confirmWorkspace"))}</button>`
+    : `<button type="button" class="primary subtle" data-target="${target}">${escapeHTML(t("overview.next.openTarget"))}</button>`;
+  const secondaryAction = item.action === "confirm-workspace"
+    ? `<button type="button" data-target="${target}">${escapeHTML(t("overview.next.openWorkspace"))}</button>`
+    : "";
+  return `<article class="next-step-card ${escapeHTML(item.tone || "neutral")}">
+    <span class="badge ${escapeHTML(item.tone || "neutral")}">${escapeHTML(item.badge || item.title)}</span>
+    <strong>${escapeHTML(item.title)}</strong>
+    <p>${escapeHTML(item.body)}</p>
+    <div class="next-step-actions">
+      ${primaryAction}
+      ${secondaryAction}
+    </div>
+    <div class="next-step-status" data-overview-status="${escapeHTML(item.action || item.target || "")}" role="status" aria-live="polite"></div>
+  </article>`;
+}
+
+function learnAction(target, title, body) {
+  return `<button class="learning-action" data-target="${target}">
+    <strong>${escapeHTML(title)}</strong>
+    <span>${escapeHTML(body)}</span>
   </button>`;
 }
 
-function bindTour(root, count) {
-  const steps = Array.from(root.querySelectorAll(".tour-step"));
-  const progress = root.querySelector(".tour-progress span");
-  let active = 0;
-  const activate = index => {
-    active = index;
-    steps.forEach((step, stepIndex) => step.classList.toggle("active", stepIndex === index));
-    if (progress) progress.style.width = `${((index + 1) / count) * 100}%`;
-  };
-  steps.forEach((step, index) => {
-    step.onmouseenter = () => activate(index);
-    step.onfocus = () => activate(index);
-    step.onclick = () => { location.hash = step.dataset.tourTarget; };
+function bindOverviewActions(root, launchpad, refreshRuntime) {
+  const triggerLaunch = () => launchpad.primaryAction();
+  root.querySelector("#overviewTourPrimary").onclick = triggerLaunch;
+  root.querySelector("#overviewSpotlightAction").onclick = triggerLaunch;
+  root.querySelector("#overviewTourSecondary").onclick = () => launchpad.secondaryAction();
+  root.querySelector("#overviewSpotlightFallback").onclick = () => { location.hash = "workflows"; };
+  root.querySelectorAll("[data-overview-action]").forEach(button => {
+    button.addEventListener("click", event => {
+      event.preventDefault();
+      const action = button.dataset.overviewAction || "";
+      if (action === "confirm-workspace") {
+        void confirmWorkspaceFromOverview(root, button, refreshRuntime);
+      }
+    });
   });
-  activate(0);
-  tourTimer = window.setInterval(() => activate((active + 1) % count), 2600);
+  root.querySelectorAll("[data-target]").forEach(button => {
+    button.addEventListener("click", () => {
+      location.hash = button.dataset.target;
+    });
+  });
+}
+
+async function confirmWorkspaceFromOverview(root, button, refreshRuntime) {
+  const status = root.querySelector('[data-overview-status="confirm-workspace"]');
+  setOverviewActionBusy(root, true);
+  if (status) status.textContent = t("overview.next.workspaceConfirming");
+  try {
+    await overviewWorkspaceActionRequest(button.dataset.overviewActionPath || "/api/workspace/confirm", button.dataset.overviewActionMethod || "POST");
+    if (status) status.textContent = t("overview.next.workspaceConfirmed");
+    if (typeof refreshRuntime === "function") {
+      const nextRuntime = await refreshRuntime();
+      await renderOverview(root, nextRuntime, refreshRuntime);
+    }
+  } catch (error) {
+    if (status) status.textContent = overviewDisplayValue(error?.data?.message || error?.data?.error || error?.message || t("overview.next.workspaceConfirmFailed"));
+  } finally {
+    setOverviewActionBusy(root, false);
+  }
+}
+
+function setOverviewActionBusy(root, busy) {
+  root.querySelectorAll("[data-overview-action]").forEach(button => {
+    if (busy) {
+      if (!button.dataset.overviewBusyPreviousDisabled) {
+        button.dataset.overviewBusyPreviousDisabled = button.disabled ? "true" : "false";
+      }
+      button.disabled = true;
+      button.setAttribute("aria-disabled", "true");
+      button.setAttribute("aria-busy", "true");
+      return;
+    }
+    const wasDisabled = button.dataset.overviewBusyPreviousDisabled === "true";
+    delete button.dataset.overviewBusyPreviousDisabled;
+    button.disabled = wasDisabled;
+    button.setAttribute("aria-disabled", wasDisabled ? "true" : "false");
+    button.setAttribute("aria-busy", busy ? "true" : "false");
+  });
+}
+
+function overviewWorkspaceActionAvailable(actions = [], name, fallback = false) {
+  const action = actions.find(item => item?.name === name);
+  return action ? action.available !== false : fallback;
+}
+
+function overviewWorkspaceActions(runtime = {}) {
+  const workspace = runtime.workspace || {};
+  const capabilities = runtime.workspace_capabilities || workspace.capabilities || {};
+  const sources = [
+    capabilities.actions,
+    runtime.workspace_actions,
+    workspace.actions
+  ];
+  for (const source of sources) {
+    if (Array.isArray(source) && source.length) return source;
+  }
+  return [];
+}
+
+function overviewWorkspaceActionRequest(path, method = "POST") {
+  return request(path, { method: String(method || "POST").toUpperCase() });
+}
+
+function overviewDisplayValue(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
+  if (text.startsWith("{") || text.startsWith("[") || text.startsWith("@") || text.startsWith("$")) return text;
+  if (text.includes("\\") || text.includes("://")) return text;
+  if (text.includes("/") && !/\s/.test(text)) return text;
+  if (text.includes(".") && !/\s/.test(text)) return text;
+  if (/^[-\w.]+$/.test(text) && /[._-]/.test(text)) return text;
+  return localizedText(text);
 }

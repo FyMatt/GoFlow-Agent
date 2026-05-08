@@ -1,0 +1,8 @@
+chat:
+  name: Chat
+  description: Handles ordinary user requests and can route into planner/fixer/auditor flows when needed.
+  provider: primary
+  mode: chat
+  tool_policy: confirm
+  allowed_tool_kinds: [read, network]
+  max_iterations: 8

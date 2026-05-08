@@ -1,5 +1,7 @@
 ﻿# MCP Integration
 
+[English](./mcp.md) | [简体中文](./mcp.zh-CN.md)
+
 ## Current scope
 
 GoFlow Agent currently supports stdio-based MCP servers.
@@ -123,6 +125,33 @@ The extra inspection tools support:
 - bounded JSON field extraction through `json_query`
 - binary triage metadata, strings, and hex previews through the binary helpers
 
+## Built-in `skill_runner` server (Go)
+
+### Tools
+
+- `run_script`
+
+### Purpose
+
+This server executes deterministic helper scripts declared in a matched
+`skills/<name>/SKILL.md` `scripts:` manifest. It is intentionally exposed as an
+`exec` tool named `skill_runner/run_script`, so script execution uses the same
+agent permissions, approval prompts, audit trail, risk display, and MCP
+isolation as other executable tools.
+
+Behavior:
+
+- loads skills from `--skills-dir` or `GOFLOW_SKILLS_DIR`
+- rejects path-like skill and script names
+- executes only scripts declared by name in `SKILL.md`
+- requires the script path to stay under the skill's `scripts/` directory
+- validates `args` against the declared `args_schema`
+- passes JSON arguments on stdin and in `GOFLOW_SKILL_ARGS_JSON`
+- returns JSON with stdout, exit code, duration, timeout status, and declared metadata
+
+Use `isolation: container` on this MCP server when running generated or
+third-party skill scripts that need a strong Docker/Podman sandbox.
+
 ## Runtime behavior
 
 The stdio client is designed to be restartable:
@@ -136,15 +165,40 @@ The stdio client is designed to be restartable:
 - injects `GOFLOW_WORKSPACE_ROOT` for workspace-aware servers
 - can start MCP servers in a separate process group with `isolation: process_group`
 - can opt into Windows Job Object lifecycle isolation with `isolation: windows_job` on Windows hosts
+- can opt into Windows restricted-token privilege reduction with `isolation: windows_restricted_token` on Windows hosts
 - can opt into Linux cgroup resource-control isolation with `isolation: linux_cgroup` on Linux hosts
+- can opt into Linux network namespace isolation with `isolation: linux_netns` on Linux hosts
+- should prefer container isolation with `isolation: container` through Docker
+  or Podman for generated, third-party, write-capable, exec-capable,
+  network-capable, or otherwise untrusted tools
 
-`network_disabled` is surfaced in health/status output as a capability declaration. It is not an OS-level network sandbox; network-capable tools should still declare kind `network` so agent profiles can gate them.
+`network_disabled` is surfaced in health/status output as a capability declaration. It is enforced only when a real adapter such as `isolation: container` maps it to `--network none` or `isolation: linux_netns` maps execution through `unshare --net`; otherwise it remains advisory. Network-capable tools should still declare kind `network` so agent profiles can gate them.
 
 `isolation: process_group` is the first conservative OS-level adapter. On supported platforms it starts the MCP child in a separate process group so lifecycle cleanup can target the server boundary more reliably. It does not provide network filtering, filesystem sandboxing, containerization, or privilege dropping.
 
 `isolation: windows_job` is an opt-in Windows adapter. It places the MCP child process in a Windows Job Object with kill-on-close behavior, so timeout shutdown can terminate the job boundary instead of only the direct process. It is still lifecycle isolation, not a filesystem or network sandbox.
 
+`isolation: windows_restricted_token` is an opt-in Windows adapter. It starts
+the MCP child with a restricted primary token and low integrity level, then
+attaches it to a kill-on-close Job Object for process-tree cleanup. This is real
+privilege reduction plus lifecycle cleanup, but it does not install filesystem
+or network policy.
+
 `isolation: linux_cgroup` is an opt-in Linux adapter. It creates or uses a child cgroup under `isolation_options.cgroup_parent`, writes configured `memory.max`, `pids.max`, and `cpu.max` values, and attaches the MCP process to that cgroup. It requires a writable cgroup v2 parent for the GoFlow user and is still resource control, not filesystem or network sandboxing.
+
+`isolation: linux_netns` is an opt-in Linux adapter. It starts the MCP command
+through `unshare --net -- <command> ...`, so network egress is isolated when the
+host permits network namespace creation. It is network isolation only; it is not
+a filesystem, mount, seccomp, or privilege sandbox.
+
+`isolation: container` is the recommended Docker/Podman adapter for strong MCP
+sandboxing. GoFlow runs:
+
+```text
+docker run --rm -i ... <image> <command> <args...>
+```
+
+The configured `command` and `args` are executed inside the container image, not directly on the host. `isolation_options.workspace_mount` controls whether the host workspace is mounted read-write, read-only, or not mounted; `workspace_target` sets the container-side `GOFLOW_WORKSPACE_ROOT`; `network: disabled` or `network_disabled: true` maps to `--network none`; `memory`, `cpus`, and `pids_limit` map to container runtime limits, with `memory` validated as a positive integer plus optional `b`/`k`/`m`/`g`/`t` suffix; `readonly_rootfs`, `no_new_privileges`, `cap_drop`, `security_opt`, `tmpfs`, `init`, and `user` expose container hardening knobs. `user` and `cap_drop` are validated before startup so invalid values are reported through config diagnostics instead of failing only when Docker/Podman starts. If Docker/Podman is unavailable, the MCP server reports a startup error instead of silently falling back to host execution.
 
 For the isolation roadmap and adapter tradeoffs, see [MCP Isolation Strategy](./mcp-isolation.md).
 
@@ -201,6 +255,25 @@ mcp_servers:
       - go
     max_request_bytes: 65536
     max_response_bytes: 2097152
+
+  - name: skill_runner
+    command: go
+    args:
+      - run
+      - ./mcp_servers/skill_runner
+      - --skills-dir
+      - ./skills
+    enabled: true
+    timeout: 2m
+    workdir: .
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
+    isolation: process_group
+    restart_limit: 3
+    cooldown: 10s
+    allowed_commands:
+      - go
+    max_request_bytes: 65536
+    max_response_bytes: 2097152
 ```
 
 ## How to inspect MCP tools
@@ -232,6 +305,7 @@ Current built-in output should include entries for:
 - `web_tools/web_search`
 - `web_tools/fetch_url`
 - `web_tools/fetch_page_assets`
+- `skill_runner/run_script`
 - `python_notes/read_note`
 - `python_notes/write_note`
 - `python_notes/python_ast_summary`
@@ -253,7 +327,7 @@ Current built-in output should include entries for:
 
 Planned next steps for MCP should build on the existing manager/client split:
 - runtime transports beyond the current HTTP/SSE surface where they fit the same schema contracts
-- stronger OS-level isolation options for third-party MCP servers, such as platform-specific job objects, seccomp, chroot, containers, or firewall rules where available
+- stronger container hardening and narrowly scoped native fallback controls only where they are enforceable and testable
 - more cross-language examples beyond Python
 
 For adding new servers and tools, see [MCP Tool Authoring](./mcp-authoring.md).

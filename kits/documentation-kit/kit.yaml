@@ -1,0 +1,46 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: documentation-kit
+title: Documentation Kit
+description: Plan, update, review, and hand off technical documentation changes.
+category: documentation
+tags:
+    - docs
+    - writing
+    - review
+agents:
+    - chat
+    - planner
+    - fixer
+    - auditor
+providers:
+    - primary
+skills:
+    - execution-plan
+    - code-writing
+    - code-audit
+tools:
+    - read_file
+    - search_files
+    - write_file
+workflows:
+    - plan-fix-audit
+workflow_templates:
+    - docs-review-publish
+team_templates:
+    - documentation-team
+policy_rules:
+    - expression
+    - team_approval_gate
+examples:
+    - title: Refresh docs
+      description: Update docs and review for accuracy.
+      request: Update the setup documentation and verify commands are accurate.
+      workflow: docs-review-publish
+      agent: chat
+metadata:
+    preset: documentation
+    recommended_agent: chat
+    recommended_workflow: docs-review-publish
+    scaffold_preset: documentation

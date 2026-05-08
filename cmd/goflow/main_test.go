@@ -9,20 +9,24 @@ import (
 	"io"
 	"net/http"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
 	"unsafe"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
+	apppkg "github.com/FyMatt/GoFlow-Agent/internal/app"
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	skillpkg "github.com/FyMatt/GoFlow-Agent/internal/skill"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
+	"gopkg.in/yaml.v3"
 )
 
 func TestResolvePathsUsesHTTPFlag(t *testing.T) {
@@ -36,7 +40,7 @@ func TestResolvePathsUsesHTTPFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve paths: %v", err)
 	}
-	wantConfigPath := filepath.Join(runtimeHome, "configs", "agent.yaml")
+	wantConfigPath := filepath.Join(runtimeHome, "configs", "goflow.yaml")
 	if configPath != wantConfigPath {
 		t.Fatalf("expected config path %q, got %q", wantConfigPath, configPath)
 	}
@@ -55,11 +59,11 @@ func TestResolvePathsAcceptsConfigFlag(t *testing.T) {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
 
-	configPath, resolvedWorkspace, httpAddr, err := resolvePaths(runtimeHome, []string{"--config", "configs/agent.docker.yaml", "--workspace", workspaceRoot, "--http", ":8080"})
+	configPath, resolvedWorkspace, httpAddr, err := resolvePaths(runtimeHome, []string{"--config", "configs/goflow.docker.yaml", "--workspace", workspaceRoot, "--http", ":8080"})
 	if err != nil {
 		t.Fatalf("resolve paths: %v", err)
 	}
-	wantConfigPath := filepath.Join(runtimeHome, "configs", "agent.docker.yaml")
+	wantConfigPath := filepath.Join(runtimeHome, "configs", "goflow.docker.yaml")
 	if configPath != wantConfigPath {
 		t.Fatalf("expected config path %q, got %q", wantConfigPath, configPath)
 	}
@@ -106,7 +110,7 @@ func TestResolvePathsDefaultsWorkspaceToCurrentDirectory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve paths: %v", err)
 	}
-	wantConfigPath := filepath.Join(runtimeHome, "configs", "agent.yaml")
+	wantConfigPath := filepath.Join(runtimeHome, "configs", "goflow.yaml")
 	if configPath != wantConfigPath {
 		t.Fatalf("expected config path %q, got %q", wantConfigPath, configPath)
 	}
@@ -120,7 +124,7 @@ func TestResolveRuntimeHomeUsesParentWhenRunningFromBin(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(runtimeHome, "configs"), 0o755); err != nil {
 		t.Fatalf("mkdir configs: %v", err)
 	}
-	if err := os.WriteFile(filepath.Join(runtimeHome, "configs", "agent.binary.yaml"), []byte("agent: {}\n"), 0o644); err != nil {
+	if err := os.WriteFile(filepath.Join(runtimeHome, "configs", "goflow.binary.yaml"), []byte("agent: {}\n"), 0o644); err != nil {
 		t.Fatalf("write binary config: %v", err)
 	}
 	binDir := filepath.Join(runtimeHome, "bin")
@@ -133,14 +137,14 @@ func TestResolveRuntimeHomeUsesParentWhenRunningFromBin(t *testing.T) {
 	if !info.BinaryArchive {
 		t.Fatalf("expected binary archive runtime, got %#v", info)
 	}
-	if got := defaultConfigPathForRuntime(info); got != filepath.Join(runtimeHome, "configs", "agent.binary.yaml") {
+	if got := defaultConfigPathForRuntime(info); got != filepath.Join(runtimeHome, "configs", "goflow.binary.yaml") {
 		t.Fatalf("expected binary config, got %q", got)
 	}
 }
 
 func TestResolvePathSettingsWithDefaultConfig(t *testing.T) {
 	runtimeHome := t.TempDir()
-	customConfig := filepath.Join(runtimeHome, "configs", "agent.binary.yaml")
+	customConfig := filepath.Join(runtimeHome, "configs", "goflow.binary.yaml")
 
 	settings, err := resolvePathSettingsWithDefault(runtimeHome, nil, customConfig)
 	if err != nil {
@@ -234,10 +238,30 @@ func TestResolvePathsAcceptsRelativeWorkspaceAndNormalizesIt(t *testing.T) {
 	}
 }
 
-func TestWorkspaceRequirementForInputDetectsWorkspaceTasks(t *testing.T) {
+func legacyWorkspaceRequirementForInputDetectsWorkspaceTasks(t *testing.T) {
 	cases := []string{
 		"帮我用python写个计算器",
 		"optimize and extend this project",
+		"@README.md 总结一下",
+		"run tests",
+	}
+	for _, input := range cases {
+		if req := workspaceRequirementForInput(input); !req.Required {
+			t.Fatalf("expected workspace requirement for %q", input)
+		}
+	}
+	if req := workspaceRequirementForInput("Go 终端中如何监听按键？"); req.Required {
+		t.Fatalf("expected pure chat to avoid workspace requirement, got %#v", req)
+	}
+}
+
+func TestWorkspaceRequirementForInputDetectsWorkspaceTasks(t *testing.T) {
+	cases := []string{
+		"帮我用 python 写个计算器",
+		"optimize and extend this project",
+		"帮我优化拓展这个项目",
+		"生成文档",
+		"运行测试",
 		"@README.md 总结一下",
 		"run tests",
 	}
@@ -261,6 +285,67 @@ func TestWorkspaceLifecycleConfirmCommand(t *testing.T) {
 	}
 	if !workspace.Confirmed() {
 		t.Fatal("expected /workspace confirm to mark workspace confirmed")
+	}
+}
+
+func TestParseWorkspaceUseInputNormalizesTarget(t *testing.T) {
+	target := filepath.Join(t.TempDir(), "workspace with space")
+	path, ok, usage := parseWorkspaceUseInput("/workspace use " + target)
+	if !ok {
+		t.Fatal("expected /workspace use to be detected")
+	}
+	if usage != "" {
+		t.Fatalf("unexpected usage error: %s", usage)
+	}
+	if path != filepath.Clean(target) {
+		t.Fatalf("expected normalized path %q, got %q", filepath.Clean(target), path)
+	}
+}
+
+func TestParseWorkspaceUseInputReportsMissingTarget(t *testing.T) {
+	_, ok, usage := parseWorkspaceUseInput("/workspace use")
+	if !ok {
+		t.Fatal("expected /workspace use to be detected")
+	}
+	if !strings.Contains(usage, "usage: /workspace use <path>") {
+		t.Fatalf("unexpected usage error: %q", usage)
+	}
+}
+
+func TestParseWorkspaceChooseInput(t *testing.T) {
+	for _, input := range []string{"/workspace choose", "/workspace pick"} {
+		if !parseWorkspaceChooseInput(input) {
+			t.Fatalf("expected %q to be detected", input)
+		}
+	}
+	if parseWorkspaceChooseInput("/workspace use C:/demo") {
+		t.Fatal("did not expect workspace use to be detected as choose")
+	}
+}
+
+func TestCLIWorkspaceRebindBlockersDetectPendingState(t *testing.T) {
+	state := session.New(10)
+	state.SetPendingHandoff(session.PendingHandoffSnapshot{TargetAgent: "fixer", ExpectedAction: "confirm_execution"})
+	state.SetWorkflow(session.WorkflowSnapshot{Name: "plan-fix-audit", Status: "awaiting_input"})
+	state.StartAgentRun("long task")
+	state.StartWorkflowRun("workflow", "long workflow")
+	runtimeRef, err := agent.NewRuntime(&config.Config{
+		DefaultAgent: "chat",
+		Agents: map[string]config.AgentProfile{
+			"chat": {Provider: "stub", Model: "stub", Mode: "chat"},
+		},
+	}, map[string]interfaces.LLMClient{"stub": &workflowStubLLMClient{}}, nil, &mainTestMCP{}, state, nil)
+	if err != nil {
+		t.Fatalf("new runtime: %v", err)
+	}
+	state.SetPendingApprovals([]session.PendingApprovalSnapshot{{CallID: "call-1", ToolName: "write_file"}})
+	app := &apppkg.RuntimeApp{Runtime: runtimeRef}
+
+	blockers := cliWorkspaceRebindBlockers(app)
+	for _, want := range []string{"pending_approvals", "pending_handoff", "active_workflow", "active_agent_run", "active_workflow_run"} {
+		if !slices.Contains(blockers, want) {
+			t.Fatalf("expected blocker %q in %#v", want, blockers)
+		}
 	}
 }
 
@@ -456,6 +541,21 @@ func TestRunHTTPServerStopsWhenContextCancelled(t *testing.T) {
 	}
 	if got := output.String(); !strings.Contains(got, "shutting down") || !strings.Contains(got, "stopped") {
 		t.Fatalf("expected shutdown status output, got %q", got)
+	}
+}
+
+func TestDisplayHTTPURLAlwaysUsesPlainHTTP(t *testing.T) {
+	cases := map[string]string{
+		":8080":          "http://127.0.0.1:8080/console",
+		"127.0.0.1:9090": "http://127.0.0.1:9090/console",
+		"localhost:8081": "http://localhost:8081/console",
+		"0.0.0.0:8082":   "http://127.0.0.1:8082/console",
+		"[::]:8083":      "http://127.0.0.1:8083/console",
+	}
+	for addr, want := range cases {
+		if got := displayHTTPURL(addr, "console"); got != want {
+			t.Fatalf("displayHTTPURL(%q) = %q, want %q", addr, got, want)
+		}
 	}
 }
 
@@ -971,6 +1071,38 @@ func TestCLIStreamRendererShowsTaskStage(t *testing.T) {
 	}
 	if !strings.Contains(output, "\x1b[") {
 		t.Fatalf("expected colored stage output, got %q", output)
+	}
+}
+
+func TestCLIStreamRendererHandlesHTTPParityEvents(t *testing.T) {
+	renderer := newCLIStreamRenderer(false)
+	output := captureStdout(t, func() {
+		_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "waiting for model response...", NeedsAction: true})
+		_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventTaskStage, TaskStage: "inspect", AgentID: "fixer", Mode: "fix", Content: "gathering context"})
+		_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventApproval, ToolName: "write_file", ToolCallID: "call-1", ArgumentsSummary: "path=demo.txt"})
+		_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: "write_file", ToolCallID: "call-1", ArgumentsSummary: "path=demo.txt", Content: `{"path":"demo.txt","bytes_written":12,"status":"created","added_lines":1,"deleted_lines":0,"new_range":"1"}`})
+		_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventTokenUsage, PromptTokens: 20, OutputTokens: 5, CachedTokens: 3})
+		_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventFinalMessage, Content: "done after approval"})
+		_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventWorkflowResult, RunID: "wf-1", WorkflowName: "plan-fix-audit", WorkflowStatus: "completed"})
+		_ = renderer.Handle(schema.StreamEvent{Type: schema.StreamEventError, Content: "workspace confirmation required", IsError: true, NeedsAction: true})
+		renderer.Finish("")
+	})
+	for _, want := range []string{
+		"[status]",
+		"[stage]",
+		"[approval]",
+		"[write]",
+		"done after approval",
+		"[workflow]",
+		"plan-fix-audit",
+		"status=completed",
+		"[error]",
+		"[tokens]",
+		"input=20",
+	} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected HTTP parity renderer output to include %q, got %q", want, output)
+		}
 	}
 }
 
@@ -1610,8 +1742,194 @@ func TestFormatHelpOutputUsesSections(t *testing.T) {
 	if !strings.Contains(help, "/workflow <custom-name>") {
 		t.Fatalf("expected custom workflow command in help output, got %q", help)
 	}
-	if !strings.Contains(help, "/skill-templates") || !strings.Contains(help, "/new-skill") {
+	if !strings.Contains(help, "/teams [name]") {
+		t.Fatalf("expected team template command in help output, got %q", help)
+	}
+	if !strings.Contains(help, "/team-state [run-id]") {
+		t.Fatalf("expected team state command in help output, got %q", help)
+	}
+	if !strings.Contains(help, "/policy-rules [name]") || !strings.Contains(help, "/new-policy-rule") || !strings.Contains(help, "/new-team") || !strings.Contains(help, "/workflow-templates [name]") || !strings.Contains(help, "/new-workflow-template") {
+		t.Fatalf("expected policy/workflow template commands in help output, got %q", help)
+	}
+	if !strings.Contains(help, "/workflow-node-metadata [type]") || !strings.Contains(help, "/expression-helpers [name]") {
+		t.Fatalf("expected workflow metadata discovery commands in help output, got %q", help)
+	}
+	if !strings.Contains(help, "/skill-templates") || !strings.Contains(help, "/new-skill") || !strings.Contains(help, "/new-kit") {
 		t.Fatalf("expected skill scaffold commands in help output, got %q", help)
+	}
+}
+
+func TestFormatPolicyRulesOutput(t *testing.T) {
+	rows := []policyRuleDisplayRow{{
+		Name:        "risk_at_least",
+		Label:       "Risk At Least",
+		Description: "Pass when severity meets a threshold.",
+		Source:      "built_in",
+		Operator:    "risk_at_least",
+		Params: []agent.WorkflowNodeFieldOption{{
+			Name:        "params.minimum",
+			Type:        "select",
+			Description: "Minimum severity.",
+			Options:     []string{"low", "medium", "high"},
+		}},
+	}}
+	output := formatPolicyRulesOutput(rows)
+	if !strings.Contains(output, "Workflow Policy Rules") || !strings.Contains(output, "risk_at_least") || !strings.Contains(output, "/new-policy-rule") {
+		t.Fatalf("expected policy rule list output, got %q", output)
+	}
+	detail := formatPolicyRuleDetailOutput(rows[0])
+	if !strings.Contains(detail, "Workflow Policy Rule") || !strings.Contains(detail, "params.minimum") || !strings.Contains(detail, "Minimum severity") {
+		t.Fatalf("expected policy rule detail output, got %q", detail)
+	}
+}
+
+func TestFormatWorkflowTemplatesOutput(t *testing.T) {
+	rows := []workflowTemplateDisplayRow{{
+		Name:        "plan-fix-audit",
+		Title:       "Plan Fix Audit",
+		Description: "Plan, implement, and review.",
+		Category:    "software",
+		Tags:        []string{"coding"},
+		Stages:      3,
+		Source:      "built_in",
+		StageNames:  []string{"plan", "implement", "audit"},
+	}}
+	output := formatWorkflowTemplatesOutput(rows)
+	if !strings.Contains(output, "Workflow Templates") || !strings.Contains(output, "plan-fix-audit") || !strings.Contains(output, "/new-workflow-template") {
+		t.Fatalf("expected workflow template list output, got %q", output)
+	}
+	detail := formatWorkflowTemplateDetailOutput(rows[0])
+	if !strings.Contains(detail, "Workflow Template") || !strings.Contains(detail, "plan -> implement -> audit") {
+		t.Fatalf("expected workflow template detail output, got %q", detail)
+	}
+}
+
+func TestFormatWorkflowMetadataDiscoveryOutputs(t *testing.T) {
+	node := agent.WorkflowNodeTypeOption{
+		Type:        "policy_guard",
+		Label:       "Policy Guard",
+		Category:    "control",
+		Description: "Evaluate reusable policy rules.",
+		Control:     true,
+		Fields: []agent.WorkflowNodeFieldOption{{
+			Name:        "policy",
+			Type:        "policy",
+			Required:    true,
+			Description: "Policy rule name.",
+		}},
+		Outputs: []agent.WorkflowNodeVariableOption{{Name: "passed", Description: "Whether the policy passed."}},
+	}
+	nodeList := formatWorkflowNodeMetadataOutput([]agent.WorkflowNodeTypeOption{node})
+	if !strings.Contains(nodeList, "Workflow Node Metadata") || !strings.Contains(nodeList, "policy_guard") || !strings.Contains(nodeList, "metadata/workflow_nodes") {
+		t.Fatalf("expected workflow node metadata list output, got %q", nodeList)
+	}
+	nodeDetail := formatWorkflowNodeMetadataDetailOutput(node)
+	for _, want := range []string{"Workflow Node Metadata", "policy_guard", "policy", "passed"} {
+		if !strings.Contains(nodeDetail, want) {
+			t.Fatalf("expected workflow node metadata detail to contain %q, got %q", want, nodeDetail)
+		}
+	}
+
+	helper := agent.WorkflowExpressionFunctionOption{
+		Name:        "risk_rank",
+		Label:       "Risk Rank",
+		Category:    "risk",
+		Description: "Map severity to a number.",
+		Signature:   "risk_rank(value)",
+		InsertText:  "risk_rank(${reference})",
+		ReturnType:  "number",
+		MinArgs:     1,
+		MaxArgs:     1,
+		Modes:       []string{"condition", "policy"},
+		NodeTypes:   []string{"policy_guard"},
+		Args:        []agent.WorkflowExpressionFunctionArgument{{Name: "value", Type: "reference", Required: true}},
+		Examples:    []string{`risk_rank(stages.audit.outputs.risk) >= 4`},
+	}
+	helperList := formatExpressionHelpersOutput([]agent.WorkflowExpressionFunctionOption{helper}, "policy", "policy_guard")
+	if !strings.Contains(helperList, "Expression Helpers") || !strings.Contains(helperList, "risk_rank") || !strings.Contains(helperList, "metadata/expression_helpers") {
+		t.Fatalf("expected expression helper list output, got %q", helperList)
+	}
+	helperDetail := formatExpressionHelperDetailOutput(helper)
+	for _, want := range []string{"Expression Helper", "risk_rank(value)", "arguments", "value", "examples"} {
+		if !strings.Contains(helperDetail, want) {
+			t.Fatalf("expected expression helper detail to contain %q, got %q", want, helperDetail)
+		}
+	}
+}
+
+func TestFormatWorkflowSchemasOutput(t *testing.T) {
+	schema := session.WorkflowSchemaSnapshot{
+		Workflow:  "security-review",
+		UpdatedAt: "2026-05-03T12:00:00Z",
+		RunIDs:    []string{"wf-2", "wf-1"},
+		Stages: map[string]session.WorkflowStageSchemaSnapshot{
+			"audit": {
+				Stage:    "audit",
+				NodeType: "agent",
+				AgentID:  "auditor",
+				Skill:    "code-audit",
+				Outputs: map[string]session.WorkflowValueSchemaSnapshot{
+					"finding": {
+						Type:     "object",
+						Observed: 2,
+						Fields: map[string]session.WorkflowValueSchemaSnapshot{
+							"risk": {Type: "string", Observed: 2, LastRunID: "wf-2"},
+						},
+					},
+				},
+			},
+		},
+	}
+	output := formatWorkflowSchemasOutput([]session.WorkflowSchemaSnapshot{schema})
+	if !strings.Contains(output, "Workflow Schemas") || !strings.Contains(output, "security-review") || !strings.Contains(output, "/workflow-schemas --rebuild") {
+		t.Fatalf("expected workflow schema list output, got %q", output)
+	}
+	detail := formatWorkflowSchemaDetailOutput(schema)
+	for _, want := range []string{"Workflow Schema", "security-review", "audit", "finding", "risk", "last_run", "wf-2"} {
+		if !strings.Contains(detail, want) {
+			t.Fatalf("expected workflow schema detail to contain %q, got %q", want, detail)
+		}
+	}
+}
+
+func TestFormatTeamTemplateOutputs(t *testing.T) {
+	list := formatTeamTemplatesOutput(agent.TeamTemplates())
+	if !strings.Contains(list, "Team Templates") || !strings.Contains(list, "software-task-team") || !strings.Contains(list, "web-research-team") || !strings.Contains(list, "customer-support-team") {
+		t.Fatalf("expected team template list, got %q", list)
+	}
+
+	template, ok := agent.LoadTeamTemplate("web-research-team")
+	if !ok {
+		t.Fatal("expected web research team template")
+	}
+	detail := formatTeamTemplateDetailOutput(template)
+	if !strings.Contains(detail, "asset-collector") || !strings.Contains(detail, "handoffs") || !strings.Contains(detail, "blackboard") || !strings.Contains(detail, "web-research-risk") {
+		t.Fatalf("expected team template detail, got %q", detail)
+	}
+}
+
+func TestFormatTeamStateOutput(t *testing.T) {
+	state := agent.TeamState{
+		RunID:       "wf-1",
+		Workflow:    "team-flow",
+		Status:      "running",
+		Team:        "web-research-team",
+		ActiveOwner: "auditor",
+		Handoffs: []session.CollaborationMessageSnapshot{{
+			FromAgent: "auditor",
+			ToAgent:   "planner",
+			Kind:      "team_handoff",
+			Subject:   "Risk handoff",
+		}},
+		UnresolvedItems: []session.BlackboardEntrySnapshot{{
+			Kind:   "decision",
+			Status: "open",
+			Title:  "Verify risk",
+		}},
+	}
+	output := formatTeamStateOutput(state)
+	if !strings.Contains(output, "Team State") || !strings.Contains(output, "web-research-team") || !strings.Contains(output, "Risk handoff") || !strings.Contains(output, "Verify risk") {
+		t.Fatalf("expected formatted team state, got %q", output)
 	}
 }
 
@@ -1619,6 +1937,16 @@ func TestCompleteCommandTokenCompletesUniqueCommand(t *testing.T) {
 	next, changed, message := completeCommandToken([]rune("/sta"), len([]rune("/sta")))
 	if !changed || message != "" || string(next) != "/status " {
 		t.Fatalf("expected /status completion, changed=%t message=%q next=%q", changed, message, string(next))
+	}
+
+	next, changed, message = completeCommandToken([]rune("/tea"), len([]rune("/tea")))
+	if !changed || message != "" || string(next) != "/team" {
+		t.Fatalf("expected shared /team prefix completion, changed=%t message=%q next=%q", changed, message, string(next))
+	}
+
+	next, changed, message = completeCommandToken([]rune("/team-s"), len([]rune("/team-s")))
+	if !changed || message != "" || string(next) != "/team-state " {
+		t.Fatalf("expected /team-state completion, changed=%t message=%q next=%q", changed, message, string(next))
 	}
 
 	next, changed, message = completeCommandToken([]rune("/re"), len([]rune("/re")))
@@ -1820,19 +2148,235 @@ func TestHandleScaffoldCommandsCreateToolAgentAndWorkflow(t *testing.T) {
 		if handled := handleCommand(context.Background(), "/new-agent researcher", manager, nil, nil); !handled {
 			t.Fatal("expected /new-agent to be handled")
 		}
+		if handled := handleCommand(context.Background(), "/new-provider deepseek", manager, nil, nil); !handled {
+			t.Fatal("expected /new-provider to be handled")
+		}
 		if handled := handleCommand(context.Background(), "/new-workflow release-check", manager, nil, nil); !handled {
 			t.Fatal("expected /new-workflow to be handled")
 		}
+		if handled := handleCommand(context.Background(), "/new-workflow security-review --template human-input-security-review", manager, nil, nil); !handled {
+			t.Fatal("expected templated /new-workflow to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-kit software-engineering acme-platform", manager, nil, nil); !handled {
+			t.Fatal("expected /new-kit to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-kit agent-framework framework-starter", manager, nil, nil); !handled {
+			t.Fatal("expected agent-framework /new-kit to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-kit customer-support support-desk", manager, nil, nil); !handled {
+			t.Fatal("expected customer-support /new-kit to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-kit software-engineering acme-platform-full --materialize", manager, nil, nil); !handled {
+			t.Fatal("expected materialized /new-kit to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-policy-rule risk-threshold high-risk-gate", manager, nil, nil); !handled {
+			t.Fatal("expected /new-policy-rule to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-team software-review custom-review-team", manager, nil, nil); !handled {
+			t.Fatal("expected /new-team to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-team agent-framework custom-framework-team", manager, nil, nil); !handled {
+			t.Fatal("expected agent-framework /new-team to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-team customer-support custom-support-team", manager, nil, nil); !handled {
+			t.Fatal("expected customer-support /new-team to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-workflow-template plan-fix-audit custom-plan-template", manager, nil, nil); !handled {
+			t.Fatal("expected /new-workflow-template to be handled")
+		}
 	})
-	if !strings.Contains(output, "notes-helper.py") || !strings.Contains(output, "researcher.yaml") || !strings.Contains(output, "release-check") {
+	if !strings.Contains(output, "notes-helper.py") || !strings.Contains(output, "researcher.yaml") || !strings.Contains(output, "deepseek.yaml") || !strings.Contains(output, "release-check") || !strings.Contains(output, "template=human-input-security-review") || !strings.Contains(output, "acme-platform") || !strings.Contains(output, "framework-starter") || !strings.Contains(output, "support-desk") || !strings.Contains(output, "acme-platform-full-agent") || !strings.Contains(output, "high-risk-gate") || !strings.Contains(output, "custom-review-team") || !strings.Contains(output, "custom-framework-team") || !strings.Contains(output, "custom-support-team") || !strings.Contains(output, "custom-plan-template") {
 		t.Fatalf("expected scaffold output, got %q", output)
 	}
 	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "notes-helper.py"), "WORKSPACE_ROOT")
+	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "notes-helper.py"), "resolve_path")
+	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "notes-helper.py"), "relative_path")
+	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "notes-helper.py"), "is_error")
+	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "notes-helper.py"), "escapes workspace root")
+	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "notes-helper.py"), "resolves outside workspace root")
 	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "notes-helper.py"), "write_text")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "mcp_servers", "notes-helper.yaml"), "notes_helper")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "mcp_servers", "notes-helper.yaml"), "configs/mcp_servers")
 	assertFileContains(t, filepath.Join(runtimeHome, "configs", "agents", "researcher.yaml"), "researcher:")
 	assertFileContains(t, filepath.Join(runtimeHome, "configs", "agents", "researcher.yaml"), "allowed_tools")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "providers", "deepseek.yaml"), "deepseek:")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "providers", "deepseek.yaml"), "api_key: ${DEEPSEEK_API_KEY}")
 	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "release-check", "workflow.yaml"), "skill: execution-plan")
 	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "release-check", "WORKFLOW.md"), "Workflow")
+	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "security-review", "workflow.yaml"), "node_type: input_gate")
+	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "security-review", "workflow.yaml"), "web-vulnerability-research")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform", "kit.yaml"), "kind: goflow.kit")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform", "kit.yaml"), "software-engineering")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform", "kit.yaml"), "plan-fix-audit")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "framework-starter", "kit.yaml"), "agent-framework-extension")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "framework-starter", "kit.yaml"), "framework-extension-team")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "support-desk", "kit.yaml"), "customer-support-triage")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "support-desk", "kit.yaml"), "customer-support-team")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform-full", "kit.yaml"), "materialized")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "agents", "acme-platform-full-agent.yaml"), "acme_platform_full_helper/read_text")
+	assertFileContains(t, filepath.Join(runtimeHome, "skills", "acme-platform-full-skill", "SKILL.md"), "workflow-handoff")
+	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "acme-platform-full-helper.py"), "WORKSPACE_ROOT")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "mcp_servers", "acme-platform-full-helper.yaml"), "isolation: container")
+	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "acme-platform-full-workflow", "workflow.yaml"), "policy_guard")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "workflows", "acme-platform-full-template.yaml"), "goflow.workflow_template_resource")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "acme-platform-full-team.yaml"), "goflow.team_template_resource")
+	assertFileContains(t, filepath.Join(runtimeHome, "policies", "workflow_rules", "acme-platform-full-gate.yaml"), "ref_truthy")
+	assertFileContains(t, filepath.Join(runtimeHome, "policies", "workflow_rules", "high-risk-gate.yaml"), "kind: goflow.workflow_policy_rule")
+	assertFileContains(t, filepath.Join(runtimeHome, "policies", "workflow_rules", "high-risk-gate.yaml"), "operator: risk_at_least")
+	assertFileContains(t, filepath.Join(runtimeHome, "policies", "workflow_rules", "high-risk-gate.yaml"), "minimum: high")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "custom-review-team.yaml"), "kind: goflow.team_template_resource")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "custom-review-team.yaml"), "role_templates:")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "custom-review-team.yaml"), "quorum_presets:")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "custom-framework-team.yaml"), "agent-framework-extension")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "custom-framework-team.yaml"), "extension-review")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "custom-support-team.yaml"), "customer-support-triage")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "custom-support-team.yaml"), "support-review")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "workflows", "custom-plan-template.yaml"), "kind: goflow.workflow_template_resource")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "workflows", "custom-plan-template.yaml"), "graph:")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "workflows", "custom-plan-template.yaml"), "name: custom-plan-template")
+}
+
+func TestGeneratedPythonMCPScaffoldRunsWithWorkspaceSafety(t *testing.T) {
+	python, args := findPythonForScaffoldTest()
+	if python == "" {
+		t.Skip("python3/python not found on PATH")
+	}
+	runtimeHome := t.TempDir()
+	toolPath := filepath.Join(runtimeHome, "mcp_servers", "safe-helper.py")
+	if err := os.MkdirAll(filepath.Dir(toolPath), 0o755); err != nil {
+		t.Fatalf("mkdir tool dir: %v", err)
+	}
+	if err := os.WriteFile(toolPath, []byte(renderPythonMCPServerTemplate("safe-helper")), 0o644); err != nil {
+		t.Fatalf("write generated scaffold: %v", err)
+	}
+	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
+	if err := os.MkdirAll(workspaceRoot, 0o755); err != nil {
+		t.Fatalf("mkdir workspace: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspaceRoot, "notes.txt"), []byte("hello scaffold\n"), 0o644); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+	outsideRoot := t.TempDir()
+	outsideDir := filepath.Join(outsideRoot, "outside")
+	if err := os.MkdirAll(outsideDir, 0o755); err != nil {
+		t.Fatalf("mkdir outside: %v", err)
+	}
+	symlinkSupported := true
+	if err := os.Symlink(outsideDir, filepath.Join(workspaceRoot, "outside-link")); err != nil {
+		symlinkSupported = false
+	}
+
+	requests := []string{
+		scaffoldMCPRequest(1, "read_text", map[string]any{"path": "notes.txt"}),
+		scaffoldMCPRequest(2, "write_text", map[string]any{"path": "created.txt", "content": "created", "overwrite": true}),
+		scaffoldMCPRequest(3, "read_text", map[string]any{"path": "../outside.txt"}),
+	}
+	if symlinkSupported {
+		requests = append(requests, scaffoldMCPRequest(4, "write_text", map[string]any{"path": "outside-link/escape.txt", "content": "escape", "overwrite": true}))
+	}
+	cmdArgs := append(append([]string(nil), args...), toolPath)
+	cmd := exec.Command(python, cmdArgs...)
+	cmd.Env = append(os.Environ(), "GOFLOW_WORKSPACE_ROOT="+workspaceRoot)
+	cmd.Dir = runtimeHome
+	cmd.Stdin = strings.NewReader(strings.Join(requests, "\n") + "\n")
+	output, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("generated scaffold failed: %v\n%s", err, output)
+	}
+	lines := strings.Split(strings.TrimSpace(string(output)), "\n")
+	if want := len(requests); len(lines) != want {
+		t.Fatalf("expected %d scaffold responses, got %d: %s", want, len(lines), output)
+	}
+	readPayload := scaffoldMCPResultContent(t, lines[0])
+	if readPayload["relative_path"] != "notes.txt" || !strings.Contains(fmt.Sprint(readPayload["content"]), "hello scaffold") {
+		t.Fatalf("unexpected read_text payload: %#v", readPayload)
+	}
+	writePayload := scaffoldMCPResultContent(t, lines[1])
+	if writePayload["relative_path"] != "created.txt" || writePayload["bytes_written"].(float64) != 7 {
+		t.Fatalf("unexpected write_text payload: %#v", writePayload)
+	}
+	if content, err := os.ReadFile(filepath.Join(workspaceRoot, "created.txt")); err != nil || string(content) != "created" {
+		t.Fatalf("expected created workspace file, content=%q err=%v", content, err)
+	}
+	scaffoldMCPExpectToolError(t, lines[2], "escapes workspace root")
+	if symlinkSupported {
+		scaffoldMCPExpectToolError(t, lines[3], "resolves outside workspace root")
+		if _, err := os.Stat(filepath.Join(outsideDir, "escape.txt")); !os.IsNotExist(err) {
+			t.Fatalf("expected symlink-parent write to be rejected, stat err=%v", err)
+		}
+	}
+}
+
+func findPythonForScaffoldTest() (string, []string) {
+	for _, candidate := range []struct {
+		name string
+		args []string
+	}{
+		{name: "python3"},
+		{name: "python"},
+		{name: "py", args: []string{"-3"}},
+	} {
+		path, err := exec.LookPath(candidate.name)
+		if err != nil {
+			continue
+		}
+		versionArgs := append(append([]string(nil), candidate.args...), "--version")
+		if err := exec.Command(path, versionArgs...).Run(); err != nil {
+			continue
+		}
+		return path, candidate.args
+	}
+	return "", nil
+}
+
+func scaffoldMCPRequest(id int, name string, arguments map[string]any) string {
+	data, _ := json.Marshal(map[string]any{
+		"jsonrpc": "2.0",
+		"id":      id,
+		"method":  "tools/call",
+		"params": map[string]any{
+			"name":      name,
+			"arguments": arguments,
+		},
+	})
+	return string(data)
+}
+
+func scaffoldMCPResultContent(t *testing.T, line string) map[string]any {
+	t.Helper()
+	var response struct {
+		Result struct {
+			Content string `json:"content"`
+			IsError bool   `json:"is_error"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(line), &response); err != nil {
+		t.Fatalf("decode scaffold response %q: %v", line, err)
+	}
+	if response.Result.IsError {
+		t.Fatalf("expected successful scaffold response, got %q", line)
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(response.Result.Content), &payload); err != nil {
+		t.Fatalf("decode scaffold content %q: %v", response.Result.Content, err)
+	}
+	return payload
+}
+
+func scaffoldMCPExpectToolError(t *testing.T, line, want string) {
+	t.Helper()
+	var response struct {
+		Result struct {
+			Content string `json:"content"`
+			IsError bool   `json:"is_error"`
+		} `json:"result"`
+	}
+	if err := json.Unmarshal([]byte(line), &response); err != nil {
+		t.Fatalf("decode scaffold error response %q: %v", line, err)
+	}
+	if !response.Result.IsError || !strings.Contains(response.Result.Content, want) {
+		t.Fatalf("expected scaffold tool error containing %q, got %q", want, line)
+	}
 }
 
 func TestScaffoldValidationRejectsIncompleteTemplates(t *testing.T) {
@@ -1841,6 +2385,9 @@ func TestScaffoldValidationRejectsIncompleteTemplates(t *testing.T) {
 	}
 	if err := validateAgentScaffold("worker", "worker:\n  provider: primary\n"); err == nil {
 		t.Fatal("expected incomplete agent scaffold to fail validation")
+	}
+	if err := validateProviderScaffold("primary", "primary:\n  provider: openai-compatible\n"); err == nil {
+		t.Fatal("expected incomplete provider scaffold to fail validation")
 	}
 	if err := validateWorkflowScaffold("release", "name: release\n"); err == nil {
 		t.Fatal("expected incomplete workflow scaffold to fail validation")
@@ -1929,6 +2476,465 @@ func TestHandleCommandAgentsIncludesAllowedTools(t *testing.T) {
 	}
 }
 
+func TestHandleCommandKitsListsAndShowsManifest(t *testing.T) {
+	runtimeHome := t.TempDir()
+	kitDir := filepath.Join(runtimeHome, "kits", "acme-platform")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir kit: %v", err)
+	}
+	kitBody := `kind: goflow.kit
+version: 1
+name: acme-platform
+title: Acme Platform Kit
+description: Reusable platform engineering setup.
+category: software
+tags: [platform, coding]
+providers: [primary]
+agents: [chat, fixer]
+skills: [execution-plan, code-writing]
+tools: [read_file, write_file]
+workflows: [plan-fix-audit]
+workflow_templates: [software-team-review-gate]
+team_templates: [software-task-team]
+policy_rules: [expression]
+required_env: [GOFLOW_MISSING_TEST_ENV]
+examples:
+  - title: Improve project
+    request: Optimize this project.
+    workflow: plan-fix-audit
+    agent: chat
+metadata:
+  owner: local
+`
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitBody), 0o644); err != nil {
+		t.Fatalf("write kit: %v", err)
+	}
+	runtimeRef, err := agent.NewRuntime(&config.Config{
+		RuntimeHome:   runtimeHome,
+		Audit:         config.AuditConfig{},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Providers:     map[string]config.LLMConfig{"primary": {Provider: "openai-compatible", Model: "test"}},
+		WorkspaceRoot: filepath.Join(t.TempDir(), "workspace"),
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:       "Chat",
+				Provider:   "primary",
+				Mode:       "chat",
+				ToolPolicy: config.ToolPolicyAllow,
+			},
+		},
+	}, map[string]interfaces.LLMClient{
+		"primary": &workflowStubLLMClient{},
+	}, nil, &mainTestMCP{}, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	listOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/kits", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /kits command to be handled")
+		}
+	})
+	if !strings.Contains(listOutput, "Vertical Kits") || !strings.Contains(listOutput, "acme-platform") || !strings.Contains(listOutput, "warnings=1") || !strings.Contains(listOutput, "required environment variable GOFLOW_MISSING_TEST_ENV is not set") {
+		t.Fatalf("expected kit list with warning, got %q", listOutput)
+	}
+
+	detailOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/kits acme-platform", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /kits detail command to be handled")
+		}
+	})
+	for _, want := range []string{"Vertical Kit", "Acme Platform Kit", "providers", "primary", "workflow_templates", "software-team-review-gate", "examples", "Optimize this project.", "metadata", "owner=local"} {
+		if !strings.Contains(detailOutput, want) {
+			t.Fatalf("expected kit detail to contain %q, got %q", want, detailOutput)
+		}
+	}
+}
+
+func TestHandleCommandKitsExportsAndImportsBundle(t *testing.T) {
+	sourceHome := t.TempDir()
+	kitDir := filepath.Join(sourceHome, "kits", "acme-platform")
+	if err := os.MkdirAll(kitDir, 0o755); err != nil {
+		t.Fatalf("mkdir source kit: %v", err)
+	}
+	kitBody := `kind: goflow.kit
+version: 1
+name: acme-platform
+title: Acme Platform Kit
+category: software
+workflows: [delivery-flow]
+workflow_templates: [software-team-review-gate]
+team_templates: [software-task-team]
+policy_rules: [expression]
+`
+	if err := os.WriteFile(filepath.Join(kitDir, "kit.yaml"), []byte(kitBody), 0o644); err != nil {
+		t.Fatalf("write source kit: %v", err)
+	}
+	workflowDir := filepath.Join(sourceHome, "workflows", "delivery-flow")
+	if err := os.MkdirAll(workflowDir, 0o755); err != nil {
+		t.Fatalf("mkdir workflow: %v", err)
+	}
+	workflowBody := `name: delivery-flow
+description: Delivery workflow.
+stages:
+  - name: plan
+    agent: chat
+    skill: execution-plan
+`
+	if err := os.WriteFile(filepath.Join(workflowDir, "workflow.yaml"), []byte(workflowBody), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	sourceRuntime := newMainTestRuntimeForHome(t, sourceHome)
+
+	exportOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/kits acme-platform --export", nil, nil, sourceRuntime); !handled {
+			t.Fatal("expected /kits --export command to be handled")
+		}
+	})
+	if !strings.Contains(exportOutput, `"kind": "goflow.kit_bundle"`) ||
+		!strings.Contains(exportOutput, `"delivery-flow"`) ||
+		!strings.Contains(exportOutput, `"software-team-review-gate"`) {
+		t.Fatalf("expected kit bundle export, got %q", exportOutput)
+	}
+
+	targetHome := t.TempDir()
+	targetRuntime := newMainTestRuntimeForHome(t, targetHome)
+	bundlePath := filepath.Join(t.TempDir(), "kit-bundle.json")
+	if err := os.WriteFile(bundlePath, []byte(exportOutput), 0o644); err != nil {
+		t.Fatalf("write exported bundle: %v", err)
+	}
+	importOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/kits --import "+bundlePath+" --replace", nil, nil, targetRuntime); !handled {
+			t.Fatal("expected /kits --import command to be handled")
+		}
+	})
+	if !strings.Contains(importOutput, "Kit Bundle Import") ||
+		!strings.Contains(importOutput, "saved") ||
+		!strings.Contains(importOutput, "workflow/delivery-flow") ||
+		!strings.Contains(importOutput, "kit/acme-platform") {
+		t.Fatalf("expected kit bundle import summary, got %q", importOutput)
+	}
+	assertFileContains(t, filepath.Join(targetHome, "kits", "acme-platform", "kit.yaml"), "kind: goflow.kit")
+	assertFileContains(t, filepath.Join(targetHome, "workflows", "delivery-flow", "workflow.yaml"), "name: delivery-flow")
+	assertFileContains(t, filepath.Join(targetHome, "templates", "workflows", "software-team-review-gate.yaml"), "kind: goflow.workflow_template_resource")
+	assertFileContains(t, filepath.Join(targetHome, "templates", "teams", "software-task-team.yaml"), "kind: goflow.team_template_resource")
+}
+
+func TestHandleCommandWorkflowSchemasListsShowsAndRebuilds(t *testing.T) {
+	state := session.New(8)
+	_, err := state.ImportWorkflowSchema(session.WorkflowSchemaSnapshot{
+		Workflow:  "expression-flow",
+		UpdatedAt: "2026-05-03T12:00:00Z",
+		RunIDs:    []string{"wf-1"},
+		Stages: map[string]session.WorkflowStageSchemaSnapshot{
+			"collect": {
+				Stage:    "collect",
+				NodeType: "agent",
+				AgentID:  "planner",
+				Outputs: map[string]session.WorkflowValueSchemaSnapshot{
+					"payload": {
+						Type: "object",
+						Fields: map[string]session.WorkflowValueSchemaSnapshot{
+							"risk": {Type: "string", Observed: 1, LastRunID: "wf-1"},
+						},
+					},
+				},
+			},
+		},
+	}, false)
+	if err != nil {
+		t.Fatalf("ImportWorkflowSchema: %v", err)
+	}
+	runtimeRef, err := agent.NewRuntime(&config.Config{
+		RuntimeHome:   t.TempDir(),
+		Audit:         config.AuditConfig{},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Providers:     map[string]config.LLMConfig{"primary": {Provider: "openai-compatible", Model: "test"}},
+		WorkspaceRoot: filepath.Join(t.TempDir(), "workspace"),
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:       "Chat",
+				Provider:   "primary",
+				Mode:       "chat",
+				ToolPolicy: config.ToolPolicyAllow,
+			},
+		},
+	}, map[string]interfaces.LLMClient{
+		"primary": &workflowStubLLMClient{},
+	}, nil, &mainTestMCP{}, state, runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	listOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-schemas", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-schemas command to be handled")
+		}
+	})
+	if !strings.Contains(listOutput, "Workflow Schemas") || !strings.Contains(listOutput, "expression-flow") {
+		t.Fatalf("expected workflow schema list, got %q", listOutput)
+	}
+
+	detailOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-schemas expression-flow", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-schemas detail command to be handled")
+		}
+	})
+	if !strings.Contains(detailOutput, "Workflow Schema") || !strings.Contains(detailOutput, "payload") || !strings.Contains(detailOutput, "risk") {
+		t.Fatalf("expected workflow schema detail, got %q", detailOutput)
+	}
+
+	jsonOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-schemas expression-flow --json", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-schemas --json command to be handled")
+		}
+	})
+	if !strings.Contains(jsonOutput, `"workflow": "expression-flow"`) || !strings.Contains(jsonOutput, `"payload"`) {
+		t.Fatalf("expected workflow schema json detail, got %q", jsonOutput)
+	}
+
+	exportOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-schemas expression-flow --export", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-schemas --export command to be handled")
+		}
+	})
+	if !strings.Contains(exportOutput, `"kind": "goflow.workflow_schemas"`) || !strings.Contains(exportOutput, `"version": 2`) || !strings.Contains(exportOutput, `"schemas"`) {
+		t.Fatalf("expected workflow schema export bundle, got %q", exportOutput)
+	}
+
+	clearOneOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-schemas expression-flow --clear", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-schemas --clear command to be handled")
+		}
+	})
+	if !strings.Contains(clearOneOutput, "workflow schema cleared") {
+		t.Fatalf("expected clear one output, got %q", clearOneOutput)
+	}
+	if _, ok := runtimeRef.WorkflowSchema("expression-flow"); ok {
+		t.Fatalf("expected expression-flow schema to be cleared")
+	}
+
+	importPath := filepath.Join(t.TempDir(), "schema-bundle.json")
+	if err := os.WriteFile(importPath, []byte(exportOutput), 0o644); err != nil {
+		t.Fatalf("write schema import bundle: %v", err)
+	}
+	importOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-schemas --import "+importPath, nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-schemas --import command to be handled")
+		}
+	})
+	if !strings.Contains(importOutput, "workflow schemas imported") || !strings.Contains(importOutput, "1") {
+		t.Fatalf("expected workflow schema import output, got %q", importOutput)
+	}
+	if _, ok := runtimeRef.WorkflowSchema("expression-flow"); !ok {
+		t.Fatalf("expected expression-flow schema to be imported")
+	}
+	runtimeRef.ClearWorkflowSchema("expression-flow")
+
+	if _, err := state.ImportWorkflowSchema(session.WorkflowSchemaSnapshot{
+		Workflow: "rebuild-flow",
+		Stages: map[string]session.WorkflowStageSchemaSnapshot{
+			"done": {Stage: "done", Outputs: map[string]session.WorkflowValueSchemaSnapshot{"summary": {Type: "string"}}},
+		},
+	}, false); err != nil {
+		t.Fatalf("reimport workflow schema for rebuild: %v", err)
+	}
+	rebuildOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-schemas --rebuild", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-schemas --rebuild command to be handled")
+		}
+	})
+	if !strings.Contains(rebuildOutput, "Workflow Schemas") {
+		t.Fatalf("expected workflow schema rebuild output, got %q", rebuildOutput)
+	}
+
+	if _, err := state.ImportWorkflowSchema(session.WorkflowSchemaSnapshot{
+		Workflow: "another-flow",
+		Stages: map[string]session.WorkflowStageSchemaSnapshot{
+			"done": {Stage: "done", Outputs: map[string]session.WorkflowValueSchemaSnapshot{"summary": {Type: "string"}}},
+		},
+	}, false); err != nil {
+		t.Fatalf("reimport workflow schema: %v", err)
+	}
+	clearAllOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-schemas --clear", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-schemas --clear command to be handled")
+		}
+	})
+	if !strings.Contains(clearAllOutput, "workflow schemas cleared") || !strings.Contains(clearAllOutput, "1") {
+		t.Fatalf("expected clear all output, got %q", clearAllOutput)
+	}
+	if schemas := runtimeRef.WorkflowSchemas(); len(schemas) != 0 {
+		t.Fatalf("expected all workflow schemas to be cleared, got %#v", schemas)
+	}
+}
+
+func TestHandleCommandWorkflowMetadataDiscovery(t *testing.T) {
+	runtimeRef, err := agent.NewRuntime(&config.Config{
+		RuntimeHome:   t.TempDir(),
+		Audit:         config.AuditConfig{},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Providers:     map[string]config.LLMConfig{"primary": {Provider: "openai-compatible", Model: "test"}},
+		WorkspaceRoot: filepath.Join(t.TempDir(), "workspace"),
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:       "Chat",
+				Provider:   "primary",
+				Mode:       "chat",
+				ToolPolicy: config.ToolPolicyAllow,
+			},
+		},
+	}, map[string]interfaces.LLMClient{
+		"primary": &workflowStubLLMClient{},
+	}, nil, &mainTestMCP{}, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	nodeList := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-node-metadata", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-node-metadata command to be handled")
+		}
+	})
+	if !strings.Contains(nodeList, "Workflow Node Metadata") || !strings.Contains(nodeList, "policy_guard") || !strings.Contains(nodeList, "custom metadata") {
+		t.Fatalf("expected workflow node metadata list, got %q", nodeList)
+	}
+	nodeDetail := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-node-metadata policy_guard", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-node-metadata detail command to be handled")
+		}
+	})
+	if !strings.Contains(nodeDetail, "Workflow Node Metadata") || !strings.Contains(nodeDetail, "policy_guard") || !strings.Contains(nodeDetail, "outputs") {
+		t.Fatalf("expected workflow node metadata detail, got %q", nodeDetail)
+	}
+
+	helperList := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/expression-helpers --mode policy --node-type policy_guard", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /expression-helpers command to be handled")
+		}
+	})
+	if !strings.Contains(helperList, "Expression Helpers") || !strings.Contains(helperList, "risk_rank") || !strings.Contains(helperList, "filter") {
+		t.Fatalf("expected expression helper list, got %q", helperList)
+	}
+	helperDetail := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/workflow-expression-functions risk_rank", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected /workflow-expression-functions detail command to be handled")
+		}
+	})
+	if !strings.Contains(helperDetail, "Expression Helper") || !strings.Contains(helperDetail, "risk_rank") || !strings.Contains(helperDetail, "arguments") {
+		t.Fatalf("expected expression helper detail, got %q", helperDetail)
+	}
+}
+
+func TestHandleCommandConfigDiagnostics(t *testing.T) {
+	runtimeHome := t.TempDir()
+	configDir := filepath.Join(runtimeHome, "configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(configDir, "goflow.yaml")
+	if err := os.WriteFile(configPath, []byte(`
+runtime_home: `+quoteYAMLPath(runtimeHome)+`
+workspace_root: workspace
+default_agent: chat
+providers:
+  primary:
+    provider: openai-compatible
+    model: test
+    base_url: http://127.0.0.1
+agents:
+  chat:
+    provider: primary
+    mode: chat
+    tool_policy: confirm
+    allowed_tool_kinds: [read]
+skill:
+  directory: skills
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	runtimeRef, err := agent.NewRuntime(&config.Config{
+		RuntimeHome:   runtimeHome,
+		ConfigPath:    configPath,
+		Audit:         config.AuditConfig{},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Providers:     map[string]config.LLMConfig{"primary": {Provider: "openai-compatible", Model: "test", BaseURL: "http://127.0.0.1"}},
+		WorkspaceRoot: filepath.Join(runtimeHome, "workspace"),
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:             "Chat",
+				Provider:         "primary",
+				Mode:             "chat",
+				ToolPolicy:       config.ToolPolicyConfirm,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+			},
+		},
+	}, map[string]interfaces.LLMClient{
+		"primary": &workflowStubLLMClient{},
+	}, nil, &mainTestMCP{}, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	output := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/config-diagnostics", nil, nil, runtimeRef, newWorkspaceLifecycle(runtimeRef.WorkspaceRoot(), true)); !handled {
+			t.Fatal("expected /config-diagnostics command to be handled")
+		}
+	})
+	if !strings.Contains(output, "Config Diagnostics") || !strings.Contains(output, "config_load_ok") || !strings.Contains(output, "modules") || !strings.Contains(output, "optional extension-directory") {
+		t.Fatalf("expected config diagnostics output, got %q", output)
+	}
+	jsonOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/config-diagnostics --json", nil, nil, runtimeRef, newWorkspaceLifecycle(runtimeRef.WorkspaceRoot(), true)); !handled {
+			t.Fatal("expected /config-diagnostics --json command to be handled")
+		}
+	})
+	if !strings.Contains(jsonOutput, `"status"`) || !strings.Contains(jsonOutput, `"config_path"`) || !strings.Contains(jsonOutput, `"diagnostics"`) {
+		t.Fatalf("expected config diagnostics json output, got %q", jsonOutput)
+	}
+}
+
+func TestDecodeCLIWorkflowSchemaImportFormats(t *testing.T) {
+	rawSchema := []byte(`{
+		"workflow": "raw-flow",
+		"stages": {"done": {"stage":"done", "outputs":{"summary":{"type":"string"}}}}
+	}`)
+	schemas, merge, err := decodeCLIWorkflowSchemaImport(rawSchema, true)
+	if err != nil || !merge || len(schemas) != 1 || schemas[0].Workflow != "raw-flow" {
+		t.Fatalf("expected raw schema import, schemas=%#v merge=%t err=%v", schemas, merge, err)
+	}
+	rawList := []byte(`[{
+		"workflow": "list-flow",
+		"stages": {"done": {"stage":"done", "outputs":{"summary":{"type":"string"}}}}
+	}]`)
+	schemas, merge, err = decodeCLIWorkflowSchemaImport(rawList, false)
+	if err != nil || merge || len(schemas) != 1 || schemas[0].Workflow != "list-flow" {
+		t.Fatalf("expected raw list import, schemas=%#v merge=%t err=%v", schemas, merge, err)
+	}
+	bundle := []byte(`{
+		"kind": "goflow.workflow_schemas",
+		"version": 2,
+		"merge": false,
+		"schemas": [{
+			"workflow": "bundle-flow",
+			"stages": {"done": {"stage":"done", "outputs":{"summary":{"type":"string"}}}}
+		}]
+	}`)
+	schemas, merge, err = decodeCLIWorkflowSchemaImport(bundle, true)
+	if err != nil || merge || len(schemas) != 1 || schemas[0].Workflow != "bundle-flow" {
+		t.Fatalf("expected bundle import with merge override, schemas=%#v merge=%t err=%v", schemas, merge, err)
+	}
+	if _, _, err := decodeCLIWorkflowSchemaImport([]byte(`{"kind":"wrong","schemas":[]}`), true); err == nil {
+		t.Fatal("expected unsupported bundle kind to fail")
+	}
+	if _, _, err := decodeCLIWorkflowSchemaImport([]byte(`{"kind":"goflow.workflow_schemas","version":99,"schemas":[]}`), true); err == nil {
+		t.Fatal("expected future bundle version to fail")
+	}
+}
+
 func TestFormatSessionOutputUsesSections(t *testing.T) {
 	output := formatSessionOutput("planner", "fix", "code-review", []string{"prompt one"}, []string{"write_file: suspended"}, workflowDisplayRow{}, handoffDisplayRow{}, routingDisplayRow{}, nil, taskStageDisplayRow{Stage: "verify", AgentID: "auditor", Mode: "audit", Detail: "checking final result"})
 	if !strings.Contains(output, "Session") {
@@ -1939,6 +2945,47 @@ func TestFormatSessionOutputUsesSections(t *testing.T) {
 	}
 	if !strings.Contains(output, "Task stage") || !strings.Contains(output, "verify") {
 		t.Fatalf("expected task stage section, got %q", output)
+	}
+}
+
+func TestFormatCostOutputSummarizesPromptAndTokenHistory(t *testing.T) {
+	output := formatCostOutput(session.Snapshot{
+		PromptBudget: &schema.PromptBudget{
+			AgentID:                        "fixer",
+			Mode:                           "fix",
+			TaskStage:                      "modify",
+			EstimatedPromptTokens:          7200,
+			SystemTokens:                   1200,
+			MessageTokens:                  3200,
+			ToolSchemaTokens:               1800,
+			CacheablePrefixTokens:          2600,
+			ExposedToolCount:               3,
+			TotalToolCount:                 12,
+			FilteredToolCount:              9,
+			HistoryPromptItems:             8,
+			HistoryPromptRetainedItems:     4,
+			HistoryPromptDeduplicatedItems: 2,
+			HistoryToolItems:               10,
+			HistoryToolRetainedItems:       6,
+			HistoryToolCompactedOlderItems: 3,
+			HistoryEstimatedSavedTokens:    160,
+			PromptPrefixHash:               "prefix-d",
+		},
+		PromptBudgets: []schema.PromptBudget{
+			{AgentID: "planner", Mode: "plan", EstimatedPromptTokens: 2000, CacheablePrefixTokens: 1200, PromptPrefixHash: "prefix-a"},
+			{AgentID: "fixer", Mode: "fix", EstimatedPromptTokens: 6400, CacheablePrefixTokens: 2400, PromptPrefixHash: "prefix-b"},
+			{AgentID: "fixer", Mode: "fix", EstimatedPromptTokens: 7000, CacheablePrefixTokens: 2600, PromptPrefixHash: "prefix-c"},
+			{AgentID: "fixer", Mode: "fix", TaskStage: "modify", EstimatedPromptTokens: 7200, SystemTokens: 1200, MessageTokens: 3200, ToolSchemaTokens: 1800, CacheablePrefixTokens: 2600, ExposedToolCount: 3, TotalToolCount: 12, FilteredToolCount: 9, HistoryPromptItems: 8, HistoryPromptRetainedItems: 4, HistoryPromptDeduplicatedItems: 2, HistoryToolItems: 10, HistoryToolRetainedItems: 6, HistoryToolCompactedOlderItems: 3, HistoryEstimatedSavedTokens: 160, PromptPrefixHash: "prefix-d"},
+		},
+		TokenUsages: []schema.TokenUsageSample{
+			{AgentID: "planner", Mode: "plan", PromptTokens: 1000, OutputTokens: 200, CachedTokens: 100},
+			{AgentID: "fixer", Mode: "fix", PromptTokens: 3000, OutputTokens: 500, CachedTokens: 400},
+		},
+	})
+	for _, want := range []string{"Cost Diagnostics", "prompt_samples=4", "token_samples=2", "saved_est=160", "deduped=2", "compacted_old=3", "prompts=4/8", "tools=6/10", "latest", "fixer", "top agents", "tool_schema_high", "prompt_prefix_churn"} {
+		if !strings.Contains(output, want) {
+			t.Fatalf("expected cost output to contain %q, got %q", want, output)
+		}
 	}
 }
 
@@ -2047,6 +3094,97 @@ func TestFormatToolsOutputShowsDiagnostics(t *testing.T) {
 	}
 }
 
+func TestFormatToolsOutputShowsRiskProfile(t *testing.T) {
+	output := formatToolsOutput([]toolDisplayRow{{
+		Name:                   "file_tools/write_file",
+		Description:            "Writes",
+		Server:                 "file_tools",
+		Kind:                   "write",
+		Health:                 "ready",
+		InputSchemaSummary:     "object(path, content)",
+		RiskLevel:              "high",
+		IsolationLevel:         "lifecycle",
+		RequiresSandbox:        true,
+		SandboxFeatures:        []string{"windows_job_object_lifecycle"},
+		MissingSandboxFeatures: []string{"windows_restricted_token", "windows_appcontainer"},
+		WindowsIsolation: &schema.WindowsIsolationProfile{
+			JobObject:       true,
+			RestrictedToken: false,
+			AppContainer:    false,
+			LifecycleOnly:   true,
+		},
+	}})
+	if !strings.Contains(output, "risk") || !strings.Contains(output, "high") || !strings.Contains(output, "isolation") || !strings.Contains(output, "lifecycle") {
+		t.Fatalf("expected tool risk and isolation in output, got %q", output)
+	}
+	if !strings.Contains(output, "sandbox") || !strings.Contains(output, "recommended") {
+		t.Fatalf("expected sandbox recommendation in output, got %q", output)
+	}
+	if !strings.Contains(output, "sandbox_features") || !strings.Contains(output, "windows_job_object_lifecycle") ||
+		!strings.Contains(output, "missing_sandbox") || !strings.Contains(output, "windows_restricted_token") ||
+		!strings.Contains(output, "restricted token and AppContainer are not enabled") {
+		t.Fatalf("expected Windows sandbox feature details in output, got %q", output)
+	}
+}
+
+func TestFormatToolsOutputShowsSensitiveEnvRisk(t *testing.T) {
+	output := formatToolsOutput([]toolDisplayRow{{
+		Name:               "web_tools/search",
+		Description:        "Searches the web",
+		Server:             "web_tools",
+		Kind:               "network",
+		Health:             "ready",
+		InputSchemaSummary: "object(query)",
+		RiskLevel:          "medium",
+		IsolationLevel:     "none",
+		RequiresSandbox:    true,
+		EnvAllowlistSet:    true,
+		EnvAllowlist:       []string{"PATH", "WEB_API_KEY"},
+		SensitiveEnv:       []string{"WEB_API_KEY"},
+	}})
+	if !strings.Contains(output, "sensitive_env") || !strings.Contains(output, "WEB_API_KEY") || !strings.Contains(output, "env_allowlist") {
+		t.Fatalf("expected sensitive env risk in tools output, got %q", output)
+	}
+	if strings.Contains(output, "super-secret-value") {
+		t.Fatalf("expected tools output to omit env values, got %q", output)
+	}
+}
+
+func TestBuildCLIToolRiskProfileUsesServerIsolation(t *testing.T) {
+	servers := buildCLIMCPServerRiskMap([]config.MCPServerRef{{Name: "file_tools", Isolation: "process_group"}})
+	risk := buildCLIToolRiskProfile(schema.Tool{Name: "write_file", Server: "file_tools", Kind: "write"}, servers["file_tools"])
+	if risk.RiskLevel != "high" || risk.IsolationLevel != "lifecycle" || risk.Sandboxed || !risk.RequiresSandbox {
+		t.Fatalf("expected high-risk lifecycle write tool, got %#v", risk)
+	}
+	if strings.Join(risk.SandboxFeatures, ",") != "process_group_lifecycle" || !slices.Contains(risk.MissingSandboxFeatures, "filesystem_policy") {
+		t.Fatalf("expected lifecycle sandbox feature metadata, got %#v", risk)
+	}
+	readRisk := buildCLIToolRiskProfile(schema.Tool{Name: "read_file", Server: "file_tools", Kind: "read"}, servers["file_tools"])
+	if readRisk.RiskLevel != "low" || readRisk.RequiresSandbox {
+		t.Fatalf("expected read tool to stay low risk without sandbox requirement, got %#v", readRisk)
+	}
+
+	winServers := buildCLIMCPServerRiskMap([]config.MCPServerRef{{Name: "win_tools", Isolation: "windows_job"}})
+	winRisk := buildCLIToolRiskProfile(schema.Tool{Name: "write_file", Server: "win_tools", Kind: "write"}, winServers["win_tools"])
+	if winRisk.WindowsIsolation == nil || !winRisk.WindowsIsolation.JobObject || winRisk.WindowsIsolation.RestrictedToken || winRisk.WindowsIsolation.AppContainer ||
+		!slices.Contains(winRisk.MissingSandboxFeatures, "windows_restricted_token") ||
+		!slices.Contains(winRisk.MissingSandboxFeatures, "windows_appcontainer") {
+		t.Fatalf("expected Windows lifecycle-only risk metadata, got %#v", winRisk)
+	}
+}
+
+func TestBuildCLIToolRiskProfileCarriesEnvRisk(t *testing.T) {
+	servers := buildCLIMCPServerRiskMap([]config.MCPServerRef{{
+		Name:         "web_tools",
+		Isolation:    "none",
+		EnvAllowlist: []string{"PATH", "WEB_API_KEY", "WEB_API_KEY"},
+	}})
+	risk := buildCLIToolRiskProfile(schema.Tool{Name: "search", Server: "web_tools", Kind: "network"}, servers["web_tools"])
+	if !risk.EnvAllowlistSet || len(risk.EnvAllowlist) != 2 || strings.Join(risk.SensitiveEnv, ",") != "WEB_API_KEY" {
+		t.Fatalf("expected sanitized sensitive env risk, got %#v", risk)
+	}
+}
+
 func TestFormatSessionOutputAppliesColorStyling(t *testing.T) {
 	output := formatSessionOutput("planner", "fix", "code-review", []string{"prompt one"}, []string{"write_file: suspended"}, workflowDisplayRow{}, handoffDisplayRow{}, routingDisplayRow{}, nil)
 	if !strings.Contains(output, "\x1b[") {
@@ -2101,15 +3239,25 @@ func captureStdout(t *testing.T, fn func()) string {
 	os.Stdout = w
 	defer func() { os.Stdout = old }()
 
+	type captureResult struct {
+		output string
+		err    error
+	}
+	done := make(chan captureResult, 1)
+	go func() {
+		var buf bytes.Buffer
+		_, err := io.Copy(&buf, r)
+		done <- captureResult{output: buf.String(), err: err}
+	}()
+
 	fn()
 	_ = w.Close()
-
-	var buf bytes.Buffer
-	if _, err := io.Copy(&buf, r); err != nil {
-		t.Fatalf("io.Copy: %v", err)
-	}
+	result := <-done
 	_ = r.Close()
-	return buf.String()
+	if result.err != nil {
+		t.Fatalf("io.Copy: %v", result.err)
+	}
+	return result.output
 }
 
 func captureStderr(t *testing.T, fn func()) string {
@@ -2216,6 +3364,40 @@ func assertFileContains(t *testing.T, path, want string) {
 	if !strings.Contains(string(data), want) {
 		t.Fatalf("expected %s to contain %q, got %q", path, want, string(data))
 	}
+}
+
+func newMainTestRuntimeForHome(t *testing.T, runtimeHome string) *agent.Runtime {
+	t.Helper()
+	runtimeRef, err := agent.NewRuntime(&config.Config{
+		RuntimeHome:   runtimeHome,
+		Audit:         config.AuditConfig{},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Providers:     map[string]config.LLMConfig{"primary": {Provider: "openai-compatible", Model: "test"}},
+		WorkspaceRoot: filepath.Join(t.TempDir(), "workspace"),
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:       "Chat",
+				Provider:   "primary",
+				Mode:       "chat",
+				ToolPolicy: config.ToolPolicyAllow,
+			},
+		},
+	}, map[string]interfaces.LLMClient{
+		"primary": &workflowStubLLMClient{},
+	}, nil, &mainTestMCP{}, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	return runtimeRef
+}
+
+func quoteYAMLPath(path string) string {
+	data, err := yaml.Marshal(path)
+	if err != nil {
+		return `"` + strings.ReplaceAll(path, `"`, `\"`) + `"`
+	}
+	return strings.TrimSpace(string(data))
 }
 
 type mainTestSkillManager struct{}

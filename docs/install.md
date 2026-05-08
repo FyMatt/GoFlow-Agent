@@ -1,5 +1,7 @@
 # Installation And Deployment
 
+[English](./install.md) | [简体中文](./install.zh-CN.md)
+
 This guide is for users who want to run GoFlow without reading the framework
 internals first.
 
@@ -74,7 +76,7 @@ export GOFLOW_MODEL=deepseek-chat
 ./run-goflow.sh /path/to/workspace
 ```
 
-Release archives use `configs/agent.binary.yaml`. The launcher scripts set the
+Release archives use `configs/goflow.binary.yaml`. The launcher scripts set the
 compiled MCP tool paths automatically, so Go is not required on the target
 machine. They also default the backup provider environment variables to the
 primary provider values when `GOFLOW_BACKUP_*` is not set. Python is still
@@ -82,7 +84,7 @@ required for the built-in Python MCP server.
 
 You can also run `bin/goflow` or `bin/goflow.exe` directly from an extracted
 archive. When launched from `bin`, GoFlow resolves runtime home to the archive
-root and uses `configs/agent.binary.yaml` by default.
+root and uses `configs/goflow.binary.yaml` by default.
 
 ## Run The Published Docker Image
 
@@ -91,7 +93,13 @@ The release workflow publishes images to GitHub Container Registry:
 ```text
 ghcr.io/fymatt/goflow-agent:<version>
 ghcr.io/fymatt/goflow-agent:latest
+ghcr.io/fymatt/goflow-agent-mcp-python:<version>
+ghcr.io/fymatt/goflow-agent-mcp-python:latest
 ```
+
+`goflow-agent` is the HTTP/CLI runtime image. `goflow-agent-mcp-python` is the
+minimal Python image used by containerized MCP tool scaffold presets; you do
+not run it directly unless you are testing a generated tool container.
 
 Create a workspace directory and run the HTTP server:
 
@@ -118,7 +126,7 @@ docker run --rm -it `
 The image starts HTTP mode by default:
 
 ```text
-goflow --config /app/configs/agent.docker.yaml --workspace /workspace --http :8080
+goflow --config /app/configs/goflow.docker.yaml --workspace /workspace --http :8080
 ```
 
 Check the server:

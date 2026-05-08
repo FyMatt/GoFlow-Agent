@@ -1,0 +1,57 @@
+name: plan-fix-audit
+description: Plan a requested change, implement approved work, verify the result, and produce an audit-ready output.
+stages:
+  - name: start
+    node_type: start
+    next: [intake]
+    position: {x: 80, y: 260}
+  - name: intake
+    node_type: agent
+    agent: planner
+    skill: execution-plan
+    next: [plan]
+    params:
+      output: "Clarify objective, affected files, constraints, and acceptance checks."
+      risk_scope: "Identify workspace, dependency, test, and approval risks before planning edits."
+    position: {x: 330, y: 230}
+  - name: plan
+    node_type: skill
+    agent: planner
+    skill: execution-plan
+    next: [implement]
+    params:
+      output: "Produce ordered implementation steps, target files, verification commands, and rollback notes."
+      handoff: "The next stage should be able to implement without rediscovering the task."
+    position: {x: 650, y: 230}
+  - name: implement
+    node_type: agent
+    agent: fixer
+    skill: code-writing
+    approval: true
+    next: [verify]
+    params:
+      output: "Apply the approved plan with focused code changes and keep unrelated files untouched."
+      edit_policy: "Preserve user edits and summarize changed files."
+    position: {x: 970, y: 230}
+  - name: verify
+    node_type: skill
+    agent: auditor
+    skill: code-audit
+    next: [audit]
+    params:
+      verification_command: "go test ./..."
+      output: "Run or recommend the narrowest meaningful verification, then record failures and residual risk."
+      evidence: "Include exact commands or checks performed."
+    position: {x: 1290, y: 230}
+  - name: audit
+    node_type: skill
+    agent: auditor
+    skill: code-audit
+    next: [output]
+    params:
+      output: "Review the implementation for regressions, missed requirements, unsafe behavior, and test gaps."
+      severity_order: "Prioritize concrete bugs and risks before summaries."
+    position: {x: 1610, y: 230}
+  - name: output
+    node_type: end
+    position: {x: 1930, y: 260}

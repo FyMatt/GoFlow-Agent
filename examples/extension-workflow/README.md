@@ -1,5 +1,7 @@
 # End-To-End Extension Example
 
+[English](./README.md) | [简体中文](./README.zh-CN.md)
+
 This example shows how to combine a custom Python MCP server, a custom agent, a custom skill, and a graph workflow.
 
 It is intentionally not enabled by default. Copy the parts you want into the runtime home, review permissions, then reload discovery from the CLI.
@@ -10,6 +12,7 @@ It is intentionally not enabled by default. Copy the parts you want into the run
 examples/extension-workflow/
   mcp_servers/workspace_report.py
   configs/agents/workspace-reporter.yaml
+  configs/mcp_servers/workspace_report.yaml
   skills/workspace-report/SKILL.md
   workflows/workspace-review/workflow.yaml
 ```
@@ -23,40 +26,16 @@ Copy-Item examples/extension-workflow/mcp_servers/workspace_report.py mcp_server
 Copy-Item -Recurse examples/extension-workflow/skills/workspace-report skills/workspace-report
 Copy-Item -Recurse examples/extension-workflow/workflows/workspace-review workflows/workspace-review
 Copy-Item examples/extension-workflow/configs/agents/workspace-reporter.yaml configs/agents/workspace-reporter.yaml
+Copy-Item examples/extension-workflow/configs/mcp_servers/workspace_report.yaml configs/mcp_servers/workspace_report.yaml
 ```
 
-Then merge these snippets into `configs/agent.yaml`:
+The custom agent is already installed as a modular runtime profile at
+`configs/agents/workspace-reporter.yaml`. Review that file before restarting
+GoFlow.
 
-```yaml
-agents:
-  workspace-reporter:
-    name: Workspace Reporter
-    description: Produces evidence-backed workspace inventory reports with a narrow read-only tool envelope.
-    provider: primary
-    mode: audit
-    tool_policy: confirm
-    allowed_tool_kinds: [read]
-    allowed_tools:
-      - workspace_report/workspace_summary
-      - file_tools/list_tree
-      - file_tools/read_file
-    max_iterations: 5
-
-mcp_servers:
-  - name: workspace_report
-    command: python
-    args:
-      - ./mcp_servers/workspace_report.py
-    enabled: true
-    timeout: 30s
-    workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
-    isolation: process_group
-    allowed_commands:
-      - python
-    max_request_bytes: 65536
-    max_response_bytes: 1048576
-```
+The custom MCP server is installed as a modular runtime profile at
+`configs/mcp_servers/workspace_report.yaml`. Review that file before
+restarting GoFlow.
 
 ## Verify Discovery
 

@@ -55,21 +55,37 @@ def validate_dockerfile() -> None:
             "FROM python:3.13-slim AS runtime",
             "go build -o /out/goflow ./cmd/goflow",
             "go build -o /out/file_tools ./mcp_servers/file_tools",
+            "go build -o /out/skill_runner ./mcp_servers/skill_runner",
             "go build -o /out/web_tools ./mcp_servers/web_tools",
             "COPY --from=builder /out/file_tools /app/bin/file_tools",
+            "COPY --from=builder /out/skill_runner /app/bin/skill_runner",
             "COPY --from=builder /out/web_tools /app/bin/web_tools",
-            'CMD ["--config", "/app/configs/agent.docker.yaml", "--workspace", "/workspace", "--http", ":8080"]',
+            'CMD ["--config", "/app/configs/goflow.docker.yaml", "--workspace", "/workspace", "--http", ":8080"]',
+        ],
+    )
+    mcp_python = read("docker/mcp-python/Dockerfile")
+    assert_contains(
+        "docker/mcp-python/Dockerfile",
+        mcp_python,
+        [
+            "FROM python:3.13-slim",
+            "GoFlow MCP Python Tool Runtime",
+            "PYTHONDONTWRITEBYTECODE=1",
+            "PYTHONUNBUFFERED=1",
+            "mkdir -p /workspace /goflow-tools",
+            'CMD ["python", "--version"]',
         ],
     )
 
 
 def validate_docker_config() -> None:
-    config = read("configs/agent.docker.yaml")
+    config = read("configs/goflow.docker.yaml")
     assert_contains(
-        "configs/agent.docker.yaml",
+        "configs/goflow.docker.yaml",
         config,
         [
             "command: /app/bin/file_tools",
+            "command: /app/bin/skill_runner",
             "command: /app/bin/web_tools",
             "command: python3",
             "- /app/mcp_servers/python_notes.py",
@@ -79,16 +95,17 @@ def validate_docker_config() -> None:
             "directory: /app/skills",
         ],
     )
-    assert_not_contains("configs/agent.docker.yaml", config, ["go run", "command: go"])
+    assert_not_contains("configs/goflow.docker.yaml", config, ["go run", "command: go"])
 
 
 def validate_binary_config() -> None:
-    config = read("configs/agent.binary.yaml")
+    config = read("configs/goflow.binary.yaml")
     assert_contains(
-        "configs/agent.binary.yaml",
+        "configs/goflow.binary.yaml",
         config,
         [
             "command: ${GOFLOW_FILE_TOOLS_CMD}",
+            "command: ${GOFLOW_SKILL_RUNNER_CMD}",
             "command: ${GOFLOW_WEB_TOOLS_CMD}",
             "command: ${GOFLOW_PYTHON_CMD}",
             "- ${GOFLOW_PYTHON_NOTES_PATH}",
@@ -108,7 +125,7 @@ def validate_compose() -> None:
             ".env",
             "./workspace:/workspace",
             "--config",
-            "/app/configs/agent.docker.yaml",
+            "/app/configs/goflow.docker.yaml",
             "--workspace",
             "/workspace",
             "--http",
@@ -128,6 +145,7 @@ def validate_ci() -> None:
             "python scripts/validate_extension_workflow.py",
             "python scripts/validate_deployment_assets.py",
             "docker build -t goflow-agent:ci .",
+            "docker build -f docker/mcp-python/Dockerfile -t goflow-agent-mcp-python:ci .",
             "http://127.0.0.1:18080/api/session",
         ],
     )
@@ -152,6 +170,8 @@ def validate_release_workflow() -> None:
             "docker/login-action@v3",
             "docker/build-push-action@v6",
             "ghcr.io/${GITHUB_REPOSITORY,,}",
+            "mcp_python",
+            "docker/mcp-python/Dockerfile",
         ],
     )
 
@@ -168,8 +188,9 @@ def validate_release_script() -> None:
             '("windows", "arm64")',
             '("goflow", "./cmd/goflow")',
             '("file_tools", "./mcp_servers/file_tools")',
+            '("skill_runner", "./mcp_servers/skill_runner")',
             '("web_tools", "./mcp_servers/web_tools")',
-            "agent.binary.yaml",
+            "goflow.binary.yaml",
             "run-goflow.sh",
             "run-goflow.cmd",
             "GOFLOW_BACKUP_MODEL",
@@ -229,13 +250,14 @@ def validate_release_docs() -> None:
         [
             "python scripts/build_release_assets.py --clean --version",
             "scripts/validate_release_archives.py",
-            "configs/agent.binary.yaml",
+            "configs/goflow.binary.yaml",
             "SHA256SUMS",
             "SBOM.spdx.json",
             ".sigstore.json",
             "cosign verify-blob",
             "ghcr.io/fymatt/goflow-agent:<tag>",
-            "configs/agent.docker.yaml",
+            "ghcr.io/fymatt/goflow-agent-mcp-python:<tag>",
+            "configs/goflow.docker.yaml",
         ],
     )
 

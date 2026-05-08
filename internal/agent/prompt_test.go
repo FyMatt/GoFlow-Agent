@@ -50,3 +50,42 @@ func TestBuildSystemPromptIncludesModeContract(t *testing.T) {
 		})
 	}
 }
+
+func TestBuildSystemPromptCompactsSessionHistory(t *testing.T) {
+	longPrompt := "recent-long-" + strings.Repeat("x", systemPromptPromptItemBytes+200)
+	prompt := BuildSystemPrompt(config.AgentProfile{Name: "Agent", Mode: "chat"}, nil, session.Snapshot{
+		RecentPrompts: []string{"old-1", "old-2", "recent-1", "recent-2", "recent-3", longPrompt},
+		RecentTools:   []string{"tool-1", strings.Repeat("y", systemPromptToolItemBytes+200)},
+	})
+
+	if strings.Contains(prompt, "old-1") || strings.Contains(prompt, "old-2") {
+		t.Fatalf("expected older prompts to be compacted out, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "[compacted 2 older prompts; latest 4 retained]") {
+		t.Fatalf("expected older prompt compaction marker, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "recent-1") || !strings.Contains(prompt, "recent-long-") {
+		t.Fatalf("expected recent prompts retained, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "[compacted 200 bytes]") {
+		t.Fatalf("expected oversized history item compaction marker, got:\n%s", prompt)
+	}
+}
+
+func TestBuildSystemPromptDeduplicatesSessionHistory(t *testing.T) {
+	prompt := BuildSystemPrompt(config.AgentProfile{Name: "Agent", Mode: "chat"}, nil, session.Snapshot{
+		RecentPrompts: []string{"same request", "same   request", "new request", "same request"},
+		RecentTools:   []string{"read_file path=a.go", "read_file   path=a.go", "write_file path=a.go"},
+	})
+
+	if got := strings.Count(prompt, "same request"); got != 1 {
+		t.Fatalf("expected duplicate recent prompt to be retained once, got count=%d prompt:\n%s", got, prompt)
+	}
+	if got := strings.Count(prompt, "read_file"); got != 1 {
+		t.Fatalf("expected duplicate tool summary to be retained once, got count=%d prompt:\n%s", got, prompt)
+	}
+	if !strings.Contains(prompt, "deduplicated 2 repeated prompts") ||
+		!strings.Contains(prompt, "deduplicated 1 repeated tool summaries") {
+		t.Fatalf("expected history dedupe markers, got:\n%s", prompt)
+	}
+}

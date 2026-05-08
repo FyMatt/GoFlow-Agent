@@ -6,8 +6,29 @@ import (
 	"strings"
 	"time"
 
+	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
+
+// VerifierRoute describes the effective model route used by verifier passes.
+type VerifierRoute struct {
+	Enabled          bool     `json:"enabled"`
+	Agent            string   `json:"agent,omitempty"`
+	Provider         string   `json:"provider,omitempty"`
+	Model            string   `json:"model,omitempty"`
+	Modes            []string `json:"modes,omitempty"`
+	MaxTokens        int      `json:"max_tokens,omitempty"`
+	ProviderOverride bool     `json:"provider_override"`
+	ModelOverride    bool     `json:"model_override"`
+}
+
+type verifierTarget struct {
+	route   VerifierRoute
+	profile config.AgentProfile
+	llm     interfaces.LLMClient
+	mode    string
+}
 
 func (r *Runtime) maybeRunVerifierPass(ctx context.Context, request string, result *schema.AgentResult, handler func(event schema.StreamEvent) error) error {
 	if r == nil || r.cfg == nil || result == nil || !r.cfg.Verifier.Enabled {
@@ -26,24 +47,26 @@ func (r *Runtime) maybeRunVerifierPass(ctx context.Context, request string, resu
 	if !verifierModeEnabled(mode, r.cfg.Verifier.Modes) {
 		return nil
 	}
-	verifierID := strings.TrimSpace(r.cfg.Verifier.Agent)
-	runner, ok := r.runners[verifierID]
+	target, ok := r.effectiveVerifierTarget()
 	if !ok {
 		return nil
 	}
+	verifierID := target.route.Agent
 	emitTaskStage(handler, r.session, verifierID, "audit", "verify", "checking final result")
 	if handler != nil {
-		_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: fmt.Sprintf("running verifier pass with %s...", verifierID), AgentID: verifierID, Mode: "audit", NeedsAction: true})
+		_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: fmt.Sprintf("running verifier pass with %s (provider=%s model=%s)...", verifierID, target.route.Provider, target.route.Model), AgentID: verifierID, Mode: "audit", NeedsAction: true})
 	}
 	started := time.Now()
-	resp, err := runner.llm.Chat(ctx, schema.ChatRequest{
-		Model:       runner.profile.Model,
+	chatRequest := schema.ChatRequest{
+		Model:       target.route.Model,
 		System:      verifierSystemPrompt(),
 		Messages:    []schema.Message{{Role: "user", Content: buildVerifierPrompt(request, *result)}},
 		Tools:       nil,
-		Temperature: runner.profile.Temperature,
+		Temperature: target.profile.Temperature,
 		MaxTokens:   r.cfg.Verifier.MaxTokens,
-	})
+	}
+	emitPromptBudget(handler, r.session, verifierID, target.mode, chatRequest, nil, 0)
+	resp, err := target.llm.Chat(ctx, chatRequest)
 	if err != nil {
 		if r.audit != nil {
 			r.audit.Record(schema.AuditEntry{Type: "verifier_pass", AgentID: verifierID, Outcome: "failed", Detail: err.Error(), DurationMs: time.Since(started).Milliseconds()})
@@ -53,7 +76,7 @@ func (r *Runtime) maybeRunVerifierPass(ctx context.Context, request string, resu
 		}
 		return nil
 	}
-	emitTokenUsage(handler, verifierID, "audit", resp.Usage)
+	emitTokenUsage(handler, r.session, verifierID, "audit", resp.Usage)
 	verificationText := strings.TrimSpace(resp.Message.Content)
 	if verificationText == "" {
 		return nil
@@ -69,6 +92,86 @@ func (r *Runtime) maybeRunVerifierPass(ctx context.Context, request string, resu
 		r.audit.Record(schema.AuditEntry{Type: "verifier_pass", AgentID: verifierID, Outcome: "completed", Detail: verificationText, DurationMs: time.Since(started).Milliseconds(), PromptTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.OutputTokens, CachedTokens: resp.Usage.CachedTokens})
 	}
 	return nil
+}
+
+// VerifierRoute returns the effective verifier route for diagnostics.
+func (r *Runtime) VerifierRoute() VerifierRoute {
+	if target, ok := r.effectiveVerifierTarget(); ok {
+		return target.route
+	}
+	if r == nil || r.cfg == nil {
+		return VerifierRoute{}
+	}
+	return VerifierRoute{
+		Enabled:   r.cfg.Verifier.Enabled,
+		Agent:     strings.TrimSpace(r.cfg.Verifier.Agent),
+		Provider:  strings.TrimSpace(r.cfg.Verifier.Provider),
+		Model:     strings.TrimSpace(r.cfg.Verifier.Model),
+		Modes:     append([]string(nil), r.cfg.Verifier.Modes...),
+		MaxTokens: r.cfg.Verifier.MaxTokens,
+	}
+}
+
+func (r *Runtime) effectiveVerifierTarget() (verifierTarget, bool) {
+	if r == nil || r.cfg == nil || !r.cfg.Verifier.Enabled {
+		return verifierTarget{}, false
+	}
+	agentID := strings.TrimSpace(r.cfg.Verifier.Agent)
+	runner, ok := r.runners[agentID]
+	if !ok {
+		return verifierTarget{}, false
+	}
+	provider := strings.TrimSpace(r.cfg.Verifier.Provider)
+	providerOverride := provider != ""
+	if provider == "" {
+		provider = strings.TrimSpace(runner.profile.Provider)
+	}
+	model := strings.TrimSpace(r.cfg.Verifier.Model)
+	modelOverride := model != ""
+	if model == "" {
+		if provider != strings.TrimSpace(runner.profile.Provider) {
+			if providerCfg, ok := r.cfg.Providers[provider]; ok {
+				model = strings.TrimSpace(providerCfg.Model)
+			}
+		}
+	}
+	if model == "" {
+		model = strings.TrimSpace(runner.profile.Model)
+	}
+	client := runner.llm
+	if providerOverride {
+		overrideClient, ok := r.clients[provider]
+		if !ok {
+			return verifierTarget{}, false
+		}
+		client = overrideClient
+	}
+	profile := runner.profile
+	if providerOverride {
+		profile.Provider = provider
+	}
+	if modelOverride || profile.Model == "" {
+		profile.Model = model
+	}
+	mode := strings.TrimSpace(profile.Mode)
+	if mode == "" {
+		mode = "audit"
+	}
+	return verifierTarget{
+		route: VerifierRoute{
+			Enabled:          true,
+			Agent:            agentID,
+			Provider:         provider,
+			Model:            model,
+			Modes:            append([]string(nil), r.cfg.Verifier.Modes...),
+			MaxTokens:        r.cfg.Verifier.MaxTokens,
+			ProviderOverride: providerOverride,
+			ModelOverride:    modelOverride,
+		},
+		profile: profile,
+		llm:     client,
+		mode:    mode,
+	}, true
 }
 
 func verifierModeEnabled(mode string, modes []string) bool {

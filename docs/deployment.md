@@ -1,21 +1,33 @@
 # Deployment
 
-GoFlow is intended to run on Windows, Linux, and inside Docker.
+[English](./deployment.md) | [简体中文](./deployment.zh-CN.md)
 
-For a user-facing install guide with release archive and published image
-commands, see [Installation And Deployment](./install.md). For Chinese
-instructions, see [安装与部署](./install.zh-CN.md).
+GoFlow is intended to run on Windows, Linux, and inside Docker. For MCP tool
+sandboxing, Docker/Podman container isolation is the recommended strong
+boundary across operating systems. Native adapters are available for
+compatibility, lifecycle cleanup, or resource control, but they are not a full
+cross-platform sandbox.
+
+For user-facing install commands, see [Installation And Deployment](./install.md).
+For Chinese instructions, see [安装与部署](./install.zh-CN.md).
 
 ## Local Windows
 
-Use the provided command script after setting provider credentials:
+Set provider credentials, then use the packaged command script:
 
 ```bat
+set GOFLOW_BASE_URL=https://api.deepseek.com/v1
 set GOFLOW_API_KEY=your-key
-run-goflow.example.cmd
+set GOFLOW_MODEL=deepseek-chat
+set GOFLOW_BACKUP_BASE_URL=%GOFLOW_BASE_URL%
+set GOFLOW_BACKUP_API_KEY=%GOFLOW_API_KEY%
+set GOFLOW_BACKUP_MODEL=%GOFLOW_MODEL%
+
+run-goflow.example.cmd D:\Projects\my-workspace
 ```
 
-The script runs the CLI against the workspace configured inside the script. Edit `--workspace` there when you want to point GoFlow at a different project.
+The script runs the CLI against the selected workspace. Edit the script or pass
+an argument when you want a different target directory.
 
 ## Local Linux
 
@@ -32,27 +44,45 @@ export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
 go run ./cmd/goflow --workspace /path/to/workspace
 ```
 
-Start the HTTP API:
+Start the HTTP API and Web Studio:
 
 ```bash
 go run ./cmd/goflow --workspace /path/to/workspace --http :8080
 ```
 
-Linux MCP servers can optionally use cgroup v2 resource controls:
+Open `http://127.0.0.1:8080/console`.
+
+## MCP Container Isolation
+
+MCP servers should run inside Docker/Podman when they are generated,
+third-party, write-capable, exec-capable, network-capable, or otherwise
+untrusted:
 
 ```yaml
-isolation: linux_cgroup
+isolation: container
+network_disabled: true
 isolation_options:
-  cgroup_parent: /sys/fs/cgroup/goflow
-  memory_max: 256M
-  pids_max: "64"
+  image: ghcr.io/fymatt/goflow-agent-mcp-tools:latest
+  workspace_mount: ro
+  workspace_target: /workspace
+  network: disabled
+  memory: 256m
+  cpus: "0.5"
+  pids_limit: "64"
 ```
 
-The cgroup parent must already be writable by the GoFlow process. This is resource control only; use containers or OS sandboxing when you need filesystem or network isolation.
+With container isolation, GoFlow runs Docker/Podman as the host process and
+executes the configured MCP command inside the image. Missing Docker/Podman is
+reported as an MCP startup error. GoFlow does not silently fall back to
+unsandboxed host execution.
+
+Native modes such as `process_group`, `windows_job`,
+`windows_restricted_token`, `linux_cgroup`, and `linux_netns` are fallback or
+helper modes. Use `isolation: container` when you need a broad sandbox.
 
 ## Docker
 
-The Docker image uses `configs/agent.docker.yaml`. Unlike the development config, it runs compiled MCP binaries for the Go MCP servers:
+The Docker image uses `configs/goflow.docker.yaml` and compiled MCP binaries:
 
 - `/app/bin/file_tools`
 - `/app/bin/web_tools`
@@ -62,6 +92,7 @@ Build:
 
 ```bash
 docker build -t goflow-agent:local .
+docker build -f docker/mcp-python/Dockerfile -t goflow-agent-mcp-python:local .
 ```
 
 Run:
@@ -80,7 +111,7 @@ Compose:
 docker compose up --build
 ```
 
-Use the published GHCR image when you do not need a local source build:
+Use the published GHCR image:
 
 ```bash
 docker run --rm -it \
@@ -90,10 +121,10 @@ docker run --rm -it \
   ghcr.io/fymatt/goflow-agent:<version>
 ```
 
-The container defaults to:
+The container starts:
 
 ```text
-goflow --config /app/configs/agent.docker.yaml --workspace /workspace --http :8080
+goflow --config /app/configs/goflow.docker.yaml --workspace /workspace --http :8080
 ```
 
 ## Configuration Selection
@@ -101,24 +132,20 @@ goflow --config /app/configs/agent.docker.yaml --workspace /workspace --http :80
 Use `--config` to choose a runtime config:
 
 ```bash
-goflow --config /app/configs/agent.docker.yaml --workspace /workspace --http :8080
+goflow --config /app/configs/goflow.docker.yaml --workspace /workspace --http :8080
 ```
 
-Relative `--config` paths are resolved from the runtime home. Absolute paths are used directly.
+Relative config paths are resolved from runtime home. Absolute paths are used
+directly.
 
-Binary release archives use `configs/agent.binary.yaml`. The included launcher scripts set:
-
-- `GOFLOW_FILE_TOOLS_CMD`
-- `GOFLOW_WEB_TOOLS_CMD`
-- `GOFLOW_PYTHON_CMD`
-- `GOFLOW_PYTHON_NOTES_PATH`
-- `GOFLOW_BACKUP_*` defaults copied from the primary provider variables when unset
-
-This lets archive installs run compiled Go MCP tools without requiring `go run` on the target machine.
+Binary release archives use `configs/goflow.binary.yaml`. The included launcher
+scripts set MCP binary paths and copy primary Provider variables into
+`GOFLOW_BACKUP_*` when backup variables are unset.
 
 If an operator runs `bin/goflow` or `bin/goflow.exe` directly from the archive,
-the executable detects the parent archive root, loads `configs/agent.binary.yaml`
-by default, and uses the compiled MCP tools from `bin/`.
+the executable detects the parent archive root, loads
+`configs/goflow.binary.yaml` by default, and uses compiled MCP tools from
+`bin/`.
 
 ## Volumes
 
@@ -128,7 +155,8 @@ Mount the target project at `/workspace`. Session state is stored at:
 /workspace/.goflow/session.json
 ```
 
-Keep runtime files under `/app` and target project files under `/workspace` so tool boundaries remain clear.
+Keep runtime files under `/app` and target project files under `/workspace` so
+tool boundaries remain clear.
 
 ## CI Smoke Tests
 
@@ -137,13 +165,14 @@ The repository includes `.github/workflows/ci.yml` with:
 - Linux `go test ./...`
 - Python MCP smoke tests
 - deployment asset validation
-- Docker image build
+- Docker image builds for the runtime and MCP Python tool runtime
 - container startup check against `GET /api/session`
 
-Run the local deployment asset check without Docker:
+Run local deployment validation without Docker:
 
 ```bash
 python scripts/validate_deployment_assets.py
 ```
 
-For tag-based binary archives and GHCR image publishing, see [Release Packaging](./release.md).
+For tag-based binary archives and GHCR image publishing, see
+[Release Packaging](./release.md).

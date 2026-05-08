@@ -80,9 +80,82 @@ func TestWriteLinuxCgroupLimits(t *testing.T) {
 	if err != nil {
 		t.Fatalf("writeLinuxCgroupLimits: %v", err)
 	}
-	assertFileContent(t, filepath.Join(dir, "memory.max"), "256M")
+	assertFileContent(t, filepath.Join(dir, "memory.max"), "268435456")
 	assertFileContent(t, filepath.Join(dir, "pids.max"), "64")
 	assertFileContent(t, filepath.Join(dir, "cpu.max"), "50000 100000")
+}
+
+func TestNormalizeLinuxCgroupMemoryMax(t *testing.T) {
+	cases := map[string]string{
+		"1":    "1",
+		"256M": "268435456",
+		"1G":   "1073741824",
+		"2k":   "2048",
+		"max":  "max",
+		"MAX":  "max",
+	}
+	for input, want := range cases {
+		got, err := normalizeLinuxCgroupMemoryMax(input)
+		if err != nil {
+			t.Fatalf("normalizeLinuxCgroupMemoryMax(%q): %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("normalizeLinuxCgroupMemoryMax(%q): expected %q, got %q", input, want, got)
+		}
+	}
+}
+
+func TestNormalizeLinuxCgroupMemoryMaxRejectsInvalidValues(t *testing.T) {
+	for _, input := range []string{"", "0", "-1", "bad", "1MB", "9223372036854775807T"} {
+		if got, err := normalizeLinuxCgroupMemoryMax(input); err == nil {
+			t.Fatalf("expected normalizeLinuxCgroupMemoryMax(%q) to fail, got %q", input, got)
+		}
+	}
+}
+
+func TestNormalizeLinuxCgroupMaxOrPositiveInteger(t *testing.T) {
+	cases := map[string]string{
+		"1":   "1",
+		"64":  "64",
+		"max": "max",
+		"MAX": "max",
+	}
+	for input, want := range cases {
+		got, err := normalizeLinuxCgroupMaxOrPositiveInteger(input)
+		if err != nil {
+			t.Fatalf("normalizeLinuxCgroupMaxOrPositiveInteger(%q): %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("normalizeLinuxCgroupMaxOrPositiveInteger(%q): expected %q, got %q", input, want, got)
+		}
+	}
+}
+
+func TestNormalizeLinuxCgroupCPUMax(t *testing.T) {
+	cases := map[string]string{
+		"max":           "max",
+		"MAX":           "max",
+		"50000 100000":  "50000 100000",
+		"max 100000":    "max 100000",
+		" 50000 100000": "50000 100000",
+	}
+	for input, want := range cases {
+		got, err := normalizeLinuxCgroupCPUMax(input)
+		if err != nil {
+			t.Fatalf("normalizeLinuxCgroupCPUMax(%q): %v", input, err)
+		}
+		if got != want {
+			t.Fatalf("normalizeLinuxCgroupCPUMax(%q): expected %q, got %q", input, want, got)
+		}
+	}
+}
+
+func TestNormalizeLinuxCgroupCPUMaxRejectsInvalidValues(t *testing.T) {
+	for _, input := range []string{"", "50000", "0 100000", "50000 max", "50000 0", "bad 100000"} {
+		if got, err := normalizeLinuxCgroupCPUMax(input); err == nil {
+			t.Fatalf("expected normalizeLinuxCgroupCPUMax(%q) to fail, got %q", input, got)
+		}
+	}
 }
 
 func assertFileContent(t *testing.T, path, want string) {
