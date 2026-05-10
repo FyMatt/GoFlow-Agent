@@ -28,6 +28,12 @@ mode: audit
 preferred_agent: auditor
 allowed_tool_kinds: [read, exec]
 output_kind: findings
+next_skills: [binary-vulnerability-research, execution-plan]
+metadata:
+  domain: reverse-engineering
+  recommended_workflow: binary-triage
+  recommended_team: binary-triage-team
+  role: reverse-analyst
 ---
 
 ## Role

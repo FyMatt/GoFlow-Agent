@@ -23,6 +23,7 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
+	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	skillpkg "github.com/FyMatt/GoFlow-Agent/internal/skill"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
@@ -2132,6 +2133,55 @@ func TestHandleNewSkillCommandCreatesValidSkill(t *testing.T) {
 	assertFileContains(t, path, "## Extension Points")
 }
 
+func TestHandleNewSkillCommandUsesRuntimeTemplateOverrides(t *testing.T) {
+	runtimeHome := t.TempDir()
+	skillRoot := filepath.Join(runtimeHome, "skills")
+	writeTestSkill(t, skillRoot, "existing-skill")
+	templateDir := filepath.Join(runtimeHome, "templates", "skills", "scaffolds")
+	if err := os.MkdirAll(templateDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill template dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(templateDir, "custom.yaml"), []byte(`
+templates:
+  - name: data-analysis
+    description: Analyze structured data and produce a concise report.
+    mode: audit
+    preferred_agent: analyst
+    allowed_tool_kinds: [read, exec]
+    output_kind: report
+    keywords: [data analysis]
+    body: |
+      ## Role
+
+      Analyze structured data and report findings.
+`), 0o644); err != nil {
+		t.Fatalf("write custom skill template: %v", err)
+	}
+	manager, err := skillpkg.NewManager(skillRoot)
+	if err != nil {
+		t.Fatalf("NewManager: %v", err)
+	}
+
+	output := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/new-skill data-analysis custom-data", manager, nil, nil); !handled {
+			t.Fatal("expected /new-skill to be handled")
+		}
+	})
+	if !strings.Contains(output, "created custom-data") {
+		t.Fatalf("expected creation output, got %q", output)
+	}
+
+	path := filepath.Join(skillRoot, "custom-data", "SKILL.md")
+	created, err := skillpkg.ParseFile(path)
+	if err != nil {
+		t.Fatalf("ParseFile: %v", err)
+	}
+	if created.Name != "custom-data" || created.PreferredAgent != "analyst" || created.OutputKind != "report" {
+		t.Fatalf("unexpected generated custom skill: %#v", created)
+	}
+	assertFileContains(t, path, "Analyze structured data and report findings.")
+}
+
 func TestHandleScaffoldCommandsCreateToolAgentAndWorkflow(t *testing.T) {
 	runtimeHome := t.TempDir()
 	skillRoot := filepath.Join(runtimeHome, "skills")
@@ -2139,6 +2189,27 @@ func TestHandleScaffoldCommandsCreateToolAgentAndWorkflow(t *testing.T) {
 	manager, err := skillpkg.NewManager(skillRoot)
 	if err != nil {
 		t.Fatalf("NewManager: %v", err)
+	}
+	customPresetDir := filepath.Join(runtimeHome, "templates", "kits", "scaffolds")
+	if err := os.MkdirAll(customPresetDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom preset dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customPresetDir, "observability.yaml"), []byte(`
+name: observability
+title: Observability Kit
+description: Custom runtime kit scaffold preset.
+category: operations
+agents: [operations-specialist]
+skills: [execution-plan]
+workflow_templates: [operations-runbook]
+team_templates: [operations-runbook-team]
+examples:
+  - title: Build an observability plan
+    request: Create an observability rollout checklist.
+    workflow: operations-runbook
+    agent: operations-specialist
+`), 0o644); err != nil {
+		t.Fatalf("write custom preset: %v", err)
 	}
 
 	output := captureStdout(t, func() {
@@ -2166,8 +2237,14 @@ func TestHandleScaffoldCommandsCreateToolAgentAndWorkflow(t *testing.T) {
 		if handled := handleCommand(context.Background(), "/new-kit customer-support support-desk", manager, nil, nil); !handled {
 			t.Fatal("expected customer-support /new-kit to be handled")
 		}
+		if handled := handleCommand(context.Background(), "/new-kit observability obs-kit", manager, nil, nil); !handled {
+			t.Fatal("expected custom observability /new-kit to be handled")
+		}
 		if handled := handleCommand(context.Background(), "/new-kit software-engineering acme-platform-full --materialize", manager, nil, nil); !handled {
 			t.Fatal("expected materialized /new-kit to be handled")
+		}
+		if handled := handleCommand(context.Background(), "/new-kit binary-analysis acme-binary-full --materialize", manager, nil, nil); !handled {
+			t.Fatal("expected binary materialized /new-kit to be handled")
 		}
 		if handled := handleCommand(context.Background(), "/new-policy-rule risk-threshold high-risk-gate", manager, nil, nil); !handled {
 			t.Fatal("expected /new-policy-rule to be handled")
@@ -2185,7 +2262,7 @@ func TestHandleScaffoldCommandsCreateToolAgentAndWorkflow(t *testing.T) {
 			t.Fatal("expected /new-workflow-template to be handled")
 		}
 	})
-	if !strings.Contains(output, "notes-helper.py") || !strings.Contains(output, "researcher.yaml") || !strings.Contains(output, "deepseek.yaml") || !strings.Contains(output, "release-check") || !strings.Contains(output, "template=human-input-security-review") || !strings.Contains(output, "acme-platform") || !strings.Contains(output, "framework-starter") || !strings.Contains(output, "support-desk") || !strings.Contains(output, "acme-platform-full-agent") || !strings.Contains(output, "high-risk-gate") || !strings.Contains(output, "custom-review-team") || !strings.Contains(output, "custom-framework-team") || !strings.Contains(output, "custom-support-team") || !strings.Contains(output, "custom-plan-template") {
+	if !strings.Contains(output, "notes-helper.py") || !strings.Contains(output, "researcher.yaml") || !strings.Contains(output, "deepseek.yaml") || !strings.Contains(output, "release-check") || !strings.Contains(output, "template=human-input-security-review") || !strings.Contains(output, "acme-platform") || !strings.Contains(output, "framework-starter") || !strings.Contains(output, "support-desk") || !strings.Contains(output, "obs-kit") || !strings.Contains(output, "acme-platform-full-agent") || !strings.Contains(output, "acme-binary-full-agent") || !strings.Contains(output, "high-risk-gate") || !strings.Contains(output, "custom-review-team") || !strings.Contains(output, "custom-framework-team") || !strings.Contains(output, "custom-support-team") || !strings.Contains(output, "custom-plan-template") {
 		t.Fatalf("expected scaffold output, got %q", output)
 	}
 	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "notes-helper.py"), "WORKSPACE_ROOT")
@@ -2212,8 +2289,13 @@ func TestHandleScaffoldCommandsCreateToolAgentAndWorkflow(t *testing.T) {
 	assertFileContains(t, filepath.Join(runtimeHome, "kits", "framework-starter", "kit.yaml"), "framework-extension-team")
 	assertFileContains(t, filepath.Join(runtimeHome, "kits", "support-desk", "kit.yaml"), "customer-support-triage")
 	assertFileContains(t, filepath.Join(runtimeHome, "kits", "support-desk", "kit.yaml"), "customer-support-team")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "obs-kit", "kit.yaml"), "Observability Kit")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "obs-kit", "kit.yaml"), "operations-runbook-team")
 	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform-full", "kit.yaml"), "materialized")
-	assertFileContains(t, filepath.Join(runtimeHome, "configs", "agents", "acme-platform-full-agent.yaml"), "acme_platform_full_helper/read_text")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform-full", "kit.yaml"), "recommended_agent: acme-platform-full-agent")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform-full", "kit.yaml"), "recommended_workflow: acme-platform-full-workflow")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform-full", "kit.yaml"), "recommended_team: acme-platform-full-team")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "agents", "acme-platform-full-agent.yaml"), "acme-platform-full-helper/read_text")
 	assertFileContains(t, filepath.Join(runtimeHome, "skills", "acme-platform-full-skill", "SKILL.md"), "workflow-handoff")
 	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "acme-platform-full-helper.py"), "WORKSPACE_ROOT")
 	assertFileContains(t, filepath.Join(runtimeHome, "configs", "mcp_servers", "acme-platform-full-helper.yaml"), "isolation: container")
@@ -2221,6 +2303,16 @@ func TestHandleScaffoldCommandsCreateToolAgentAndWorkflow(t *testing.T) {
 	assertFileContains(t, filepath.Join(runtimeHome, "templates", "workflows", "acme-platform-full-template.yaml"), "goflow.workflow_template_resource")
 	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "acme-platform-full-team.yaml"), "goflow.team_template_resource")
 	assertFileContains(t, filepath.Join(runtimeHome, "policies", "workflow_rules", "acme-platform-full-gate.yaml"), "ref_truthy")
+	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-binary-full", "kit.yaml"), "recommended_agent: acme-binary-full-agent")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "agents", "acme-binary-full-agent.yaml"), "acme-binary-full-helper/binary_file_info")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "agents", "acme-binary-full-agent.yaml"), "acme-binary-full-helper/binary_strings")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "agents", "acme-binary-full-agent.yaml"), "acme-binary-full-helper/hex_preview")
+	assertFileContains(t, filepath.Join(runtimeHome, "skills", "acme-binary-full-skill", "SKILL.md"), "binary_file_info")
+	assertFileContains(t, filepath.Join(runtimeHome, "skills", "acme-binary-full-skill", "SKILL.md"), "static triage")
+	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "acme-binary-full-helper.py"), "\"name\": \"binary_file_info\"")
+	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "acme-binary-full-helper.py"), "\"name\": \"hex_preview\"")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "acme-binary-full-team.yaml"), "acme-binary-full-helper/binary_file_info")
+	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "acme-binary-full-team.yaml"), "acme-binary-full-helper/hex_preview")
 	assertFileContains(t, filepath.Join(runtimeHome, "policies", "workflow_rules", "high-risk-gate.yaml"), "kind: goflow.workflow_policy_rule")
 	assertFileContains(t, filepath.Join(runtimeHome, "policies", "workflow_rules", "high-risk-gate.yaml"), "operator: risk_at_least")
 	assertFileContains(t, filepath.Join(runtimeHome, "policies", "workflow_rules", "high-risk-gate.yaml"), "minimum: high")
@@ -2246,7 +2338,11 @@ func TestGeneratedPythonMCPScaffoldRunsWithWorkspaceSafety(t *testing.T) {
 	if err := os.MkdirAll(filepath.Dir(toolPath), 0o755); err != nil {
 		t.Fatalf("mkdir tool dir: %v", err)
 	}
-	if err := os.WriteFile(toolPath, []byte(renderPythonMCPServerTemplate("safe-helper")), 0o644); err != nil {
+	code, err := scaffold.RenderPythonMCPToolCode(runtimeHome, "safe-helper")
+	if err != nil {
+		t.Fatalf("render generated scaffold: %v", err)
+	}
+	if err := os.WriteFile(toolPath, []byte(code), 0o644); err != nil {
 		t.Fatalf("write generated scaffold: %v", err)
 	}
 	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
@@ -2300,7 +2396,7 @@ func TestGeneratedPythonMCPScaffoldRunsWithWorkspaceSafety(t *testing.T) {
 	}
 	scaffoldMCPExpectToolError(t, lines[2], "escapes workspace root")
 	if symlinkSupported {
-		scaffoldMCPExpectToolError(t, lines[3], "resolves outside workspace root")
+		scaffoldMCPExpectToolError(t, lines[3], "resolves outside workspace root", "escapes workspace root")
 		if _, err := os.Stat(filepath.Join(outsideDir, "escape.txt")); !os.IsNotExist(err) {
 			t.Fatalf("expected symlink-parent write to be rejected, stat err=%v", err)
 		}
@@ -2363,7 +2459,7 @@ func scaffoldMCPResultContent(t *testing.T, line string) map[string]any {
 	return payload
 }
 
-func scaffoldMCPExpectToolError(t *testing.T, line, want string) {
+func scaffoldMCPExpectToolError(t *testing.T, line string, wants ...string) {
 	t.Helper()
 	var response struct {
 		Result struct {
@@ -2374,9 +2470,15 @@ func scaffoldMCPExpectToolError(t *testing.T, line, want string) {
 	if err := json.Unmarshal([]byte(line), &response); err != nil {
 		t.Fatalf("decode scaffold error response %q: %v", line, err)
 	}
-	if !response.Result.IsError || !strings.Contains(response.Result.Content, want) {
-		t.Fatalf("expected scaffold tool error containing %q, got %q", want, line)
+	if !response.Result.IsError {
+		t.Fatalf("expected scaffold tool error, got %q", line)
 	}
+	for _, want := range wants {
+		if strings.Contains(response.Result.Content, want) {
+			return
+		}
+	}
+	t.Fatalf("expected scaffold tool error containing one of %q, got %q", wants, line)
 }
 
 func TestScaffoldValidationRejectsIncompleteTemplates(t *testing.T) {

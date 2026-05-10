@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -199,27 +200,8 @@ func (w *WorkflowRunner) loadTeamTemplateResourcePath(path string) (TeamTemplate
 	if err != nil {
 		return TeamTemplate{}, err
 	}
-	var template TeamTemplate
-	switch strings.ToLower(filepath.Ext(path)) {
-	case ".json":
-		if err := json.Unmarshal(data, &template); err != nil {
-			return TeamTemplate{}, fmt.Errorf("parse team template json: %w", err)
-		}
-	default:
-		if err := yaml.Unmarshal(data, &template); err != nil {
-			return TeamTemplate{}, fmt.Errorf("parse team template yaml: %w", err)
-		}
-	}
-	if err := validateTeamTemplateResourceVersion(template.Kind, template.Version, template.MinVersion); err != nil {
-		return TeamTemplate{}, err
-	}
-	migrated := template.Version == 0
-	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
-	if strings.TrimSpace(template.Name) == "" {
-		template.Name = name
-	}
-	template = normalizeTeamTemplateResource(template, migrated)
-	if err := validateTeamTemplateResource(template); err != nil {
+	template, err := parseTeamTemplateData(path, data)
+	if err != nil {
 		return TeamTemplate{}, err
 	}
 	template.Source = "custom"
@@ -228,6 +210,106 @@ func (w *WorkflowRunner) loadTeamTemplateResourcePath(path string) (TeamTemplate
 	template.Roles = len(template.RoleTemplates)
 	template.QuorumPresetCount = len(template.QuorumPresets)
 	return template, nil
+}
+
+func parseTeamTemplateData(source string, data []byte) (TeamTemplate, error) {
+	var template TeamTemplate
+	base := teamTemplateSourceBase(source)
+	switch strings.ToLower(path.Ext(base)) {
+	case ".json":
+		if err := json.Unmarshal(data, &template); err != nil {
+			return TeamTemplate{}, fmt.Errorf("parse team template json: %w", err)
+		}
+		if isEmptyTeamTemplateSummary(template.TeamTemplateSummary) {
+			if legacy, ok := parseLegacyTeamTemplateJSON(data); ok {
+				template = legacy
+			}
+		}
+	default:
+		if err := yaml.Unmarshal(data, &template); err != nil {
+			return TeamTemplate{}, fmt.Errorf("parse team template yaml: %w", err)
+		}
+		if isEmptyTeamTemplateSummary(template.TeamTemplateSummary) {
+			if legacy, ok := parseLegacyTeamTemplateYAML(data); ok {
+				template = legacy
+			}
+		}
+	}
+	if err := validateTeamTemplateResourceVersion(template.Kind, template.Version, template.MinVersion); err != nil {
+		return TeamTemplate{}, err
+	}
+	migrated := template.Version == 0
+	if strings.TrimSpace(template.Name) == "" {
+		template.Name = strings.TrimSuffix(base, path.Ext(base))
+	}
+	template = normalizeTeamTemplateResource(template, migrated)
+	if err := validateTeamTemplateResource(template); err != nil {
+		return TeamTemplate{}, err
+	}
+	return template, nil
+}
+
+type legacyTeamTemplateDocument struct {
+	TeamTemplateSummary TeamTemplateSummary      `json:"teamtemplatesummary" yaml:"teamtemplatesummary"`
+	RoleTemplates       []TeamRoleTemplate       `json:"role_templates,omitempty" yaml:"role_templates,omitempty"`
+	Handoffs            []TeamHandoffTemplate    `json:"handoffs,omitempty" yaml:"handoffs,omitempty"`
+	BlackboardTemplates []TeamBlackboardTemplate `json:"blackboard_templates,omitempty" yaml:"blackboard_templates,omitempty"`
+	QuorumPresets       []TeamQuorumPreset       `json:"quorum_presets,omitempty" yaml:"quorum_presets,omitempty"`
+	OutputContract      []string                 `json:"output_contract,omitempty" yaml:"output_contract,omitempty"`
+}
+
+func parseLegacyTeamTemplateJSON(data []byte) (TeamTemplate, bool) {
+	var legacy legacyTeamTemplateDocument
+	if err := json.Unmarshal(data, &legacy); err != nil || isEmptyTeamTemplateSummary(legacy.TeamTemplateSummary) {
+		return TeamTemplate{}, false
+	}
+	return legacy.toTeamTemplate(), true
+}
+
+func parseLegacyTeamTemplateYAML(data []byte) (TeamTemplate, bool) {
+	var legacy legacyTeamTemplateDocument
+	if err := yaml.Unmarshal(data, &legacy); err != nil || isEmptyTeamTemplateSummary(legacy.TeamTemplateSummary) {
+		return TeamTemplate{}, false
+	}
+	return legacy.toTeamTemplate(), true
+}
+
+func (legacy legacyTeamTemplateDocument) toTeamTemplate() TeamTemplate {
+	return TeamTemplate{
+		TeamTemplateSummary: legacy.TeamTemplateSummary,
+		RoleTemplates:       legacy.RoleTemplates,
+		Handoffs:            legacy.Handoffs,
+		BlackboardTemplates: legacy.BlackboardTemplates,
+		QuorumPresets:       legacy.QuorumPresets,
+		OutputContract:      legacy.OutputContract,
+	}
+}
+
+func isEmptyTeamTemplateSummary(summary TeamTemplateSummary) bool {
+	return strings.TrimSpace(summary.Kind) == "" &&
+		summary.Version == 0 &&
+		summary.MinVersion == 0 &&
+		summary.MigratedFromVersion == 0 &&
+		strings.TrimSpace(summary.Name) == "" &&
+		strings.TrimSpace(summary.Title) == "" &&
+		strings.TrimSpace(summary.Description) == "" &&
+		strings.TrimSpace(summary.Category) == "" &&
+		len(summary.Tags) == 0 &&
+		summary.Roles == 0 &&
+		summary.QuorumPresetCount == 0 &&
+		strings.TrimSpace(summary.RecommendedWorkflow) == "" &&
+		strings.TrimSpace(summary.RecommendedEntryAgent) == "" &&
+		strings.TrimSpace(summary.Source) == "" &&
+		strings.TrimSpace(summary.Path) == "" &&
+		!summary.Custom
+}
+
+func teamTemplateSourceBase(source string) string {
+	source = strings.TrimSpace(strings.ReplaceAll(source, "\\", "/"))
+	if source == "" {
+		return ""
+	}
+	return path.Base(source)
 }
 
 func (w *WorkflowRunner) teamTemplateResourceRoot() (string, error) {

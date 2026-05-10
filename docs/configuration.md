@@ -166,6 +166,7 @@ mcp_servers:
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
+    max_concurrent_calls: 1
     allowed_commands:
       - go
     max_request_bytes: 65536
@@ -182,6 +183,7 @@ mcp_servers:
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
+    max_concurrent_calls: 1
     allowed_commands:
       - python
     max_request_bytes: 65536
@@ -199,6 +201,7 @@ mcp_servers:
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
+    max_concurrent_calls: 1
     allowed_commands:
       - go
     max_request_bytes: 65536
@@ -459,6 +462,7 @@ Useful fields:
 - `network_disabled`
 - `restart_limit`
 - `cooldown`
+- `max_concurrent_calls`
 - `isolation_options`
 - `allowed_commands`
 - `allowed_command_paths`
@@ -468,6 +472,18 @@ Useful fields:
 Enabled MCP servers must include either `allowed_commands` or `allowed_command_paths`. This keeps accidental command drift visible during startup.
 
 `env_allowlist` is opt-in. When it is omitted, MCP child processes receive only minimal platform variables and `GOFLOW_WORKSPACE_ROOT`; they do not inherit the full GoFlow process environment. Add only the variables the tool really needs, such as `PATH`, `HOME`, proxy variables, or language-runtime cache paths.
+
+`max_concurrent_calls` bounds how many calls may queue or execute against one
+MCP server at once. The default is `1`, matching the current single stdio
+connection model. Keep it at `1` unless the server implementation and transport
+are known to handle higher parallelism safely. `restart_limit` and `cooldown`
+act as the lightweight circuit breaker: after repeated startup or call failures,
+the server enters cooldown instead of being restarted indefinitely.
+
+Runtime status includes the current call-slot pressure for each configured
+server. `GET /api/runtime` returns `mcp_servers[].active_calls`,
+`queued_calls`, and `available_call_slots` beside `max_concurrent_calls`, so a
+UI can explain why a workflow is waiting before changing concurrency settings.
 
 `isolation` is optional. Supported values are:
 
@@ -948,6 +964,11 @@ feature detection: `capabilities`, `client_contracts`, and
 `resource_capabilities` only. Use `/api/help` for full onboarding/help pages,
 and `/api/capabilities` when a client only needs to discover supported
 contracts and editor affordances.
+
+Use `/api/workflow-options.workflow_executors` for any UI that starts a
+workflow run. Use `/api/workflow-graphs` only for graph editing and graph-file
+management. This distinction keeps legacy compatibility executors runnable
+without pretending they are editable YAML graph resources.
 The `container_tool_scaffold_hardened_defaults` capability indicates that
 containerized Python MCP tool scaffolds generate resource limits, read-only
 rootfs, no-new-privileges, cap-drop-all, tmpfs scratch mounts, `ipc: none`, and
@@ -1177,7 +1198,10 @@ preview the generated template document, and
 `title`, `description`, `category`, `tags`, `recommended_workflow`,
 `recommended_entry_agent`, and `overwrite`. Existing built-in or custom names
 are protected by default; pass `overwrite=1` or body field `"overwrite": true`
-to create a custom override.
+to create a custom override. The scaffold catalog is file-backed: built-ins are
+embedded from `internal/scaffold/templates/teams/scaffolds/presets.yaml`, and
+runtime homes can add or override entries with
+`templates/teams/scaffolds/*.yaml`.
 
 Team template editors can validate before saving with
 `POST /api/resources/team-templates/validate` or
@@ -1199,7 +1223,15 @@ Policy rule scaffold presets are available through
 risk thresholds, truthy references, text contains checks, minimum counts, team
 review quorum gates, and custom expression gates. Creation writes a validated
 `policies/workflow_rules/<name>.yaml` file, returns `201 Created`, and refuses
-to replace existing rules unless `overwrite=true` is supplied.
+to replace existing rules unless `overwrite=true` is supplied. The scaffold
+catalog is file-backed: built-ins are embedded from
+`internal/scaffold/templates/policies/scaffolds/presets.yaml`, and runtime homes
+can add or override entries with `templates/policies/scaffolds/*.yaml`.
+Built-in workflow policy rule metadata returned by `/api/workflow-options` is
+file-backed as well: shipped labels, descriptions, operators, and editable
+parameter definitions are embedded from
+`internal/agent/templates/policy_rules/*.yaml`. Custom executable policy rules
+remain runtime resources under `policies/workflow_rules/*.yaml`.
 
 Workflow node metadata and expression helper metadata editors can validate
 before saving with:
@@ -1211,6 +1243,12 @@ These endpoints normalize the metadata resource, verify that it targets an
 existing workflow node type or expression helper, return structured `issues` on
 failure, and do not write `metadata/workflow_nodes/*.yaml` or
 `metadata/expression_helpers/*.yaml`.
+Built-in workflow node metadata is embedded from
+`internal/agent/templates/workflow_nodes/*.yaml`; runtime metadata files are
+for editor-facing additions or overrides.
+Built-in expression helper metadata is embedded from
+`internal/agent/templates/expression_helpers/*.yaml`; the metadata endpoints are
+for runtime overrides and additions to the editor-facing catalog.
 
 Kit bundles use `kind: goflow.kit_bundle` and package the kit manifest plus any
 referenced resource documents that are available on disk or in the active
@@ -1332,6 +1370,10 @@ when the backend can infer the profile from the active MCP catalog.
 workflow platform surface, not a terminal clone. It includes overview,
 workflow Studio, playground, workspace, approvals, resource catalog,
 observability, and settings modules.
+The optional `lang` or `locale` query parameter persists the Studio language
+preference before rendering. Use `?lang=zh` for Simplified Chinese or
+`?lang=en` for English, including deep links such as
+`/console?lang=zh#settings`.
 
 `GET /api/runtime` returns the browser-facing runtime inventory: version,
 active agent, mode, workspace state, session snapshot, agents, skills, tools,
@@ -1339,6 +1381,11 @@ MCP health, MCP server isolation/risk profiles, and first-run
 environment-variable status. `mcp_servers` distinguishes lifecycle-only,
 resource-control, container-configured, and unsandboxed servers and reports
 whether network, filesystem, and privilege sandboxing are actually enforced.
+It also carries live MCP call-slot pressure fields for each server:
+`max_concurrent_calls`, `active_calls`, `queued_calls`, and
+`available_call_slots`. The Web Studio Observability page renders these as tool
+pressure cards so operators can see whether a long run is waiting on tools,
+model output, or approval.
 The embedded session snapshot carries the same pending-approval risk fields as
 `GET /api/session`, so Studio can render approval cards without making a second
 resource lookup.
@@ -1490,6 +1537,15 @@ without joining against the tool catalog manually.
 settings page. Release-archive self-update should verify checksums/signatures
 and remain opt-in. Docker and source installs should normally show prompted
 upgrade commands rather than mutate themselves silently.
+`POST /api/update-policy/check` performs the explicit release-feed check. Set
+`GOFLOW_RELEASE_FEED` to override the GitHub-compatible release JSON endpoint,
+or set `GOFLOW_DISABLE_UPDATE_CHECKS=1` to hide the Studio check button and
+make the check endpoint return `403` for offline deployments. The check
+response includes `asset_summary` so Studio can show whether the current
+platform archive, checksums, SBOM, and Sigstore bundles are present before any
+future download or replacement flow. When enough assets are present,
+`asset_summary.verify_steps` includes manual checksum and Sigstore commands for
+operator review; they are not executed by GoFlow.
 
 `GET /workspace` serves a basic workspace status and confirmation page.
 

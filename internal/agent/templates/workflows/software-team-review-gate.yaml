@@ -1,0 +1,91 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: software-team-review-gate
+title: Software Team Review Gate
+description: Run the reusable software task team, evaluate its approval quorum, and branch to handoff or revision.
+category: software
+tags:
+    - team
+    - approval
+    - policy_guard
+    - review
+stages: 6
+graph:
+    name: software-team-review-gate
+    description: Executable team workflow with an observable and routable review quorum.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - team
+          position:
+            x: 60
+            "y": 220
+        - name: team
+          node_type: team
+          agent: planner
+          skill: ""
+          params:
+            approval_preset: software-review
+            execute: "true"
+            team: software-task-team
+          next:
+            - review-gate
+          position:
+            x: 320
+            "y": 200
+        - name: review-gate
+          node_type: policy_guard
+          agent: ""
+          skill: ""
+          params:
+            reason: team review quorum did not pass
+            rule: team_approval_gate
+            status: passed
+            team: software-task-team
+          routes:
+            allow: handoff
+            deny: revise
+          position:
+            x: 640
+            "y": 220
+        - name: handoff
+          node_type: skill
+          agent: chat
+          skill: execution-plan
+          input:
+            approvers: stages.review-gate.outputs.approvers
+            final_handoff: stages.team__reporter.outputs.summary
+            gate_status: stages.review-gate.outputs.value
+          outputs:
+            handoff: result.output
+          next:
+            - end
+          position:
+            x: 980
+            "y": 140
+        - name: revise
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            gate_rejectors: stages.review-gate.outputs.rejectors
+            gate_status: stages.review-gate.outputs.value
+            team_summary: stages.team__reporter.outputs.summary
+          outputs:
+            revision_plan: result.output
+          next:
+            - end
+          position:
+            x: 980
+            "y": 320
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 1280
+            "y": 220

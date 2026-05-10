@@ -54,6 +54,9 @@ mcp_servers:
 	if cfg.MCP[0].MaxResponseBytes != defaultMCPMaxResponseBytes {
 		t.Fatalf("expected default max response bytes, got %d", cfg.MCP[0].MaxResponseBytes)
 	}
+	if cfg.MCP[0].MaxConcurrentCalls != defaultMCPMaxConcurrent {
+		t.Fatalf("expected default max concurrent calls, got %d", cfg.MCP[0].MaxConcurrentCalls)
+	}
 }
 
 func TestLoadExpandsBackupAPIKeyFromEnvironment(t *testing.T) {
@@ -705,8 +708,58 @@ mcp_servers:
 	if cfg.MCP[0].Cooldown != defaultMCPCooldown {
 		t.Fatalf("expected default cooldown, got %s", cfg.MCP[0].Cooldown)
 	}
+	if cfg.MCP[0].MaxConcurrentCalls != defaultMCPMaxConcurrent {
+		t.Fatalf("expected default max concurrent calls, got %d", cfg.MCP[0].MaxConcurrentCalls)
+	}
 	if cfg.MCP[0].WorkDir != tmp {
 		t.Fatalf("expected default workdir %q, got %q", tmp, cfg.MCP[0].WorkDir)
+	}
+}
+
+func TestLoadAcceptsMCPMaxConcurrentCalls(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: file_tools
+    command: go
+    enabled: true
+    allowed_commands: [go]
+    max_concurrent_calls: 2
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.MCP[0].MaxConcurrentCalls != 2 {
+		t.Fatalf("expected configured max concurrent calls, got %d", cfg.MCP[0].MaxConcurrentCalls)
+	}
+}
+
+func TestValidateMCPServerRefRejectsInvalidMaxConcurrentCalls(t *testing.T) {
+	server := MCPServerRef{
+		Name:                "file_tools",
+		Command:             "go",
+		Enabled:             true,
+		WorkDir:             ".",
+		AllowedCommands:     []string{"go"},
+		RestartLimit:        1,
+		Cooldown:            time.Second,
+		MaxConcurrentCalls:  0,
+		MaxRequestBytes:     1,
+		MaxResponseBytes:    1,
+		AllowedCommandPaths: nil,
+	}
+	if err := ValidateMCPServerRef(server); err == nil || !strings.Contains(err.Error(), "max_concurrent_calls") {
+		t.Fatalf("expected max_concurrent_calls validation error, got %v", err)
 	}
 }
 
@@ -1253,17 +1306,18 @@ mcp_servers:
 
 func TestValidateMCPServerRefAcceptsContainerIsolationProfile(t *testing.T) {
 	server := MCPServerRef{
-		Name:             "helper",
-		Command:          "python",
-		Enabled:          true,
-		WorkDir:          ".",
-		Isolation:        "container",
-		IsolationProfile: "production",
-		AllowedCommands:  []string{"python"},
-		RestartLimit:     1,
-		Cooldown:         time.Second,
-		MaxRequestBytes:  1,
-		MaxResponseBytes: 1,
+		Name:               "helper",
+		Command:            "python",
+		Enabled:            true,
+		WorkDir:            ".",
+		Isolation:          "container",
+		IsolationProfile:   "production",
+		AllowedCommands:    []string{"python"},
+		RestartLimit:       1,
+		Cooldown:           time.Second,
+		MaxConcurrentCalls: 1,
+		MaxRequestBytes:    1,
+		MaxResponseBytes:   1,
 		IsolationOptions: map[string]string{
 			"image": "goflow/mcp-helper@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
 		},

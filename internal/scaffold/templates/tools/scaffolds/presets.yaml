@@ -1,0 +1,246 @@
+presets:
+  - name: python-local
+    default_name: workspace-helper
+    title: Python MCP Tool
+    description: Create a local Python stdio MCP server with read/write examples and workspace-root path checks.
+    category: local
+    tags: [python, workspace, starter]
+    language: python
+    isolation: process_group
+    risk_level: medium
+    requires_restart: true
+    capabilities:
+      - stdio-json-rpc
+      - read_text example
+      - write_text example
+      - workspace file access
+    safety_guards:
+      - strict JSON schemas with additionalProperties=false
+      - GOFLOW_WORKSPACE_ROOT path scoping
+      - path traversal rejection
+      - symlink escape rejection for reads and write parents
+      - workspace-root write refusal
+      - bounded UTF-8 text reads
+      - tool-level is_error responses
+      - MCP command allowlist in generated config
+    generated_paths:
+      - mcp_servers/<name>.py
+      - configs/mcp_servers/<name>.yaml
+    activation_steps:
+      - review generated code and tool descriptions
+      - keep agent allowed_tools narrow before enabling broad access
+      - restart GoFlow or rebootstrap MCP servers so the new config is loaded
+      - confirm the server appears in /tools or the Studio tool catalog
+    recommendations:
+      - keep allowed_tools narrow on agents that can call this server
+      - review generated write tools before enabling them for broad agents
+
+  - name: python-container-readonly
+    default_name: sandboxed-reader
+    title: Containerized Read-Only Python MCP Tool
+    description: Create a Python MCP server that runs in Docker/Podman with the generated tool file mounted read-only and the workspace mounted read-only.
+    category: container
+    tags: [python, container, readonly, sandbox]
+    language: python
+    isolation: container
+    workspace_mount: ro
+    network_mode: disabled
+    isolation_profile: readonly
+    risk_level: low
+    requires_restart: true
+    capabilities:
+      - stdio-json-rpc
+      - read_text example
+      - containerized execution
+      - read-only workspace mount
+    safety_guards:
+      - strict JSON schemas with additionalProperties=false
+      - GOFLOW_WORKSPACE_ROOT path scoping
+      - path traversal rejection
+      - symlink escape rejection for reads and write parents
+      - workspace-root write refusal
+      - bounded UTF-8 text reads
+      - tool-level is_error responses
+      - MCP command allowlist in generated config
+      - read-only workspace mount
+      - single generated tool file mounted read-only
+      - network disabled
+      - resource limits
+      - read-only container root filesystem
+      - dedicated tmpfs scratch mounts
+      - isolated IPC namespace
+      - user namespace where supported
+      - non-root container user by default
+      - dropped Linux capabilities where supported
+      - no-new-privileges where supported
+      - container init for child-process cleanup
+    generated_paths:
+      - mcp_servers/<name>.py
+      - configs/mcp_servers/<name>.yaml
+    activation_steps:
+      - review generated code and tool descriptions
+      - keep agent allowed_tools narrow before enabling broad access
+      - restart GoFlow or rebootstrap MCP servers so the new config is loaded
+      - confirm the server appears in /tools or the Studio tool catalog
+    recommendations:
+      - use this preset for untrusted read-only helpers
+      - switch to a write-capable preset only when the workflow needs workspace mutation
+
+  - name: python-container-writer
+    default_name: sandboxed-writer
+    title: Containerized Write-Capable Python MCP Tool
+    description: Create a Python MCP server that runs in Docker/Podman with network disabled, resource limits, and read-write workspace access.
+    category: container
+    tags: [python, container, write, sandbox]
+    language: python
+    isolation: container
+    workspace_mount: rw
+    network_mode: disabled
+    isolation_profile: writer
+    risk_level: medium
+    requires_restart: true
+    capabilities:
+      - stdio-json-rpc
+      - read_text example
+      - write_text example
+      - containerized execution
+      - read-write workspace mount
+    safety_guards:
+      - strict JSON schemas with additionalProperties=false
+      - GOFLOW_WORKSPACE_ROOT path scoping
+      - path traversal rejection
+      - symlink escape rejection for reads and write parents
+      - workspace-root write refusal
+      - bounded UTF-8 text reads
+      - tool-level is_error responses
+      - MCP command allowlist in generated config
+      - single generated tool file mounted read-only
+      - network disabled
+      - resource limits
+      - read-only container root filesystem
+      - dedicated tmpfs scratch mounts
+      - isolated IPC namespace
+      - user namespace where supported
+      - dropped Linux capabilities where supported
+      - no-new-privileges where supported
+      - container init for child-process cleanup
+    generated_paths:
+      - mcp_servers/<name>.py
+      - configs/mcp_servers/<name>.yaml
+    activation_steps:
+      - review generated code and tool descriptions
+      - keep agent allowed_tools narrow before enabling broad access
+      - restart GoFlow or rebootstrap MCP servers so the new config is loaded
+      - confirm the server appears in /tools or the Studio tool catalog
+    recommendations:
+      - route this tool through confirm policy
+      - prefer exact allowed_tools for agents using write-capable container tools
+
+  - name: python-container-network
+    default_name: sandboxed-fetcher
+    title: Containerized Network Python MCP Tool
+    description: Create a Python MCP server that runs in Docker/Podman with workspace read-only access and explicit network egress enabled.
+    category: container
+    tags: [python, container, network, fetch]
+    language: python
+    isolation: container
+    workspace_mount: ro
+    network_mode: bridge
+    isolation_profile: network
+    risk_level: medium
+    requires_restart: true
+    capabilities:
+      - stdio-json-rpc
+      - read_text example
+      - containerized execution
+      - network egress
+      - read-only workspace mount
+    safety_guards:
+      - strict JSON schemas with additionalProperties=false
+      - GOFLOW_WORKSPACE_ROOT path scoping
+      - path traversal rejection
+      - symlink escape rejection for reads and write parents
+      - workspace-root write refusal
+      - bounded UTF-8 text reads
+      - tool-level is_error responses
+      - MCP command allowlist in generated config
+      - read-only workspace mount
+      - single generated tool file mounted read-only
+      - resource limits
+      - read-only container root filesystem
+      - dedicated tmpfs scratch mounts
+      - isolated IPC namespace
+      - user namespace where supported
+      - non-root container user by default
+      - dropped Linux capabilities where supported
+      - no-new-privileges where supported
+      - container init for child-process cleanup
+      - network egress explicitly declared
+    generated_paths:
+      - mcp_servers/<name>.py
+      - configs/mcp_servers/<name>.yaml
+    activation_steps:
+      - review generated code and tool descriptions
+      - keep agent allowed_tools narrow before enabling broad access
+      - restart GoFlow or rebootstrap MCP servers so the new config is loaded
+      - confirm the server appears in /tools or the Studio tool catalog
+    recommendations:
+      - declare network tools as kind=network
+      - keep approvals enabled for network-capable agents
+
+  - name: python-container-production
+    default_name: production-reader
+    title: Production Python MCP Tool
+    description: Create a locked-down read-only Python MCP server for production deployments that pre-pull trusted digest-pinned images.
+    category: container
+    tags: [python, container, production, digest, sandbox]
+    language: python
+    isolation: container
+    workspace_mount: ro
+    network_mode: disabled
+    isolation_profile: production
+    risk_level: medium
+    requires_restart: true
+    capabilities:
+      - stdio-json-rpc
+      - read_text example
+      - containerized execution
+      - read-only workspace mount
+      - production profile defaults
+      - pre-pulled image mode
+    safety_guards:
+      - strict JSON schemas with additionalProperties=false
+      - GOFLOW_WORKSPACE_ROOT path scoping
+      - path traversal rejection
+      - symlink escape rejection for reads and write parents
+      - workspace-root write refusal
+      - bounded UTF-8 text reads
+      - tool-level is_error responses
+      - MCP command allowlist in generated config
+      - read-only workspace mount
+      - single generated tool file mounted read-only
+      - network disabled
+      - pull_policy=never
+      - resource limits
+      - read-only container root filesystem
+      - dedicated tmpfs scratch mounts
+      - isolated IPC namespace
+      - user namespace where supported
+      - non-root container user by default
+      - dropped Linux capabilities where supported
+      - no-new-privileges where supported
+      - container init for child-process cleanup
+    generated_paths:
+      - mcp_servers/<name>.py
+      - configs/mcp_servers/<name>.yaml
+    activation_steps:
+      - review generated code and tool descriptions
+      - keep agent allowed_tools narrow before enabling broad access
+      - restart GoFlow or rebootstrap MCP servers so the new config is loaded
+      - confirm the server appears in /tools or the Studio tool catalog
+      - replace the scaffold image tag with a trusted image@sha256:... reference
+      - pre-pull the trusted image on each deployment host before enabling the tool
+    recommendations:
+      - use this preset for production read-only helpers
+      - replace the default image tag with an immutable digest before deployment
+      - keep pull_policy=never after pre-pulling trusted images

@@ -231,6 +231,28 @@ func TestManagerCloseClearsClientsAndIndexes(t *testing.T) {
 	}
 }
 
+func TestManagerReportsClientCallMetrics(t *testing.T) {
+	manager := NewManager([]config.MCPServerRef{{
+		Name:               "file_tools",
+		Enabled:            true,
+		MaxConcurrentCalls: 2,
+	}})
+	client := manager.clients["file_tools"]
+	if client == nil {
+		t.Fatal("expected managed client")
+	}
+	if err := client.acquireCallSlot(context.Background()); err != nil {
+		t.Fatalf("acquire slot: %v", err)
+	}
+	defer client.releaseCallSlot()
+
+	metrics := manager.MCPCallMetrics()
+	item := metrics["file_tools"]
+	if item.MaxConcurrentCalls != 2 || item.ActiveCalls != 1 || item.QueuedCalls != 0 || item.AvailableCallSlots != 1 {
+		t.Fatalf("unexpected manager metrics: %#v", metrics)
+	}
+}
+
 func newHelperMCPManager(t *testing.T, name string, tools []schema.Tool) *Manager {
 	return newHelperMCPManagerWithServers(t, []string{name}, tools)
 }

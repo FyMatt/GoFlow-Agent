@@ -1,0 +1,267 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: agent-framework-extension
+title: Agent Framework Extension
+description: Design and materialize a linked Agent/Skill/Tool/Workflow/Team extension with quality gates and operator review.
+category: platform
+tags:
+    - agent-framework
+    - extension
+    - kit
+    - workflow-template
+    - quality_gate
+stages: 12
+graph:
+    name: agent-framework-extension
+    description: Framework-extension workflow for building second-development resources as a coordinated kit instead of disconnected files.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - scope
+          position:
+            x: 60
+            "y": 260
+        - name: scope
+          node_type: input_gate
+          agent: ""
+          skill: ""
+          params:
+            fields_json: '{"fields":[{"name":"domain","type":"text","label":"Domain or vertical","required":true},{"name":"goal","type":"textarea","label":"Extension goal","required":true},{"name":"resources","type":"multiselect","label":"Resources to create","options":["agent","skill","tool","workflow","workflow_template","team_template","policy_rule","kit"],"default":["agent","skill","workflow","kit"]},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","options":["low","medium","high"],"default":"medium"}]}'
+            manual: "true"
+            prompt: Describe the vertical domain, extension goal, resources to create, and risk tolerance before generating a framework extension.
+          outputs:
+            domain: params.domain
+            goal: params.goal
+            resources: params.resources
+            risk_tolerance: params.risk_tolerance
+          next:
+            - team
+          position:
+            x: 330
+            "y": 250
+        - name: team
+          node_type: team
+          agent: planner
+          skill: ""
+          params:
+            execute: "false"
+            team: framework-extension-team
+          input:
+            domain: stages.scope.outputs.domain
+            goal: stages.scope.outputs.goal
+            resources: stages.scope.outputs.resources
+          outputs:
+            roles: result.roles
+            team: result.structured
+          next:
+            - design
+          position:
+            x: 630
+            "y": 250
+        - name: design
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          params:
+            output_contract: Emit sections named Extension Summary, Resource Map, Agent Contract, Skill Contract, Tool Boundary, Workflow Data Flow, Team Roles, Policy Gates, Files To Create, Restart/Reload Notes, and Acceptance Criteria.
+            purpose: Design a linked GoFlow extension package that can be materialized as versionable resources.
+            quality_bar: Every generated resource must have a name, storage path, owner, inputs, outputs, safety boundary, and validation path.
+          input:
+            domain: stages.scope.outputs.domain
+            goal: stages.scope.outputs.goal
+            resources: stages.scope.outputs.resources
+            risk_tolerance: stages.scope.outputs.risk_tolerance
+            team: stages.team.outputs.team
+          outputs:
+            design: result.output
+            resource_map: result.findings
+            summary: result.summary
+          artifacts:
+            - name: extension-design
+              kind: plan
+              title: Extension design
+              ref: result.output
+              summary: Linked Agent/Skill/Tool/Workflow/Team resource design.
+          acceptance_criteria:
+            - name: has-resource-map
+              ref: result.output
+              contains: Resource Map
+              expected: design lists linked resources
+            - name: has-workflow-data-flow
+              ref: result.output
+              contains: Workflow Data Flow
+              expected: design explains output-to-input chaining
+            - name: has-tool-boundary
+              ref: result.output
+              contains: Tool Boundary
+              expected: design declares tool permissions and sandbox boundary
+            - name: has-acceptance
+              ref: result.output
+              contains: Acceptance Criteria
+              expected: design includes acceptance criteria
+          next:
+            - review-design
+          position:
+            x: 950
+            "y": 250
+        - name: review-design
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          params:
+            output_contract: Emit sections named Review Decision, Missing Contracts, Safety Risks, Validation Gaps, Required Changes, and Recommendation. Use approved only when ready to materialize.
+            review_scope: Review the extension design for over-broad agents, missing skill/tool contracts, missing workflow data flow, missing validation, unsafe tool permissions, and restart/reload ambiguity.
+          input:
+            design: stages.design.outputs.design
+            scope: stages.scope.outputs.goal
+          outputs:
+            findings: result.findings
+            recommendation: result.summary
+            review: result.output
+          artifacts:
+            - name: extension-design-review
+              kind: review
+              title: Extension design review
+              ref: result.output
+              summary: Safety and completeness review for the extension design.
+          acceptance_criteria:
+            - name: review-decision
+              ref: result.output
+              contains: Review Decision
+              expected: review declares readiness
+            - name: safety-reviewed
+              ref: result.output
+              contains: Safety Risks
+              expected: review covers safety risks
+            - name: validation-reviewed
+              ref: result.output
+              contains: Validation Gaps
+              expected: review covers validation gaps
+          next:
+            - quality
+          position:
+            x: 1290
+            "y": 250
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            min_score: "80"
+            reason: extension design is missing linked resource contracts, safety review, or validation evidence
+            require_acceptance: "true"
+            require_evidence: "true"
+          routes:
+            fail: revise-design
+            pass: operator-check
+            warning: operator-check
+          position:
+            x: 1600
+            "y": 270
+        - name: operator-check
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          params:
+            prompt: Review the extension design, safety review, and resource map before generating files.
+          next:
+            - materialize
+          position:
+            x: 1880
+            "y": 170
+        - name: materialize
+          node_type: agent
+          agent: fixer
+          skill: code-writing
+          params:
+            purpose: Create or update the requested GoFlow extension resources under their modular folders. Prefer scaffold commands or validated YAML formats where possible.
+          input:
+            design: stages.design.outputs.design
+            review: stages.review-design.outputs.review
+          outputs:
+            changes: result.changes
+            output: result.output
+            summary: result.summary
+          artifacts:
+            - name: extension-materialization
+              kind: change
+              title: Materialized extension resources
+              ref: result.changes
+          acceptance_criteria:
+            - name: changes-recorded
+              ref: result.output
+              contains: change
+              expected: materialization records created or changed resources
+          retry:
+            max_attempts: 2
+          approval: true
+          next:
+            - final-review
+          position:
+            x: 2180
+            "y": 170
+        - name: final-review
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          params:
+            review_scope: Check whether the generated resources match the design, remain workspace scoped, declare validation/restart guidance, and avoid unrelated edits.
+          input:
+            changes: stages.materialize.outputs.changes
+            design: stages.design.outputs.design
+          outputs:
+            review: result.output
+          artifacts:
+            - name: extension-final-review
+              kind: review
+              title: Final extension review
+              ref: result.output
+          next:
+            - handoff
+          position:
+            x: 2490
+            "y": 170
+        - name: revise-design
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            failures: stages.quality.outputs.failures
+            review: stages.review-design.outputs.review
+          outputs:
+            revision_plan: result.output
+          next:
+            - end
+          position:
+            x: 1880
+            "y": 390
+        - name: handoff
+          node_type: skill
+          agent: chat
+          skill: execution-plan
+          input:
+            changes: stages.materialize.outputs.changes
+            review: stages.final-review.outputs.review
+          outputs:
+            handoff: result.output
+          artifacts:
+            - name: extension-handoff
+              kind: report
+              title: Extension handoff
+              ref: result.output
+          next:
+            - end
+          position:
+            x: 2810
+            "y": 170
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 3120
+            "y": 260

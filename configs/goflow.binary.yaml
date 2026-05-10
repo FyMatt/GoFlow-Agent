@@ -15,6 +15,7 @@ mcp_servers:
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
+    max_concurrent_calls: 1
     allowed_commands:
       - ${GOFLOW_FILE_TOOLS_CMD}
     max_request_bytes: 65536
@@ -31,6 +32,7 @@ mcp_servers:
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
+    max_concurrent_calls: 1
     allowed_commands:
       - ${GOFLOW_PYTHON_CMD}
     max_request_bytes: 65536
@@ -59,6 +61,7 @@ mcp_servers:
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
+    max_concurrent_calls: 1
     allowed_commands:
       - ${GOFLOW_SKILL_RUNNER_CMD}
     max_request_bytes: 65536
@@ -73,6 +76,7 @@ mcp_servers:
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
+    max_concurrent_calls: 1
     allowed_commands:
       - ${GOFLOW_WEB_TOOLS_CMD}
     max_request_bytes: 65536

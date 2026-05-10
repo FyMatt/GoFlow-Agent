@@ -89,6 +89,26 @@ type WorkflowGraphSummary struct {
 	Error       string `json:"error,omitempty"`
 }
 
+// WorkflowExecutorOption describes a runnable workflow entry. Some entries are
+// persisted graph workflows; legacy compatibility executors remain runnable but
+// are not directly editable as workflow graphs.
+type WorkflowExecutorOption struct {
+	Name            string `json:"name"`
+	Description     string `json:"description,omitempty"`
+	Source          string `json:"source"`
+	Path            string `json:"path,omitempty"`
+	Stages          int    `json:"stages,omitempty"`
+	Valid           bool   `json:"valid"`
+	Error           string `json:"error,omitempty"`
+	Editable        bool   `json:"editable"`
+	Legacy          bool   `json:"legacy,omitempty"`
+	Compatibility   bool   `json:"compatibility,omitempty"`
+	Overridden      bool   `json:"overridden,omitempty"`
+	OverridesLegacy bool   `json:"overrides_legacy,omitempty"`
+	OverridePath    string `json:"override_path,omitempty"`
+	Detail          string `json:"detail,omitempty"`
+}
+
 // WorkflowGraphValidationIssue is a structured graph validation diagnostic.
 type WorkflowGraphValidationIssue struct {
 	Level   string `json:"level"`
@@ -165,6 +185,7 @@ type WorkflowOptionSet struct {
 	Agents              []WorkflowAgentOption              `json:"agents"`
 	Skills              []WorkflowSkillOption              `json:"skills"`
 	Tools               []string                           `json:"tools"`
+	WorkflowExecutors   []WorkflowExecutorOption           `json:"workflow_executors,omitempty"`
 	NodeTypes           []WorkflowNodeTypeOption           `json:"node_types,omitempty"`
 	PolicyRules         []WorkflowPolicyRuleOption         `json:"policy_rules,omitempty"`
 	ExpressionFunctions []WorkflowExpressionFunctionOption `json:"expression_functions,omitempty"`
@@ -211,7 +232,11 @@ func (w *WorkflowRunner) ListWorkflowGraphs() []WorkflowGraphSummary {
 		}
 		doc, err := w.LoadWorkflowGraphDocument(name)
 		if err != nil {
-			summaries = append(summaries, WorkflowGraphSummary{Name: name, Source: "custom", Path: path, Valid: false, Error: err.Error()})
+			source := "custom"
+			if _, builtin := w.registry[normalizePersistedWorkflowName(name)]; builtin {
+				source = "default"
+			}
+			summaries = append(summaries, WorkflowGraphSummary{Name: name, Source: source, Path: path, Valid: false, Error: err.Error()})
 			continue
 		}
 		source := "custom"
@@ -227,6 +252,131 @@ func (w *WorkflowRunner) ListWorkflowGraphs() []WorkflowGraphSummary {
 		return summaries[i].Name < summaries[j].Name
 	})
 	return summaries
+}
+
+// WorkflowExecutors returns every runnable workflow entry: persisted graph
+// workflows plus built-in compatibility executors that can be overridden by a
+// graph with the same name.
+func (w *WorkflowRunner) WorkflowExecutors() []WorkflowExecutorOption {
+	graphs := w.ListWorkflowGraphs()
+	out := make([]WorkflowExecutorOption, 0, len(graphs)+len(w.registry))
+	graphByName := make(map[string]WorkflowGraphSummary, len(graphs))
+	legacyNames := legacyWorkflowExecutorNames()
+	for _, graph := range graphs {
+		name := normalizePersistedWorkflowName(graph.Name)
+		overridesLegacy := legacyNames[name]
+		graphByName[name] = graph
+		overridePath := ""
+		if overridesLegacy {
+			overridePath = graph.Path
+		}
+		out = append(out, WorkflowExecutorOption{
+			Name:            graph.Name,
+			Description:     graph.Description,
+			Source:          graph.Source,
+			Path:            graph.Path,
+			Stages:          graph.Stages,
+			Valid:           graph.Valid,
+			Error:           graph.Error,
+			Editable:        true,
+			OverridesLegacy: overridesLegacy,
+			OverridePath:    overridePath,
+			Detail:          workflowExecutorDetail(graph.Source, overridesLegacy, graph.Valid),
+		})
+	}
+	for _, name := range legacyWorkflowExecutorNameList(w.registry) {
+		graph, overridden := graphByName[name]
+		if overridden && graph.Valid {
+			continue
+		}
+		out = append(out, WorkflowExecutorOption{
+			Name:          name,
+			Description:   legacyWorkflowExecutorDescription(name),
+			Source:        "legacy_executor",
+			Valid:         !overridden,
+			Error:         legacyWorkflowExecutorError(graph),
+			Editable:      false,
+			Legacy:        true,
+			Compatibility: true,
+			Overridden:    overridden,
+			OverridePath:  graph.Path,
+			Detail:        workflowExecutorDetail("legacy_executor", overridden, !overridden),
+		})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if workflowExecutorSourceRank(out[i]) != workflowExecutorSourceRank(out[j]) {
+			return workflowExecutorSourceRank(out[i]) < workflowExecutorSourceRank(out[j])
+		}
+		return out[i].Name < out[j].Name
+	})
+	return out
+}
+
+func legacyWorkflowExecutorNameList(registry map[string]workflowDefinition) []string {
+	if len(registry) == 0 {
+		registry = builtInWorkflowRegistry()
+	}
+	names := make([]string, 0, len(registry))
+	for name := range registry {
+		names = append(names, normalizePersistedWorkflowName(name))
+	}
+	sort.Strings(names)
+	return names
+}
+
+func legacyWorkflowExecutorNames() map[string]bool {
+	out := make(map[string]bool)
+	for _, name := range legacyWorkflowExecutorNameList(nil) {
+		out[name] = true
+	}
+	return out
+}
+
+func legacyWorkflowExecutorDescription(name string) string {
+	switch normalizePersistedWorkflowName(name) {
+	case workflowNamePlanFixAudit:
+		return "Compatibility executor for the original plan, fix, and audit workflow. A saved graph named plan-fix-audit overrides it."
+	case workflowNameSkillChain:
+		return "Compatibility executor that chains matched skills. A saved graph named skill-chain overrides it."
+	default:
+		return "Compatibility workflow executor. A saved graph with the same name overrides it."
+	}
+}
+
+func legacyWorkflowExecutorError(graph WorkflowGraphSummary) string {
+	if graph.Valid || strings.TrimSpace(graph.Name) == "" {
+		return ""
+	}
+	return graph.Error
+}
+
+func workflowExecutorDetail(source string, overridden, valid bool) string {
+	if overridden {
+		if valid {
+			return "legacy compatibility executor is overridden by a saved workflow graph"
+		}
+		return "legacy compatibility executor is hidden because a saved workflow graph with the same name exists but is invalid"
+	}
+	if source == "legacy_executor" {
+		return "built-in compatibility executor; fork the matching workflow template or save a graph with the same name to customize it"
+	}
+	return "editable workflow graph"
+}
+
+func workflowExecutorSourceRank(item WorkflowExecutorOption) int {
+	if item.Overridden {
+		return 3
+	}
+	switch item.Source {
+	case "default":
+		return 0
+	case "custom":
+		return 1
+	case "legacy_executor":
+		return 2
+	default:
+		return 4
+	}
 }
 
 func sourceRank(source string) int {
@@ -414,6 +564,7 @@ func (w *WorkflowRunner) WorkflowOptions() WorkflowOptionSet {
 	sort.Slice(options.Skills, func(i, j int) bool { return options.Skills[i].Name < options.Skills[j].Name })
 	options.Tools = w.runtime.ToolNames()
 	sort.Strings(options.Tools)
+	options.WorkflowExecutors = w.WorkflowExecutors()
 	options.NodeTypes = w.WorkflowNodeTypes()
 	options.PolicyRules = w.WorkflowPolicyRules()
 	options.ExpressionFunctions = w.WorkflowExpressionFunctions()

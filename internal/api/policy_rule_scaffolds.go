@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
+	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
 	"gopkg.in/yaml.v3"
 )
 
@@ -142,92 +144,7 @@ func (s *Server) policyRuleScaffoldPreset(name string, includeDocument bool) (po
 }
 
 func (s *Server) policyRuleScaffoldPresets(includeDocument bool) []policyRuleScaffoldPreset {
-	presets := []policyRuleScaffoldPreset{
-		{
-			Name:        "risk-threshold",
-			DefaultName: "high-risk-gate",
-			Title:       "Risk Threshold Gate",
-			Description: "Pass when a referenced risk/severity value is at least the configured threshold.",
-			Category:    "security",
-			Tags:        []string{"risk", "security", "branching"},
-			Operator:    "risk_at_least",
-			Defaults:    map[string]string{"ref": "stages.audit.outputs.risk", "minimum": "high"},
-			Params: []agent.WorkflowNodeFieldOption{
-				{Name: "params.ref", Label: "Evidence reference", Type: "reference", Description: "Reference to a stage output containing low, medium, high, or critical."},
-				{Name: "params.minimum", Label: "Minimum severity", Type: "select", Options: []string{"low", "medium", "high", "critical"}},
-			},
-		},
-		{
-			Name:        "truthy-reference",
-			DefaultName: "finding-present-gate",
-			Title:       "Truthy Reference Gate",
-			Description: "Pass when a referenced workflow output is present and truthy.",
-			Category:    "control-flow",
-			Tags:        []string{"reference", "branching"},
-			Operator:    "ref_truthy",
-			Defaults:    map[string]string{"ref": "stages.audit.outputs.finding"},
-			Params: []agent.WorkflowNodeFieldOption{
-				{Name: "params.ref", Label: "Reference", Type: "reference", Description: "Reference that must be truthy for the guard to pass."},
-			},
-		},
-		{
-			Name:        "contains-text",
-			DefaultName: "output-contains-gate",
-			Title:       "Contains Text Gate",
-			Description: "Pass when a referenced output contains an expected substring.",
-			Category:    "control-flow",
-			Tags:        []string{"text", "branching"},
-			Operator:    "contains",
-			Defaults:    map[string]string{"ref": "stages.review.outputs.summary", "needle": "approved"},
-			Params: []agent.WorkflowNodeFieldOption{
-				{Name: "params.ref", Label: "Reference", Type: "reference"},
-				{Name: "params.needle", Label: "Expected text", Type: "text"},
-			},
-		},
-		{
-			Name:        "minimum-count",
-			DefaultName: "minimum-findings-gate",
-			Title:       "Minimum Count Gate",
-			Description: "Pass when a referenced list or count reaches a configured minimum.",
-			Category:    "quality",
-			Tags:        []string{"count", "quality", "branching"},
-			Operator:    "min_count",
-			Defaults:    map[string]string{"ref": "stages.audit.outputs.findings", "minimum": "1"},
-			Params: []agent.WorkflowNodeFieldOption{
-				{Name: "params.ref", Label: "List/count reference", Type: "reference"},
-				{Name: "params.minimum", Label: "Minimum count", Type: "number"},
-			},
-		},
-		{
-			Name:        "team-review-quorum",
-			DefaultName: "team-review-gate",
-			Title:       "Team Review Quorum Gate",
-			Description: "Pass, block, or pause based on executable team approval/rejection quorum state.",
-			Category:    "collaboration",
-			Tags:        []string{"team", "quorum", "approval"},
-			Operator:    "team_approval_gate",
-			Defaults:    map[string]string{"status": "passed", "wait_for_quorum": "true"},
-			Params: []agent.WorkflowNodeFieldOption{
-				{Name: "params.team", Label: "Team", Type: "text", Description: "Optional team name to filter approval packets."},
-				{Name: "params.status", Label: "Required status", Type: "select", Options: []string{"passed", "blocked", "pending"}},
-				{Name: "params.approval_quorum", Label: "Approval quorum", Type: "number"},
-				{Name: "params.approval_preset", Label: "Quorum preset", Type: "text", Description: "Reusable quorum preset from the selected team template."},
-			},
-		},
-		{
-			Name:        "expression",
-			DefaultName: "custom-expression-gate",
-			Title:       "Custom Expression Gate",
-			Description: "Pass when a custom workflow expression evaluates truthy.",
-			Category:    "advanced",
-			Tags:        []string{"expression", "custom"},
-			Operator:    "expression",
-			Defaults:    map[string]string{"expression": "{{params.ref}} == true", "ref": "stages.audit.outputs.passed"},
-			Params: []agent.WorkflowNodeFieldOption{
-				{Name: "params.ref", Label: "Reference", Type: "reference"},
-			},
-		},
-	}
+	presets := s.policyRuleScaffoldPresetDefinitions()
 	for i := range presets {
 		if includeDocument {
 			if doc, err := policyRuleFromScaffold(presets[i], policyRuleScaffoldRequest{Name: presets[i].DefaultName}); err == nil {
@@ -236,6 +153,65 @@ func (s *Server) policyRuleScaffoldPresets(includeDocument bool) []policyRuleSca
 		}
 	}
 	return presets
+}
+
+func (s *Server) policyRuleScaffoldPresetDefinitions() []policyRuleScaffoldPreset {
+	if s == nil || s.runtime == nil || strings.TrimSpace(s.runtime.RuntimeHome()) == "" {
+		return policyRuleScaffoldPresetsFromShared(scaffold.BuiltInPolicyRulePresets())
+	}
+	presets, err := scaffold.PolicyRulePresetsFromDirs(filepath.Join(s.runtime.RuntimeHome(), "templates", "policies", "scaffolds"))
+	if err != nil {
+		return policyRuleScaffoldPresetsFromShared(scaffold.BuiltInPolicyRulePresets())
+	}
+	return policyRuleScaffoldPresetsFromShared(presets)
+}
+
+func policyRuleScaffoldPresetsFromShared(presets []scaffold.PolicyRulePreset) []policyRuleScaffoldPreset {
+	out := make([]policyRuleScaffoldPreset, 0, len(presets))
+	for _, preset := range presets {
+		out = append(out, policyRuleScaffoldPresetFromShared(preset))
+	}
+	return out
+}
+
+func policyRuleScaffoldPresetFromShared(preset scaffold.PolicyRulePreset) policyRuleScaffoldPreset {
+	defaults := copyMap(preset.Defaults)
+	if strings.TrimSpace(preset.Expression) != "" {
+		if defaults == nil {
+			defaults = make(map[string]string)
+		}
+		defaults["expression"] = preset.Expression
+	}
+	return policyRuleScaffoldPreset{
+		Name:        preset.Name,
+		DefaultName: preset.DefaultName,
+		Title:       preset.Title,
+		Description: preset.Description,
+		Category:    preset.Category,
+		Tags:        append([]string(nil), preset.Tags...),
+		Operator:    preset.Operator,
+		Defaults:    defaults,
+		Params:      workflowNodeFieldsFromPolicyPresetFields(preset.Params),
+	}
+}
+
+func workflowNodeFieldsFromPolicyPresetFields(fields []scaffold.PolicyRuleFieldOption) []agent.WorkflowNodeFieldOption {
+	out := make([]agent.WorkflowNodeFieldOption, 0, len(fields))
+	for _, field := range fields {
+		out = append(out, agent.WorkflowNodeFieldOption{
+			Name:        field.Name,
+			Label:       field.Label,
+			Type:        field.Type,
+			Description: field.Description,
+			Placeholder: field.Placeholder,
+			Default:     field.Default,
+			Required:    field.Required,
+			Options:     append([]string(nil), field.Options...),
+			Examples:    append([]string(nil), field.Examples...),
+			Hints:       append([]string(nil), field.Hints...),
+		})
+	}
+	return out
 }
 
 func policyRuleFromScaffold(preset policyRuleScaffoldPreset, req policyRuleScaffoldRequest) (policyRuleResourceDocument, error) {

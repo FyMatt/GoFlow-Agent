@@ -1,0 +1,105 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: binary-triage
+title: Binary Triage
+description: Plan binary analysis, collect triage evidence, classify risk, and report next steps.
+category: security
+tags:
+    - binary
+    - reverse
+    - security
+stages: 8
+graph:
+    name: binary-triage
+    description: Static binary triage workflow for defensive vulnerability research.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - plan
+          position:
+            x: 60
+            "y": 200
+        - name: plan
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          outputs:
+            plan: result.output
+          next:
+            - triage
+          position:
+            x: 300
+            "y": 170
+        - name: triage
+          node_type: skill
+          agent: auditor
+          skill: binary-vulnerability-research
+          input:
+            plan: stages.plan.outputs.plan
+          outputs:
+            evidence: result.output
+            findings: result.findings
+          next:
+            - risk
+          position:
+            x: 580
+            "y": 170
+        - name: risk
+          node_type: switch
+          agent: ""
+          skill: ""
+          switch_on: stages.triage.outputs.findings
+          cases:
+            critical: checkpoint
+            default: report
+          position:
+            x: 850
+            "y": 200
+        - name: checkpoint
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          params:
+            prompt: Critical binary-risk path requires operator review before deeper analysis.
+          next:
+            - deep-review
+          position:
+            x: 1120
+            "y": 120
+        - name: deep-review
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          input:
+            evidence: stages.triage.outputs.evidence
+          outputs:
+            review: result.output
+          next:
+            - report
+          position:
+            x: 1380
+            "y": 120
+        - name: report
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            evidence: stages.triage.outputs.evidence
+          outputs:
+            report: result.output
+          next:
+            - end
+          position:
+            x: 1380
+            "y": 300
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 1660
+            "y": 220

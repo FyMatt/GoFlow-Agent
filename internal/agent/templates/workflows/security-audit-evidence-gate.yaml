@@ -1,0 +1,163 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: security-audit-evidence-gate
+title: Security Audit Evidence Gate
+description: Collect target scope, gather evidence, audit findings, and route through a quality gate before reporting.
+category: security
+tags:
+    - security
+    - evidence
+    - quality_gate
+    - manual-input
+stages: 9
+graph:
+    name: security-audit-evidence-gate
+    description: Security audit workflow with operator scope, evidence artifacts, acceptance criteria, quality gate, and remediation branch.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - scope
+          position:
+            x: 60
+            "y": 220
+        - name: scope
+          node_type: input_gate
+          agent: ""
+          skill: ""
+          params:
+            fields_json: '{"fields":[{"name":"target","type":"url","label":"Target URL","required":true},{"name":"scope","type":"textarea","label":"Scope","required":true},{"name":"depth","type":"integer","default":"1","min":"1","max":"3"}]}'
+            manual: "true"
+            prompt: Provide the authorized target, scope, and depth before security analysis.
+          outputs:
+            depth: params.depth
+            scope: params.scope
+            target: params.target
+          next:
+            - collect
+          position:
+            x: 320
+            "y": 210
+        - name: collect
+          node_type: skill
+          agent: auditor
+          skill: web-vulnerability-research
+          input:
+            scope: stages.scope.outputs.scope
+            target: stages.scope.outputs.target
+          outputs:
+            evidence: result.output
+            findings: result.findings
+          artifacts:
+            - name: web-evidence
+              kind: evidence
+              title: Collected web evidence
+              ref: result.output
+          acceptance_criteria:
+            - name: target-covered
+              ref: result.output
+              contains: http
+              expected: evidence references fetched target material
+          next:
+            - audit
+          position:
+            x: 620
+            "y": 190
+        - name: audit
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          input:
+            evidence: stages.collect.outputs.evidence
+          outputs:
+            audit: result.output
+            findings: result.findings
+          artifacts:
+            - name: audit-findings
+              kind: finding
+              title: Audit findings
+              ref: result.findings
+            - name: audit-report
+              kind: report
+              title: Audit report
+              ref: result.output
+          acceptance_criteria:
+            - name: risk-classified
+              ref: result.output
+              contains: risk
+              expected: audit classifies risk and impact
+          next:
+            - quality
+          position:
+            x: 920
+            "y": 190
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            min_score: "75"
+            reason: security evidence is insufficient for a final report
+            require_acceptance: "true"
+            require_evidence: "true"
+          routes:
+            fail: remediate
+            pass: report
+            warning: review
+          position:
+            x: 1220
+            "y": 220
+        - name: review
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          params:
+            prompt: Review warning-level security evidence before producing the report.
+          next:
+            - report
+          position:
+            x: 1510
+            "y": 110
+        - name: report
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            audit: stages.audit.outputs.audit
+            quality: stages.quality.outputs.quality_status
+          outputs:
+            report: result.output
+          artifacts:
+            - name: final-security-report
+              kind: report
+              title: Final security report
+              ref: result.output
+          next:
+            - end
+          position:
+            x: 1510
+            "y": 240
+        - name: remediate
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            audit: stages.audit.outputs.audit
+            failures: stages.quality.outputs.failures
+          outputs:
+            remediation_plan: result.output
+          next:
+            - end
+          position:
+            x: 1510
+            "y": 390
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 1810
+            "y": 240

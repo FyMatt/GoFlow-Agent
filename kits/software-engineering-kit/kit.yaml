@@ -14,6 +14,7 @@ agents:
     - planner
     - fixer
     - auditor
+    - software-engineer
 providers:
     - primary
 skills:
@@ -21,13 +22,14 @@ skills:
     - code-writing
     - code-audit
 tools:
-    - read_file
-    - search_files
-    - write_file
+    - file_tools/read_file
+    - file_tools/search_files
+    - file_tools/write_file
 workflows:
     - plan-fix-audit
 workflow_templates:
     - plan-fix-audit
+    - software-quality-gate
     - software-team-review-gate
     - parallel-research-review
 team_templates:
@@ -40,9 +42,16 @@ examples:
       description: Plan, edit, and review a code change under approval.
       request: Optimize this project and add focused tests.
       workflow: plan-fix-audit
-      agent: chat
+      agent: software-engineer
+    - title: Quality-gated change
+      description: Produce a plan, implementation, verification evidence, audit, and final handoff.
+      request: Add the requested feature and route it through a quality gate before final response.
+      workflow: software-quality-gate
+      agent: software-engineer
 metadata:
     preset: software-engineering
-    recommended_agent: chat
+    recommended_agent: software-engineer
     recommended_workflow: plan-fix-audit
     scaffold_preset: software-engineering
+    recommended_team: software-task-team
+    primary_skill: code-writing

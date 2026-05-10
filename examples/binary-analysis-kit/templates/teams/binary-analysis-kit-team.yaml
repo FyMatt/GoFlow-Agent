@@ -1,0 +1,94 @@
+teamtemplatesummary:
+    kind: goflow.team_template_resource
+    version: 2
+    min_supported_version: 1
+    migrated_from_version: 1
+    name: binary-analysis-kit-team
+    title: Binary Analysis Kit Team
+    description: Linked starter team template generated with the kit scaffold.
+    category: security
+    tags:
+        - binary
+        - reverse-engineering
+        - security
+        - materialized
+        - starter
+        - team
+    roles: 2
+    quorum_presets: 1
+    recommended_workflow: binary-analysis-kit-workflow
+    recommended_entry_agent: binary-analysis-kit-agent
+    source: custom
+    custom: true
+role_templates:
+    - name: planner
+      label: Planner
+      agent: binary-analysis-kit-agent
+      skill: binary-analysis-kit-skill
+      responsibilities:
+        - clarify scope
+        - produce a compact execution plan
+        - declare evidence and acceptance criteria
+      produces:
+        - plan
+        - acceptance_criteria
+      tools:
+        - binary-analysis-kit-helper/binary_file_info
+        - binary-analysis-kit-helper/binary_strings
+        - binary-analysis-kit-helper/hex_preview
+    - name: reviewer
+      label: Reviewer
+      agent: binary-analysis-kit-agent
+      skill: binary-analysis-kit-skill
+      responsibilities:
+        - review the plan
+        - identify risks
+        - approve or request revision
+      consumes:
+        - plan
+      produces:
+        - review_decision
+        - risk_notes
+      tools:
+        - binary-analysis-kit-helper/binary_strings
+        - binary-analysis-kit-helper/hex_preview
+handoffs:
+    - from: planner
+      to: reviewer
+      kind: review
+      subject: Plan review and risk check
+      artifacts:
+        - starter-plan
+      blackboard:
+        - task_scope
+        - risk_register
+      description: Reviewer consumes the compact plan and decides whether the workflow should continue or revise.
+blackboard_templates:
+    - kind: task_scope
+      title: Task Scope
+      owner_role: planner
+      status: open
+      tags:
+        - scope
+      description: Current scope, constraints, and assumptions.
+    - kind: risk_register
+      title: Risk Register
+      owner_role: reviewer
+      status: open
+      tags:
+        - risk
+      description: Risks that should affect policy routing or approvals.
+quorum_presets:
+    - name: default-review
+      title: Default review quorum
+      description: Require one reviewer approval before using the final handoff path.
+      required: 1
+      roles:
+        - reviewer
+      reject_blocks: true
+      default: true
+output_contract:
+    - plan
+    - review_decision
+    - risk_notes
+    - final_report

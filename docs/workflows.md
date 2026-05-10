@@ -7,6 +7,17 @@ GoFlow supports two workflow styles:
 - built-in workflows such as `plan-fix-audit` and `skill-chain`
 - runtime-home workflow graphs under `workflows/<name>/workflow.yaml`
 
+These are exposed through two related but different catalogs:
+
+- `/api/workflow-graphs` lists editable graph files only.
+- `/api/workflow-options.workflow_executors` lists runnable workflow entries,
+  including editable graphs and legacy compatibility executors such as
+  `plan-fix-audit` and `skill-chain`.
+
+If a valid graph is saved with the same name as a legacy executor, that graph
+overrides the compatibility executor for future runs. Use this when you want to
+customize a built-in workflow without changing Go source.
+
 Use workflow graphs when a task needs named stages, explicit agent assignment, branch selection, or approval boundaries.
 
 Workflow graphs are persisted runtime configuration. They are loaded when you
@@ -31,7 +42,14 @@ The active workspace is still where file tools read and write. Workflow files ar
 
 For all scaffold commands and generated-file verification steps, see [Scaffold Commands](./scaffolds.md).
 
-For an end-to-end custom extension, see `examples/extension-workflow`. It includes a custom Python MCP server, a read-only agent snippet, a custom skill, and a graph workflow that composes the custom stage with a built-in audit stage.
+For end-to-end custom extensions, see:
+
+- `examples/extension-workflow`: a compact Python MCP server, read-only agent,
+  custom skill, and graph workflow that composes the custom stage with a
+  built-in audit stage.
+- `examples/binary-analysis-kit`: a fuller materialized kit whose workflow
+  passes data from a team context into a planning skill, through a policy gate,
+  and then into either a report or revision branch.
 
 ## Visual Workflow Studio
 
@@ -67,6 +85,17 @@ The Studio can:
 - save custom graphs back to `workflows/<name>/workflow.yaml`
 - run the selected workflow through the same HTTP workflow endpoint and display stage/token/approval stream events
 
+For faster authoring in the right-side inspector:
+
+- Node metadata cards can apply a built-in default setup or a worked example to
+  the current node.
+- Advanced behavior guide cards now expose one-click example fillers for the
+  matching field.
+- Results and evidence now support both `artifacts` and
+  `acceptance_criteria`, so quality checks can be authored directly in Studio.
+- Results and evidence guide cards can add common report artifacts, evidence
+  artifacts, contains checks, and exists checks without hand-writing YAML.
+
 Node positions are saved as optional stage metadata:
 
 ```yaml
@@ -96,6 +125,11 @@ Executable body/stage nodes still need an `agent` and `skill`; `tool` and
 `params` are included in the stage prompt as metadata.
 
 Built-in workflows are shown for reference but cannot be overwritten or deleted.
+Built-in workflow templates are file-backed resources embedded from
+`internal/agent/templates/workflows/*.yaml`. Runtime files under
+`templates/workflows/*.yaml` can add or override templates by name, and the same
+catalog powers CLI `/workflow-templates`, Studio workflow template pickers, and
+`/api/resources/workflow-templates`.
 
 The first Studio baseline intentionally keeps the frontend dependency-free:
 assets live under `internal/api/web` and are embedded into the Go binary. This
@@ -183,6 +217,530 @@ Fields:
 - `stage.position`: optional visual editor metadata. It does not affect execution.
 
 Agent profile permissions remain the final tool boundary. A stage cannot grant itself write, exec, or network access just by naming a skill.
+
+## Node Configuration Quick Reference
+
+Studio receives the same field metadata from `/api/workflow-options` that the
+runtime uses for built-in node types. Use these fields as the primary form
+guide:
+
+| Field | Use it for | Common values |
+| --- | --- | --- |
+| `agent` | Which configured Agent profile runs an executable stage | `planner`, `software-engineer`, `web-security-researcher`, `binary-analyst` |
+| `skill` | Which reusable procedure guides the stage | `execution-plan`, `code-writing`, `code-audit`, `web-vulnerability-research` |
+| `tool` | Preferred MCP tool metadata for a tool-focused stage | `file_tools/write_file`, `web_tools/fetch_page_assets`, `python_notes/binary_strings` |
+| `input` | Map local input names to workflow references or literals | `plan: stages.plan.outputs.plan`, `target: workflow.input` |
+| `outputs` | Publish stable names for later stages | `summary: result.summary`, `report: result.output`, `findings: result.findings` |
+| `params` | Stable node settings, output contracts, team names, form metadata | `team: software-task-team`, `rule: risk_at_least`, `fields: target:string:Target:required` |
+| `artifacts` | Mark first-class deliverables for replay/UI | `name: audit-report, kind: report, ref: result.output` |
+| `acceptance_criteria` | Define checks for quality gates and replay evidence | `name: has-risk, ref: result.output, contains: risk` |
+| `approval` | Pause before risky or high-impact stages | `true` for write, exec, external side-effect, or release stages |
+| `retry.max_attempts` | Bound automatic retries for executable stages | `2`, `3` |
+| `on_error` | Fallback stage names after retries fail | `revise`, `report-failure` |
+
+Reference patterns:
+
+- `workflow.input`: the original workflow request.
+- `params.<name>`: a node parameter.
+- `stages.<stage>.outputs.<name>`: a named output declared by an upstream stage.
+- `stages.<stage>.output_values.<name>`: the typed JSON value when available.
+- `stages.<stage>.result.output`: raw upstream output for older graphs.
+- `result.output`, `result.summary`, `result.findings`,
+  `result.tool_results`, `result.changes`, `result.verification`: current
+  executable stage result references for `outputs`, artifacts, and criteria.
+
+Practical authoring pattern:
+
+1. Put broad user context in an `input_gate` or `agent` planning node.
+2. Publish one or two stable outputs from that node, such as `plan` and
+   `scope`.
+3. Feed only those named outputs into implementation, audit, or domain
+   specialist nodes.
+4. Route on structured outputs with `condition`, `switch`, or `policy_guard`.
+5. Declare final reports, findings, diffs, or evidence as artifacts so replay
+   and Studio do not have to parse prose.
+
+## How To Use Each Node Type
+
+The simplest mental model is:
+
+```text
+collect input -> run work -> publish outputs -> route/gate -> produce artifact
+```
+
+Every executable node normally needs `agent` and `skill`. Control nodes usually
+read upstream output through `condition`, `switch_on`, `policy`, `params.ref`,
+or `input`, then choose the next node through `routes`, `cases`, or `next`.
+
+### `start` And `end`
+
+Use these as visual markers in Studio. Runtime execution follows stage order
+and `next` edges; the markers do not call a model.
+
+```yaml
+- name: start
+  node_type: start
+  next: [collect]
+- name: end
+  node_type: end
+```
+
+Common fields:
+
+- `next`: where the visual start points.
+- `position`: canvas coordinates only.
+
+### `input_gate`
+
+Use this when the workflow needs structured user input before it can continue:
+target URL, scope, severity, output type, credentials placeholder, release
+window, or approval context.
+
+```yaml
+- name: collect
+  node_type: input_gate
+  params:
+    manual: true
+    prompt: Provide target and scope.
+    fields: target:url:Target URL:required,scope:text:Scope:required
+    strict: true
+  outputs:
+    target: result.output.target
+    scope: result.output.scope
+  next: [plan]
+```
+
+Common params:
+
+- `manual: true`: pause and wait for user input.
+- `prompt`: text shown to the operator.
+- `fields`: compact field list, `name:type:label:required`.
+- `fields_json`: richer JSON field schema.
+- `required`: comma-separated required field names.
+- `strict: true`: reject undeclared submitted keys.
+
+Downstream references:
+
+- `stages.collect.outputs.target`
+- `stages.collect.outputs.scope`
+
+### `agent`
+
+Use this for a normal LLM stage where the selected Agent profile matters:
+planning, implementation, audit, documentation, support, or domain routing.
+
+```yaml
+- name: plan
+  node_type: agent
+  agent: planner
+  skill: execution-plan
+  input:
+    target: stages.collect.outputs.target
+    scope: stages.collect.outputs.scope
+  outputs:
+    plan: result.output
+    summary: result.summary
+  next: [implement]
+```
+
+Common fields:
+
+- `agent`: configured profile from `/agents`.
+- `skill`: loaded skill from `/skills`.
+- `input`: named values this stage should focus on.
+- `outputs`: stable names for later stages.
+- `approval`: set `true` before risky stages.
+- `retry.max_attempts`: retry count for transient model/tool failure.
+- `on_error`: fallback stage list.
+
+### `skill`
+
+Use this when the reusable procedure matters more than the Agent identity. It
+still needs an Agent profile because permissions come from the Agent.
+
+```yaml
+- name: audit
+  node_type: skill
+  agent: auditor
+  skill: code-audit
+  input:
+    changed_files: stages.implement.outputs.changes
+  outputs:
+    findings: result.findings
+    audit_report: result.output
+  next: [quality]
+```
+
+Good for:
+
+- `code-audit`
+- `web-vulnerability-research`
+- `binary-vulnerability-research`
+- `reverse-engineering`
+- `execution-plan`
+
+### `tool`
+
+Use this when the stage should strongly prefer one MCP tool, but remember:
+`tool` is guidance and metadata, not a permission override. Agent policy still
+decides whether the tool can run and whether approval is required.
+
+```yaml
+- name: write-report
+  node_type: tool
+  agent: fixer
+  skill: code-writing
+  tool: file_tools/write_file
+  input:
+    report: stages.audit.outputs.audit_report
+  approval: true
+  outputs:
+    tool_results: result.tool_results
+  next: [end]
+```
+
+Common tool names:
+
+- `file_tools/read_file`
+- `file_tools/search_files`
+- `file_tools/write_file`
+- `web_tools/web_search`
+- `web_tools/fetch_url`
+- `web_tools/fetch_page_assets`
+- `python_notes/binary_file_info`
+- `python_notes/binary_strings`
+- `python_notes/hex_preview`
+
+### `team`
+
+Use this to bring in a reusable multi-Agent team template. With
+`params.execute: false` or omitted, it publishes team context. With
+`params.execute: true`, GoFlow expands roles into executable stages.
+
+```yaml
+- name: team
+  node_type: team
+  params:
+    team: software-task-team
+    execute: "true"
+    approval_preset: software-review
+  input:
+    goal: workflow.input
+  outputs:
+    handoff: result.summary
+  next: [team-gate]
+```
+
+Common params:
+
+- `team`: template name, such as `software-task-team`,
+  `web-research-team`, `binary-triage-team`, `framework-extension-team`.
+- `execute`: `"true"` to run roles, otherwise publish context only.
+- `approval_preset`: optional preset consumed by `team_approval_gate`.
+
+### `condition`
+
+Use this for a true/false branch. It evaluates an expression and follows
+`routes.true` or `routes.false`.
+
+```yaml
+- name: has-risk
+  node_type: condition
+  condition: contains(stages.audit.outputs.audit_report, "High")
+  routes:
+    true: verify
+    false: report-clean
+```
+
+Common expressions:
+
+- `exists(stages.audit.outputs.findings)`
+- `contains(stages.audit.outputs.audit_report, "vulnerability")`
+- `len(stages.collect.outputs.targets) > 0`
+- `risk_rank(stages.audit.outputs.risk) >= 4`
+- `stages.collect.outputs.domain == "web-security"`
+
+### `switch` / `router`
+
+Use this for more than two routes: domain routing, severity routing, or output
+type routing.
+
+```yaml
+- name: route-domain
+  node_type: switch
+  switch_on: stages.collect.outputs.domain
+  cases:
+    software: plan-code
+    web-security: web-review
+    binary: binary-triage
+    docs: docs-update
+    default: general-plan
+```
+
+Common fields:
+
+- `switch_on`: reference to evaluate.
+- `cases`: map from expected value to target stage.
+- Always include `default`, `else`, or `*`.
+
+### `policy_guard`
+
+Use this for reusable or named gates. It is better than `condition` when the
+rule is shared across workflows, such as risk thresholds or team approvals.
+
+```yaml
+- name: risk-gate
+  node_type: policy_guard
+  params:
+    rule: risk_at_least
+    ref: stages.audit.outputs.findings
+    minimum: high
+  routes:
+    allow: verify
+    deny: report
+```
+
+Common rules:
+
+- `expression`: evaluate `policy` or `condition`.
+- `ref_truthy`: pass when `params.ref` is truthy.
+- `contains`: pass when `params.ref` contains `params.needle`.
+- `min_count`: pass when `len(params.ref) >= params.minimum`.
+- `risk_at_least`: pass when severity is at least a threshold.
+- `team_approval_gate`: pass when team approval packets satisfy a preset.
+
+### `quality_gate`
+
+Use this after work or audit stages to check acceptance criteria, artifacts,
+and verification evidence before handoff.
+
+```yaml
+- name: quality
+  node_type: quality_gate
+  input:
+    report: stages.audit.outputs.audit_report
+  params:
+    min_score: "80"
+  routes:
+    pass: handoff
+    fail: revise
+```
+
+Upstream executable stages should declare `acceptance_criteria` and
+`artifacts` so the quality gate has evidence to evaluate.
+
+### `parallel` And `join`
+
+Use `parallel` when branches can run independently, then converge with `join`.
+
+```yaml
+- name: split
+  node_type: parallel
+  next: [research, audit]
+- name: research
+  agent: planner
+  skill: execution-plan
+  next: [join]
+- name: audit
+  agent: auditor
+  skill: code-audit
+  next: [join]
+- name: join
+  node_type: join
+  params:
+    wait_for: research,audit
+  next: [synthesize]
+```
+
+Common params:
+
+- `parallel.params.concurrent: true`: opt in to stricter concurrent execution
+  only for safe branch shapes.
+- `join.params.wait_for`: comma-separated branch names.
+
+### `for_each`
+
+Use this to run one body stage once per item.
+
+```yaml
+- name: each-target
+  node_type: for_each
+  params:
+    items_ref: stages.collect.outputs.targets
+    stage: review-one
+  next: [summarize]
+- name: review-one
+  agent: auditor
+  skill: code-audit
+  outputs:
+    finding: result.output
+```
+
+Common params:
+
+- `items`: comma/newline text or JSON array.
+- `items_ref` / `ref`: reference to an upstream list.
+- `stage` / `body`: executable stage to repeat.
+
+The body stage receives iteration variables such as `iteration.item` and
+`iteration.index`.
+
+### `loop`
+
+Use this for bounded improve-until-done cycles. Always set a max iteration
+count.
+
+```yaml
+- name: improve-loop
+  node_type: loop
+  params:
+    stage: revise
+    until: contains(previous.raw_output, "ready")
+    max_iterations: "3"
+  next: [handoff]
+- name: revise
+  agent: fixer
+  skill: code-writing
+  approval: true
+```
+
+Common params:
+
+- `stage` / `body`: executable body stage.
+- `until`: expression checked after each iteration.
+- `max_iterations`: hard stop.
+
+### `sub_workflow`
+
+Use this to call another workflow as a nested unit.
+
+```yaml
+- name: binary-subflow
+  node_type: sub_workflow
+  params:
+    workflow: binary-triage
+    request: stages.collect.outputs.target
+  outputs:
+    sub_run_id: result.sub_run_id
+    summary: result.summary
+  next: [handoff]
+```
+
+Common params:
+
+- `workflow`: built-in or persisted workflow name.
+- `request`: literal or reference passed to the child workflow.
+
+If the child workflow pauses, the parent pauses until the child is resumed.
+
+### `checkpoint`
+
+Use this to insert a human review point without calling a model.
+
+```yaml
+- name: approve-release
+  node_type: checkpoint
+  params:
+    prompt: Approve release execution?
+  next: [release]
+```
+
+Common params:
+
+- `prompt` / `message` / `reason`: text shown to the operator.
+
+## Complete Pattern Example
+
+This graph collects a target URL, fetches web assets, audits the output, gates
+on risk, then either verifies findings or produces a clean report:
+
+```yaml
+name: web-risk-review
+description: Collect a URL, inspect web assets, audit findings, and route by risk.
+stages:
+  - name: collect
+    node_type: input_gate
+    params:
+      manual: true
+      fields: target:url:Target URL:required,scope:text:Scope:required
+      strict: true
+    next: [fetch]
+
+  - name: fetch
+    node_type: skill
+    agent: web-security-researcher
+    skill: web-vulnerability-research
+    input:
+      target_url: stages.collect.outputs.target
+      scope: stages.collect.outputs.scope
+    outputs:
+      evidence: result.output
+      summary: result.summary
+    artifacts:
+      - name: collected-assets
+        kind: evidence
+        title: Collected web assets
+        ref: result.output
+    next: [audit]
+
+  - name: audit
+    node_type: skill
+    agent: security-researcher
+    skill: vulnerability-research
+    input:
+      evidence: stages.fetch.outputs.evidence
+    outputs:
+      findings: result.findings
+      report: result.output
+    acceptance_criteria:
+      - name: has-scope
+        ref: result.output
+        contains: scope
+    next: [risk-gate]
+
+  - name: risk-gate
+    node_type: policy_guard
+    params:
+      rule: risk_at_least
+      ref: stages.audit.outputs.findings
+      minimum: medium
+    routes:
+      allow: verify
+      deny: clean-report
+
+  - name: verify
+    node_type: agent
+    agent: auditor
+    skill: code-audit
+    input:
+      findings: stages.audit.outputs.findings
+    approval: true
+    outputs:
+      verification: result.verification
+    next: [handoff]
+
+  - name: clean-report
+    node_type: agent
+    agent: documentation-specialist
+    skill: code-writing
+    input:
+      report: stages.audit.outputs.report
+    outputs:
+      report: result.output
+    next: [handoff]
+
+  - name: handoff
+    node_type: quality_gate
+    input:
+      audit_report: stages.audit.outputs.report
+      verification: stages.verify.outputs.verification
+    routes:
+      pass: end
+      fail: clean-report
+
+  - name: end
+    node_type: end
+```
 
 ## Data Flow And Control Flow
 
@@ -438,6 +996,13 @@ description, reason, `defaults`, and `overwrite`. Presets include
 `risk-threshold`, `truthy-reference`, `contains-text`, `minimum-count`,
 `team-review-quorum`, and `expression`. The backend validates the generated
 rule through the same save path used by `/api/resources/policy-rules/{name}`.
+The preset catalog is also file-backed: built-ins are embedded from
+`internal/scaffold/templates/policies/scaffolds/presets.yaml`, and runtime homes
+can add or override presets with `templates/policies/scaffolds/*.yaml`.
+Built-in policy rule metadata in `/api/workflow-options` is also file-backed:
+the shipped rule labels, descriptions, operators, and parameter definitions are
+embedded from `internal/agent/templates/policy_rules/*.yaml`. User-defined
+runtime rules still live under `policies/workflow_rules/*.yaml`.
 
 ```yaml
 kind: goflow.workflow_policy_rule
@@ -1016,8 +1581,11 @@ Workflow graph management endpoints:
 - `DELETE /api/workflow-schemas/{name}`
 
 `/api/workflow-options` returns configured agents, loaded skills, tool names,
-supported node types, workflow template summaries, policy guard rules,
-expression helper functions, and team template summaries for editors.
+runnable `workflow_executors`, supported node types, workflow template
+summaries, policy guard rules, expression helper functions, and team template
+summaries for editors. Studio should use `workflow_executors` when it needs a
+"run this workflow" selector, and `/api/workflow-graphs` when it needs an
+"edit this graph file" selector.
 
 `/api/workflow-expression-functions` returns the expression helper catalog on
 its own, including function signatures, return types, argument counts, argument
@@ -1026,6 +1594,10 @@ with `?mode=condition` or `?node_type=policy_guard` when rendering a node field.
 The CLI equivalent is `/expression-helpers [name] [--mode <mode>]
 [--node-type <type>]`; `/workflow-expression-functions` is accepted as a
 descriptive alias for scripts and users who prefer the HTTP resource name.
+The built-in helper catalog is file-backed and embedded from
+`internal/agent/templates/expression_helpers/*.yaml`, so contributors can review
+and extend editor guidance without reading Go source. Runtime homes can still
+override helper metadata with the custom metadata paths described below.
 
 Workflow node metadata is also discoverable from the CLI with
 `/workflow-node-metadata [type]`. The list view groups built-in and custom node
@@ -1041,6 +1613,12 @@ and any custom metadata file path.
 `human-input-security-review`, and `software-team-review-gate`. The item
 endpoint returns the full graph document so a Studio can clone it into
 `/api/workflow-graphs/{name}`.
+
+Template list items also include composition metadata for visual pickers:
+`node_types`, `agents`, `skills`, `tools`, `team_templates`, `policy_rules`,
+`has_control_flow`, `has_data_flow`, `has_approval`, and
+`has_quality_gate`. Studio uses these fields to show what a template creates
+before the user applies it, instead of forcing users to open the full YAML.
 
 `multi-domain-intake-router` is the recommended built-in entry template for new
 users and broad deployments. It starts with a structured intake form, routes the
@@ -1061,7 +1639,9 @@ then it routes that candidate through an auditor review, a `quality_gate`, and a
 materialized workflow draft or clarification gate.
 
 Custom workflow templates are stored under `templates/workflows/<name>.yaml`
-and are included in `/api/workflow-templates`. Studio can manage them through
+and are included in `/api/workflow-templates`. A custom file with the same name
+as an embedded template overrides that template everywhere it is listed,
+validated, forked, or used to create a workflow. Studio can manage templates through
 `/api/resources/workflow-templates`: `GET` lists custom template resources,
 `PUT /api/resources/workflow-templates/{name}` saves a validated template,
 `POST /api/resources/workflow-templates/validate` or
@@ -1205,6 +1785,9 @@ document with `POST /api/resources/workflow-node-metadata/validate` or
 `POST /api/resources/workflow-node-metadata/{type}/validate`; validation returns
 `valid:true` with a normalized document or `valid:false` with structured
 `issues`, and it does not write the metadata file.
+Built-in node metadata is embedded from
+`internal/agent/templates/workflow_nodes/*.yaml`, so node fields, outputs,
+hints, warnings, examples, and default stage snippets are reviewable as YAML.
 
 ```yaml
 kind: goflow.workflow_node_metadata
@@ -1548,7 +2131,9 @@ the same normalization rules without writing `schemas/workflows/<name>.json` or
 importing it into the active session catalog. Resource files are saved as
 `kind: goflow.workflow_schema_resource`, `version: 2`, and
 `min_supported_version: 1`; legacy bare schema JSON is migrated on load/save and
-future unsupported resource versions are rejected.
+future unsupported resource versions are rejected. This directory is optional
+and does not back the built-in workflow templates; those ship separately from
+`internal/agent/templates/workflows/*.yaml`.
 
 Import or export graph files:
 

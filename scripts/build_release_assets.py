@@ -30,7 +30,7 @@ GO_PROJECTS = [
     ("skill_runner", "./mcp_servers/skill_runner"),
     ("web_tools", "./mcp_servers/web_tools"),
 ]
-COMMON_DIRS = ["configs", "skills", "docs"]
+COMMON_DIRS = ["configs", "skills", "docs", "kits", "examples"]
 COMMON_FILES = [
     ".env.example",
     "README.md",

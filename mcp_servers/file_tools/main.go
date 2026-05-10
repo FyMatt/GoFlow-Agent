@@ -73,13 +73,13 @@ func builtinTools() []tool {
 	return []tool{
 		{
 			Name:        "read_file",
-			Description: "Read a local text file from disk.",
+			Description: "Read a local UTF-8 text file from disk.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
 			Kind:        "read",
 		},
 		{
 			Name:        "write_file",
-			Description: "Write text content to a local file.",
+			Description: "Write UTF-8 text content to a local file.",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
 			Kind:        "write",
 		},
@@ -145,7 +145,11 @@ func callTool(params json.RawMessage) map[string]any {
 		if err != nil {
 			return map[string]any{"content": err.Error(), "is_error": true}
 		}
-		payload, _ := json.Marshal(map[string]any{"path": path, "size": info.Size(), "content": string(data)})
+		content, err := decodeUTF8Text(data)
+		if err != nil {
+			return map[string]any{"content": err.Error(), "is_error": true}
+		}
+		payload, _ := json.Marshal(map[string]any{"path": path, "size": info.Size(), "content": content})
 		return map[string]any{"content": string(payload), "is_error": false}
 	case "write_file":
 		path, err := extractPath(input.Arguments)
@@ -427,10 +431,14 @@ func searchWorkspaceFiles(path, query string, maxResults int, includeContent, ca
 			return nil
 		}
 		data, readErr := os.ReadFile(current)
-		if readErr != nil || !utf8.Valid(data) {
+		if readErr != nil {
 			return nil
 		}
-		lines := splitLines(string(data))
+		text, textErr := decodeUTF8Text(data)
+		if textErr != nil {
+			return nil
+		}
+		lines := splitLines(text)
 		for i, line := range lines {
 			haystackLine := line
 			if !caseSensitive {
@@ -453,6 +461,13 @@ func searchWorkspaceFiles(path, query string, maxResults int, includeContent, ca
 		return fmt.Sprint(matches[i]["relative_path"]) < fmt.Sprint(matches[j]["relative_path"])
 	})
 	return map[string]any{"path": path, "relative_path": relativeWorkspacePath(path), "query": query, "case_sensitive": caseSensitive, "include_content": includeContent, "max_results": maxResults, "truncated": truncated, "matches": matches}, nil
+}
+
+func decodeUTF8Text(data []byte) (string, error) {
+	if !utf8.Valid(data) {
+		return "", fmt.Errorf("file is not valid UTF-8 text; use a binary inspection tool for non-text files")
+	}
+	return strings.TrimPrefix(string(data), "\ufeff"), nil
 }
 
 type writeChangeStats struct {

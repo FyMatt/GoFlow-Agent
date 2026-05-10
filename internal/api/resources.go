@@ -18,6 +18,7 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
 	"github.com/FyMatt/GoFlow-Agent/internal/skill"
 	"github.com/FyMatt/GoFlow-Agent/internal/version"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
@@ -239,6 +240,7 @@ type toolResourceDocument struct {
 	IsolationOptions    map[string]string       `json:"isolation_options,omitempty" yaml:"isolation_options,omitempty"`
 	RestartLimit        int                     `json:"restart_limit,omitempty" yaml:"restart_limit,omitempty"`
 	Cooldown            string                  `json:"cooldown,omitempty" yaml:"cooldown,omitempty"`
+	MaxConcurrentCalls  int                     `json:"max_concurrent_calls,omitempty" yaml:"max_concurrent_calls,omitempty"`
 	AllowedCommandPaths []string                `json:"allowed_command_paths,omitempty" yaml:"allowed_command_paths,omitempty"`
 	AllowedCommands     []string                `json:"allowed_commands,omitempty" yaml:"allowed_commands,omitempty"`
 	MaxRequestBytes     int                     `json:"max_request_bytes,omitempty" yaml:"max_request_bytes,omitempty"`
@@ -286,6 +288,7 @@ type toolResourceServerDocument struct {
 	IsolationOptions    map[string]string `yaml:"isolation_options,omitempty"`
 	RestartLimit        int               `yaml:"restart_limit,omitempty"`
 	Cooldown            string            `yaml:"cooldown,omitempty"`
+	MaxConcurrentCalls  int               `yaml:"max_concurrent_calls,omitempty"`
 	AllowedCommandPaths []string          `yaml:"allowed_command_paths,omitempty"`
 	AllowedCommands     []string          `yaml:"allowed_commands,omitempty"`
 	MaxRequestBytes     int               `yaml:"max_request_bytes,omitempty"`
@@ -918,7 +921,7 @@ func (s *Server) handleToolResourceItem(w http.ResponseWriter, r *http.Request) 
 		}
 		doc, ok := s.toolResourceByName(name)
 		if !ok {
-			doc = defaultToolResource(name)
+			doc = s.defaultToolResource(name)
 			s.annotateToolResourceRisk(&doc)
 		}
 		writeJSON(w, doc)
@@ -1450,7 +1453,7 @@ func (s *Server) toolResourceByName(name string) (toolResourceDocument, bool) {
 	if codeErr != nil {
 		return toolResourceDocument{}, false
 	}
-	doc := defaultToolResource(normalized)
+	doc := s.defaultToolResource(normalized)
 	doc.Code = string(code)
 	doc.Path = codePath
 	doc.ConfigPath = configPath
@@ -1542,6 +1545,7 @@ func (s *Server) saveToolResource(name string, doc toolResourceDocument) (toolRe
 		_ = os.Remove(configTmp)
 		return toolResourceDocument{}, fmt.Errorf("tool config snippet missing mcp server %q", normalized)
 	}
+	config.ApplyMCPServerDefaults(&parsed.MCPServers[0])
 	if err := config.ValidateMCPServerRef(parsed.MCPServers[0]); err != nil {
 		_ = os.Remove(codeTmp)
 		_ = os.Remove(configTmp)
@@ -1568,7 +1572,7 @@ func (s *Server) validateToolResourceDryRun(name string, doc toolResourceDocumen
 		return toolResourceDocument{}, fmt.Errorf("invalid tool name %q: use lowercase letters, numbers, hyphen, or underscore", normalized)
 	}
 	doc.Name = normalized
-	applyToolResourceDefaults(&doc)
+	s.applyToolResourceDefaults(&doc)
 	normalizeToolResourceIsolationProfile(&doc)
 	if strings.TrimSpace(doc.Code) == "" {
 		return toolResourceDocument{}, fmt.Errorf("tool code is required")
@@ -1590,6 +1594,7 @@ func (s *Server) validateToolResourceDryRun(name string, doc toolResourceDocumen
 	if len(parsed.MCPServers) != 1 || strings.TrimSpace(parsed.MCPServers[0].Name) != normalized {
 		return toolResourceDocument{}, fmt.Errorf("tool config snippet missing mcp server %q", normalized)
 	}
+	config.ApplyMCPServerDefaults(&parsed.MCPServers[0])
 	if err := config.ValidateMCPServerRef(parsed.MCPServers[0]); err != nil {
 		return toolResourceDocument{}, fmt.Errorf("validate tool config: %w", err)
 	}
@@ -2951,31 +2956,36 @@ func fileExists(path string) bool {
 	return err == nil && !info.IsDir()
 }
 
-func defaultToolResource(name string) toolResourceDocument {
+func (s *Server) defaultToolResource(name string) toolResourceDocument {
 	name = normalizeResourceName(name)
 	fileName := name + ".py"
+	code, err := scaffold.RenderPythonMCPToolCode(s.runtimeHomeForScaffold(), name)
+	if err != nil {
+		code, _ = scaffold.RenderPythonMCPToolCode("", name)
+	}
 	return toolResourceDocument{
-		Name:             name,
-		Language:         "python",
-		Description:      "Custom Python MCP tool server.",
-		Command:          "python",
-		Args:             []string{"./mcp_servers/" + fileName},
-		Enabled:          true,
-		Timeout:          "30s",
-		WorkDir:          ".",
-		EnvAllowlist:     []string{"PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "TMP", "TEMP"},
-		Isolation:        "process_group",
-		RestartLimit:     3,
-		Cooldown:         "10s",
-		AllowedCommands:  []string{"python"},
-		MaxRequestBytes:  65536,
-		MaxResponseBytes: 2097152,
-		Code:             renderPythonMCPToolTemplate(name),
+		Name:               name,
+		Language:           "python",
+		Description:        "Custom Python MCP tool server.",
+		Command:            "python",
+		Args:               []string{"./mcp_servers/" + fileName},
+		Enabled:            true,
+		Timeout:            "30s",
+		WorkDir:            ".",
+		EnvAllowlist:       []string{"PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "TMP", "TEMP"},
+		Isolation:          "process_group",
+		RestartLimit:       3,
+		Cooldown:           "10s",
+		MaxConcurrentCalls: 1,
+		AllowedCommands:    []string{"python"},
+		MaxRequestBytes:    65536,
+		MaxResponseBytes:   2097152,
+		Code:               code,
 	}
 }
 
-func applyToolResourceDefaults(doc *toolResourceDocument) {
-	defaults := defaultToolResource(doc.Name)
+func (s *Server) applyToolResourceDefaults(doc *toolResourceDocument) {
+	defaults := s.defaultToolResource(doc.Name)
 	if strings.TrimSpace(doc.Language) == "" {
 		doc.Language = defaults.Language
 	}
@@ -3006,6 +3016,9 @@ func applyToolResourceDefaults(doc *toolResourceDocument) {
 	if strings.TrimSpace(doc.Cooldown) == "" {
 		doc.Cooldown = defaults.Cooldown
 	}
+	if doc.MaxConcurrentCalls <= 0 {
+		doc.MaxConcurrentCalls = defaults.MaxConcurrentCalls
+	}
 	if len(doc.AllowedCommands) == 0 && len(doc.AllowedCommandPaths) == 0 {
 		doc.AllowedCommands = defaults.AllowedCommands
 	}
@@ -3015,6 +3028,13 @@ func applyToolResourceDefaults(doc *toolResourceDocument) {
 	if doc.MaxResponseBytes <= 0 {
 		doc.MaxResponseBytes = defaults.MaxResponseBytes
 	}
+}
+
+func (s *Server) runtimeHomeForScaffold() string {
+	if s == nil || s.runtime == nil {
+		return ""
+	}
+	return strings.TrimSpace(s.runtime.RuntimeHome())
 }
 
 func renderToolResourceConfig(doc toolResourceDocument) (string, error) {
@@ -3032,6 +3052,7 @@ func renderToolResourceConfig(doc toolResourceDocument) (string, error) {
 		IsolationOptions:    copyMap(doc.IsolationOptions),
 		RestartLimit:        doc.RestartLimit,
 		Cooldown:            doc.Cooldown,
+		MaxConcurrentCalls:  doc.MaxConcurrentCalls,
 		AllowedCommandPaths: doc.AllowedCommandPaths,
 		AllowedCommands:     doc.AllowedCommands,
 		MaxRequestBytes:     doc.MaxRequestBytes,
@@ -3120,6 +3141,7 @@ func toolResourceFromServerDocument(doc toolResourceServerDocument) toolResource
 		IsolationOptions:    copyMap(doc.IsolationOptions),
 		RestartLimit:        doc.RestartLimit,
 		Cooldown:            doc.Cooldown,
+		MaxConcurrentCalls:  doc.MaxConcurrentCalls,
 		AllowedCommandPaths: append([]string(nil), doc.AllowedCommandPaths...),
 		AllowedCommands:     append([]string(nil), doc.AllowedCommands...),
 		MaxRequestBytes:     doc.MaxRequestBytes,
@@ -3398,212 +3420,6 @@ func fallbackString(value, fallback string) string {
 		return value
 	}
 	return fallback
-}
-
-func renderPythonMCPToolTemplate(name string) string {
-	serverName := strings.ReplaceAll(normalizeResourceName(name), "-", "_")
-	return fmt.Sprintf(`#!/usr/bin/env python3
-"""%s MCP server.
-
-This stdio JSON-RPC server is generated by GoFlow Studio.
-"""
-import json
-import os
-import sys
-from pathlib import Path
-
-
-MAX_TEXT_BYTES = 1024 * 1024
-SERVER_NAME = %q
-
-
-def workspace_root() -> Path:
-    value = os.environ.get("GOFLOW_WORKSPACE_ROOT", "").strip()
-    if value:
-        return Path(value).resolve()
-    return Path(os.environ.get("WORKSPACE_ROOT") or os.getcwd()).resolve()
-
-
-WORKSPACE_ROOT = workspace_root()
-
-
-def respond(request_id, result=None, error=None):
-    payload = {"jsonrpc": "2.0", "id": request_id}
-    if error is not None:
-        payload["error"] = {"code": -32000, "message": str(error)}
-    else:
-        payload["result"] = result
-    print(json.dumps(payload), flush=True)
-
-
-def resolve_path(raw, must_exist=True, allow_root=False):
-    if not isinstance(raw, str) or not raw.strip():
-        raise ValueError("path is required")
-    candidate = Path(raw)
-    if not candidate.is_absolute():
-        candidate = WORKSPACE_ROOT / candidate
-    candidate = candidate.resolve(strict=False)
-    try:
-        candidate.relative_to(WORKSPACE_ROOT)
-    except ValueError as exc:
-        raise ValueError(f'path "{raw}" escapes workspace root') from exc
-    if not allow_root and candidate == WORKSPACE_ROOT:
-        raise ValueError("path must not be workspace root")
-    if must_exist:
-        if not candidate.exists():
-            raise FileNotFoundError(str(candidate))
-        candidate = candidate.resolve(strict=True)
-        try:
-            candidate.relative_to(WORKSPACE_ROOT)
-        except ValueError as exc:
-            raise ValueError(f'path "{raw}" resolves outside workspace root') from exc
-        if not allow_root and candidate == WORKSPACE_ROOT:
-            raise ValueError("path must not be workspace root")
-        return candidate
-
-    parent = candidate.parent
-    while not parent.exists():
-        if parent == parent.parent:
-            raise ValueError(f'path "{raw}" has no existing parent inside workspace')
-        parent = parent.parent
-    parent = parent.resolve(strict=True)
-    try:
-        parent.relative_to(WORKSPACE_ROOT)
-    except ValueError as exc:
-        raise ValueError(f'path "{raw}" resolves outside workspace root') from exc
-    return candidate
-
-
-def relative_path(path):
-    try:
-        return path.relative_to(WORKSPACE_ROOT).as_posix()
-    except ValueError:
-        return str(path)
-
-
-def read_text_limited(path):
-    size = path.stat().st_size
-    if size > MAX_TEXT_BYTES:
-        raise ValueError(f"file too large: {size} bytes exceeds {MAX_TEXT_BYTES}")
-    return path.read_text(encoding="utf-8-sig")
-
-
-def list_tools():
-    return {
-        "tools": [
-            {
-                "name": "ping",
-                "description": "Return a health response from this MCP server.",
-                "kind": "read",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {},
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "name": "read_text",
-                "description": "Read a UTF-8 text file inside the workspace.",
-                "kind": "read",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {"path": {"type": "string"}},
-                    "required": ["path"],
-                    "additionalProperties": False,
-                },
-            },
-            {
-                "name": "write_text",
-                "description": "Write a UTF-8 text file inside the workspace.",
-                "kind": "write",
-                "input_schema": {
-                    "type": "object",
-                    "properties": {
-                        "path": {"type": "string"},
-                        "content": {"type": "string"},
-                        "overwrite": {"type": "boolean"},
-                    },
-                    "required": ["path", "content"],
-                    "additionalProperties": False,
-                },
-            },
-        ]
-    }
-
-
-def handle_ping(_args):
-    return {"server": SERVER_NAME, "status": "ok"}
-
-
-def handle_read_text(args):
-    path = resolve_path(args.get("path", ""))
-    return {"path": str(path), "relative_path": relative_path(path), "content": read_text_limited(path)}
-
-
-def handle_write_text(args):
-    path = resolve_path(args.get("path", ""), must_exist=False)
-    if path.exists() and not args.get("overwrite", False):
-        raise ValueError("file exists; pass overwrite=true to replace it")
-    if path.exists() and path.is_dir():
-        raise ValueError("path is a directory")
-    content = args.get("content")
-    if not isinstance(content, str):
-        raise ValueError("content must be a string")
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(content, encoding="utf-8")
-    return {"path": str(path), "relative_path": relative_path(path), "bytes_written": len(content.encode("utf-8"))}
-
-
-def call_tool(params):
-    name = params.get("name", "") if isinstance(params, dict) else ""
-    args = params.get("arguments") if isinstance(params, dict) else {}
-    if args is None:
-        args = {}
-    if not isinstance(args, dict):
-        return {"content": "arguments must be an object", "is_error": True}
-    handlers = {
-        "ping": handle_ping,
-        "read_text": handle_read_text,
-        "write_text": handle_write_text,
-    }
-    handler = handlers.get(name)
-    if handler is None:
-        return {"content": f"unknown tool: {name}", "is_error": True}
-    try:
-        body = handler(args)
-        return {"content": json.dumps(body, ensure_ascii=False), "is_error": False}
-    except Exception as exc:
-        return {"content": str(exc), "is_error": True}
-
-
-def handle(request):
-    method = request.get("method")
-    params = request.get("params") or {}
-    if method == "initialize":
-        return {"server": SERVER_NAME, "capabilities": {"tools": True}}
-    if method == "tools/list":
-        return list_tools()
-    if method == "tools/call":
-        return call_tool(params)
-    raise ValueError(f"unknown method: {method}")
-
-
-def main():
-    for line in sys.stdin:
-        if not line.strip():
-            continue
-        request_id = None
-        try:
-            request = json.loads(line)
-            request_id = request.get("id")
-            respond(request.get("id"), handle(request))
-        except Exception as exc:
-            respond(request_id, error=exc)
-
-
-if __name__ == "__main__":
-    main()
-`, serverName, serverName)
 }
 
 func normalizeResourceName(name string) string {

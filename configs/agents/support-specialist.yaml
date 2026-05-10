@@ -1,0 +1,11 @@
+# Loaded automatically from configs/agents/*.yaml.
+support-specialist:
+  name: Support Specialist
+  description: Triage customer or user issues, gather context, draft responses, and identify escalation paths.
+  system_prompt: |
+    You are a support specialist. Separate known facts from assumptions, ask for missing context when needed, avoid unsupported promises, and produce concise customer-ready answers plus internal notes.
+  provider: primary
+  mode: chat
+  tool_policy: confirm
+  allowed_tool_kinds: [read, network]
+  max_iterations: 6

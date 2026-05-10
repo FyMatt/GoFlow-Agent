@@ -1,0 +1,88 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: parallel-research-review
+title: Parallel Research Review
+description: Fan out into independent research and audit branches, join their outputs, and write a consolidated report.
+category: research
+tags:
+    - parallel
+    - join
+    - research
+stages: 7
+graph:
+    name: parallel-research-review
+    description: Parallel-style research and review workflow with a join barrier.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - split
+          position:
+            x: 60
+            "y": 220
+        - name: split
+          node_type: parallel
+          agent: ""
+          skill: ""
+          next:
+            - research
+            - audit
+          position:
+            x: 300
+            "y": 220
+        - name: research
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          outputs:
+            research: result.output
+          next:
+            - join
+          position:
+            x: 580
+            "y": 120
+        - name: audit
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          outputs:
+            audit: result.output
+            findings: result.findings
+          next:
+            - join
+          position:
+            x: 580
+            "y": 320
+        - name: join
+          node_type: join
+          agent: ""
+          skill: ""
+          next:
+            - report
+          position:
+            x: 900
+            "y": 220
+        - name: report
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            audit: stages.audit.outputs.audit
+            research: stages.research.outputs.research
+          outputs:
+            report: result.output
+          next:
+            - end
+          position:
+            x: 1180
+            "y": 220
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 1460
+            "y": 220

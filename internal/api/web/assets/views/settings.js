@@ -1,4 +1,4 @@
-import { discoveryMetaSupported, escapeHTML, request } from "../api.js";
+import { discoveryMetaSupported, escapeHTML, postJSON, request } from "../api.js";
 import { currentLanguage, localizedText, t } from "../i18n.js";
 
 export async function renderSettings(root, runtime, refreshRuntime) {
@@ -170,6 +170,22 @@ function bindSettingsActions(root, refreshRuntime) {
       node.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
     });
   });
+  root.querySelectorAll("[data-settings-update-check]").forEach(button => {
+    button.addEventListener("click", async () => {
+      const output = root.querySelector("[data-settings-update-output]");
+      const endpoint = button.dataset.settingsUpdateCheckPath || "/api/update-policy/check";
+      setSettingsUpdateBusy(button, true);
+      if (output) output.innerHTML = renderUpdateCheckLoading();
+      try {
+        const result = await postJSON(endpoint, {});
+        if (output) output.innerHTML = renderUpdateCheckResult(result);
+      } catch (error) {
+        if (output) output.innerHTML = renderUpdateCheckError(error);
+      } finally {
+        setSettingsUpdateBusy(button, false);
+      }
+    });
+  });
 }
 
 function setSettingsWorkspaceBusy(root, busy) {
@@ -250,7 +266,7 @@ function renderSettingsHero(diagnostics, runtime) {
         ? t("settings.heroWarningTitle")
         : t("settings.heroReadyTitle");
   const body = diagnostics?.__error
-    ? t("settings.diagnosticsLoadFailed", { message: diagnostics.__error })
+    ? t("settings.diagnosticsLoadFailed", { message: settingsDisplayText(diagnostics.__error) })
     : diagnostics?.restart_required
       ? t("settings.heroRestartBody")
       : status === "error"
@@ -375,7 +391,7 @@ function buildPriorityActions(diagnostics, runtime, capabilities) {
     actions.push({
       tone: "bad",
       title: t("settings.priorityDiagnosticsUnavailableTitle"),
-      body: t("settings.priorityDiagnosticsUnavailableBody", { message: diagnostics.__error }),
+      body: t("settings.priorityDiagnosticsUnavailableBody", { message: settingsDisplayText(diagnostics.__error) }),
       meta: t("settings.statusUnknown"),
       scroll: "config-health",
       cta: t("settings.priorityInspectDiagnostics")
@@ -908,12 +924,22 @@ function renderUpdatePolicy(update) {
   }
   const strategies = Array.isArray(update?.strategies) ? update.strategies : [];
   const notes = Array.isArray(update?.notes) ? update.notes : [];
+  const endpoint = update?.check_endpoint || "/api/update-policy/check";
+  const checkEnabled = update?.check_enabled !== false;
   return `<div class="settings-update-layout">
     <div class="settings-update-meta">
       ${updateMeta(t("settings.repository"), update?.repository)}
       ${updateMeta(t("settings.releaseFeed"), update?.release_feed)}
       ${updateMeta(t("settings.currentVersion"), update?.current_version)}
     </div>
+    <div class="settings-update-check ${checkEnabled ? "" : "disabled"}">
+      <div>
+        <strong>${escapeHTML(t(checkEnabled ? "settings.updateCheckTitle" : "settings.updateCheckDisabledTitle"))}</strong>
+        <p>${escapeHTML(checkEnabled ? t(update?.network_opt_in ? "settings.updateCheckOptInHelp" : "settings.updateCheckHelp") : updateCheckDisabledText(update))}</p>
+      </div>
+      ${checkEnabled ? `<button type="button" class="primary" data-settings-update-check data-settings-update-check-path="${escapeHTML(endpoint)}">${escapeHTML(t("settings.updateCheckButton"))}</button>` : `<span class="badge neutral">${escapeHTML(t("settings.updateCheckDisabledBadge"))}</span>`}
+    </div>
+    <div class="settings-update-check-output" data-settings-update-output role="status" aria-live="polite"></div>
     <div class="settings-update-strategies">
       ${strategies.length ? strategies.map(renderUpdateStrategy).join("") : `<div class="settings-empty settings-update-empty">${t("settings.noUpdateStrategies")}</div>`}
     </div>
@@ -922,6 +948,107 @@ function renderUpdatePolicy(update) {
       ${notes.map(note => `<p>${escapeHTML(localizedText(note))}</p>`).join("")}
     </div>` : ""}
   </div>`;
+}
+
+function updateCheckDisabledText(update = {}) {
+  const reason = settingsDisplayText(update.disabled_reason || "");
+  return reason || t("settings.updateCheckDisabledHelp");
+}
+
+function setSettingsUpdateBusy(button, busy) {
+  if (!button) return;
+  button.disabled = Boolean(busy);
+  button.setAttribute("aria-disabled", busy ? "true" : "false");
+  button.setAttribute("aria-busy", busy ? "true" : "false");
+  button.textContent = busy ? t("settings.updateCheckChecking") : t("settings.updateCheckButton");
+}
+
+function renderUpdateCheckLoading() {
+  return `<article class="settings-update-check-card neutral">
+    <strong>${escapeHTML(t("settings.updateCheckChecking"))}</strong>
+    <p>${escapeHTML(t("settings.updateCheckCheckingHelp"))}</p>
+  </article>`;
+}
+
+function renderUpdateCheckResult(result = {}) {
+  const available = Boolean(result.update_available);
+  const tone = available ? "warn" : "good";
+  const title = available ? t("settings.updateAvailableTitle") : t("settings.updateCurrentTitle");
+  const assets = Array.isArray(result.assets) ? result.assets : [];
+  const facts = [
+    [t("settings.currentVersion"), result.current_version],
+    [t("settings.latestVersion"), result.latest_version],
+    [t("settings.checkedAt"), result.checked_at],
+    [t("settings.releaseFeed"), result.release_feed]
+  ].filter(([, value]) => String(value || "").trim());
+  return `<article class="settings-update-check-card ${tone}">
+    <div class="settings-update-check-head">
+      <div>
+        <strong>${escapeHTML(title)}</strong>
+        <p>${escapeHTML(updateCheckMessage(result, available))}</p>
+      </div>
+      <span class="badge ${available ? "warn" : "good"}">${escapeHTML(available ? t("settings.updateAvailableBadge") : t("settings.updateCurrentBadge"))}</span>
+    </div>
+    <div class="settings-update-check-facts">
+      ${facts.map(([label, value]) => `<span><small>${escapeHTML(label)}</small><strong title="${escapeHTML(value || "")}">${escapeHTML(value || t("common.none"))}</strong></span>`).join("")}
+    </div>
+    ${result.release_url ? `<a class="settings-update-release-link" href="${escapeHTML(result.release_url)}" target="_blank" rel="noreferrer">${escapeHTML(t("settings.openRelease"))}</a>` : ""}
+    ${result.notes_preview ? `<p class="settings-update-notes-preview">${escapeHTML(result.notes_preview)}</p>` : ""}
+    ${renderUpdateAssetSummary(result.asset_summary)}
+    ${assets.length ? `<div class="settings-update-assets">
+      <span>${escapeHTML(t("settings.releaseAssets"))}</span>
+      ${assets.slice(0, 5).map(asset => `<small title="${escapeHTML(asset.url || "")}">${escapeHTML(asset.name || t("common.none"))}${asset.size ? ` · ${escapeHTML(formatBytes(asset.size))}` : ""}</small>`).join("")}
+    </div>` : ""}
+  </article>`;
+}
+
+function renderUpdateAssetSummary(summary = {}) {
+  if (!summary || typeof summary !== "object" || !Number.isFinite(Number(summary.asset_count))) return "";
+  const ready = Boolean(summary.verification_ready);
+  const missing = Array.isArray(summary.missing) ? summary.missing.filter(Boolean) : [];
+  const steps = Array.isArray(summary.verify_steps) ? summary.verify_steps.filter(Boolean) : [];
+  const facts = [
+    [t("settings.updateAssetPlatform"), summary.current_platform],
+    [t("settings.updateAssetArchive"), summary.matching_archive || summary.expected_archive],
+    [t("settings.updateAssetChecksums"), summary.has_checksums ? t("common.yes") : t("common.no")],
+    [t("settings.updateAssetSBOM"), summary.has_sbom ? t("common.yes") : t("common.no")],
+    [t("settings.updateAssetSignatures"), summary.sigstore_bundle_count]
+  ].filter(([, value]) => String(value ?? "").trim());
+  return `<div class="settings-update-integrity ${ready ? "good" : "warn"}">
+    <div class="settings-update-integrity-head">
+      <strong>${escapeHTML(t(ready ? "settings.updateIntegrityReady" : "settings.updateIntegrityMissing"))}</strong>
+      <span class="badge ${ready ? "good" : "warn"}">${escapeHTML(ready ? t("settings.updateIntegrityReadyBadge") : t("settings.updateIntegrityMissingBadge"))}</span>
+    </div>
+    <div class="settings-update-integrity-facts">
+      ${facts.map(([label, value]) => `<span><small>${escapeHTML(label)}</small><strong title="${escapeHTML(value)}">${escapeHTML(value)}</strong></span>`).join("")}
+    </div>
+    ${missing.length ? `<p>${escapeHTML(t("settings.updateIntegrityMissingList", { items: missing.join(", ") }))}</p>` : ""}
+    ${steps.length ? `<div class="settings-update-verify">
+      <span>${escapeHTML(t("settings.updateVerifySteps"))}</span>
+      ${steps.map(step => `<code>${escapeHTML(step)}</code>`).join("")}
+    </div>` : ""}
+  </div>`;
+}
+
+function renderUpdateCheckError(error) {
+  return `<article class="settings-update-check-card bad">
+    <strong>${escapeHTML(t("settings.updateCheckFailedTitle"))}</strong>
+    <p>${escapeHTML(localizedSettingsErrorMessage(error, t("settings.updateCheckFailedBody")))}</p>
+  </article>`;
+}
+
+function updateCheckMessage(result, available) {
+  if (result.message) return localizedText(result.message);
+  if (available) return t("settings.updateAvailableBody", { version: result.latest_version || t("common.none") });
+  return t("settings.updateCurrentBody");
+}
+
+function formatBytes(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "";
+  if (number < 1024) return `${number} B`;
+  if (number < 1024 * 1024) return `${(number / 1024).toFixed(1)} KB`;
+  return `${(number / (1024 * 1024)).toFixed(1)} MB`;
 }
 
 function renderUpdateStrategy(strategy = {}) {
@@ -1145,8 +1272,8 @@ function generatedDiagnosticRecommendation(item = {}) {
   if (currentLanguage() !== "zh") return "";
   const code = String(item?.code || "").toLowerCase();
   if (code.includes("restart")) return "按提示重启 GoFlow 后，再回到设置页确认诊断状态。";
-  if (code.includes("provider")) return "打开资源页检查对应 Provider 的模型、密钥和 fallback 配置。";
-  if (code.includes("workflow")) return "打开 Workflow Studio 或资源页，检查工作流引用的节点、工具和字段是否存在。";
+  if (code.includes("provider")) return "打开资源页检查对应模型供应商的模型、密钥和备用配置。";
+  if (code.includes("workflow")) return "打开工作流编排页或资源页，检查工作流引用的节点、工具和字段是否存在。";
   if (code.includes("tool") || code.includes("mcp")) return "打开资源页检查对应工具配置，重点确认隔离、命令、路径和审批策略。";
   if (code.includes("workspace")) return "打开工作区页确认当前根目录，并重新检查需要访问文件的操作。";
   if (code.includes("template") || code.includes("metadata") || code.includes("schema")) return "打开资源页检查对应扩展资源；可选扩展为空时通常不需要处理。";
@@ -1182,7 +1309,8 @@ function diagnosticCodeLabel(code = "") {
     network: "网络",
     node: "节点",
     policy: "策略",
-    provider: "Provider",
+    provider: "模型供应商",
+    fallback: "备用",
     resource: "资源",
     restart: "重启",
     rule: "规则",

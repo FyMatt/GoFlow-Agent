@@ -1,0 +1,48 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: {{.Names.Kit}}
+title: "{{.Preset.Title}}"
+description: "{{.Preset.Description}}"
+category: {{.Preset.Category}}
+tags:
+{{ range .Preset.Tags }}
+  - {{.}}
+{{ end }}
+providers:
+{{ if .Preset.Providers }}
+{{ range .Preset.Providers }}
+  - {{.}}
+{{ end }}
+{{ else }}
+  - primary
+{{ end }}
+agents:
+  - {{.Names.Agent}}
+skills:
+  - {{.Names.Skill}}
+tools:
+  - {{.Names.Tool}}
+workflows:
+  - {{.Names.Workflow}}
+workflow_templates:
+  - {{.Names.WorkflowTemplate}}
+team_templates:
+  - {{.Names.TeamTemplate}}
+policy_rules:
+  - {{.Names.PolicyRule}}
+{{ if .Preset.RequiredEnv }}
+required_env:
+{{ range .Preset.RequiredEnv }}
+  - {{.}}
+{{ end }}
+{{ end }}
+examples:
+  - title: "Run the linked starter workflow"
+    request: "{{if .Preset.Examples}}{{(index .Preset.Examples 0).Request}}{{else}}Describe the task, scope, expected output, and acceptance criteria.{{end}}"
+    workflow: {{.Names.Workflow}}
+    agent: {{.Names.Agent}}
+metadata:
+{{ range $key, $value := .Metadata }}
+  {{$key}}: {{$value}}
+{{ end }}

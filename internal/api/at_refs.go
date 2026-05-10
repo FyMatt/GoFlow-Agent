@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
@@ -93,8 +94,12 @@ func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string
 		if err != nil {
 			return "", fmt.Errorf("@%s: %w", rawPath, err)
 		}
+		content, err := decodeHTTPAtReferenceUTF8(rawPath, data)
+		if err != nil {
+			return "", err
+		}
 		total += len(data)
-		ref := httpAtReference{RawPath: rawPath, ResolvedPath: resolved, RelativePath: rel, Content: string(data), Size: len(data)}
+		ref := httpAtReference{RawPath: rawPath, ResolvedPath: resolved, RelativePath: rel, Content: content, Size: len(data)}
 		refs = append(refs, ref)
 		if handler != nil {
 			payload, _ := json.Marshal(map[string]any{
@@ -105,6 +110,13 @@ func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string
 		}
 	}
 	return buildHTTPAtReferencePrompt(input, refs), nil
+}
+
+func decodeHTTPAtReferenceUTF8(rawPath string, data []byte) (string, error) {
+	if !utf8.Valid(data) {
+		return "", fmt.Errorf("@%s: file is not valid UTF-8 text; use a binary inspection tool for non-text files", rawPath)
+	}
+	return strings.TrimPrefix(string(data), "\ufeff"), nil
 }
 
 func buildHTTPAtReferencePrompt(input string, refs []httpAtReference) string {

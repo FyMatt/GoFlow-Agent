@@ -1,0 +1,80 @@
+presets:
+  - name: software-review
+    default_name: custom-software-review-team
+    title: Custom Software Review Team
+    description: Planner, implementer, reviewer, and reporter team for code changes with reusable review quorum.
+    category: software
+    tags: [software, review, quality]
+    base_template: software-task-team
+    recommended_workflow: plan-fix-audit
+    recommended_entry_agent: planner
+
+  - name: agent-framework
+    default_name: custom-framework-team
+    title: Custom Framework Extension Team
+    description: Product, platform, workflow, safety, and handoff team for creating GoFlow extensions.
+    category: platform
+    tags: [agent-framework, extension, kit]
+    base_template: framework-extension-team
+    recommended_workflow: agent-framework-extension
+    recommended_entry_agent: planner
+
+  - name: security-review
+    default_name: custom-security-review-team
+    title: Custom Security Review Team
+    description: Scope, analysis, audit, and policy-review team for evidence-backed security reviews.
+    category: security
+    tags: [security, audit, evidence]
+    base_template: audit-security-team
+    recommended_workflow: human-input-security-review
+    recommended_entry_agent: auditor
+
+  - name: web-research
+    default_name: custom-web-research-team
+    title: Custom Web Research Team
+    description: Asset collection, JavaScript review, and risk-analysis team for scoped web research.
+    category: security
+    tags: [web, assets, risk]
+    base_template: web-research-team
+    recommended_workflow: web-research-risk
+    recommended_entry_agent: auditor
+
+  - name: binary-triage
+    default_name: custom-binary-triage-team
+    title: Custom Binary Triage Team
+    description: Static binary triage, reverse-analysis, vulnerability review, and report handoff team.
+    category: security
+    tags: [binary, reverse, triage]
+    base_template: binary-triage-team
+    recommended_workflow: binary-triage
+    recommended_entry_agent: auditor
+
+  - name: documentation
+    default_name: custom-documentation-team
+    title: Custom Documentation Team
+    description: Plan, draft, review, and publication-handoff team for documentation changes.
+    category: documentation
+    tags: [docs, review, publish]
+    base_template: documentation-team
+    recommended_workflow: docs-review-publish
+    recommended_entry_agent: planner
+
+  - name: operations-runbook
+    default_name: custom-operations-runbook-team
+    title: Custom Operations Runbook Team
+    description: Operational planning, runbook authoring, risk review, and operator handoff team.
+    category: operations
+    tags: [ops, runbook, approval]
+    base_template: operations-runbook-team
+    recommended_workflow: operations-runbook
+    recommended_entry_agent: planner
+
+  - name: customer-support
+    default_name: custom-customer-support-team
+    title: Custom Customer Support Team
+    description: Triage, context gathering, response drafting, and support-review handoff team.
+    category: support
+    tags: [support, triage, response]
+    base_template: customer-support-team
+    recommended_workflow: customer-support-triage
+    recommended_entry_agent: chat

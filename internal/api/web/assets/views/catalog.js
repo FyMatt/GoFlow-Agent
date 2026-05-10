@@ -44,7 +44,7 @@ export async function renderCatalog(root, runtime) {
         <div class="resource-hero-copy">
           <p class="eyebrow">${t("catalog.resourceBuilder")}</p>
           <h2>${t("catalog.resourceBuilderTitle")}</h2>
-          <p class="muted">${t("catalog.resourceBuilderHelp")} <code>skills/&lt;name&gt;/SKILL.md</code></p>
+          <p class="muted">${t("catalog.resourceBuilderHelp")}</p>
           <div id="resourceMetrics" class="resource-metrics">
             ${resourceCounts}
           </div>
@@ -99,6 +99,14 @@ export async function renderCatalog(root, runtime) {
 
       <section class="panel resource-guide-panel span-12">
         ${renderResourceGuide()}
+      </section>
+
+      <section class="panel resource-starter-panel span-12" data-tour-id="catalog-starter">
+        ${renderResourceStarter(kits, kitScaffolds)}
+      </section>
+
+      <section class="panel resource-relation-panel span-12">
+        ${renderResourceRelationMap(runtime)}
       </section>
 
       <div class="resource-grid">
@@ -598,6 +606,7 @@ function renderResourceMetrics(runtime = catalogContext.runtime) {
 
 function renderResourceGuide() {
   const cards = [
+    [t("catalog.guideKitTitle"), t("catalog.guideKitBody")],
     [t("catalog.guideAgentTitle"), t("catalog.guideAgentBody")],
     [t("catalog.guideSkillTitle"), t("catalog.guideSkillBody")],
     [t("catalog.guideToolTitle"), t("catalog.guideToolBody")],
@@ -614,6 +623,123 @@ function renderResourceGuide() {
   <div class="resource-guide-grid">
     ${cards.map(([title, body]) => `<article class="resource-guide-card"><strong>${escapeHTML(title)}</strong><span>${escapeHTML(body)}</span></article>`).join("")}
   </div>`;
+}
+
+function renderResourceStarter(kits = [], scaffolds = []) {
+  const presets = sortKitScaffolds(Array.isArray(scaffolds) ? scaffolds : []);
+  const starter = presets.find(item => kitScaffoldName(item) === "multi-domain-agent") || presets[0] || null;
+  const savedStarter = Array.isArray(kits) ? kits.find(item => String(item?.name || "").includes("multi-domain")) : null;
+  const starterName = starter ? kitScaffoldName(starter) : "multi-domain-agent";
+  const workflow = starter?.recommended_workflow || savedStarter?.recommended_workflow || "multi-domain-intake-router";
+  const agent = starter?.recommended_agent || savedStarter?.recommended_agent || "chat";
+  const resources = starter ? kitScaffoldResourceCounts(starter) : [];
+  const example = Array.isArray(starter?.examples) ? starter.examples.find(item => item?.request || item?.title) : null;
+  const steps = [
+    {
+      label: t("catalog.starterStepChoose"),
+      title: t("catalog.starterChooseTitle"),
+      body: starter ? localizedText(starter.description || t("catalog.kitDescriptionDefault")) : t("catalog.starterChooseBody")
+    },
+    {
+      label: t("catalog.starterStepCreate"),
+      title: t("catalog.starterCreateTitle"),
+      body: t("catalog.starterCreateBody")
+    },
+    {
+      label: t("catalog.starterStepRun"),
+      title: t("catalog.starterRunTitle"),
+      body: t("catalog.starterRunBody", { workflow, agent })
+    }
+  ];
+  return `<div class="resource-starter-head">
+    <div>
+      <p class="eyebrow">${escapeHTML(t("catalog.starterEyebrow"))}</p>
+      <h2>${escapeHTML(t("catalog.starterTitle"))}</h2>
+      <p class="muted">${escapeHTML(t("catalog.starterHelp"))}</p>
+    </div>
+    <div class="resource-starter-actions">
+      ${starter ? `<button class="primary" data-kit-scaffold="${escapeHTML(starterName)}" data-force-materialize="true">${escapeHTML(t("catalog.starterCreateFull"))}</button>` : ""}
+      <button data-scroll-resource="#resourceKitScaffolds">${escapeHTML(t("catalog.starterBrowseKits"))}</button>
+      <button data-open-view="workflows">${escapeHTML(t("catalog.starterOpenWorkflowStudio"))}</button>
+    </div>
+  </div>
+  <div class="resource-starter-body">
+    <div class="resource-starter-steps">
+      ${steps.map((step, index) => `<article class="resource-starter-step">
+        <span>${escapeHTML(step.label)}</span>
+        <strong>${escapeHTML(step.title)}</strong>
+        <p>${escapeHTML(step.body)}</p>
+        ${index === 0 && resources.length ? `<div class="resource-starter-links">${resources.map(item => `<small>${escapeHTML(item.label)} <b>${escapeHTML(String(item.count))}</b></small>`).join("")}</div>` : ""}
+      </article>`).join("")}
+    </div>
+    <aside class="resource-starter-example">
+      <small>${escapeHTML(t("catalog.starterExample"))}</small>
+      <strong>${escapeHTML(localizedText(example?.title || workflow))}</strong>
+      <p>${escapeHTML(localizedText(example?.description || t("catalog.starterExampleHelp")))}</p>
+      <code>${escapeHTML(localizedText(example?.request || t("catalog.starterExampleRequest")))}</code>
+    </aside>
+  </div>`;
+}
+
+function renderResourceRelationMap(runtime = catalogContext.runtime || {}) {
+  const counts = {
+    kits: (catalogContext.kits || []).length + (catalogContext.kitScaffolds || []).length,
+    agents: runtime?.agents?.length || 0,
+    skills: runtime?.skills?.length || 0,
+    tools: (catalogContext.toolResources || []).length || runtime?.tools?.length || 0,
+    workflows: (catalogContext.workflowTemplates || []).length + (catalogContext.workflowGraphs || []).length,
+    teams: (catalogContext.teamTemplates || []).length,
+    policies: (catalogContext.policyRules || []).length
+  };
+  const rows = [
+    { from: t("catalog.resourceKit"), to: t("catalog.relationEverything"), body: t("catalog.relationKitBody"), count: counts.kits },
+    { from: t("catalog.resourceAgent"), to: t("catalog.resourceSkill"), body: t("catalog.relationAgentSkillBody"), count: counts.agents },
+    { from: t("catalog.resourceSkill"), to: t("catalog.resourceTool"), body: t("catalog.relationSkillToolBody"), count: counts.skills },
+    { from: t("catalog.resourceWorkflow"), to: t("catalog.relationExecution"), body: t("catalog.relationWorkflowBody"), count: counts.workflows },
+    { from: t("catalog.resourceTeamTemplate"), to: t("catalog.relationCollaboration"), body: t("catalog.relationTeamBody"), count: counts.teams },
+    { from: t("catalog.resourcePolicyRule"), to: t("catalog.relationQuality"), body: t("catalog.relationPolicyBody"), count: counts.policies }
+  ];
+  return `<div class="resource-relation-head">
+    <div>
+      <p class="eyebrow">${escapeHTML(t("catalog.relationEyebrow"))}</p>
+      <h2>${escapeHTML(t("catalog.relationTitle"))}</h2>
+      <p class="muted">${escapeHTML(t("catalog.relationHelp"))}</p>
+    </div>
+  </div>
+  <div class="resource-relation-flow">
+    ${rows.map(row => `<article class="resource-relation-card">
+      <span>${escapeHTML(String(row.count))}</span>
+      <strong>${escapeHTML(row.from)} <em>${escapeHTML(t("catalog.relationArrow"))}</em> ${escapeHTML(row.to)}</strong>
+      <p>${escapeHTML(row.body)}</p>
+    </article>`).join("")}
+  </div>
+  <details class="resource-override-paths">
+    <summary>
+      <div>
+        <strong>${escapeHTML(t("catalog.overridePathsTitle"))}</strong>
+        <p>${escapeHTML(t("catalog.overridePathsHelp"))}</p>
+      </div>
+      <span>${escapeHTML(t("catalog.overridePathsSummary", { count: resourceOverridePathItems().length }))}</span>
+    </summary>
+    <div>
+      ${resourceOverridePathItems().map(item => `<span><small>${escapeHTML(item.label)}</small><strong>${escapeHTML(item.hint)}</strong></span>`).join("")}
+    </div>
+  </details>`;
+}
+
+function resourceOverridePathItems() {
+  return [
+    { label: t("catalog.resourceProvider"), hint: t("catalog.overridePathProviderHint") },
+    { label: t("catalog.resourceAgent"), hint: t("catalog.overridePathAgentHint") },
+    { label: t("catalog.resourceSkill"), hint: t("catalog.overridePathSkillHint") },
+    { label: t("catalog.resourceTool"), hint: t("catalog.overridePathToolHint") },
+    { label: t("catalog.resourceWorkflow"), hint: t("catalog.overridePathWorkflowHint") },
+    { label: t("catalog.resourceWorkflowTemplate"), hint: t("catalog.overridePathWorkflowTemplateHint") },
+    { label: t("catalog.resourceTeamTemplate"), hint: t("catalog.overridePathTeamTemplateHint") },
+    { label: t("catalog.resourcePolicyRule"), hint: t("catalog.overridePathPolicyHint") },
+    { label: t("catalog.resourceKit"), hint: t("catalog.overridePathKitHint") },
+    { label: t("catalog.kitScaffolds"), hint: t("catalog.overridePathMaterializedHint") }
+  ];
 }
 
 function catalogNodeMetadataItems() {
@@ -1072,6 +1198,21 @@ function bindResourceCatalog(root, runtime, providerOptions) {
   root.querySelectorAll("[data-kit-scaffold]").forEach(button => {
     button.onclick = () => createKitFromScaffold(root, button.dataset.kitScaffold, button);
   });
+  root.querySelectorAll("[data-scroll-resource]").forEach(button => {
+    button.onclick = () => scrollCatalogResourceTarget(root, button.dataset.scrollResource);
+  });
+  root.querySelectorAll("[data-kit-focus-kind]").forEach(button => {
+    button.onclick = () => focusKitResource(root, button.dataset.kitFocusKind, button.dataset.kitFocusName);
+  });
+  root.querySelectorAll("[data-open-kit-workflow]").forEach(button => {
+    button.onclick = () => openKitWorkflow(button.dataset.openKitWorkflow);
+  });
+  root.querySelectorAll("[data-open-view]").forEach(button => {
+    button.onclick = () => {
+      const view = String(button.dataset.openView || "").trim();
+      if (view) location.hash = view;
+    };
+  });
   root.querySelectorAll("[data-tool-scaffold]").forEach(button => {
     button.onclick = () => openToolScaffoldDesigner(root, runtime, button.dataset.toolScaffold, providerOptions);
   });
@@ -1154,6 +1295,48 @@ function bindResourceCapabilityActionDelegation(root) {
     event.preventDefault();
     void handleCatalogCapabilityAction(root, button);
   });
+}
+
+function scrollCatalogResourceTarget(root, selector) {
+  const target = selector ? root.querySelector(selector) : null;
+  const search = root.querySelector("#resourceSearch");
+  const group = root.querySelector("#resourceGroupFilter");
+  if (group) group.value = "essential";
+  if (search) search.value = "";
+  applyResourceFilters(root);
+  if (!target) return;
+  target.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  target.classList.add("resource-focus-pulse");
+  window.setTimeout(() => target.classList.remove("resource-focus-pulse"), prefersReducedMotion() ? 700 : 1600);
+}
+
+function focusKitResource(root, kind, name) {
+  const normalizedKind = normalizeCatalogFocusKind(kind);
+  const normalizedName = String(name || "").trim();
+  const groupName = catalogFocusGroup(normalizedKind);
+  const group = root.querySelector("#resourceGroupFilter");
+  const search = root.querySelector("#resourceSearch");
+  if (group && groupName && [...group.options].some(option => option.value === groupName)) group.value = groupName;
+  if (search) search.value = normalizedName;
+  applyResourceFilters(root);
+  const node = findCatalogFocusItem(root, normalizedKind, normalizedName) || findCatalogFocusPanel(root, normalizedKind, groupName);
+  if (!node) return;
+  node.classList.add("resource-focus-pulse");
+  node.focus?.({ preventScroll: true });
+  node.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  window.setTimeout(() => node.classList.remove("resource-focus-pulse"), prefersReducedMotion() ? 700 : 1600);
+}
+
+function openKitWorkflow(name) {
+  const value = String(name || "").trim();
+  if (value) {
+    try {
+      localStorage.setItem("goflow.workflow.template", value);
+    } catch {
+      // Navigation still opens Workflow Studio when browser storage is blocked.
+    }
+  }
+  location.hash = "workflows";
 }
 
 function bindResourceCapabilityRefresh(root) {
@@ -1838,6 +2021,146 @@ function kitScaffoldName(scaffold) {
   return String(scaffold?.name || scaffold?.default_name || scaffold?.defaultKitName || scaffold?.title || "kit").trim() || "kit";
 }
 
+function kitScaffoldResourceCounts(scaffold = {}) {
+  return [
+    ["providers", t("catalog.kitProviders")],
+    ["agents", t("catalog.kitAgents")],
+    ["skills", t("catalog.kitSkills")],
+    ["tools", t("catalog.kitTools")],
+    ["workflows", t("catalog.kitWorkflows")],
+    ["workflow_templates", t("catalog.kitWorkflowTemplates")],
+    ["team_templates", t("catalog.kitTeamTemplates")],
+    ["policy_rules", t("catalog.kitPolicyRules")]
+  ]
+    .map(([key, label]) => ({ key, label, count: Array.isArray(scaffold?.[key]) ? scaffold[key].length : 0, items: Array.isArray(scaffold?.[key]) ? scaffold[key] : [] }))
+    .filter(item => item.count > 0);
+}
+
+function renderKitScaffoldLinks(scaffold = {}) {
+  const counts = kitScaffoldResourceCounts(scaffold);
+  if (!counts.length) return "";
+  return `<div class="kit-scaffold-links" aria-label="${escapeHTML(t("catalog.kitScaffoldLinkedResources"))}">
+    ${counts.map(item => `<span title="${escapeHTML(item.items.join(", "))}">
+      <small>${escapeHTML(item.label)}</small>
+      <strong>${escapeHTML(String(item.count))}</strong>
+    </span>`).join("")}
+  </div>`;
+}
+
+function firstArrayValue(values) {
+  return Array.isArray(values) && values.length ? String(values[0] || "").trim() : "";
+}
+
+function firstKitExample(source = {}) {
+  return Array.isArray(source?.examples) ? source.examples.find(item => item && (item.title || item.description || item.request || item.workflow || item.agent)) || null : null;
+}
+
+function kitRecommendedValue(source = {}, keys = [], fallback = "") {
+  const example = firstKitExample(source) || {};
+  const metadata = source?.metadata || {};
+  for (const key of keys) {
+    const value = source?.[key] || metadata?.[key] || example?.[key];
+    if (value !== null && value !== undefined && String(value).trim()) return String(value).trim();
+  }
+  return fallback || "";
+}
+
+function kitRunPath(source = {}, options = {}) {
+  const agentRefs = options.saved ? source?.agent_refs : source?.agents;
+  const skillRefs = options.saved ? source?.skill_refs : source?.skills;
+  const workflowRefs = options.saved ? (source?.workflow_template_refs || source?.workflow_refs) : (source?.workflow_templates || source?.workflows);
+  const teamRefs = options.saved ? source?.team_template_refs : source?.team_templates;
+  return [
+    { kind: "agent", label: t("catalog.runPathAgent"), value: kitRecommendedValue(source, ["recommended_agent"], firstArrayValue(agentRefs)), hint: t("catalog.runPathAgentHelp") },
+    { kind: "workflow-template", label: t("catalog.runPathWorkflow"), value: kitRecommendedValue(source, ["recommended_workflow"], firstArrayValue(workflowRefs)), hint: t("catalog.runPathWorkflowHelp") },
+    { kind: "team-template", label: t("catalog.runPathTeam"), value: kitRecommendedValue(source, ["recommended_team"], firstArrayValue(teamRefs)), hint: t("catalog.runPathTeamHelp") },
+    { kind: "skill", label: t("catalog.runPathSkill"), value: kitRecommendedValue(source, ["primary_skill", "recommended_skill"], firstArrayValue(skillRefs)), hint: t("catalog.runPathSkillHelp") }
+  ].filter(item => item.value);
+}
+
+function renderKitRunPath(source = {}, options = {}) {
+  const path = kitRunPath(source, options);
+  if (!path.length) return "";
+  const workflow = path.find(item => item.kind === "workflow-template")?.value || "";
+  return `<div class="kit-run-path">
+    <div class="kit-run-path-head">
+      <div>
+        <strong>${escapeHTML(t("catalog.runPathTitle"))}</strong>
+        <span>${escapeHTML(t("catalog.runPathHelp"))}</span>
+      </div>
+      ${workflow ? `<button type="button" data-open-kit-workflow="${escapeHTML(workflow)}">${escapeHTML(t("catalog.openRecommendedWorkflow"))}</button>` : ""}
+    </div>
+    <div class="kit-run-path-grid">
+      ${path.map(item => `<button type="button" class="kit-run-path-item" data-kit-focus-kind="${escapeHTML(item.kind)}" data-kit-focus-name="${escapeHTML(item.value)}" title="${escapeHTML(item.hint)}">
+        <span>${escapeHTML(item.label)}</span>
+        <strong>${escapeHTML(item.value)}</strong>
+      </button>`).join("")}
+    </div>
+  </div>`;
+}
+
+function renderKitResourceChain(source = {}, options = {}) {
+  const groups = options.saved ? kitSummaryResourceCounts(source) : kitScaffoldResourceCounts(source);
+  const ordered = [
+    ["agents", "agent_refs", t("catalog.resourceAgent")],
+    ["skills", "skill_refs", t("catalog.resourceSkill")],
+    ["tools", "tool_refs", t("catalog.resourceTool")],
+    ["workflow_templates", "workflow_template_refs", t("catalog.resourceWorkflow")],
+    ["team_templates", "team_template_refs", t("catalog.resourceTeamTemplate")],
+    ["policy_rules", "policy_rule_refs", t("catalog.resourcePolicyRule")]
+  ];
+  const steps = ordered
+    .map(([scaffoldKey, savedKey, label]) => {
+      const match = groups.find(item => item.key === scaffoldKey || item.refsKey === savedKey || item.label === label);
+      return match?.count ? { label, count: match.count, items: match.items || [] } : null;
+    })
+    .filter(Boolean);
+  if (!steps.length) return "";
+  return `<div class="kit-resource-chain" aria-label="${escapeHTML(t("catalog.resourceChainTitle"))}">
+    <div class="kit-resource-chain-head">
+      <strong>${escapeHTML(t("catalog.resourceChainTitle"))}</strong>
+      <span>${escapeHTML(t("catalog.resourceChainHelp"))}</span>
+    </div>
+    <div class="kit-resource-chain-steps">
+      ${steps.map((step, index) => `<span class="kit-resource-chain-step" title="${escapeHTML((step.items || []).join(", "))}">
+        <small>${escapeHTML(String(index + 1))}</small>
+        <b>${escapeHTML(step.label)}</b>
+        <em>${escapeHTML(String(step.count))}</em>
+      </span>`).join("")}
+    </div>
+  </div>`;
+}
+
+function kitSummaryResourceCounts(kit = {}) {
+  return [
+    ["provider_refs", "providers", t("catalog.kitProviders")],
+    ["agent_refs", "agents", t("catalog.kitAgents")],
+    ["skill_refs", "skills", t("catalog.kitSkills")],
+    ["tool_refs", "tools", t("catalog.kitTools")],
+    ["workflow_refs", "workflows", t("catalog.kitWorkflows")],
+    ["workflow_template_refs", "workflow_templates", t("catalog.kitWorkflowTemplates")],
+    ["team_template_refs", "team_templates", t("catalog.kitTeamTemplates")],
+    ["policy_rule_refs", "policy_rules", t("catalog.kitPolicyRules")]
+  ]
+    .map(([refsKey, countKey, label]) => {
+      const items = Array.isArray(kit?.[refsKey]) ? kit[refsKey] : [];
+      const count = items.length || Number(kit?.[countKey] || 0);
+      return { refsKey, key: countKey, label, count, items };
+    })
+    .filter(item => item.count > 0);
+}
+
+function renderKitSummaryLinks(kit = {}) {
+  const counts = kitSummaryResourceCounts(kit);
+  if (!counts.length) return "";
+  return `<div class="kit-scaffold-links kit-summary-links" aria-label="${escapeHTML(t("catalog.kitScaffoldLinkedResources"))}">
+    ${counts.map(item => `<span title="${escapeHTML(item.items.join(", "))}">
+      <small>${escapeHTML(item.label)}</small>
+      <strong>${escapeHTML(String(item.count))}</strong>
+    </span>`).join("")}
+  </div>`;
+}
+
 function kitScaffoldRank(scaffold) {
   const name = kitScaffoldName(scaffold);
   const ranks = {
@@ -1867,11 +2190,7 @@ function kitScaffoldBadge(scaffold) {
 
 function renderKitScaffold(scaffold) {
   const name = kitScaffoldName(scaffold);
-  const refs = [
-    scaffold?.agents?.length ? `${t("catalog.kitAgents")}: ${scaffold.agents.length}` : "",
-    scaffold?.skills?.length ? `${t("catalog.kitSkills")}: ${scaffold.skills.length}` : "",
-    scaffold?.tools?.length ? `${t("catalog.kitTools")}: ${scaffold.tools.length}` : ""
-  ].filter(Boolean);
+  const refs = kitScaffoldResourceCounts(scaffold).slice(0, 5).map(item => `${item.label}: ${item.count}`);
   const tags = Array.isArray(scaffold?.tags) ? scaffold.tags.slice(0, 4).map(localizedText).filter(Boolean) : [];
   const badge = kitScaffoldBadge(scaffold);
   const recommendation = [
@@ -1895,6 +2214,9 @@ function renderKitScaffold(scaffold) {
       </div>
       <p>${escapeHTML(localizedText(scaffold?.description || t("catalog.kitDescriptionDefault")))}</p>
       ${recommendation.length ? `<div class="kit-scaffold-recommendation">${recommendation.map(item => `<span>${escapeHTML(localizedText(item))}</span>`).join("")}</div>` : ""}
+      ${renderKitRunPath(scaffold)}
+      ${renderKitResourceChain(scaffold)}
+      ${renderKitScaffoldLinks(scaffold)}
       ${example ? `<div class="kit-scaffold-example">
         <small>${escapeHTML(t("catalog.kitScaffoldExample"))}</small>
         <strong>${escapeHTML(localizedText(example.title || example.workflow || name))}</strong>
@@ -1913,7 +2235,10 @@ function renderKitScaffold(scaffold) {
         ${refs.map(item => `<span>${escapeHTML(item)}</span>`).join("")}
         <span>${escapeHTML(valid ? t("catalog.kitValid") : t("catalog.kitNeedsReview"))}</span>
       </div>
-      <button data-kit-scaffold="${escapeHTML(name)}">${escapeHTML(t("catalog.useKitScaffold"))}</button>
+      <div class="kit-scaffold-actions">
+        <button data-kit-scaffold="${escapeHTML(name)}">${escapeHTML(t("catalog.useKitScaffold"))}</button>
+        <button class="primary" data-kit-scaffold="${escapeHTML(name)}" data-force-materialize="true">${escapeHTML(t("catalog.starterCreateFull"))}</button>
+      </div>
     </div>
   </article>`;
 }
@@ -2034,11 +2359,15 @@ function renderKit(kit) {
   const tags = Array.isArray(kit?.tags) ? kit.tags.slice(0, 5).map(localizedText).join(", ") : "";
   const valid = kit?.valid !== false;
   const issueCount = Array.isArray(kit?.issues) ? kit.issues.length : 0;
-  const totalRefs = Number(kit?.agents || 0) + Number(kit?.skills || 0) + Number(kit?.tools || 0) + Number(kit?.workflows || 0);
+  const refGroups = kitSummaryResourceCounts(kit);
+  const totalRefs = refGroups.reduce((sum, item) => sum + Number(item.count || 0), 0);
   return `<div class="item resource-item kit-resource-item" ${resourceItemAttrs("kit", name)}>
     <strong>${escapeHTML(title)}</strong>
     ${resourceKicker([sourceChip("custom", true), name, localizedText(kit?.category || t("catalog.resourceKit"))])}
     <div class="muted kit-resource-description">${escapeHTML(localizedText(kit?.description || t("catalog.kitDescriptionDefault")))}</div>
+    ${renderKitRunPath(kit, { saved: true })}
+    ${renderKitResourceChain(kit, { saved: true })}
+    ${renderKitSummaryLinks(kit)}
     <div class="resource-facts">
       <span>${escapeHTML(t("catalog.kitRefs"))}: ${escapeHTML(String(totalRefs))}</span>
       <span>${escapeHTML(valid ? t("catalog.kitValid") : t("catalog.kitNeedsReview"))}</span>
@@ -5040,7 +5369,7 @@ async function createKitFromScaffold(root, presetName, button = null) {
   const preset = String(presetName || "").trim();
   if (!preset) return;
   const card = button?.closest(".kit-scaffold-card");
-  const materialize = Boolean(card?.querySelector("[data-kit-materialize]")?.checked);
+  const materialize = button?.dataset.forceMaterialize === "true" || Boolean(card?.querySelector("[data-kit-materialize]")?.checked);
   setCatalogResourceActionPending(button, true);
   if (output) output.textContent = `${materialize ? t("catalog.creatingMaterializedKitFromScaffold") : t("catalog.creatingKitFromScaffold")} ${preset}...`;
   try {
@@ -5207,7 +5536,7 @@ function readTextFile(file) {
     const reader = new FileReader();
     reader.onload = () => resolve(String(reader.result || ""));
     reader.onerror = () => reject(reader.error || new Error(t("catalog.readFileFailed")));
-    reader.readAsText(file);
+    reader.readAsText(file, "utf-8");
   });
 }
 
@@ -6723,7 +7052,7 @@ function loadToolCodeFile(root, event) {
       root.querySelector("#resourceName").value = normalizeName(file.name.replace(/\.[^.]+$/, ""));
     }
   };
-  reader.readAsText(file);
+  reader.readAsText(file, "utf-8");
 }
 
 function defaultToolCode(name) {

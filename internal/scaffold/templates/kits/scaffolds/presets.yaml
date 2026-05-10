@@ -1,0 +1,245 @@
+presets:
+  - name: multi-domain-agent
+    default_kit_name: multi-domain-agent-kit
+    title: Multi-Domain Agent Starter Kit
+    description: One starter kit that routes mixed user requests to linked software, security, documentation, operations, support, and platform teams.
+    category: starter
+    tags: [starter, multi-domain, workflow, team, quality]
+    providers: [primary]
+    agents: [chat, planner, fixer, auditor, software-engineer, security-researcher, web-security-researcher, binary-analyst, documentation-specialist, operations-specialist, support-specialist, framework-extension-architect]
+    skills: [execution-plan, code-writing, code-audit, vulnerability-research, web-vulnerability-research, binary-vulnerability-research, reverse-engineering]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview]
+    workflows: [plan-fix-audit, skill-chain]
+    workflow_templates: [multi-domain-intake-router, task-decomposition-plan, plan-fix-audit, software-quality-gate, software-team-review-gate, web-research-risk, security-audit-evidence-gate, binary-triage, docs-review-publish, operations-runbook, customer-support-triage, agent-framework-extension]
+    team_templates: [software-task-team, audit-security-team, web-research-team, binary-triage-team, documentation-team, operations-runbook-team, customer-support-team, framework-extension-team]
+    policy_rules: [expression, contains, risk_at_least, ref_truthy, team_approval_gate]
+    required_env: [GOFLOW_API_KEY]
+    recommended_workflow: multi-domain-intake-router
+    recommended_agent: chat
+    examples:
+      - title: Route a mixed request
+        description: Collect context, route to the right domain team, and produce a quality-gated handoff.
+        request: Help me decide how to handle this project request and route it to the right workflow.
+        workflow: multi-domain-intake-router
+        agent: chat
+    metadata:
+      preset: multi-domain-agent
+      recommended_team: framework-extension-team
+      primary_skill: execution-plan
+
+  - name: software-engineering
+    default_kit_name: software-engineering-kit
+    title: Software Engineering Kit
+    description: Plan, implement, review, and hand off scoped software changes.
+    category: software
+    tags: [coding, review, planning]
+    providers: [primary]
+    agents: [chat, planner, fixer, auditor, software-engineer]
+    skills: [execution-plan, code-writing, code-audit]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file]
+    workflows: [plan-fix-audit]
+    workflow_templates: [plan-fix-audit, software-quality-gate, software-team-review-gate, parallel-research-review]
+    team_templates: [software-task-team]
+    policy_rules: [expression, team_approval_gate]
+    recommended_workflow: plan-fix-audit
+    recommended_agent: software-engineer
+    examples:
+      - title: Improve a project
+        description: Plan, edit, and review a code change under approval.
+        request: Optimize this project and add focused tests.
+        workflow: plan-fix-audit
+        agent: software-engineer
+    metadata:
+      preset: software-engineering
+      recommended_team: software-task-team
+      primary_skill: code-writing
+
+  - name: agent-framework
+    default_kit_name: agent-framework-kit
+    title: Agent Framework Extension Kit
+    description: Design and materialize linked GoFlow Agent, Skill, Tool, Workflow, Team, Policy, and Kit resources.
+    category: platform
+    tags: [agent-framework, extension, kit, second-development]
+    providers: [primary]
+    agents: [chat, planner, fixer, auditor, framework-extension-architect, software-engineer]
+    skills: [execution-plan, code-writing, code-audit]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file]
+    workflows: [skill-chain]
+    workflow_templates: [agent-framework-extension, multi-domain-intake-router, task-decomposition-plan, software-quality-gate]
+    team_templates: [framework-extension-team, software-task-team]
+    policy_rules: [ref_truthy, team_approval_gate, expression]
+    recommended_workflow: agent-framework-extension
+    recommended_agent: framework-extension-architect
+    examples:
+      - title: Create a vertical Agent extension
+        description: Design and materialize linked resources for a new domain assistant.
+        request: Create a vertical Agent kit for an internal release-review assistant.
+        workflow: agent-framework-extension
+        agent: framework-extension-architect
+    metadata:
+      preset: agent-framework
+      recommended_team: framework-extension-team
+      primary_skill: execution-plan
+
+  - name: web-security
+    default_kit_name: web-security-kit
+    title: Web Security Research Kit
+    description: Collect web assets, review client code evidence, and route risky findings through approval gates.
+    category: security
+    tags: [web, security, audit]
+    providers: [primary]
+    agents: [planner, auditor, web-security-researcher, security-researcher]
+    skills: [execution-plan, web-vulnerability-research, vulnerability-research, code-audit]
+    tools: [web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, file_tools/read_file]
+    workflows: [skill-chain]
+    workflow_templates: [web-research-risk, security-audit-evidence-gate, human-input-security-review]
+    team_templates: [web-research-team, audit-security-team]
+    policy_rules: [contains, risk_at_least, ref_truthy, expression]
+    required_env: [GOFLOW_API_KEY]
+    recommended_workflow: web-research-risk
+    recommended_agent: web-security-researcher
+    examples:
+      - title: Review a target URL
+        description: Fetch reachable assets and produce evidence-backed findings.
+        request: Review https://example.com for client-side security risks within authorized scope.
+        workflow: web-research-risk
+        agent: web-security-researcher
+    metadata:
+      preset: web-security
+      recommended_team: web-research-team
+      primary_skill: web-vulnerability-research
+
+  - name: security-research
+    default_kit_name: security-research-kit
+    title: Security Research Kit
+    description: Plan authorized security reviews, collect evidence, classify risk, and prepare defensive reports.
+    category: security
+    tags: [security, audit, evidence]
+    providers: [primary]
+    agents: [planner, auditor, security-researcher, web-security-researcher, binary-analyst]
+    skills: [execution-plan, vulnerability-research, web-vulnerability-research, binary-vulnerability-research, reverse-engineering, code-audit]
+    tools: [file_tools/read_file, file_tools/search_files, web_tools/web_search, web_tools/fetch_url, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview]
+    workflows: [skill-chain]
+    workflow_templates: [web-research-risk, security-audit-evidence-gate, binary-triage, human-input-security-review]
+    team_templates: [audit-security-team, web-research-team, binary-triage-team]
+    policy_rules: [contains, risk_at_least, team_approval_gate, expression]
+    recommended_workflow: human-input-security-review
+    recommended_agent: security-researcher
+    examples:
+      - title: Authorized review
+        description: Create a scoped evidence-backed security review.
+        request: Create an authorized security review plan and identify evidence requirements.
+        workflow: skill-chain
+        agent: security-researcher
+    metadata:
+      preset: security-research
+      recommended_team: audit-security-team
+      primary_skill: vulnerability-research
+
+  - name: binary-analysis
+    default_kit_name: binary-analysis-kit
+    title: Binary Analysis Kit
+    description: Run static binary triage with reverse-engineering and vulnerability-research skills.
+    category: security
+    tags: [binary, reverse-engineering, security]
+    providers: [primary]
+    agents: [planner, auditor, binary-analyst, security-researcher]
+    skills: [execution-plan, reverse-engineering, binary-vulnerability-research, code-audit]
+    tools: [python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview, file_tools/read_file]
+    workflows: [skill-chain]
+    workflow_templates: [binary-triage]
+    team_templates: [binary-triage-team]
+    policy_rules: [risk_at_least, expression]
+    recommended_workflow: binary-triage
+    recommended_agent: binary-analyst
+    examples:
+      - title: Static binary triage
+        description: Extract metadata and produce a defensive analysis report.
+        request: Perform static triage on sample.bin and report likely risk areas without executing it.
+        workflow: binary-triage
+        agent: binary-analyst
+    metadata:
+      preset: binary-analysis
+      recommended_team: binary-triage-team
+      primary_skill: reverse-engineering
+
+  - name: documentation
+    default_kit_name: documentation-kit
+    title: Documentation Kit
+    description: Plan, update, review, and hand off technical documentation changes.
+    category: documentation
+    tags: [docs, writing, review]
+    providers: [primary]
+    agents: [chat, planner, fixer, auditor, documentation-specialist]
+    skills: [execution-plan, code-writing, code-audit]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file]
+    workflows: [plan-fix-audit]
+    workflow_templates: [docs-review-publish]
+    team_templates: [documentation-team]
+    policy_rules: [expression, team_approval_gate]
+    recommended_workflow: docs-review-publish
+    recommended_agent: documentation-specialist
+    examples:
+      - title: Refresh docs
+        description: Update docs and review for accuracy.
+        request: Update the setup documentation and verify commands are accurate.
+        workflow: docs-review-publish
+        agent: documentation-specialist
+    metadata:
+      preset: documentation
+      recommended_team: documentation-team
+      primary_skill: code-writing
+
+  - name: operations-runbook
+    default_kit_name: operations-runbook-kit
+    title: Operations Runbook Kit
+    description: Create and review runbooks with rollback and approval guidance.
+    category: operations
+    tags: [operations, runbook, rollback]
+    providers: [primary]
+    agents: [chat, planner, fixer, auditor, operations-specialist, documentation-specialist]
+    skills: [execution-plan, code-writing, code-audit]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file]
+    workflows: [plan-fix-audit]
+    workflow_templates: [operations-runbook, docs-review-publish]
+    team_templates: [operations-runbook-team]
+    policy_rules: [expression, team_approval_gate]
+    recommended_workflow: operations-runbook
+    recommended_agent: operations-specialist
+    examples:
+      - title: Write a runbook
+        description: Create a runbook with prechecks and rollback steps.
+        request: Create an operations runbook for this deployment with rollback guidance.
+        workflow: operations-runbook
+        agent: operations-specialist
+    metadata:
+      preset: operations-runbook
+      recommended_team: operations-runbook-team
+      primary_skill: execution-plan
+
+  - name: customer-support
+    default_kit_name: customer-support-kit
+    title: Customer Support Kit
+    description: Triage support requests, prepare response plans, and hand off concise customer-ready answers.
+    category: support
+    tags: [support, triage, handoff]
+    providers: [primary]
+    agents: [chat, planner, support-specialist, auditor]
+    skills: [execution-plan, code-audit]
+    tools: [file_tools/read_file, file_tools/search_files, web_tools/web_search]
+    workflows: [skill-chain]
+    workflow_templates: [customer-support-triage, parallel-research-review]
+    team_templates: [customer-support-team]
+    policy_rules: [expression]
+    recommended_workflow: customer-support-triage
+    recommended_agent: support-specialist
+    examples:
+      - title: Support triage
+        description: Analyze a support request and draft a response plan.
+        request: Triage this customer issue and draft a clear support response.
+        workflow: customer-support-triage
+        agent: support-specialist
+    metadata:
+      preset: customer-support
+      recommended_team: customer-support-team
+      primary_skill: execution-plan

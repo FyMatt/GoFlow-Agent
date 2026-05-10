@@ -1,12 +1,15 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	goruntime "runtime"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
@@ -266,6 +269,10 @@ type mcpServerSummary struct {
 	AllowedCommandPaths           []string                        `json:"allowed_command_paths,omitempty"`
 	MaxRequestBytes               int                             `json:"max_request_bytes,omitempty"`
 	MaxResponseBytes              int                             `json:"max_response_bytes,omitempty"`
+	MaxConcurrentCalls            int                             `json:"max_concurrent_calls,omitempty"`
+	ActiveCalls                   int                             `json:"active_calls,omitempty"`
+	QueuedCalls                   int                             `json:"queued_calls,omitempty"`
+	AvailableCallSlots            int                             `json:"available_call_slots,omitempty"`
 	RestartLimit                  int                             `json:"restart_limit,omitempty"`
 	Cooldown                      string                          `json:"cooldown,omitempty"`
 	SecurityBoundary              string                          `json:"security_boundary"`
@@ -339,6 +346,10 @@ type updatePolicyResponse struct {
 	CurrentVersion string       `json:"current_version"`
 	Repository     string       `json:"repository"`
 	ReleaseFeed    string       `json:"release_feed"`
+	CheckEndpoint  string       `json:"check_endpoint"`
+	NetworkOptIn   bool         `json:"network_opt_in"`
+	CheckEnabled   bool         `json:"check_enabled"`
+	DisabledReason string       `json:"disabled_reason,omitempty"`
 	Strategies     []updateMode `json:"strategies"`
 	Notes          []string     `json:"notes"`
 }
@@ -347,6 +358,59 @@ type updateMode struct {
 	InstallType string   `json:"install_type"`
 	PromptFlow  []string `json:"prompt_flow"`
 	AutoUpdate  []string `json:"auto_update"`
+}
+
+type updateCheckResponse struct {
+	CheckedAt       string               `json:"checked_at"`
+	CurrentVersion  string               `json:"current_version"`
+	LatestVersion   string               `json:"latest_version,omitempty"`
+	UpdateAvailable bool                 `json:"update_available"`
+	Prerelease      bool                 `json:"prerelease,omitempty"`
+	Draft           bool                 `json:"draft,omitempty"`
+	ReleaseURL      string               `json:"release_url,omitempty"`
+	ReleaseFeed     string               `json:"release_feed"`
+	Message         string               `json:"message,omitempty"`
+	NotesPreview    string               `json:"notes_preview,omitempty"`
+	Assets          []updateReleaseAsset `json:"assets,omitempty"`
+	AssetSummary    updateAssetSummary   `json:"asset_summary"`
+}
+
+type updateReleaseAsset struct {
+	Name string `json:"name"`
+	Size int64  `json:"size,omitempty"`
+	URL  string `json:"url,omitempty"`
+}
+
+type updateAssetSummary struct {
+	AssetCount             int      `json:"asset_count"`
+	CurrentPlatform        string   `json:"current_platform"`
+	ExpectedArchive        string   `json:"expected_archive,omitempty"`
+	MatchingArchive        string   `json:"matching_archive,omitempty"`
+	HasCurrentPlatform     bool     `json:"has_current_platform"`
+	HasChecksums           bool     `json:"has_checksums"`
+	HasSBOM                bool     `json:"has_sbom"`
+	SigstoreBundleCount    int      `json:"sigstore_bundle_count"`
+	HasArchiveSignature    bool     `json:"has_archive_signature"`
+	HasChecksumSignature   bool     `json:"has_checksum_signature"`
+	HasSBOMSignature       bool     `json:"has_sbom_signature"`
+	VerificationReady      bool     `json:"verification_ready"`
+	RecommendedInstallType string   `json:"recommended_install_type,omitempty"`
+	Missing                []string `json:"missing,omitempty"`
+	VerifySteps            []string `json:"verify_steps,omitempty"`
+}
+
+type githubReleaseResponse struct {
+	TagName    string `json:"tag_name"`
+	Name       string `json:"name"`
+	HTMLURL    string `json:"html_url"`
+	Body       string `json:"body"`
+	Draft      bool   `json:"draft"`
+	Prerelease bool   `json:"prerelease"`
+	Assets     []struct {
+		Name               string `json:"name"`
+		Size               int64  `json:"size"`
+		BrowserDownloadURL string `json:"browser_download_url"`
+	} `json:"assets"`
 }
 
 func (s *Server) handleRuntimeStatus(w http.ResponseWriter, r *http.Request) {
@@ -377,7 +441,11 @@ func (s *Server) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, updatePolicyResponse{
 		CurrentVersion: version.Version,
 		Repository:     "https://github.com/FyMatt/GoFlow-Agent",
-		ReleaseFeed:    "https://api.github.com/repos/FyMatt/GoFlow-Agent/releases/latest",
+		ReleaseFeed:    updateReleaseFeedURL(),
+		CheckEndpoint:  "/api/update-policy/check",
+		NetworkOptIn:   true,
+		CheckEnabled:   !updateChecksDisabled(),
+		DisabledReason: updateChecksDisabledReason(),
 		Strategies: []updateMode{
 			{
 				InstallType: "release-archive",
@@ -420,6 +488,313 @@ func (s *Server) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 			"automatic replacement is safest for release archives; Docker and source installs should prefer prompted instructions",
 		},
 	})
+}
+
+func (s *Server) handleUpdateCheck(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if updateChecksDisabled() {
+		writeJSONStatus(w, http.StatusForbidden, updateCheckResponse{
+			CheckedAt:      time.Now().UTC().Format(time.RFC3339),
+			CurrentVersion: version.Version,
+			ReleaseFeed:    updateReleaseFeedURL(),
+			Message:        updateChecksDisabledReason(),
+		})
+		return
+	}
+	ctx := r.Context()
+	feed := updateReleaseFeedURL()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, feed, nil)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	req.Header.Set("Accept", "application/vnd.github+json")
+	req.Header.Set("User-Agent", "goflow-agent-update-check/1")
+	client := &http.Client{Timeout: 8 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		writeJSONStatus(w, http.StatusBadGateway, updateCheckResponse{
+			CheckedAt:      time.Now().UTC().Format(time.RFC3339),
+			CurrentVersion: version.Version,
+			ReleaseFeed:    feed,
+			Message:        "update check failed: " + err.Error(),
+		})
+		return
+	}
+	defer resp.Body.Close()
+	body, err := io.ReadAll(io.LimitReader(resp.Body, 2<<20))
+	if err != nil {
+		http.Error(w, "read release feed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		writeJSONStatus(w, http.StatusBadGateway, updateCheckResponse{
+			CheckedAt:      time.Now().UTC().Format(time.RFC3339),
+			CurrentVersion: version.Version,
+			ReleaseFeed:    feed,
+			Message:        fmt.Sprintf("release feed returned HTTP %d", resp.StatusCode),
+		})
+		return
+	}
+	var release githubReleaseResponse
+	if err := json.Unmarshal(body, &release); err != nil {
+		http.Error(w, "parse release feed: "+err.Error(), http.StatusBadGateway)
+		return
+	}
+	result := buildUpdateCheckResponse(feed, release)
+	writeJSON(w, result)
+}
+
+func updateReleaseFeedURL() string {
+	if value := strings.TrimSpace(os.Getenv("GOFLOW_RELEASE_FEED")); value != "" {
+		return value
+	}
+	return "https://api.github.com/repos/FyMatt/GoFlow-Agent/releases/latest"
+}
+
+func updateChecksDisabled() bool {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("GOFLOW_DISABLE_UPDATE_CHECKS"))) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
+}
+
+func updateChecksDisabledReason() string {
+	if !updateChecksDisabled() {
+		return ""
+	}
+	return "update checks are disabled by GOFLOW_DISABLE_UPDATE_CHECKS"
+}
+
+func buildUpdateCheckResponse(feed string, release githubReleaseResponse) updateCheckResponse {
+	assets := make([]updateReleaseAsset, 0, len(release.Assets))
+	for _, asset := range release.Assets {
+		name := strings.TrimSpace(asset.Name)
+		if name == "" {
+			continue
+		}
+		assets = append(assets, updateReleaseAsset{
+			Name: name,
+			Size: asset.Size,
+			URL:  strings.TrimSpace(asset.BrowserDownloadURL),
+		})
+	}
+	latest := strings.TrimSpace(release.TagName)
+	if latest == "" {
+		latest = strings.TrimSpace(release.Name)
+	}
+	current := version.Version
+	summary := summarizeUpdateAssets(latest, assets)
+	return updateCheckResponse{
+		CheckedAt:       time.Now().UTC().Format(time.RFC3339),
+		CurrentVersion:  current,
+		LatestVersion:   latest,
+		UpdateAvailable: updateVersionAvailable(current, latest),
+		Prerelease:      release.Prerelease,
+		Draft:           release.Draft,
+		ReleaseURL:      strings.TrimSpace(release.HTMLURL),
+		ReleaseFeed:     feed,
+		NotesPreview:    updateNotesPreview(release.Body, 600),
+		Assets:          assets,
+		AssetSummary:    summary,
+	}
+}
+
+func summarizeUpdateAssets(latest string, assets []updateReleaseAsset) updateAssetSummary {
+	platform := goruntime.GOOS + "/" + goruntime.GOARCH
+	expected := expectedReleaseArchiveName(latest, goruntime.GOOS, goruntime.GOARCH)
+	names := make(map[string]struct{}, len(assets))
+	lowerNames := make(map[string]string, len(assets))
+	for _, asset := range assets {
+		name := strings.TrimSpace(asset.Name)
+		if name == "" {
+			continue
+		}
+		names[name] = struct{}{}
+		lowerNames[strings.ToLower(name)] = name
+	}
+	_, hasChecksums := names["SHA256SUMS"]
+	_, hasSBOM := names["SBOM.spdx.json"]
+	matchingArchive := ""
+	if expected != "" {
+		if actual, ok := lowerNames[strings.ToLower(expected)]; ok {
+			matchingArchive = actual
+		}
+	}
+	sigstoreCount := 0
+	for name := range names {
+		if strings.HasSuffix(strings.ToLower(name), ".sigstore.json") {
+			sigstoreCount++
+		}
+	}
+	hasArchiveSignature := false
+	if matchingArchive != "" {
+		_, hasArchiveSignature = names[matchingArchive+".sigstore.json"]
+	}
+	_, hasChecksumSignature := names["SHA256SUMS.sigstore.json"]
+	_, hasSBOMSignature := names["SBOM.spdx.json.sigstore.json"]
+	summary := updateAssetSummary{
+		AssetCount:             len(assets),
+		CurrentPlatform:        platform,
+		ExpectedArchive:        expected,
+		MatchingArchive:        matchingArchive,
+		HasCurrentPlatform:     matchingArchive != "",
+		HasChecksums:           hasChecksums,
+		HasSBOM:                hasSBOM,
+		SigstoreBundleCount:    sigstoreCount,
+		HasArchiveSignature:    hasArchiveSignature,
+		HasChecksumSignature:   hasChecksumSignature,
+		HasSBOMSignature:       hasSBOMSignature,
+		RecommendedInstallType: "release-archive",
+	}
+	required := []struct {
+		ok   bool
+		name string
+	}{
+		{summary.HasCurrentPlatform, "current platform archive"},
+		{summary.HasChecksums, "SHA256SUMS"},
+		{summary.HasSBOM, "SBOM.spdx.json"},
+		{summary.HasArchiveSignature, "archive Sigstore bundle"},
+		{summary.HasChecksumSignature, "SHA256SUMS Sigstore bundle"},
+		{summary.HasSBOMSignature, "SBOM Sigstore bundle"},
+	}
+	for _, item := range required {
+		if !item.ok {
+			summary.Missing = append(summary.Missing, item.name)
+		}
+	}
+	summary.VerificationReady = len(summary.Missing) == 0
+	summary.VerifySteps = updateVerifySteps(summary)
+	return summary
+}
+
+func updateVerifySteps(summary updateAssetSummary) []string {
+	if summary.MatchingArchive == "" {
+		return nil
+	}
+	steps := []string{}
+	if summary.HasChecksums {
+		steps = append(steps, checksumVerifyCommand(summary.MatchingArchive))
+	}
+	if summary.HasChecksums && summary.HasSBOM {
+		steps = append(steps, checksumVerifyCommand("SBOM.spdx.json"))
+	}
+	if summary.HasArchiveSignature {
+		steps = append(steps, cosignVerifyCommand(summary.MatchingArchive))
+	}
+	if summary.HasChecksumSignature {
+		steps = append(steps, cosignVerifyCommand("SHA256SUMS"))
+	}
+	if summary.HasSBOMSignature {
+		steps = append(steps, cosignVerifyCommand("SBOM.spdx.json"))
+	}
+	return steps
+}
+
+func checksumVerifyCommand(filename string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return ""
+	}
+	if goruntime.GOOS == "windows" {
+		return fmt.Sprintf("Select-String -Path SHA256SUMS -SimpleMatch %s; Get-FileHash %s -Algorithm SHA256", powershellSingleQuoteSafe("  "+filename), powershellSingleQuoteSafe(".\\"+filename))
+	}
+	return fmt.Sprintf("grep -- %s SHA256SUMS | sha256sum -c -", shellSingleQuoteSafe("  "+filename+"$"))
+}
+
+func cosignVerifyCommand(filename string) string {
+	filename = strings.TrimSpace(filename)
+	if filename == "" {
+		return ""
+	}
+	if goruntime.GOOS == "windows" {
+		return fmt.Sprintf("cosign verify-blob %s --bundle %s --certificate-identity-regexp 'https://github.com/FyMatt/GoFlow-Agent/.github/workflows/.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com", powershellSingleQuoteSafe(".\\"+filename), powershellSingleQuoteSafe(".\\"+filename+".sigstore.json"))
+	}
+	return fmt.Sprintf("cosign verify-blob %s --bundle %s --certificate-identity-regexp 'https://github.com/FyMatt/GoFlow-Agent/.github/workflows/.*' --certificate-oidc-issuer https://token.actions.githubusercontent.com", shellSingleQuoteSafe(filename), shellSingleQuoteSafe(filename+".sigstore.json"))
+}
+
+func shellSingleQuoteSafe(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "'\"'\"'") + "'"
+}
+
+func powershellSingleQuoteSafe(value string) string {
+	return "'" + strings.ReplaceAll(value, "'", "''") + "'"
+}
+
+func expectedReleaseArchiveName(latest, goos, goarch string) string {
+	versionTag := strings.TrimSpace(latest)
+	if versionTag == "" {
+		return ""
+	}
+	extension := ".tar.gz"
+	if goos == "windows" {
+		extension = ".zip"
+	}
+	return fmt.Sprintf("goflow-agent_%s_%s_%s%s", versionTag, goos, goarch, extension)
+}
+
+func updateVersionAvailable(current, latest string) bool {
+	current = normalizeVersionTag(current)
+	latest = normalizeVersionTag(latest)
+	if latest == "" || current == "" || current == "dev" {
+		return false
+	}
+	if current == latest {
+		return false
+	}
+	return compareSemverish(latest, current) > 0
+}
+
+func normalizeVersionTag(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	value = strings.TrimPrefix(value, "refs/tags/")
+	value = strings.TrimPrefix(value, "v")
+	return value
+}
+
+func compareSemverish(left, right string) int {
+	leftParts := versionNumericParts(left)
+	rightParts := versionNumericParts(right)
+	for i := 0; i < 3; i++ {
+		if leftParts[i] > rightParts[i] {
+			return 1
+		}
+		if leftParts[i] < rightParts[i] {
+			return -1
+		}
+	}
+	return strings.Compare(left, right)
+}
+
+func versionNumericParts(value string) [3]int {
+	var parts [3]int
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == '.' || r == '-' || r == '+'
+	})
+	for i := 0; i < len(fields) && i < len(parts); i++ {
+		part := 0
+		for _, r := range fields[i] {
+			if r < '0' || r > '9' {
+				break
+			}
+			part = part*10 + int(r-'0')
+		}
+		parts[i] = part
+	}
+	return parts
+}
+
+func updateNotesPreview(value string, limit int) string {
+	value = strings.TrimSpace(value)
+	if limit <= 0 || len(value) <= limit {
+		return value
+	}
+	return strings.TrimSpace(value[:limit]) + "..."
 }
 
 func (s *Server) runtimeStatus(r *http.Request) runtimeStatusResponse {
@@ -1581,6 +1956,7 @@ func (s *Server) mcpServerSummaries(health map[string]string) []mcpServerSummary
 		return nil
 	}
 	servers := s.runtime.MCPServerRefs()
+	metrics := s.runtime.MCPCallMetrics()
 	out := make([]mcpServerSummary, 0, len(servers))
 	seen := make(map[string]struct{}, len(servers))
 	for _, server := range servers {
@@ -1614,10 +1990,17 @@ func (s *Server) mcpServerSummaries(health map[string]string) []mcpServerSummary
 			AllowedCommandPaths:  append([]string(nil), server.AllowedCommandPaths...),
 			MaxRequestBytes:      server.MaxRequestBytes,
 			MaxResponseBytes:     server.MaxResponseBytes,
+			MaxConcurrentCalls:   server.MaxConcurrentCalls,
 			RestartLimit:         server.RestartLimit,
 			Cooldown:             durationString(server.Cooldown),
 			RequiresRealSandbox:  true,
 			CanAccessHostOutside: true,
+		}
+		if metric, ok := metrics[name]; ok {
+			summary.MaxConcurrentCalls = firstPositive(metric.MaxConcurrentCalls, summary.MaxConcurrentCalls)
+			summary.ActiveCalls = metric.ActiveCalls
+			summary.QueuedCalls = metric.QueuedCalls
+			summary.AvailableCallSlots = metric.AvailableCallSlots
 		}
 		switch isolation {
 		case "linux_cgroup":
@@ -1837,7 +2220,7 @@ func (s *Server) mcpServerSummaries(health map[string]string) []mcpServerSummary
 		if _, ok := seen[name]; ok {
 			continue
 		}
-		out = append(out, mcpServerSummary{
+		summary := mcpServerSummary{
 			Name:                   name,
 			Enabled:                true,
 			Health:                 status,
@@ -1855,7 +2238,14 @@ func (s *Server) mcpServerSummaries(health map[string]string) []mcpServerSummary
 			SecurityBoundary:       "MCP server is visible through runtime health but has no runtime config profile; sandboxing and command/env boundaries cannot be verified.",
 			Warnings:               []string{"MCP server isolation is unknown because no runtime MCP config entry was found"},
 			Recommendations:        []string{"define this MCP server in config with command allowlists, env_allowlist, and explicit isolation settings"},
-		})
+		}
+		if metric, ok := metrics[name]; ok {
+			summary.MaxConcurrentCalls = metric.MaxConcurrentCalls
+			summary.ActiveCalls = metric.ActiveCalls
+			summary.QueuedCalls = metric.QueuedCalls
+			summary.AvailableCallSlots = metric.AvailableCallSlots
+		}
+		out = append(out, summary)
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name) })
 	return out
@@ -1878,6 +2268,15 @@ func sanitizedEnvAllowlist(values []string) []string {
 	}
 	sort.Slice(out, func(i, j int) bool { return strings.ToUpper(out[i]) < strings.ToUpper(out[j]) })
 	return out
+}
+
+func firstPositive(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
 }
 
 func boolPtr(value bool) *bool {

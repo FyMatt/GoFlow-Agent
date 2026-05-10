@@ -71,6 +71,7 @@ GOFLOW_WORKSPACE_ROOT=<workspace path>
 - 拒绝路径逃逸和符号链接逃逸。
 - 写文件会创建父目录。
 - 删除目录必须显式传 `recursive=true`。
+- 文本读取统一按 UTF-8 解码，遇到 UTF-8 BOM 会自动去除。
 - 返回结构化 JSON。
 - CLI 写入日志显示类似 git 的状态、行数和 diff 摘要。
 
@@ -125,6 +126,21 @@ Agent 权限、审批、审计、风险展示和 MCP 隔离。
 
 如果要执行生成脚本或第三方脚本，应在这个 MCP server 上使用
 `isolation: container`，让脚本在 Docker/Podman 沙箱中运行。
+
+## 可靠性控制
+
+每个 MCP server 都支持单次调用超时、请求/响应大小上限、`restart_limit`、
+`cooldown` 和 `max_concurrent_calls`。当前 stdio transport 是单连接模型，所以默认
+`max_concurrent_calls: 1`，用于串行化请求并避免大量调用无限堆积。
+
+`restart_limit` 加 `cooldown` 是轻量熔断层：server 连续启动或调用失败后会进入冷却，而不是无限重启。
+
+`GET /api/runtime` 还会在 `mcp_servers[]` 中返回每个 server 的实时调用槽压力：
+`max_concurrent_calls`、`active_calls`、`queued_calls` 和
+`available_call_slots`。Web Studio 或运维侧可以用这些字段判断某个工具是否长时间占用、stdio server 是否饱和，或者工作流是否触发了过多并发调用。
+
+Web Studio 的观测页面会把这些字段渲染为 MCP 工具压力面板，用户不用直接查看
+JSON，也能区分当前是工具拥塞、模型等待、审批暂停，还是工作流编排本身造成的等待。
 
 ## 自定义 MCP server
 

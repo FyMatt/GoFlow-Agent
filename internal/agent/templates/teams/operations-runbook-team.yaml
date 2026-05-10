@@ -1,0 +1,98 @@
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: operations-runbook-team
+title: Operations Runbook Team
+category: operations
+description: Plan operational changes, draft runbooks, risk-review steps, and hand off execution.
+tags: [ops, runbook, risk, approval]
+recommended_workflow: operations-runbook
+recommended_entry_agent: planner
+role_templates:
+  - name: incident-planner
+    label: Incident Planner
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - understand operational goal
+      - identify prechecks and rollback
+      - define success signals
+    produces: [runbook_plan, rollback_plan]
+  - name: runbook-author
+    label: Runbook Author
+    agent: fixer
+    skill: code-writing
+    responsibilities:
+      - write or update runbook files
+      - include commands and expected outputs
+      - preserve safety checks
+    consumes: [runbook_plan, rollback_plan]
+    produces: [runbook_changes]
+  - name: risk-reviewer
+    label: Risk Reviewer
+    agent: auditor
+    skill: code-audit
+    responsibilities:
+      - review destructive steps
+      - check rollback coverage
+      - flag approval gates
+    consumes: [runbook_changes]
+    produces: [risk_review]
+  - name: operator-handoff
+    label: Operator Handoff
+    agent: chat
+    skill: execution-plan
+    responsibilities:
+      - summarize exact operator actions
+      - separate automated from manual steps
+      - record unresolved decisions
+    consumes: [risk_review]
+    produces: [operator_handoff]
+handoffs:
+  - from: incident-planner
+    to: runbook-author
+    kind: runbook_plan
+    subject: Operational plan and rollback
+    artifacts: [runbook_plan, rollback_plan]
+  - from: runbook-author
+    to: risk-reviewer
+    kind: risk_review
+    subject: Runbook changes ready for review
+    artifacts: [runbook_changes]
+  - from: risk-reviewer
+    to: operator-handoff
+    kind: operator_handoff
+    subject: Reviewed runbook and unresolved decisions
+    artifacts: [risk_review]
+blackboard_templates:
+  - kind: request
+    title: Original request and constraints
+    owner_role: incident-planner
+    status: open
+    tags: [scope]
+    description: The user request, allowed scope, and assumptions that should survive handoffs.
+  - kind: plan
+    title: Working plan
+    owner_role: incident-planner
+    status: open
+    tags: [plan]
+    description: Current executable plan, stage ordering, and known blockers.
+  - kind: evidence
+    title: Evidence and observations
+    owner_role: incident-planner
+    status: open
+    tags: [evidence]
+    description: Tool observations, source references, test output, or collected artifacts.
+  - kind: decision
+    title: Decisions and approvals
+    owner_role: incident-planner
+    status: open
+    tags: [decision]
+    description: Decisions made by agents or the operator, including approval gates.
+  - kind: finding
+    title: Findings and risks
+    owner_role: incident-planner
+    status: open
+    tags: [risk]
+    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+output_contract: [runbook_plan, rollback_plan, risk_review, operator_handoff]

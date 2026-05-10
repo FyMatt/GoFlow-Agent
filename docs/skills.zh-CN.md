@@ -85,6 +85,25 @@ metadata:
 
 HTTP Studio 可通过 Skill resource API 管理这些文件，而不是直接改写整个 `SKILL.md`。
 
+内置 Skill 之间也会通过 `next_skills` 和 metadata 串联。例如
+`web-vulnerability-research` 可以继续交给 `vulnerability-research` 或
+`code-audit`，`reverse-engineering` 可以继续交给
+`binary-vulnerability-research`。Web Studio 应把这些关系展示成推荐后续
+Skill，而不是把每个 Skill 当成孤立提示词。
+
+复杂领域 Skill 建议保持 `SKILL.md` 精简：只写触发场景、核心流程、工具偏好和输出格式。
+大段领域资料放到 `references/`，确定性采集或解析脚本放到 `scripts/`，报告模板放到
+`templates/`。这样可以降低提示词成本，也方便工作流复用。
+
+## CLI 脚手架
+
+```text
+/skill-templates
+/new-skill code-audit custom-audit
+```
+
+`/new-skill` 会生成 `skills/custom-audit/SKILL.md`、校验文件并 reload Skill。Skill scaffold template 已经文件化：内置模板从 `internal/scaffold/templates/skills/scaffolds/templates.yaml` 内嵌进二进制，运行目录可以通过 `templates/skills/scaffolds/*.yaml` 添加或覆盖模板。
+
 ## 声明式辅助脚本
 
 复杂 Skill 可以在 `SKILL.md` 中声明确定性的辅助脚本：

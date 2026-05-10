@@ -54,6 +54,9 @@ POST /api/resources/tools/scaffolds/{preset}
 ```yaml
 isolation: container
 network_disabled: true
+restart_limit: 3
+cooldown: 10s
+max_concurrent_calls: 1
 isolation_options:
   image: ghcr.io/fymatt/goflow-agent-mcp-python:<version>
   workspace_mount: ro

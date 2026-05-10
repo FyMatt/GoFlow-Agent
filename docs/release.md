@@ -38,6 +38,13 @@ python scripts/generate_sbom.py --version v0.1.3 --output dist/SBOM.spdx.json --
 python scripts/validate_release_archives.py --dist dist --version v0.1.3 --require-sbom
 ```
 
+Validate a single-target local build:
+
+```bash
+python scripts/build_release_assets.py --clean --version dev --target linux/amd64
+python scripts/validate_release_archives.py --dist dist --version dev --target linux/amd64
+```
+
 If Cosign is available and configured for signing, validate signatures too:
 
 ```bash
@@ -53,6 +60,8 @@ Each archive contains:
 - `mcp_servers/python_notes.py`
 - `configs/goflow.binary.yaml`
 - `skills/`
+- `kits/`
+- `examples/`
 - `docs/`
 - launcher script: `run-goflow.sh` or `run-goflow.cmd`
 
@@ -64,10 +73,15 @@ the executable is launched from an archive `bin` directory, GoFlow resolves
 runtime home to the archive root and defaults to `configs/goflow.binary.yaml`
 instead of looking for `bin/configs/goflow.yaml`.
 
-The build script writes `dist/SHA256SUMS` for archive integrity checks. The SBOM
-script writes `dist/SBOM.spdx.json` and can append its checksum to
-`SHA256SUMS`. The release workflow signs archives, `SHA256SUMS`, and
-`SBOM.spdx.json` with Sigstore/Cosign keyless signing.
+The `kits/` and `examples/` directories are included so downloaded archives have
+the same starter Kit catalog and copyable extension examples described in the
+README and Web Studio. The archive validator checks expected filenames,
+`SHA256SUMS`, optional SBOM and signature bundles, and the internal archive
+layout, including representative Kit and example files. The build script writes
+`dist/SHA256SUMS` for archive integrity checks. The SBOM script writes
+`dist/SBOM.spdx.json` and can append its checksum to `SHA256SUMS`. The release
+workflow signs archives, `SHA256SUMS`, and `SBOM.spdx.json` with Sigstore/Cosign
+keyless signing.
 
 ## GitHub Release
 
@@ -80,15 +94,22 @@ git push origin v0.1.3
 
 The workflow:
 
-1. builds binary archives with `scripts/build_release_assets.py`
-2. generates `SBOM.spdx.json` with `scripts/generate_sbom.py`
-3. signs archives, `SHA256SUMS`, and `SBOM.spdx.json`
-4. validates expected OS/architecture archive names, checksums, SBOM, and signatures
-5. uploads workflow artifacts
-6. attaches release files to the GitHub Release
-7. builds the main Docker image and the MCP Python tool-runtime image
-8. pushes both images to GHCR when the run is tag-triggered
-9. signs pushed Docker image digests with Cosign keyless signing
+1. runs release preflight: `go test ./...`, Python MCP validation, resource
+   links, Web Studio i18n/docs checks, HTTP Studio smoke, required browser
+   Studio smoke, and deployment asset validation
+2. builds binary archives with `scripts/build_release_assets.py`
+3. generates `SBOM.spdx.json` with `scripts/generate_sbom.py`
+4. signs archives, `SHA256SUMS`, and `SBOM.spdx.json`
+5. validates expected OS/architecture archive names, checksums, SBOM, and signatures
+6. uploads workflow artifacts
+7. attaches release files to the GitHub Release
+8. builds the main Docker image and the MCP Python tool-runtime image
+9. pushes both images to GHCR when the run is tag-triggered
+10. signs pushed Docker image digests with Cosign keyless signing
+
+The archive and Docker jobs both depend on the preflight job. A failed browser
+smoke test, resource validation, documentation check, or deployment validation
+blocks publishing.
 
 GitHub Actions runs these scripts on GitHub-hosted runners, not on your local
 machine. The runner checks out the repository, installs the requested toolchain,
@@ -156,11 +177,35 @@ Run static release/deployment validation without Docker:
 python scripts/validate_deployment_assets.py
 ```
 
-Run the full smoke checks before cutting a release:
+Run the full shared preflight before cutting a release:
 
 ```bash
-go test ./...
-python scripts/validate_python_mcp.py
-python scripts/validate_extension_workflow.py
-python scripts/validate_deployment_assets.py
+python scripts/run_preflight.py --browser-required
 ```
+
+To include local archive packaging in the same preflight, add one or more
+release targets:
+
+```bash
+python scripts/run_preflight.py --browser-required --release-target windows/amd64
+```
+
+For a local machine without Chrome, Edge, or Chromium, use
+`python scripts/run_preflight.py --skip-browser` for the non-browser checks.
+
+`scripts/smoke_http_studio.py` builds a temporary `goflow` binary, starts HTTP
+mode with placeholder model settings, and checks the embedded Studio pages,
+assets, and API contracts. It is a lightweight HTTP/static/API smoke test, not
+a full browser interaction test.
+
+`scripts/smoke_http_browser.py` is an optional browser execution smoke test. It
+uses a locally installed Chrome, Edge, or Chromium binary to render `/console`,
+`/workflows`, `/console#playground`, `/console#approvals`,
+`/console#catalog`, `/console#status`, `/console#workspace`,
+`/console#settings`, and Chinese `?lang=zh` deep links. This catches
+JavaScript white-screen failures, recursion failures, and mixed-language
+regressions across the Overview, Workflow Studio, Playground, Approvals,
+Resource Studio, Observability, Workspace, and Settings surfaces. It skips when
+no browser is available by default. CI and release preflight should pass
+`--required` so a missing or broken browser fails the check instead of silently
+skipping Web Studio execution coverage.

@@ -1,0 +1,62 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: web-security-kit
+title: Web Security Research Kit
+description: Collect target pages and client assets, review web attack surface, classify risk, and produce defensive reports.
+category: security
+tags:
+    - web
+    - security
+    - client-assets
+    - evidence
+agents:
+    - web-security-researcher
+    - security-researcher
+    - planner
+    - auditor
+providers:
+    - primary
+skills:
+    - execution-plan
+    - web-vulnerability-research
+    - vulnerability-research
+    - code-audit
+tools:
+    - web_tools/web_search
+    - web_tools/fetch_url
+    - web_tools/fetch_page_assets
+    - file_tools/read_file
+    - file_tools/search_files
+workflows:
+    - skill-chain
+workflow_templates:
+    - web-research-risk
+    - security-audit-evidence-gate
+    - human-input-security-review
+team_templates:
+    - web-research-team
+    - audit-security-team
+policy_rules:
+    - contains
+    - risk_at_least
+    - ref_truthy
+    - expression
+examples:
+    - title: Review a target URL
+      description: Fetch page source and linked client assets, then inspect for evidence-backed client-side risks.
+      request: Review https://example.com for client-side security risks within authorized scope.
+      workflow: web-research-risk
+      agent: web-security-researcher
+    - title: Evidence-gated web report
+      description: Require scope, collected assets, findings, and final operator review before reporting.
+      request: Build an evidence-backed web security report for this authorized target.
+      workflow: security-audit-evidence-gate
+      agent: security-researcher
+metadata:
+    preset: web-security
+    recommended_agent: web-security-researcher
+    recommended_workflow: web-research-risk
+    recommended_team: web-research-team
+    primary_skill: web-vulnerability-research
+    scaffold_preset: web-security

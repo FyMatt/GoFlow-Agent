@@ -9,6 +9,7 @@ import (
 	"sort"
 	"strings"
 	"unicode"
+	"unicode/utf8"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
@@ -60,13 +61,24 @@ func expandAtFileReferences(input, workspaceRoot string) (string, []atReference,
 		if err != nil {
 			return "", nil, fmt.Errorf("@%s: %w", rawPath, err)
 		}
+		content, err := decodeAtReferenceUTF8(rawPath, data)
+		if err != nil {
+			return "", nil, err
+		}
 		total += len(data)
-		refs = append(refs, atReference{RawPath: rawPath, ResolvedPath: resolved, RelativePath: rel, Content: string(data), Size: len(data)})
+		refs = append(refs, atReference{RawPath: rawPath, ResolvedPath: resolved, RelativePath: rel, Content: content, Size: len(data)})
 	}
 	if len(refs) == 0 {
 		return input, nil, nil
 	}
 	return buildAtReferencePrompt(input, refs), refs, nil
+}
+
+func decodeAtReferenceUTF8(rawPath string, data []byte) (string, error) {
+	if !utf8.Valid(data) {
+		return "", fmt.Errorf("@%s: file is not valid UTF-8 text; use a binary inspection tool for non-text files", rawPath)
+	}
+	return strings.TrimPrefix(string(data), "\ufeff"), nil
 }
 
 func expandAtFileReferencesWithTools(ctx context.Context, input, workspaceRoot string, mcpClient interfaces.MCPClient, renderer *cliStreamRenderer) (string, []atReference, error) {

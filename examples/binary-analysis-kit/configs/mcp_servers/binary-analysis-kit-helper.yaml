@@ -1,0 +1,50 @@
+# Loaded automatically from configs/mcp_servers/*.yaml on next startup.
+mcp_servers:
+    - name: binary-analysis-kit-helper
+      command: python
+      args:
+        - /goflow-tools/binary-analysis-kit-helper.py
+      enabled: true
+      timeout: 30s
+      workdir: .
+      env_allowlist:
+        - PATH
+        - HOME
+        - USERPROFILE
+        - LOCALAPPDATA
+        - TMP
+        - TEMP
+      network_disabled: true
+      isolation: container
+      isolation_profile: readonly
+      isolation_options:
+        cap_drop: all
+        cpus: "0.5"
+        image: ghcr.io/fymatt/goflow-agent-mcp-python:latest
+        init: "true"
+        ipc: none
+        memory: 256m
+        memory_swap: 256m
+        network: disabled
+        no_new_privileges: "true"
+        pids_limit: "64"
+        pull_policy: missing
+        readonly_rootfs: "true"
+        runtime: docker
+        tmpfs: /tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m
+        tool_mount: ro
+        # Set this to the absolute runtime-home path after copying the example,
+        # for example:
+        #   Windows: C:\path\to\goflow\mcp_servers\binary-analysis-kit-helper.py
+        #   Linux:   /opt/goflow/mcp_servers/binary-analysis-kit-helper.py
+        tool_source: ${GOFLOW_BINARY_ANALYSIS_KIT_TOOL_SOURCE}
+        tool_target: /goflow-tools/binary-analysis-kit-helper.py
+        user: 65532:65532
+        userns: auto
+        workspace_mount: ro
+      restart_limit: 3
+      cooldown: 10s
+      allowed_commands:
+        - python
+      max_request_bytes: 65536
+      max_response_bytes: 2097152

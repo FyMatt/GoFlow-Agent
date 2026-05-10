@@ -15,6 +15,7 @@ export async function renderStatus(root, runtime) {
   const runFocus = statusRunFocus(runtime);
   const cost = runtime.cost || {};
   const auxiliaryModels = Array.isArray(runtime.auxiliary_models) ? runtime.auxiliary_models : [];
+  const mcpPressure = summarizeMCPPressure(runtime);
   const teamState = await loadStatusTeamState(runtime);
   const teamSignalCount = statusTeamSignalCount(teamState);
 
@@ -39,6 +40,7 @@ export async function renderStatus(root, runtime) {
     <div id="statusMetricGrid" class="metric-grid">
       ${metric(t("status.metric.pending"), String(pending), pending ? t("status.metric.pendingHelp") : t("status.metric.clearHelp"), pending ? "warn" : "good")}
       ${metric(t("status.metric.workflow"), escapeHTML(localizedText(workflow.name || t("common.none"))), workflowStatusMetricDetail(workflow), workflow.status ? "neutral" : "warn")}
+      ${metric(t("status.metric.tools"), numberText(mcpPressure.active + mcpPressure.queued), mcpPressure.metricHelp, mcpPressure.tone)}
       ${metric(t("status.metric.agent"), escapeHTML(localizedText(runtime.active_agent || "-")), `${t("status.metric.mode")} ${escapeHTML(modeLabel(runtime.mode))}`, "neutral")}
       ${metric(t("status.metric.logs"), String(statusLines.length), t("status.metric.logsHelp"), statusLines.length ? "good" : "warn")}
     </div>
@@ -89,6 +91,17 @@ export async function renderStatus(root, runtime) {
           <span id="statusTeamBadge" class="badge ${teamSignalCount ? "neutral" : "warn"}">${teamSignalCount ? t("status.teamSignalCount", { count: teamSignalCount }) : t("status.teamNoSignals")}</span>
         </div>
         <div id="statusTeamBody">${renderStatusTeamState(teamState)}</div>
+      </section>
+
+      <section class="panel span-12 status-mcp" data-tour-id="status-mcp">
+        <div class="panel-head">
+          <div>
+            <h2>${t("status.mcpTitle")}</h2>
+            <p class="muted">${t("status.mcpHelp")}</p>
+          </div>
+          <span id="statusMCPBadge" class="badge ${mcpPressure.tone}">${escapeHTML(mcpPressure.badge)}</span>
+        </div>
+        <div id="statusMCPBody">${renderMCPPressure(mcpPressure)}</div>
       </section>
 
       <section class="panel span-12 status-cost" data-tour-id="status-cost">
@@ -204,6 +217,7 @@ function updateStatusRuntime(root, runtime) {
   const runFocus = statusRunFocus(runtime, getCachedStatusEvidence(root, baseRunFocus.runID));
   const cost = runtime.cost || {};
   const auxiliaryModels = Array.isArray(runtime.auxiliary_models) ? runtime.auxiliary_models : [];
+  const mcpPressure = summarizeMCPPressure(runtime);
 
   const heroBadge = root.querySelector("#statusHeroBadge");
   if (heroBadge) {
@@ -214,6 +228,7 @@ function updateStatusRuntime(root, runtime) {
   setHTMLIfChanged(root.querySelector("#statusMetricGrid"), `
       ${metric(t("status.metric.pending"), String(pending), pending ? t("status.metric.pendingHelp") : t("status.metric.clearHelp"), pending ? "warn" : "good")}
       ${metric(t("status.metric.workflow"), escapeHTML(localizedText(workflow.name || t("common.none"))), workflowStatusMetricDetail(workflow), workflow.status ? "neutral" : "warn")}
+      ${metric(t("status.metric.tools"), numberText(mcpPressure.active + mcpPressure.queued), mcpPressure.metricHelp, mcpPressure.tone)}
       ${metric(t("status.metric.agent"), escapeHTML(localizedText(runtime.active_agent || "-")), `${t("status.metric.mode")} ${escapeHTML(modeLabel(runtime.mode))}`, "neutral")}
       ${metric(t("status.metric.logs"), String(statusLines.length), t("status.metric.logsHelp"), statusLines.length ? "good" : "warn")}`);
   setHTMLIfChanged(root.querySelector("#statusHealthCard"), healthItems.map(renderHealthItem).join(""));
@@ -238,6 +253,12 @@ function updateStatusRuntime(root, runtime) {
     costBadge.textContent = count ? t("status.costRecommendationsCount", { count }) : t("status.costNoRecommendations");
   }
   setHTMLIfChanged(root.querySelector("#statusCostBody"), renderCostDiagnostics(cost, auxiliaryModels));
+  const mcpBadge = root.querySelector("#statusMCPBadge");
+  if (mcpBadge) {
+    mcpBadge.className = `badge ${mcpPressure.tone}`;
+    mcpBadge.textContent = mcpPressure.badge;
+  }
+  setHTMLIfChanged(root.querySelector("#statusMCPBody"), renderMCPPressure(mcpPressure));
   setStatusSessionSummary(root, session, runtime);
   setStatusSessionSnapshot(root, session);
 }
@@ -292,6 +313,7 @@ function primeStatusHTMLCache(root) {
     "#statusHealthCard",
     "#statusRunFocusBody",
     "#statusTeamBody",
+    "#statusMCPBody",
     "#statusCostBody",
     "#statusSessionSummary"
   ].forEach(selector => {
@@ -1169,6 +1191,114 @@ function statusTeamSignalCount(teamState) {
     .reduce((total, key) => total + (teamState[key]?.length || 0), 0)
     + (teamState.pending_input ? 1 : 0)
     + (teamState.approval_gate ? 1 : 0);
+}
+
+function summarizeMCPPressure(runtime = {}) {
+  const servers = Array.isArray(runtime.mcp_servers) ? runtime.mcp_servers : [];
+  const visible = servers.filter(server => server && server.enabled !== false);
+  const totals = visible.reduce((acc, server) => {
+    const active = safeCount(server.active_calls);
+    const queued = safeCount(server.queued_calls);
+    const max = safeCount(server.max_concurrent_calls);
+    const available = server.available_call_slots == null
+      ? Math.max(0, max - active)
+      : safeCount(server.available_call_slots);
+    acc.active += active;
+    acc.queued += queued;
+    acc.available += available;
+    acc.max += max;
+    if (queued > 0) acc.blocked += 1;
+    if (active > 0) acc.busy += 1;
+    return acc;
+  }, { active: 0, queued: 0, available: 0, max: 0, busy: 0, blocked: 0 });
+  const tone = totals.queued ? "warn" : totals.active ? "neutral" : "good";
+  const badge = !visible.length
+    ? t("status.mcpNoServers")
+    : totals.queued
+      ? t("status.mcpQueuedBadge", { count: totals.queued })
+      : totals.active
+        ? t("status.mcpActiveBadge", { count: totals.active })
+        : t("status.mcpIdleBadge");
+  const metricHelp = !visible.length
+    ? t("status.metric.toolsNone")
+    : totals.queued
+      ? t("status.metric.toolsQueued", { active: totals.active, queued: totals.queued })
+      : totals.active
+        ? t("status.metric.toolsActive", { active: totals.active })
+        : t("status.metric.toolsIdle", { count: visible.length });
+  return { servers: visible, ...totals, tone, badge, metricHelp };
+}
+
+function renderMCPPressure(summary) {
+  if (!summary.servers.length) {
+    return `<div class="status-mcp-shell status-mcp-empty">
+      <strong>${escapeHTML(t("status.mcpEmptyTitle"))}</strong>
+      <span>${escapeHTML(t("status.mcpEmptyHelp"))}</span>
+    </div>`;
+  }
+  return `<div class="status-mcp-shell">
+    <div class="status-mcp-summary">
+      ${mcpPressureStat(t("status.mcpActiveCalls"), numberText(summary.active), t("status.mcpActiveCallsHelp"))}
+      ${mcpPressureStat(t("status.mcpQueuedCalls"), numberText(summary.queued), t("status.mcpQueuedCallsHelp"))}
+      ${mcpPressureStat(t("status.mcpAvailableSlots"), numberText(summary.available), t("status.mcpAvailableSlotsHelp"))}
+      ${mcpPressureStat(t("status.mcpServers"), numberText(summary.servers.length), t("status.mcpServersHelp"))}
+    </div>
+    <div class="status-mcp-list">
+      ${summary.servers.map(renderMCPServerPressure).join("")}
+    </div>
+  </div>`;
+}
+
+function mcpPressureStat(label, value, help) {
+  return `<div class="status-mcp-stat">
+    <span>${escapeHTML(label)}</span>
+    <strong>${escapeHTML(value)}</strong>
+    <small>${escapeHTML(help)}</small>
+  </div>`;
+}
+
+function renderMCPServerPressure(server = {}) {
+  const active = safeCount(server.active_calls);
+  const queued = safeCount(server.queued_calls);
+  const max = safeCount(server.max_concurrent_calls);
+  const available = server.available_call_slots == null ? Math.max(0, max - active) : safeCount(server.available_call_slots);
+  const tone = queued ? "warn" : active ? "neutral" : "good";
+  const health = statusDisplayValue(server.health || t("status.mcpHealthUnknown"));
+  const utilization = max > 0 ? Math.min(100, Math.round((active / max) * 100)) : 0;
+  const detail = queued
+    ? t("status.mcpServerQueued", { queued })
+    : active
+      ? t("status.mcpServerActive", { active })
+      : t("status.mcpServerIdle");
+  return `<article class="status-mcp-server ${tone}">
+    <div class="status-mcp-server-head">
+      <div>
+        <strong>${escapeHTML(statusDisplayValue(server.name || t("status.mcpServer")))}</strong>
+        <span>${escapeHTML(detail)}</span>
+      </div>
+      <span class="badge ${tone}">${escapeHTML(health)}</span>
+    </div>
+    <div class="status-mcp-bar" aria-label="${escapeHTML(t("status.mcpUtilization", { value: utilization }))}">
+      <span style="width: ${utilization}%"></span>
+    </div>
+    <div class="status-mcp-facts">
+      ${mcpPressureFact(t("status.mcpFactActive"), active)}
+      ${mcpPressureFact(t("status.mcpFactQueued"), queued)}
+      ${mcpPressureFact(t("status.mcpFactAvailable"), available)}
+      ${mcpPressureFact(t("status.mcpFactMax"), max || t("common.none"))}
+    </div>
+  </article>`;
+}
+
+function mcpPressureFact(label, value) {
+  const display = typeof value === "number" ? numberText(value) : statusDisplayValue(value);
+  return `<span><small>${escapeHTML(label)}</small><strong>${escapeHTML(display)}</strong></span>`;
+}
+
+function safeCount(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number < 0) return 0;
+  return Math.floor(number);
 }
 
 function statusTeamOtherRecords(teamState) {

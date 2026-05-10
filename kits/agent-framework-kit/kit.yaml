@@ -1,0 +1,54 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: agent-framework-kit
+title: Agent Framework Extension Kit
+description: Design and materialize linked GoFlow Agent, Skill, MCP Tool, Workflow, Team, Policy, and Kit resources for vertical second development.
+category: platform
+tags:
+    - agent-framework
+    - extension
+    - kit
+    - second-development
+agents:
+    - framework-extension-architect
+    - software-engineer
+    - planner
+    - fixer
+    - auditor
+providers:
+    - primary
+skills:
+    - execution-plan
+    - code-writing
+    - code-audit
+tools:
+    - file_tools/read_file
+    - file_tools/search_files
+    - file_tools/write_file
+workflows:
+    - skill-chain
+workflow_templates:
+    - agent-framework-extension
+    - task-decomposition-plan
+    - software-quality-gate
+team_templates:
+    - framework-extension-team
+    - software-task-team
+policy_rules:
+    - ref_truthy
+    - team_approval_gate
+    - expression
+examples:
+    - title: Build a vertical Agent kit
+      description: Produce a linked resource design before creating Agent, Skill, Tool, Workflow, Team, Policy, and Kit files.
+      request: Create a vertical Agent kit for an internal release-review assistant.
+      workflow: agent-framework-extension
+      agent: framework-extension-architect
+metadata:
+    preset: agent-framework
+    recommended_agent: framework-extension-architect
+    recommended_workflow: agent-framework-extension
+    recommended_team: framework-extension-team
+    primary_skill: execution-plan
+    scaffold_preset: agent-framework

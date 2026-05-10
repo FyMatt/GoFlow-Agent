@@ -1,0 +1,1111 @@
+nodes:
+    - type: start
+      label: Start
+      category: visual
+      description: Entry marker. It does not run a model stage.
+      source: built_in
+      visual_only: true
+      default_stage:
+        name: start
+        node_type: start
+        agent: ""
+        skill: ""
+      hints:
+        - Use exactly one start node for visual clarity. Runtime execution follows stage order and next edges; start itself does not call a model.
+    - type: agent
+      label: Agent
+      category: execute
+      description: Run one configured agent with one skill prompt.
+      source: built_in
+      default_stage:
+        name: agent
+        node_type: agent
+        agent: planner
+        skill: execution-plan
+        outputs:
+            raw_output: result.output
+            summary: result.summary
+      fields:
+        - name: agent
+          label: Agent
+          type: agent
+          description: Configured agent profile that owns this stage.
+          default: planner
+          required: true
+          examples:
+            - planner
+            - software-engineer
+            - web-security-researcher
+            - binary-analyst
+          hints:
+            - The agent controls model route, mode, tool permission envelope, max iterations, and approval policy.
+        - name: skill
+          label: Skill
+          type: skill
+          description: Skill instructions applied to the stage.
+          default: execution-plan
+          required: true
+          examples:
+            - execution-plan
+            - code-writing
+            - code-audit
+            - web-vulnerability-research
+          hints:
+            - A skill narrows instructions and can narrow allowed tool kinds, but it cannot grant permissions the agent does not have.
+        - name: input
+          label: Inputs
+          type: map
+          description: Map local input names to workflow references or literals.
+          placeholder: 'plan: stages.plan.outputs.plan'
+          examples:
+            - 'plan: stages.plan.outputs.plan'
+            - 'target: workflow.input'
+            - 'evidence: stages.collect.outputs.evidence'
+          hints:
+            - Use input when this node needs a specific upstream value. Downstream prompts receive these names as structured context.
+        - name: outputs
+          label: Outputs
+          type: map
+          description: Map output names to result references that later nodes can consume.
+          placeholder: 'summary: result.summary'
+          examples:
+            - 'summary: result.summary'
+            - 'report: result.output'
+            - 'findings: result.findings'
+            - 'tool_results: result.tool_results'
+          hints:
+            - Common result refs are result.output, result.summary, result.findings, result.changes, result.verification, and result.tool_results.
+        - name: params
+          label: Params
+          type: map
+          description: Extra node parameters passed to the runtime and shown in Studio.
+          placeholder: 'purpose: Explain what this stage must produce'
+          examples:
+            - 'purpose: Draft the implementation plan'
+            - 'output_contract: Emit Scope, Findings, Risks, Next Steps'
+          hints:
+            - Use params for stable settings, output contracts, quality bars, and UI form metadata.
+        - name: artifacts
+          label: Artifacts
+          type: artifact_list
+          description: Declared replay artifacts such as reports, evidence, or diffs. Each item supports name, kind, title, ref, summary, and content.
+          examples:
+            - 'name: audit-report, kind: report, ref: result.output'
+            - 'name: collected-assets, kind: evidence, ref: stages.collect.outputs.evidence'
+        - name: acceptance_criteria
+          label: Acceptance criteria
+          type: acceptance_list
+          description: Checks that quality_gate can evaluate later.
+          examples:
+            - 'name: has-risk, ref: result.output, contains: Risk'
+            - 'name: has-tests, ref: result.output, contains: test'
+        - name: approval
+          label: Approval
+          type: boolean
+          description: Pause before entering this stage unless run is pre-approved.
+          default: "false"
+          examples:
+            - "true"
+            - "false"
+          hints:
+            - Use approval for write, exec, destructive, external side-effect, or high-risk stages.
+        - name: retry.max_attempts
+          label: Max attempts
+          type: number
+          description: Bounded retry count for this executable stage.
+          default: "1"
+          examples:
+            - "2"
+            - "3"
+        - name: on_error
+          label: On error
+          type: stage_list
+          description: Fallback stages when all retry attempts fail.
+          placeholder: recover, report-failure
+          examples:
+            - revise
+            - report-failure
+      outputs:
+        - name: summary
+          description: Bounded result summary
+        - name: raw_output
+          description: Raw model output
+        - name: findings
+          description: Structured findings when emitted
+      hints:
+        - Use an Agent node when model route, permissions, or mode matters more than a single reusable skill.
+        - 'Typical chain: plan.outputs.plan -> implement.input.plan -> audit.input.changes.'
+      examples:
+        - title: Plan stage
+          description: Create a plan that later stages can consume.
+          stage:
+            name: plan
+            node_type: agent
+            agent: planner
+            skill: execution-plan
+            outputs:
+                plan: result.output
+                summary: result.summary
+            next:
+                - implement
+          notes:
+            - Downstream nodes reference stages.plan.outputs.plan.
+    - type: skill
+      label: Skill
+      category: execute
+      description: Run a selected skill, optionally with mapped inputs and outputs.
+      source: built_in
+      default_stage:
+        name: skill
+        node_type: skill
+        agent: planner
+        skill: execution-plan
+        outputs:
+            raw_output: result.output
+            summary: result.summary
+      fields:
+        - name: agent
+          label: Agent
+          type: agent
+          description: Configured agent profile that owns this stage.
+          default: planner
+          required: true
+          examples:
+            - planner
+            - software-engineer
+            - web-security-researcher
+            - binary-analyst
+          hints:
+            - The agent controls model route, mode, tool permission envelope, max iterations, and approval policy.
+        - name: skill
+          label: Skill
+          type: skill
+          description: Skill instructions applied to the stage.
+          default: execution-plan
+          required: true
+          examples:
+            - execution-plan
+            - code-writing
+            - code-audit
+            - web-vulnerability-research
+          hints:
+            - A skill narrows instructions and can narrow allowed tool kinds, but it cannot grant permissions the agent does not have.
+        - name: input
+          label: Inputs
+          type: map
+          description: Map local input names to workflow references or literals.
+          placeholder: 'plan: stages.plan.outputs.plan'
+          examples:
+            - 'plan: stages.plan.outputs.plan'
+            - 'target: workflow.input'
+            - 'evidence: stages.collect.outputs.evidence'
+          hints:
+            - Use input when this node needs a specific upstream value. Downstream prompts receive these names as structured context.
+        - name: outputs
+          label: Outputs
+          type: map
+          description: Map output names to result references that later nodes can consume.
+          placeholder: 'summary: result.summary'
+          examples:
+            - 'summary: result.summary'
+            - 'report: result.output'
+            - 'findings: result.findings'
+            - 'tool_results: result.tool_results'
+          hints:
+            - Common result refs are result.output, result.summary, result.findings, result.changes, result.verification, and result.tool_results.
+        - name: params
+          label: Params
+          type: map
+          description: Extra node parameters passed to the runtime and shown in Studio.
+          placeholder: 'purpose: Explain what this stage must produce'
+          examples:
+            - 'purpose: Draft the implementation plan'
+            - 'output_contract: Emit Scope, Findings, Risks, Next Steps'
+          hints:
+            - Use params for stable settings, output contracts, quality bars, and UI form metadata.
+        - name: artifacts
+          label: Artifacts
+          type: artifact_list
+          description: Declared replay artifacts such as reports, evidence, or diffs. Each item supports name, kind, title, ref, summary, and content.
+          examples:
+            - 'name: audit-report, kind: report, ref: result.output'
+            - 'name: collected-assets, kind: evidence, ref: stages.collect.outputs.evidence'
+        - name: acceptance_criteria
+          label: Acceptance criteria
+          type: acceptance_list
+          description: Checks that quality_gate can evaluate later.
+          examples:
+            - 'name: has-risk, ref: result.output, contains: Risk'
+            - 'name: has-tests, ref: result.output, contains: test'
+        - name: approval
+          label: Approval
+          type: boolean
+          description: Pause before entering this stage unless run is pre-approved.
+          default: "false"
+          examples:
+            - "true"
+            - "false"
+          hints:
+            - Use approval for write, exec, destructive, external side-effect, or high-risk stages.
+        - name: retry.max_attempts
+          label: Max attempts
+          type: number
+          description: Bounded retry count for this executable stage.
+          default: "1"
+          examples:
+            - "2"
+            - "3"
+        - name: on_error
+          label: On error
+          type: stage_list
+          description: Fallback stages when all retry attempts fail.
+          placeholder: recover, report-failure
+          examples:
+            - revise
+            - report-failure
+      outputs:
+        - name: summary
+          description: Bounded result summary
+        - name: raw_output
+          description: Raw model output
+        - name: tool_results
+          description: Tool results as JSON
+        - name: findings
+          description: Findings as JSON
+        - name: changes
+          description: Changes as JSON
+        - name: verification
+          description: Verification results as JSON
+      hints:
+        - Use a Skill node when you want a reusable expert procedure with a clear output contract.
+        - Map upstream data through input; publish stable downstream names through outputs.
+      examples:
+        - title: Audit collected evidence
+          description: Feed web evidence into an audit skill and publish findings.
+          stage:
+            name: audit
+            node_type: skill
+            agent: auditor
+            skill: code-audit
+            input:
+                evidence: stages.collect.outputs.evidence
+            outputs:
+                audit: result.output
+                findings: result.findings
+            next:
+                - quality
+    - type: tool
+      label: Tool
+      category: execute
+      description: Tool-focused stage. Agent permissions and approval policy still apply.
+      source: built_in
+      default_stage:
+        name: tool
+        node_type: tool
+        agent: fixer
+        skill: code-writing
+        tool: file_tools/write_file
+        outputs:
+            summary: result.summary
+            tool_results: result.tool_results
+        approval: true
+      fields:
+        - name: agent
+          label: Agent
+          type: agent
+          description: Configured agent profile that owns this stage.
+          default: planner
+          required: true
+          examples:
+            - planner
+            - software-engineer
+            - web-security-researcher
+            - binary-analyst
+          hints:
+            - The agent controls model route, mode, tool permission envelope, max iterations, and approval policy.
+        - name: skill
+          label: Skill
+          type: skill
+          description: Skill instructions applied to the stage.
+          default: execution-plan
+          required: true
+          examples:
+            - execution-plan
+            - code-writing
+            - code-audit
+            - web-vulnerability-research
+          hints:
+            - A skill narrows instructions and can narrow allowed tool kinds, but it cannot grant permissions the agent does not have.
+        - name: input
+          label: Inputs
+          type: map
+          description: Map local input names to workflow references or literals.
+          placeholder: 'plan: stages.plan.outputs.plan'
+          examples:
+            - 'plan: stages.plan.outputs.plan'
+            - 'target: workflow.input'
+            - 'evidence: stages.collect.outputs.evidence'
+          hints:
+            - Use input when this node needs a specific upstream value. Downstream prompts receive these names as structured context.
+        - name: outputs
+          label: Outputs
+          type: map
+          description: Map output names to result references that later nodes can consume.
+          placeholder: 'summary: result.summary'
+          examples:
+            - 'summary: result.summary'
+            - 'report: result.output'
+            - 'findings: result.findings'
+            - 'tool_results: result.tool_results'
+          hints:
+            - Common result refs are result.output, result.summary, result.findings, result.changes, result.verification, and result.tool_results.
+        - name: params
+          label: Params
+          type: map
+          description: Extra node parameters passed to the runtime and shown in Studio.
+          placeholder: 'purpose: Explain what this stage must produce'
+          examples:
+            - 'purpose: Draft the implementation plan'
+            - 'output_contract: Emit Scope, Findings, Risks, Next Steps'
+          hints:
+            - Use params for stable settings, output contracts, quality bars, and UI form metadata.
+        - name: artifacts
+          label: Artifacts
+          type: artifact_list
+          description: Declared replay artifacts such as reports, evidence, or diffs. Each item supports name, kind, title, ref, summary, and content.
+          examples:
+            - 'name: audit-report, kind: report, ref: result.output'
+            - 'name: collected-assets, kind: evidence, ref: stages.collect.outputs.evidence'
+        - name: acceptance_criteria
+          label: Acceptance criteria
+          type: acceptance_list
+          description: Checks that quality_gate can evaluate later.
+          examples:
+            - 'name: has-risk, ref: result.output, contains: Risk'
+            - 'name: has-tests, ref: result.output, contains: test'
+        - name: approval
+          label: Approval
+          type: boolean
+          description: Pause before entering this stage unless run is pre-approved.
+          default: "false"
+          examples:
+            - "true"
+            - "false"
+          hints:
+            - Use approval for write, exec, destructive, external side-effect, or high-risk stages.
+        - name: retry.max_attempts
+          label: Max attempts
+          type: number
+          description: Bounded retry count for this executable stage.
+          default: "1"
+          examples:
+            - "2"
+            - "3"
+        - name: on_error
+          label: On error
+          type: stage_list
+          description: Fallback stages when all retry attempts fail.
+          placeholder: recover, report-failure
+          examples:
+            - revise
+            - report-failure
+        - name: tool
+          label: Tool
+          type: tool
+          description: Preferred tool metadata for this stage.
+      outputs:
+        - name: summary
+          description: Bounded result summary
+        - name: raw_output
+          description: Raw model output
+        - name: tool_results
+          description: Tool results as JSON
+        - name: findings
+          description: Findings as JSON
+        - name: changes
+          description: Changes as JSON
+        - name: verification
+          description: Verification results as JSON
+      hints:
+        - Use a Tool node only when the workflow needs to strongly prefer one MCP tool. The agent still decides the exact call arguments.
+        - Write, exec, network, and other risky tools still go through the active agent policy and approval gates.
+      warnings:
+        - Do not use tool nodes to bypass agent permissions; they are metadata and prompt guidance, not an authorization override.
+      examples:
+        - title: Preferred write tool
+          description: Ask the fixer stage to produce a workspace file through the write tool path.
+          stage:
+            name: write-report
+            node_type: tool
+            agent: fixer
+            skill: code-writing
+            tool: file_tools/write_file
+            input:
+                report: stages.report.outputs.report
+            outputs:
+                tool_results: result.tool_results
+            approval: true
+    - type: team
+      label: Team
+      category: execute
+      description: Declare a reusable multi-agent team context. Set params.execute=true to expand the team template into executable role stages.
+      source: built_in
+      default_stage:
+        name: team
+        node_type: team
+        agent: planner
+        skill: ""
+        params:
+            team: software-task-team
+        outputs:
+            team: result.structured
+        next:
+            - next
+      fields:
+        - name: params.team
+          label: Team template
+          type: team_template
+          description: Built-in team template name.
+          required: true
+        - name: params.execute
+          label: Execute roles
+          type: bool
+          description: When true, runtime expands this team into role stages named <team>__<role> before continuing.
+        - name: agent
+          label: Entry agent
+          type: agent
+          description: Optional owner shown in collaboration records.
+        - name: input
+          label: Inputs
+          type: map
+          description: Optional workflow references to pass into the team context.
+        - name: outputs
+          label: Outputs
+          type: map
+          description: Optional output bindings, for example result.structured.
+        - name: next
+          label: Next stages
+          type: stage_list
+      outputs:
+        - name: team
+          description: Team template name
+        - name: title
+          description: Human-readable team title
+        - name: entry_agent
+          description: Recommended entry agent
+        - name: recommended_workflow
+          description: Recommended workflow template
+        - name: roles
+          description: JSON role templates
+        - name: handoffs
+          description: JSON handoff templates
+        - name: blackboard
+          description: JSON shared blackboard templates
+        - name: output_contract
+          description: JSON output contract
+      hints:
+        - Use execute=false to publish reusable team context without running every role.
+        - Use execute=true when you want the team roles expanded into executable stages that share a blackboard and handoff records.
+      examples:
+        - title: Execute a software team
+          description: Expand the software task team, then gate the result.
+          stage:
+            name: team
+            node_type: team
+            agent: planner
+            skill: ""
+            params:
+                approval_preset: software-review
+                execute: "true"
+                team: software-task-team
+            input:
+                goal: stages.intake.outputs.goal
+            outputs:
+                summary: result.summary
+                team: result.structured
+            next:
+                - gate
+    - type: condition
+      label: Condition
+      category: control
+      description: Route by a boolean expression such as contains(stage output, text).
+      source: built_in
+      control: true
+      default_stage:
+        name: condition
+        node_type: condition
+        agent: ""
+        skill: ""
+        condition: contains(previous.raw_output, "risk")
+        routes:
+            "false": "no"
+            "true": "yes"
+      fields:
+        - name: condition
+          label: Condition
+          type: expression
+          description: Supports contains(ref, "text"), len(ref) > 0, comparisons, and truthy references.
+          required: true
+        - name: routes.true
+          label: True route
+          type: stage
+          description: Stage name for a true condition.
+        - name: routes.false
+          label: False route
+          type: stage
+          description: Stage name for a false condition.
+      outputs:
+        - name: kind
+          description: Control node kind
+        - name: route
+          description: Selected route
+        - name: target
+          description: Selected target stage
+        - name: passed
+          description: Boolean decision when applicable
+        - name: reason
+          description: Decision reason when present
+      hints:
+        - Use Condition for true/false decisions based on upstream output.
+        - Prefer contains, len, exists, risk_rank, or simple comparisons that the expression helper metadata can explain.
+      examples:
+        - title: Route when risk is present
+          description: Send risky findings to verification and clean results to report.
+          stage:
+            name: has-risk
+            node_type: condition
+            agent: ""
+            skill: ""
+            condition: contains(stages.audit.outputs.audit, "High")
+            routes:
+                "false": report-clean
+                "true": verify
+    - type: switch
+      label: Switch
+      category: control
+      description: Route by a resolved value with named cases and a default fallback.
+      source: built_in
+      control: true
+      default_stage:
+        name: switch
+        node_type: switch
+        agent: ""
+        skill: ""
+        switch_on: previous.summary
+        cases:
+            default: next
+      fields:
+        - name: switch_on
+          label: Switch on
+          type: reference
+          description: Reference such as stages.plan.outputs.route.
+          required: true
+        - name: cases
+          label: Cases
+          type: map
+          description: Case value to target stage. Use default, else, or * for fallback.
+      outputs:
+        - name: kind
+          description: Control node kind
+        - name: route
+          description: Selected route
+        - name: target
+          description: Selected target stage
+        - name: passed
+          description: Boolean decision when applicable
+        - name: reason
+          description: Decision reason when present
+      hints:
+        - Use Switch for multi-route cases such as domain, severity, or requested output type.
+        - Always provide default, else, or * so an unexpected value still has a safe path.
+    - type: policy_guard
+      label: Policy Guard
+      category: control
+      description: Allow, deny, or block a path based on a policy expression.
+      source: built_in
+      control: true
+      default_stage:
+        name: guard
+        node_type: policy_guard
+        agent: ""
+        skill: ""
+        policy: contains(previous.raw_output, "approved")
+        routes:
+            allow: next
+            deny: blocked
+      fields:
+        - name: params.rule
+          label: Rule
+          type: policy_rule
+          description: Optional built-in policy rule. If empty, policy/condition expression is used.
+        - name: params.ref
+          label: Reference
+          type: reference
+          description: Reference consumed by named policy rules.
+        - name: params.needle
+          label: Needle
+          type: text
+          description: Text used by the contains rule.
+        - name: params.minimum
+          label: Minimum
+          type: text
+          description: Threshold used by min_count and risk_at_least.
+        - name: policy
+          label: Policy
+          type: expression
+          description: Policy expression. Failing without a deny route blocks the workflow.
+          required: true
+        - name: routes.allow
+          label: Allow route
+          type: stage
+        - name: routes.deny
+          label: Deny route
+          type: stage
+        - name: params.reason
+          label: Reason
+          type: text
+          description: Operator-facing reason if blocked or denied.
+      outputs:
+        - name: kind
+          description: Control node kind
+        - name: route
+          description: Selected route
+        - name: target
+          description: Selected target stage
+        - name: passed
+          description: Boolean decision when applicable
+        - name: reason
+          description: Decision reason when present
+      hints:
+        - Use Policy Guard when a named reusable rule is clearer than an inline condition.
+        - If a deny route is omitted and the rule fails, the workflow blocks instead of silently continuing.
+      examples:
+        - title: Risk threshold gate
+          description: Route high-risk findings to verification.
+          stage:
+            name: risk-gate
+            node_type: policy_guard
+            agent: ""
+            skill: ""
+            params:
+                minimum: high
+                ref: stages.audit.outputs.findings
+                rule: risk_at_least
+            routes:
+                allow: verify
+                deny: report
+    - type: quality_gate
+      label: Quality Gate
+      category: control
+      description: Route or block based on prior acceptance criteria, verification results, artifact evidence, and tool errors.
+      source: built_in
+      control: true
+      default_stage:
+        name: quality
+        node_type: quality_gate
+        agent: ""
+        skill: ""
+        params:
+            min_score: "80"
+            require_acceptance: "true"
+            require_verification: "true"
+        routes:
+            fail: revise
+            pass: next
+      fields:
+        - name: params.stage
+          label: Source stage
+          type: stage
+          description: Optional stage or comma-separated stages to evaluate. Empty evaluates all completed stages.
+        - name: params.require_acceptance
+          label: Require acceptance
+          type: bool
+          description: Fail when no acceptance criteria were recorded.
+        - name: params.require_verification
+          label: Require verification
+          type: bool
+          description: Fail when no verification results were recorded.
+        - name: params.require_evidence
+          label: Require evidence
+          type: bool
+          description: Fail when no declared evidence artifacts were recorded.
+        - name: params.min_score
+          label: Minimum score
+          type: number
+          description: Optional minimum quality score from 0 to 100.
+        - name: params.allow_unknown
+          label: Allow unknown statuses
+          type: bool
+          description: Allow verification or acceptance entries without a known pass/fail status.
+        - name: routes.pass
+          label: Pass route
+          type: stage
+        - name: routes.warning
+          label: Warning route
+          type: stage
+        - name: routes.fail
+          label: Fail route
+          type: stage
+        - name: params.reason
+          label: Block reason
+          type: text
+          description: Operator-facing reason if the gate blocks without a fail route.
+      outputs:
+        - name: kind
+          description: Control node kind
+        - name: route
+          description: Selected route
+        - name: target
+          description: Selected target stage
+        - name: passed
+          description: Boolean decision when applicable
+        - name: reason
+          description: Decision reason when present
+        - name: quality_status
+          description: 'Quality outcome: passed, warning, or failed'
+        - name: score
+          description: Quality score from 0 to 100
+        - name: acceptance_total
+          description: Acceptance checks evaluated
+        - name: acceptance_failed
+          description: Failed acceptance checks
+        - name: verification_total
+          description: Verification results evaluated
+        - name: verification_failed
+          description: Failed verification results
+        - name: evidence_artifacts
+          description: Evidence artifacts counted
+        - name: failures
+          description: Semicolon-separated failure reasons
+      tags:
+        - quality
+        - acceptance
+        - verification
+        - evidence
+      hints:
+        - Use Quality Gate after implementation, audit, or report stages to require evidence before handoff.
+        - Quality gates work best when upstream stages declare artifacts and acceptance_criteria.
+    - type: parallel
+      label: Parallel
+      category: control
+      description: Fan out to multiple branches. Branches run deterministically by default; set params.concurrent=true for eligible join-bound branches.
+      source: built_in
+      control: true
+      default_stage:
+        name: parallel
+        node_type: parallel
+        agent: ""
+        skill: ""
+        next:
+            - branch-a
+            - branch-b
+      fields:
+        - name: next
+          label: Branches
+          type: stage_list
+          description: Branch stage names to schedule from this fan-out point.
+          required: true
+        - name: params.concurrent
+          label: Concurrent
+          type: bool
+          description: Opt in to goroutine-level branch execution when every direct branch flows into a join and does not require checkpoint approval.
+      outputs:
+        - name: kind
+          description: Control node kind
+        - name: route
+          description: Selected route
+        - name: target
+          description: Selected target stage
+        - name: passed
+          description: Boolean decision when applicable
+        - name: reason
+          description: Decision reason when present
+      hints:
+        - Use Parallel to fan out independent branches, then join them before synthesis.
+        - Set params.concurrent=true only when direct branches are join-bound and do not contain nested control nodes.
+    - type: join
+      label: Join
+      category: control
+      description: Wait until required upstream branches complete, then continue.
+      source: built_in
+      control: true
+      default_stage:
+        name: join
+        node_type: join
+        agent: ""
+        skill: ""
+        next:
+            - next
+      fields:
+        - name: params.wait_for
+          label: Wait for
+          type: csv
+          description: Optional comma-separated stage names. If empty, direct non-visual predecessors are inferred.
+        - name: next
+          label: Next stages
+          type: stage_list
+      outputs:
+        - name: kind
+          description: Control node kind
+        - name: route
+          description: Selected route
+        - name: target
+          description: Selected target stage
+        - name: passed
+          description: Boolean decision when applicable
+        - name: reason
+          description: Decision reason when present
+      hints:
+        - Use Join after parallel branches. Leave wait_for empty when all direct predecessors should be inferred.
+    - type: input_gate
+      label: Input Gate
+      category: control
+      description: Collect or publish variables. Manual gates pause until the operator submits values.
+      source: built_in
+      control: true
+      default_stage:
+        name: collect
+        node_type: input_gate
+        agent: ""
+        skill: ""
+        params:
+            fields: target,severity
+            manual: "true"
+        next:
+            - next
+      fields:
+        - name: params.manual
+          label: Manual
+          type: boolean
+          description: Pause this workflow until input is submitted.
+        - name: params.fields
+          label: Fields
+          type: csv
+          description: Comma-separated field names for frontend forms.
+        - name: params.prompt
+          label: Prompt
+          type: text
+          description: Operator-facing prompt.
+        - name: input
+          label: Mapped inputs
+          type: map
+          description: Optional references to publish as outputs.
+      outputs:
+        - name: route
+          description: Route hint derived from submitted or mapped values
+        - name: value
+          description: Submitted values encoded as JSON
+        - name: <field>
+          description: Each submitted or mapped field is available by name
+      hints:
+        - Use Input Gate at the beginning of complex workflows to collect target, scope, domain, or approval context.
+        - Use params.fields_json for rich Studio forms; each submitted field becomes an output by field name.
+      examples:
+        - title: Collect security scope
+          description: Pause until the operator provides target and scope.
+          stage:
+            name: scope
+            node_type: input_gate
+            agent: ""
+            skill: ""
+            params:
+                fields: target,scope,severity
+                manual: "true"
+                prompt: Provide authorized target and scope.
+            outputs:
+                scope: params.scope
+                target: params.target
+            next:
+                - collect
+    - type: for_each
+      label: For Each
+      category: control
+      description: Run one executable body stage once for each item, then publish aggregate iteration outputs.
+      source: built_in
+      control: true
+      default_stage:
+        name: for-each
+        node_type: for_each
+        agent: ""
+        skill: ""
+        params:
+            items: alpha,beta,gamma
+            stage: process-item
+        next:
+            - next
+      fields:
+        - name: params.stage
+          label: Body stage
+          type: stage
+          description: Executable stage to run for each item.
+          required: true
+        - name: params.items
+          label: Items
+          type: csv
+          description: Comma/newline separated items, or a JSON array.
+        - name: params.items_ref
+          label: Items reference
+          type: reference
+          description: Reference resolving to a JSON array or delimited text.
+        - name: next
+          label: After loop
+          type: stage_list
+          description: Stages to run after all iterations complete.
+      outputs:
+        - name: body_stage
+          description: Executable body stage name
+        - name: iteration_count
+          description: Number of iterations completed
+        - name: items
+          description: JSON array of input items
+        - name: outputs
+          description: JSON array of iteration raw outputs
+        - name: summaries
+          description: JSON array of iteration summaries
+      hints:
+        - Use For Each when one body stage must process each file, URL, package, service, or finding independently.
+        - Prefer params.items_ref when an upstream node produces the item list.
+    - type: loop
+      label: Loop / Until
+      category: control
+      description: Run one executable body stage repeatedly until an expression passes or the max-iteration guard is reached.
+      source: built_in
+      control: true
+      default_stage:
+        name: loop
+        node_type: loop
+        agent: ""
+        skill: ""
+        params:
+            max_iterations: "3"
+            stage: review
+            until: contains(previous.raw_output, "done")
+        next:
+            - next
+      fields:
+        - name: params.stage
+          label: Body stage
+          type: stage
+          description: Executable stage to repeat.
+          required: true
+        - name: params.max_iterations
+          label: Max iterations
+          type: number
+          description: Bounded guard. Values above 20 are capped.
+        - name: params.until
+          label: Until
+          type: expression
+          description: Expression checked after each iteration, for example contains(previous.raw_output, "done").
+        - name: next
+          label: After loop
+          type: stage_list
+          description: Stages to run after the loop finishes.
+      outputs:
+        - name: body_stage
+          description: Executable body stage name
+        - name: iteration_count
+          description: Number of iterations completed
+        - name: max_iterations
+          description: Configured bounded maximum
+        - name: passed
+          description: Whether the until condition passed
+        - name: outputs
+          description: JSON array of iteration raw outputs
+        - name: summaries
+          description: JSON array of iteration summaries
+      hints:
+        - Use Loop for bounded revise-review cycles. Always set max_iterations.
+    - type: sub_workflow
+      label: Sub Workflow
+      category: control
+      description: Run another workflow as a nested reusable unit and publish its run id, status, and summary.
+      source: built_in
+      control: true
+      default_stage:
+        name: sub-workflow
+        node_type: sub_workflow
+        agent: ""
+        skill: ""
+        params:
+            request: workflow.input
+            workflow: plan-fix-audit
+        next:
+            - next
+      fields:
+        - name: params.workflow
+          label: Workflow
+          type: workflow
+          description: Existing built-in or persisted workflow name.
+          required: true
+        - name: params.request
+          label: Request
+          type: reference
+          description: Reference or literal prompt passed to the nested workflow.
+        - name: input
+          label: Mapped inputs
+          type: map
+          description: Optional inputs encoded into the nested request when params.request is empty.
+        - name: next
+          label: Next stages
+          type: stage_list
+      outputs:
+        - name: sub_workflow
+          description: Nested workflow name
+        - name: sub_run_id
+          description: Nested workflow run id
+        - name: status
+          description: Nested workflow status
+        - name: summary
+          description: Nested workflow final summary
+        - name: completed_stages
+          description: Nested completed stage count
+      hints:
+        - Use Sub Workflow to reuse a persisted workflow as one node in a larger workflow.
+        - Pass workflow.input or mapped inputs so the nested run has enough context without copying every stage.
+    - type: checkpoint
+      label: Checkpoint
+      category: control
+      description: Pause for operator approval when a run is not pre-approved.
+      source: built_in
+      control: true
+      default_stage:
+        name: checkpoint
+        node_type: checkpoint
+        agent: ""
+        skill: ""
+        params:
+            prompt: Approve this workflow checkpoint?
+      fields:
+        - name: params.prompt
+          label: Prompt
+          type: text
+          description: Approval prompt shown to the operator.
+        - name: next
+          label: Next stages
+          type: stage_list
+      outputs:
+        - name: kind
+          description: Control node kind
+        - name: route
+          description: Selected route
+        - name: target
+          description: Selected target stage
+        - name: passed
+          description: Boolean decision when applicable
+        - name: reason
+          description: Decision reason when present
+      hints:
+        - Use Checkpoint before irreversible, high-risk, or publish/send handoff steps.
+    - type: end
+      label: End
+      category: visual
+      description: Terminal marker. It does not run a model stage.
+      source: built_in
+      visual_only: true
+      default_stage:
+        name: end
+        node_type: end
+        agent: ""
+        skill: ""
+      hints:
+        - Use end nodes to make the canvas readable. Runtime stops when no next edge remains; end itself is visual-only.

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"path"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -32,6 +33,16 @@ type WorkflowTemplateResourceSummary struct {
 	Path                string   `json:"path,omitempty"`
 	Valid               bool     `json:"valid"`
 	Error               string   `json:"error,omitempty"`
+	NodeTypes           []string `json:"node_types,omitempty"`
+	Agents              []string `json:"agents,omitempty"`
+	Skills              []string `json:"skills,omitempty"`
+	Tools               []string `json:"tools,omitempty"`
+	TeamTemplates       []string `json:"team_templates,omitempty"`
+	PolicyRules         []string `json:"policy_rules,omitempty"`
+	HasControlFlow      bool     `json:"has_control_flow,omitempty"`
+	HasDataFlow         bool     `json:"has_data_flow,omitempty"`
+	HasApproval         bool     `json:"has_approval,omitempty"`
+	HasQualityGate      bool     `json:"has_quality_gate,omitempty"`
 }
 
 // WorkflowTemplateResources lists user-editable workflow template resources.
@@ -161,6 +172,9 @@ func (w *WorkflowRunner) ValidateWorkflowTemplateResource(name string, template 
 	template.Source = "custom"
 	template.Custom = true
 	template.Stages = len(template.Graph.Stages)
+	template.WorkflowTemplateSummary = workflowTemplateSummaryWithGraph(template)
+	template.Source = "custom"
+	template.Custom = true
 	return template, nil
 }
 
@@ -277,12 +291,30 @@ func (w *WorkflowRunner) loadWorkflowTemplateResourcePath(path string) (Workflow
 	if err != nil {
 		return WorkflowTemplate{}, err
 	}
+	template, legacyBareGraph, err := parseWorkflowTemplateData(path, data)
+	if err != nil {
+		return WorkflowTemplate{}, err
+	}
+	return w.normalizeLoadedWorkflowTemplate(template, filepath.Base(path), legacyBareGraph, "custom", path, true)
+}
+
+func parseWorkflowTemplateData(source string, data []byte) (WorkflowTemplate, bool, error) {
 	var template WorkflowTemplate
 	legacyBareGraph := false
-	switch strings.ToLower(filepath.Ext(path)) {
+	base := workflowTemplateSourceBase(source)
+	switch strings.ToLower(path.Ext(base)) {
 	case ".json":
 		if err := json.Unmarshal(data, &template); err != nil {
-			return WorkflowTemplate{}, fmt.Errorf("parse workflow template json: %w", err)
+			var graph WorkflowGraphDocument
+			if graphErr := json.Unmarshal(data, &graph); graphErr == nil && strings.TrimSpace(graph.Name) != "" && len(graph.Stages) > 0 {
+				return workflowTemplateFromBareGraph(graph), true, nil
+			}
+			return WorkflowTemplate{}, false, fmt.Errorf("parse workflow template json: %w", err)
+		}
+		if isEmptyWorkflowTemplateSummary(template.WorkflowTemplateSummary) {
+			if legacy, ok := parseLegacyWorkflowTemplateJSON(data); ok {
+				template = legacy
+			}
 		}
 		if len(template.Graph.Stages) == 0 {
 			var graph WorkflowGraphDocument
@@ -293,7 +325,16 @@ func (w *WorkflowRunner) loadWorkflowTemplateResourcePath(path string) (Workflow
 		}
 	default:
 		if err := yaml.Unmarshal(data, &template); err != nil {
-			return WorkflowTemplate{}, fmt.Errorf("parse workflow template yaml: %w", err)
+			var graph WorkflowGraphDocument
+			if graphErr := yaml.Unmarshal(data, &graph); graphErr == nil && strings.TrimSpace(graph.Name) != "" && len(graph.Stages) > 0 {
+				return workflowTemplateFromBareGraph(graph), true, nil
+			}
+			return WorkflowTemplate{}, false, fmt.Errorf("parse workflow template yaml: %w", err)
+		}
+		if isEmptyWorkflowTemplateSummary(template.WorkflowTemplateSummary) {
+			if legacy, ok := parseLegacyWorkflowTemplateYAML(data); ok {
+				template = legacy
+			}
 		}
 		if len(template.Graph.Stages) == 0 {
 			var graph WorkflowGraphDocument
@@ -303,18 +344,23 @@ func (w *WorkflowRunner) loadWorkflowTemplateResourcePath(path string) (Workflow
 			}
 		}
 	}
+	return template, legacyBareGraph, nil
+}
+
+func (w *WorkflowRunner) normalizeLoadedWorkflowTemplate(template WorkflowTemplate, file string, legacyBareGraph bool, source, path string, custom bool) (WorkflowTemplate, error) {
 	if err := validateWorkflowTemplateResourceVersion(template.Kind, template.Version, template.MinVersion); err != nil {
 		return WorkflowTemplate{}, err
 	}
 	template = normalizeWorkflowTemplateResourceVersion(template, legacyBareGraph || template.Version == 0)
-	name := strings.TrimSuffix(filepath.Base(path), filepath.Ext(path))
+	name := strings.TrimSuffix(file, filepath.Ext(file))
 	if strings.TrimSpace(template.Name) == "" {
 		template.Name = name
 	}
+	template.Name = normalizePersistedWorkflowName(template.Name)
 	if strings.TrimSpace(template.Title) == "" {
 		template.Title = template.Name
 	}
-	if strings.TrimSpace(template.Category) == "" {
+	if strings.TrimSpace(template.Category) == "" && custom {
 		template.Category = "custom"
 	}
 	if strings.TrimSpace(template.Graph.Name) == "" {
@@ -323,11 +369,77 @@ func (w *WorkflowRunner) loadWorkflowTemplateResourcePath(path string) (Workflow
 	if err := w.validateWorkflowGraph(normalizePersistedWorkflowName(template.Graph.Name), template.Graph.toInternalGraph()); err != nil {
 		return WorkflowTemplate{}, err
 	}
-	template.Source = "custom"
-	template.Custom = true
+	template.Source = source
+	template.Custom = custom
 	template.Path = path
 	template.Stages = len(template.Graph.Stages)
+	template.WorkflowTemplateSummary = workflowTemplateSummaryWithGraph(template)
+	template.Source = source
+	template.Custom = custom
+	template.Path = path
 	return template, nil
+}
+
+type legacyWorkflowTemplateDocument struct {
+	WorkflowTemplateSummary WorkflowTemplateSummary `json:"workflowtemplatesummary" yaml:"workflowtemplatesummary"`
+	Graph                   WorkflowGraphDocument   `json:"graph" yaml:"graph"`
+}
+
+func parseLegacyWorkflowTemplateJSON(data []byte) (WorkflowTemplate, bool) {
+	var legacy legacyWorkflowTemplateDocument
+	if err := json.Unmarshal(data, &legacy); err != nil || isEmptyWorkflowTemplateSummary(legacy.WorkflowTemplateSummary) {
+		return WorkflowTemplate{}, false
+	}
+	return legacy.toWorkflowTemplate(), true
+}
+
+func parseLegacyWorkflowTemplateYAML(data []byte) (WorkflowTemplate, bool) {
+	var legacy legacyWorkflowTemplateDocument
+	if err := yaml.Unmarshal(data, &legacy); err != nil || isEmptyWorkflowTemplateSummary(legacy.WorkflowTemplateSummary) {
+		return WorkflowTemplate{}, false
+	}
+	return legacy.toWorkflowTemplate(), true
+}
+
+func (legacy legacyWorkflowTemplateDocument) toWorkflowTemplate() WorkflowTemplate {
+	return WorkflowTemplate{
+		WorkflowTemplateSummary: legacy.WorkflowTemplateSummary,
+		Graph:                   legacy.Graph,
+	}
+}
+
+func isEmptyWorkflowTemplateSummary(summary WorkflowTemplateSummary) bool {
+	return strings.TrimSpace(summary.Kind) == "" &&
+		summary.Version == 0 &&
+		summary.MinVersion == 0 &&
+		summary.MigratedFromVersion == 0 &&
+		strings.TrimSpace(summary.Name) == "" &&
+		strings.TrimSpace(summary.Title) == "" &&
+		strings.TrimSpace(summary.Description) == "" &&
+		strings.TrimSpace(summary.Category) == "" &&
+		len(summary.Tags) == 0 &&
+		summary.Stages == 0 &&
+		strings.TrimSpace(summary.Source) == "" &&
+		strings.TrimSpace(summary.Path) == "" &&
+		!summary.Custom &&
+		len(summary.NodeTypes) == 0 &&
+		len(summary.Agents) == 0 &&
+		len(summary.Skills) == 0 &&
+		len(summary.Tools) == 0 &&
+		len(summary.TeamTemplates) == 0 &&
+		len(summary.PolicyRules) == 0 &&
+		!summary.HasControlFlow &&
+		!summary.HasDataFlow &&
+		!summary.HasApproval &&
+		!summary.HasQualityGate
+}
+
+func workflowTemplateSourceBase(source string) string {
+	source = strings.TrimSpace(strings.ReplaceAll(source, "\\", "/"))
+	if source == "" {
+		return ""
+	}
+	return path.Base(source)
 }
 
 func (w *WorkflowRunner) workflowTemplateResourceRoot() (string, error) {
@@ -389,6 +501,7 @@ func isWorkflowTemplateResourceFile(name string) bool {
 }
 
 func workflowTemplateResourceSummary(template WorkflowTemplate, path string) WorkflowTemplateResourceSummary {
+	metadata := summarizeWorkflowTemplateGraph(template.Graph)
 	return WorkflowTemplateResourceSummary{
 		Kind:                template.Kind,
 		Name:                template.Name,
@@ -402,6 +515,16 @@ func workflowTemplateResourceSummary(template WorkflowTemplate, path string) Wor
 		Stages:              len(template.Graph.Stages),
 		Path:                path,
 		Valid:               true,
+		NodeTypes:           metadata.NodeTypes,
+		Agents:              metadata.Agents,
+		Skills:              metadata.Skills,
+		Tools:               metadata.Tools,
+		TeamTemplates:       metadata.TeamTemplates,
+		PolicyRules:         metadata.PolicyRules,
+		HasControlFlow:      metadata.HasControlFlow,
+		HasDataFlow:         metadata.HasDataFlow,
+		HasApproval:         metadata.HasApproval,
+		HasQualityGate:      metadata.HasQualityGate,
 	}
 }
 

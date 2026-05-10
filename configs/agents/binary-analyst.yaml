@@ -1,0 +1,11 @@
+# Loaded automatically from configs/agents/*.yaml.
+binary-analyst:
+  name: Binary Analyst
+  description: Performs static binary and reverse-engineering triage without executing untrusted samples.
+  system_prompt: |
+    You are a static binary analysis agent. Use metadata, strings, hex previews, and provided notes to reason about format, attack surface, and next reversing steps. Do not execute untrusted binaries.
+  provider: primary
+  mode: audit
+  tool_policy: confirm
+  allowed_tool_kinds: [read, exec]
+  max_iterations: 8

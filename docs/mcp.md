@@ -76,6 +76,7 @@ This means:
 - rejects path escape attempts
 - rejects symlink escapes that resolve outside the workspace root
 - rejects directory reads through `read_file`
+- decodes text reads as UTF-8 and strips UTF-8 BOM when present
 - enforces request and response byte limits
 - returns structured JSON payloads
 - creates parent directories for writes when needed
@@ -321,13 +322,30 @@ Current built-in output should include entries for:
 - `isolation: process_group` is process-lifecycle isolation, not a security sandbox
 - `isolation: windows_job` improves Windows process-tree cleanup, but does not restrict filesystem or network access
 - `isolation: linux_cgroup` requires host cgroup setup and does not restrict filesystem or network access
-- there is no concurrency control or circuit breaker layer yet
+
+## Reliability Controls
+
+Each MCP server has per-call timeout, request/response byte caps, restart
+limits, cooldown, and `max_concurrent_calls`. The current stdio transport uses a
+single connection, so the default `max_concurrent_calls: 1` keeps requests
+serialized and prevents unbounded call pileups. `restart_limit` plus `cooldown`
+acts as a lightweight circuit breaker: repeated startup or call failures move
+the server into cooldown instead of restarting indefinitely.
+
+`GET /api/runtime` also exposes live per-server call-slot pressure under
+`mcp_servers[]`: `max_concurrent_calls`, `active_calls`, `queued_calls`, and
+`available_call_slots`. Studio and operators can use those fields to spot a
+long-running tool, a saturated stdio server, or an over-aggressive workflow.
+The Web Studio Observability page renders the same fields as the MCP tool
+pressure panel, so users can distinguish tool saturation from model wait,
+approval pauses, or workflow orchestration issues without opening raw JSON.
 
 ## Future direction
 
 Planned next steps for MCP should build on the existing manager/client split:
 - runtime transports beyond the current HTTP/SSE surface where they fit the same schema contracts
 - stronger container hardening and narrowly scoped native fallback controls only where they are enforceable and testable
+- operator controls for long-running MCP tools
 - more cross-language examples beyond Python
 
 For adding new servers and tools, see [MCP Tool Authoring](./mcp-authoring.md).

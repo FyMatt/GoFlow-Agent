@@ -91,6 +91,7 @@ def validate_docker_config() -> None:
             "- /app/mcp_servers/python_notes.py",
             "allowed_command_paths:",
             "- /app/bin",
+            "max_concurrent_calls: 1",
             "persist_path: /workspace/.goflow/session.json",
             "directory: /app/skills",
         ],
@@ -110,6 +111,7 @@ def validate_binary_config() -> None:
             "command: ${GOFLOW_PYTHON_CMD}",
             "- ${GOFLOW_PYTHON_NOTES_PATH}",
             "allowed_commands:",
+            "max_concurrent_calls: 1",
             "directory: ./skills",
         ],
     )
@@ -140,10 +142,7 @@ def validate_ci() -> None:
         ".github/workflows/ci.yml",
         ci,
         [
-            "go test ./...",
-            "python scripts/validate_python_mcp.py",
-            "python scripts/validate_extension_workflow.py",
-            "python scripts/validate_deployment_assets.py",
+            "python scripts/run_preflight.py --browser-required",
             "docker build -t goflow-agent:ci .",
             "docker build -f docker/mcp-python/Dockerfile -t goflow-agent-mcp-python:ci .",
             "http://127.0.0.1:18080/api/session",
@@ -157,6 +156,10 @@ def validate_release_workflow() -> None:
         ".github/workflows/release.yml",
         workflow,
         [
+            "preflight:",
+            "name: release preflight",
+            "python scripts/run_preflight.py --browser-required",
+            "needs: preflight",
             "python scripts/build_release_assets.py --clean --version",
             "python scripts/generate_sbom.py --version",
             "python scripts/sign_release_artifacts.py --dist dist",
@@ -172,6 +175,28 @@ def validate_release_workflow() -> None:
             "ghcr.io/${GITHUB_REPOSITORY,,}",
             "mcp_python",
             "docker/mcp-python/Dockerfile",
+        ],
+    )
+    preflight = read("scripts/run_preflight.py")
+    assert_contains(
+        "scripts/run_preflight.py",
+        preflight,
+        [
+            "go test",
+            "validate_python_mcp.py",
+            "validate_extension_workflow.py",
+            "validate_binary_analysis_kit.py",
+            "validate_resource_links.py",
+            "validate_web_i18n.py",
+            "validate_docs.py",
+            "smoke_http_studio.py",
+            "smoke_http_browser.py",
+            "--browser-required",
+            "--skip-browser",
+            "--release-target",
+            "build_release_assets.py",
+            "validate_release_archives.py",
+            "validate_deployment_assets.py",
         ],
     )
 
@@ -199,6 +224,18 @@ def validate_release_script() -> None:
             "archive_base.parent",
         ],
     )
+    python_tool_config = read("internal/scaffold/templates/tools/python/config.yaml.tmpl")
+    assert_contains(
+        "internal/scaffold/templates/tools/python/config.yaml.tmpl",
+        python_tool_config,
+        ["max_concurrent_calls: 1"],
+    )
+    materialized_tool_config = read("internal/scaffold/templates/kits/materialized/generic/tool-config.yaml.tmpl")
+    assert_contains(
+        "internal/scaffold/templates/kits/materialized/generic/tool-config.yaml.tmpl",
+        materialized_tool_config,
+        ["max_concurrent_calls: 1"],
+    )
     sbom_generator = read("scripts/generate_sbom.py")
     assert_contains(
         "scripts/generate_sbom.py",
@@ -217,6 +254,18 @@ def validate_release_script() -> None:
         "scripts/validate_release_archives.py",
         release_archive_validator,
         [
+            "--target",
+            "parse_target",
+            "COMMON_ARCHIVE_MEMBERS",
+            "configs/goflow.binary.yaml",
+            "configs/agents/chat.yaml",
+            "configs/providers/primary.yaml",
+            "configs/providers/backup.yaml",
+            "configs/mcp_servers/python_notes.yaml",
+            "skills/execution-plan/SKILL.md",
+            "docs/install.md",
+            "mcp_servers/python_notes.py",
+            "validate_archive_layout",
             "linux_amd64.tar.gz",
             "linux_arm64.tar.gz",
             "windows_amd64.zip",
@@ -250,6 +299,7 @@ def validate_release_docs() -> None:
         [
             "python scripts/build_release_assets.py --clean --version",
             "scripts/validate_release_archives.py",
+            "--target linux/amd64",
             "configs/goflow.binary.yaml",
             "SHA256SUMS",
             "SBOM.spdx.json",
@@ -258,6 +308,9 @@ def validate_release_docs() -> None:
             "ghcr.io/fymatt/goflow-agent:<tag>",
             "ghcr.io/fymatt/goflow-agent-mcp-python:<tag>",
             "configs/goflow.docker.yaml",
+            "python scripts/run_preflight.py --browser-required",
+            "python scripts/run_preflight.py --browser-required --release-target",
+            "python scripts/run_preflight.py --skip-browser",
         ],
     )
 

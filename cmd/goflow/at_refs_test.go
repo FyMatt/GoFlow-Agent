@@ -52,8 +52,19 @@ func TestExpandAtFileReferencesRejectsSymlinkEscape(t *testing.T) {
 		t.Skipf("symlink unavailable: %v", err)
 	}
 	_, _, err := expandAtFileReferences("read @outside-link.txt", root)
-	if err == nil || !strings.Contains(err.Error(), "resolve real path") {
+	if err == nil || (!strings.Contains(err.Error(), "resolve real path") && !strings.Contains(err.Error(), "resolves outside workspace root")) {
 		t.Fatalf("expected symlink escape rejection, got %v", err)
+	}
+}
+
+func TestExpandAtFileReferencesRejectsNonUTF8Text(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "binary.bin"), []byte{0xff, 0xfe, 0xfd}, 0o644); err != nil {
+		t.Fatalf("write binary file: %v", err)
+	}
+	_, _, err := expandAtFileReferences("read @binary.bin", root)
+	if err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("expected UTF-8 rejection, got %v", err)
 	}
 }
 

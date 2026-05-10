@@ -11,7 +11,8 @@ import (
 	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
-	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
+	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
+	skillpkg "github.com/FyMatt/GoFlow-Agent/internal/skill"
 	"gopkg.in/yaml.v3"
 )
 
@@ -69,18 +70,30 @@ type kitValidationItem struct {
 }
 
 type kitSummary struct {
-	Name        string              `json:"name"`
-	Title       string              `json:"title,omitempty"`
-	Description string              `json:"description,omitempty"`
-	Category    string              `json:"category,omitempty"`
-	Tags        []string            `json:"tags,omitempty"`
-	Path        string              `json:"path,omitempty"`
-	Agents      int                 `json:"agents,omitempty"`
-	Skills      int                 `json:"skills,omitempty"`
-	Tools       int                 `json:"tools,omitempty"`
-	Workflows   int                 `json:"workflows,omitempty"`
-	Valid       bool                `json:"valid"`
-	Issues      []kitValidationItem `json:"issues,omitempty"`
+	Name                 string              `json:"name"`
+	Title                string              `json:"title,omitempty"`
+	Description          string              `json:"description,omitempty"`
+	Category             string              `json:"category,omitempty"`
+	Tags                 []string            `json:"tags,omitempty"`
+	Path                 string              `json:"path,omitempty"`
+	Agents               int                 `json:"agents,omitempty"`
+	Skills               int                 `json:"skills,omitempty"`
+	Tools                int                 `json:"tools,omitempty"`
+	Workflows            int                 `json:"workflows,omitempty"`
+	Providers            int                 `json:"providers,omitempty"`
+	WorkflowTemplates    int                 `json:"workflow_templates,omitempty"`
+	TeamTemplates        int                 `json:"team_templates,omitempty"`
+	PolicyRules          int                 `json:"policy_rules,omitempty"`
+	ProviderRefs         []string            `json:"provider_refs,omitempty"`
+	AgentRefs            []string            `json:"agent_refs,omitempty"`
+	SkillRefs            []string            `json:"skill_refs,omitempty"`
+	ToolRefs             []string            `json:"tool_refs,omitempty"`
+	WorkflowRefs         []string            `json:"workflow_refs,omitempty"`
+	WorkflowTemplateRefs []string            `json:"workflow_template_refs,omitempty"`
+	TeamTemplateRefs     []string            `json:"team_template_refs,omitempty"`
+	PolicyRuleRefs       []string            `json:"policy_rule_refs,omitempty"`
+	Valid                bool                `json:"valid"`
+	Issues               []kitValidationItem `json:"issues,omitempty"`
 }
 
 type kitScaffoldPreset struct {
@@ -563,18 +576,30 @@ func kitResourceListForRuntime(runtimeRef *agent.Runtime) []kitSummary {
 		}
 		validation := server.validateKitResource(doc)
 		out = append(out, kitSummary{
-			Name:        doc.Name,
-			Title:       doc.Title,
-			Description: doc.Description,
-			Category:    doc.Category,
-			Tags:        append([]string(nil), doc.Tags...),
-			Path:        doc.Path,
-			Agents:      len(doc.Agents),
-			Skills:      len(doc.Skills),
-			Tools:       len(doc.Tools),
-			Workflows:   len(doc.Workflows),
-			Valid:       validation.Valid,
-			Issues:      validation.Issues,
+			Name:                 doc.Name,
+			Title:                doc.Title,
+			Description:          doc.Description,
+			Category:             doc.Category,
+			Tags:                 append([]string(nil), doc.Tags...),
+			Path:                 doc.Path,
+			Agents:               len(doc.Agents),
+			Skills:               len(doc.Skills),
+			Tools:                len(doc.Tools),
+			Workflows:            len(doc.Workflows),
+			Providers:            len(doc.Providers),
+			WorkflowTemplates:    len(doc.WorkflowTemplates),
+			TeamTemplates:        len(doc.TeamTemplates),
+			PolicyRules:          len(doc.PolicyRules),
+			ProviderRefs:         append([]string(nil), doc.Providers...),
+			AgentRefs:            append([]string(nil), doc.Agents...),
+			SkillRefs:            append([]string(nil), doc.Skills...),
+			ToolRefs:             append([]string(nil), doc.Tools...),
+			WorkflowRefs:         append([]string(nil), doc.Workflows...),
+			WorkflowTemplateRefs: append([]string(nil), doc.WorkflowTemplates...),
+			TeamTemplateRefs:     append([]string(nil), doc.TeamTemplates...),
+			PolicyRuleRefs:       append([]string(nil), doc.PolicyRules...),
+			Valid:                validation.Valid,
+			Issues:               validation.Issues,
 		})
 	}
 	sort.Slice(out, func(i, j int) bool {
@@ -678,7 +703,7 @@ func (s *Server) deleteKitResource(name string) error {
 }
 
 func (s *Server) kitScaffoldPresets() []kitScaffoldPreset {
-	presets := defaultKitScaffoldPresets()
+	presets := s.kitScaffoldPresetDefinitions()
 	out := make([]kitScaffoldPreset, 0, len(presets))
 	for _, preset := range presets {
 		preset.Validation = s.validateKitResource(kitDocumentFromScaffold(preset, kitScaffoldRequest{}))
@@ -695,7 +720,7 @@ func (s *Server) kitScaffoldPresets() []kitScaffoldPreset {
 
 func (s *Server) kitScaffoldPreset(name string) (kitScaffoldPreset, bool) {
 	normalized := normalizeResourceName(name)
-	for _, preset := range defaultKitScaffoldPresets() {
+	for _, preset := range s.kitScaffoldPresetDefinitions() {
 		if normalizeResourceName(preset.Name) == normalized {
 			preset.Validation = s.validateKitResource(kitDocumentFromScaffold(preset, kitScaffoldRequest{}))
 			return preset, true
@@ -704,245 +729,72 @@ func (s *Server) kitScaffoldPreset(name string) (kitScaffoldPreset, bool) {
 	return kitScaffoldPreset{}, false
 }
 
-func defaultKitScaffoldPresets() []kitScaffoldPreset {
-	return []kitScaffoldPreset{
-		{
-			Name:                "multi-domain-agent",
-			DefaultKitName:      "multi-domain-agent-kit",
-			Title:               "Multi-Domain Agent Starter Kit",
-			Description:         "One starter kit that routes mixed user requests to linked software, security, documentation, operations, support, and platform teams.",
-			Category:            "starter",
-			Tags:                []string{"starter", "multi-domain", "workflow", "team", "quality"},
-			Providers:           []string{"primary"},
-			Agents:              []string{"chat", "planner", "fixer", "auditor"},
-			Skills:              []string{"execution-plan", "code-writing", "code-audit", "vulnerability-research", "web-vulnerability-research", "binary-vulnerability-research", "reverse-engineering"},
-			Tools:               []string{"read_file", "search_files", "write_file", "web_search", "fetch_url", "fetch_page_assets", "binary_file_info", "binary_strings", "hex_preview"},
-			Workflows:           []string{"plan-fix-audit", "skill-chain"},
-			WorkflowTemplates:   []string{"multi-domain-intake-router", "task-decomposition-plan", "plan-fix-audit", "software-team-review-gate", "web-research-risk", "binary-triage", "docs-review-publish", "operations-runbook", "customer-support-triage", "agent-framework-extension"},
-			TeamTemplates:       []string{"software-task-team", "audit-security-team", "web-research-team", "binary-triage-team", "documentation-team", "operations-runbook-team", "customer-support-team", "framework-extension-team"},
-			PolicyRules:         []string{"expression", "contains", "risk_at_least", "ref_truthy", "team_approval_gate"},
-			RequiredEnv:         []string{"GOFLOW_API_KEY"},
-			RecommendedWorkflow: "multi-domain-intake-router",
-			RecommendedAgent:    "chat",
-			Examples: []kitExample{{
-				Title:       "Route a mixed request",
-				Description: "Collect context, route to the right domain team, and produce a quality-gated handoff.",
-				Request:     "Help me decide how to handle this project request and route it to the right workflow.",
-				Workflow:    "multi-domain-intake-router",
-				Agent:       "chat",
-			}},
-			Metadata: map[string]string{"preset": "multi-domain-agent"},
-		},
-		{
-			Name:                "software-engineering",
-			DefaultKitName:      "software-engineering-kit",
-			Title:               "Software Engineering Kit",
-			Description:         "Plan, implement, review, and hand off scoped software changes.",
-			Category:            "software",
-			Tags:                []string{"coding", "review", "planning"},
-			Providers:           []string{"primary"},
-			Agents:              []string{"chat", "planner", "fixer", "auditor"},
-			Skills:              []string{"execution-plan", "code-writing", "code-audit"},
-			Tools:               []string{"read_file", "search_files", "write_file"},
-			Workflows:           []string{"plan-fix-audit"},
-			WorkflowTemplates:   []string{"plan-fix-audit", "software-team-review-gate", "parallel-research-review"},
-			TeamTemplates:       []string{"software-task-team"},
-			PolicyRules:         []string{"expression", "team_approval_gate"},
-			RecommendedWorkflow: "plan-fix-audit",
-			RecommendedAgent:    "chat",
-			Examples: []kitExample{{
-				Title:       "Improve a project",
-				Description: "Plan, edit, and review a code change under approval.",
-				Request:     "Optimize this project and add focused tests.",
-				Workflow:    "plan-fix-audit",
-				Agent:       "chat",
-			}},
-			Metadata: map[string]string{"preset": "software-engineering"},
-		},
-		{
-			Name:                "agent-framework",
-			DefaultKitName:      "agent-framework-kit",
-			Title:               "Agent Framework Extension Kit",
-			Description:         "Design and materialize linked GoFlow Agent, Skill, Tool, Workflow, Team, Policy, and Kit resources.",
-			Category:            "platform",
-			Tags:                []string{"agent-framework", "extension", "kit", "second-development"},
-			Providers:           []string{"primary"},
-			Agents:              []string{"chat", "planner", "fixer", "auditor"},
-			Skills:              []string{"execution-plan", "code-writing", "code-audit"},
-			Tools:               []string{"read_file", "search_files", "write_file"},
-			Workflows:           []string{"skill-chain"},
-			WorkflowTemplates:   []string{"agent-framework-extension", "multi-domain-intake-router", "task-decomposition-plan", "software-quality-gate"},
-			TeamTemplates:       []string{"framework-extension-team", "software-task-team"},
-			PolicyRules:         []string{"ref_truthy", "team_approval_gate", "expression"},
-			RecommendedWorkflow: "agent-framework-extension",
-			RecommendedAgent:    "planner",
-			Examples: []kitExample{{
-				Title:       "Create a vertical Agent extension",
-				Description: "Design and materialize linked resources for a new domain assistant.",
-				Request:     "Create a vertical Agent kit for an internal release-review assistant.",
-				Workflow:    "agent-framework-extension",
-				Agent:       "planner",
-			}},
-			Metadata: map[string]string{"preset": "agent-framework"},
-		},
-		{
-			Name:                "web-security",
-			DefaultKitName:      "web-security-kit",
-			Title:               "Web Security Research Kit",
-			Description:         "Collect web assets, review client code evidence, and route risky findings through approval gates.",
-			Category:            "security",
-			Tags:                []string{"web", "security", "audit"},
-			Providers:           []string{"primary"},
-			Agents:              []string{"planner", "auditor"},
-			Skills:              []string{"execution-plan", "web-vulnerability-research", "vulnerability-research", "code-audit"},
-			Tools:               []string{"web_search", "fetch_url", "fetch_page_assets", "read_file"},
-			Workflows:           []string{"skill-chain"},
-			WorkflowTemplates:   []string{"web-research-risk", "human-input-security-review"},
-			TeamTemplates:       []string{"web-research-team", "audit-security-team"},
-			PolicyRules:         []string{"contains", "risk_at_least", "expression"},
-			RequiredEnv:         []string{"GOFLOW_API_KEY"},
-			RecommendedWorkflow: "web-research-risk",
-			RecommendedAgent:    "auditor",
-			Examples: []kitExample{{
-				Title:       "Review a target URL",
-				Description: "Fetch reachable assets and produce evidence-backed findings.",
-				Request:     "Review https://example.com for client-side security risks within authorized scope.",
-				Workflow:    "web-research-risk",
-				Agent:       "auditor",
-			}},
-			Metadata: map[string]string{"preset": "web-security"},
-		},
-		{
-			Name:                "security-research",
-			DefaultKitName:      "security-research-kit",
-			Title:               "Security Research Kit",
-			Description:         "Plan authorized security reviews, collect evidence, classify risk, and prepare defensive reports.",
-			Category:            "security",
-			Tags:                []string{"security", "audit", "evidence"},
-			Providers:           []string{"primary"},
-			Agents:              []string{"planner", "auditor"},
-			Skills:              []string{"execution-plan", "vulnerability-research", "web-vulnerability-research", "binary-vulnerability-research", "reverse-engineering", "code-audit"},
-			Tools:               []string{"read_file", "search_files", "web_search", "fetch_url", "binary_file_info", "binary_strings", "hex_preview"},
-			Workflows:           []string{"skill-chain"},
-			WorkflowTemplates:   []string{"web-research-risk", "binary-triage", "human-input-security-review"},
-			TeamTemplates:       []string{"audit-security-team", "web-research-team", "binary-triage-team"},
-			PolicyRules:         []string{"contains", "risk_at_least", "team_approval_gate", "expression"},
-			RecommendedWorkflow: "human-input-security-review",
-			RecommendedAgent:    "auditor",
-			Examples: []kitExample{{
-				Title:       "Authorized review",
-				Description: "Create a scoped evidence-backed security review.",
-				Request:     "Create an authorized security review plan and identify evidence requirements.",
-				Workflow:    "skill-chain",
-				Agent:       "auditor",
-			}},
-			Metadata: map[string]string{"preset": "security-research"},
-		},
-		{
-			Name:                "binary-analysis",
-			DefaultKitName:      "binary-analysis-kit",
-			Title:               "Binary Analysis Kit",
-			Description:         "Run static binary triage with reverse-engineering and vulnerability-research skills.",
-			Category:            "security",
-			Tags:                []string{"binary", "reverse-engineering", "security"},
-			Providers:           []string{"primary"},
-			Agents:              []string{"planner", "auditor"},
-			Skills:              []string{"execution-plan", "reverse-engineering", "binary-vulnerability-research", "code-audit"},
-			Tools:               []string{"binary_file_info", "binary_strings", "hex_preview", "read_file"},
-			Workflows:           []string{"skill-chain"},
-			WorkflowTemplates:   []string{"binary-triage"},
-			TeamTemplates:       []string{"binary-triage-team"},
-			PolicyRules:         []string{"risk_at_least", "expression"},
-			RecommendedWorkflow: "binary-triage",
-			RecommendedAgent:    "auditor",
-			Examples: []kitExample{{
-				Title:       "Static binary triage",
-				Description: "Extract metadata and produce a defensive analysis report.",
-				Request:     "Perform static triage on @sample.bin and report likely risk areas.",
-				Workflow:    "binary-triage",
-				Agent:       "auditor",
-			}},
-			Metadata: map[string]string{"preset": "binary-analysis"},
-		},
-		{
-			Name:                "documentation",
-			DefaultKitName:      "documentation-kit",
-			Title:               "Documentation Kit",
-			Description:         "Plan, update, review, and hand off technical documentation changes.",
-			Category:            "documentation",
-			Tags:                []string{"docs", "writing", "review"},
-			Providers:           []string{"primary"},
-			Agents:              []string{"chat", "planner", "fixer", "auditor"},
-			Skills:              []string{"execution-plan", "code-writing", "code-audit"},
-			Tools:               []string{"read_file", "search_files", "write_file"},
-			Workflows:           []string{"plan-fix-audit"},
-			WorkflowTemplates:   []string{"docs-review-publish"},
-			TeamTemplates:       []string{"documentation-team"},
-			PolicyRules:         []string{"expression", "team_approval_gate"},
-			RecommendedWorkflow: "docs-review-publish",
-			RecommendedAgent:    "chat",
-			Examples: []kitExample{{
-				Title:       "Refresh docs",
-				Description: "Update docs and review for accuracy.",
-				Request:     "Update the setup documentation and verify commands are accurate.",
-				Workflow:    "docs-review-publish",
-				Agent:       "chat",
-			}},
-			Metadata: map[string]string{"preset": "documentation"},
-		},
-		{
-			Name:                "operations-runbook",
-			DefaultKitName:      "operations-runbook-kit",
-			Title:               "Operations Runbook Kit",
-			Description:         "Create and review runbooks with rollback and approval guidance.",
-			Category:            "operations",
-			Tags:                []string{"operations", "runbook", "rollback"},
-			Providers:           []string{"primary"},
-			Agents:              []string{"chat", "planner", "fixer", "auditor"},
-			Skills:              []string{"execution-plan", "code-writing", "code-audit"},
-			Tools:               []string{"read_file", "search_files", "write_file"},
-			Workflows:           []string{"plan-fix-audit"},
-			WorkflowTemplates:   []string{"operations-runbook", "docs-review-publish"},
-			TeamTemplates:       []string{"operations-runbook-team"},
-			PolicyRules:         []string{"expression", "team_approval_gate"},
-			RecommendedWorkflow: "operations-runbook",
-			RecommendedAgent:    "planner",
-			Examples: []kitExample{{
-				Title:       "Write a runbook",
-				Description: "Create a runbook with prechecks and rollback steps.",
-				Request:     "Create an operations runbook for this deployment with rollback guidance.",
-				Workflow:    "operations-runbook",
-				Agent:       "planner",
-			}},
-			Metadata: map[string]string{"preset": "operations-runbook"},
-		},
-		{
-			Name:                "customer-support",
-			DefaultKitName:      "customer-support-kit",
-			Title:               "Customer Support Kit",
-			Description:         "Triage support requests, prepare response plans, and hand off concise customer-ready answers.",
-			Category:            "support",
-			Tags:                []string{"support", "triage", "handoff"},
-			Providers:           []string{"primary"},
-			Agents:              []string{"chat", "planner"},
-			Skills:              []string{"execution-plan"},
-			Tools:               []string{"read_file", "search_files"},
-			Workflows:           []string{"skill-chain"},
-			WorkflowTemplates:   []string{"customer-support-triage", "parallel-research-review"},
-			TeamTemplates:       []string{"customer-support-team"},
-			PolicyRules:         []string{"expression"},
-			RecommendedWorkflow: "customer-support-triage",
-			RecommendedAgent:    "chat",
-			Examples: []kitExample{{
-				Title:       "Support triage",
-				Description: "Analyze a support request and draft a response plan.",
-				Request:     "Triage this customer issue and draft a clear support response.",
-				Workflow:    "customer-support-triage",
-				Agent:       "chat",
-			}},
-			Metadata: map[string]string{"preset": "customer-support"},
-		},
+func (s *Server) kitScaffoldPresetDefinitions() []kitScaffoldPreset {
+	if s == nil || s.runtime == nil || strings.TrimSpace(s.runtime.RuntimeHome()) == "" {
+		return defaultKitScaffoldPresets()
 	}
+	presets, err := scaffold.KitPresetsFromDirs(filepath.Join(s.runtime.RuntimeHome(), "templates", "kits", "scaffolds"))
+	if err != nil {
+		return defaultKitScaffoldPresets()
+	}
+	return kitScaffoldPresetsFromShared(presets)
+}
+
+func defaultKitScaffoldPresets() []kitScaffoldPreset {
+	return kitScaffoldPresetsFromShared(scaffold.BuiltInKitPresets())
+}
+
+func kitScaffoldPresetsFromShared(presets []scaffold.KitPreset) []kitScaffoldPreset {
+	out := make([]kitScaffoldPreset, 0, len(presets))
+	for _, preset := range presets {
+		out = append(out, kitScaffoldPresetFromShared(preset))
+	}
+	return out
+}
+
+func kitScaffoldPresetFromShared(preset scaffold.KitPreset) kitScaffoldPreset {
+	examples := make([]kitExample, 0, len(preset.Examples))
+	for _, example := range preset.Examples {
+		examples = append(examples, kitExample{
+			Title:       example.Title,
+			Description: example.Description,
+			Request:     example.Request,
+			Workflow:    example.Workflow,
+			Agent:       example.Agent,
+		})
+	}
+	return kitScaffoldPreset{
+		Name:                preset.Name,
+		DefaultKitName:      preset.DefaultKitName,
+		Title:               preset.Title,
+		Description:         preset.Description,
+		Category:            preset.Category,
+		Tags:                append([]string(nil), preset.Tags...),
+		Providers:           append([]string(nil), preset.Providers...),
+		Agents:              append([]string(nil), preset.Agents...),
+		Skills:              append([]string(nil), preset.Skills...),
+		Tools:               append([]string(nil), preset.Tools...),
+		Workflows:           append([]string(nil), preset.Workflows...),
+		WorkflowTemplates:   append([]string(nil), preset.WorkflowTemplates...),
+		TeamTemplates:       append([]string(nil), preset.TeamTemplates...),
+		PolicyRules:         append([]string(nil), preset.PolicyRules...),
+		RequiredEnv:         append([]string(nil), preset.RequiredEnv...),
+		RecommendedWorkflow: preset.RecommendedWorkflow,
+		RecommendedAgent:    preset.RecommendedAgent,
+		Examples:            examples,
+		Metadata:            cloneKitStringMap(preset.Metadata),
+	}
+}
+
+func cloneKitStringMap(values map[string]string) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make(map[string]string, len(values))
+	for key, value := range values {
+		out[key] = value
+	}
+	return out
 }
 
 func kitDocumentFromScaffold(preset kitScaffoldPreset, req kitScaffoldRequest) kitResourceDocument {
@@ -1079,6 +931,9 @@ func (s *Server) materializedKitBundle(preset kitScaffoldPreset, req kitScaffold
 	doc.Metadata["generated_workflow_template"] = names.WorkflowTemplate
 	doc.Metadata["generated_team_template"] = names.TeamTemplate
 	doc.Metadata["generated_policy_rule"] = names.PolicyRule
+	doc.Metadata["recommended_agent"] = names.Agent
+	doc.Metadata["recommended_workflow"] = names.Workflow
+	doc.Metadata["recommended_team"] = names.TeamTemplate
 	doc.Examples = []kitExample{{
 		Title:       "Run the generated starter workflow",
 		Description: "Uses the generated agent, skill, containerized helper tool, team template, and policy gate.",
@@ -1087,39 +942,46 @@ func (s *Server) materializedKitBundle(preset kitScaffoldPreset, req kitScaffold
 		Agent:       names.Agent,
 	}}
 	doc = normalizeKitResource(doc, names.Kit)
-
-	toolPreset, ok := s.toolScaffoldPreset("python-container-readonly", true)
-	if !ok {
-		return kitBundleDocument{}, fmt.Errorf("python-container-readonly tool scaffold preset is unavailable")
-	}
-	tool, err := s.toolDocumentFromScaffold(toolPreset, toolScaffoldRequest{
-		Name:        names.Tool,
-		Description: fmt.Sprintf("Read-only containerized helper MCP server for the %s kit.", names.Kit),
-	})
+	templatePreset := materializedKitPresetForTemplate(preset, doc)
+	kitDoc, err := s.renderMaterializedKitResource(templatePreset, names)
 	if err != nil {
 		return kitBundleDocument{}, err
 	}
-	workflow := materializedKitWorkflowGraph(names, doc, preset)
-	templateGraph := workflow
-	templateGraph.Name = names.WorkflowTemplate
-	template := agent.WorkflowTemplate{
-		WorkflowTemplateSummary: agent.WorkflowTemplateSummary{
-			Name:        names.WorkflowTemplate,
-			Title:       kitMaterializedTitle(doc, "Workflow Template"),
-			Description: "Reusable linked workflow template generated from a GoFlow kit scaffold.",
-			Category:    firstKitScaffoldValue(doc.Category, "custom"),
-			Tags:        mergeKitStringRefs(doc.Tags, []string{"materialized", "starter", "linked"}, false),
-		},
-		Graph: templateGraph,
+
+	tool, err := s.materializedKitToolDocument(preset, names)
+	if err != nil {
+		return kitBundleDocument{}, err
 	}
-	team := materializedKitTeamTemplate(names, doc)
-	policy := materializedKitPolicyRule(names, doc)
+	agentDoc, err := s.renderMaterializedAgentResource(templatePreset, names)
+	if err != nil {
+		return kitBundleDocument{}, err
+	}
+	skillDoc, err := s.renderMaterializedSkillResource(templatePreset, names)
+	if err != nil {
+		return kitBundleDocument{}, err
+	}
+	workflow, err := s.renderMaterializedWorkflowResource(templatePreset, names)
+	if err != nil {
+		return kitBundleDocument{}, err
+	}
+	template, err := s.renderMaterializedWorkflowTemplateResource(templatePreset, names)
+	if err != nil {
+		return kitBundleDocument{}, err
+	}
+	team, err := s.renderMaterializedTeamTemplateResource(templatePreset, names)
+	if err != nil {
+		return kitBundleDocument{}, err
+	}
+	policy, err := s.renderMaterializedPolicyRuleResource(templatePreset, names)
+	if err != nil {
+		return kitBundleDocument{}, err
+	}
 	return kitBundleDocument{
 		Kind:              kitBundleKind,
 		Version:           kitBundleVersion,
-		Kit:               doc,
-		Agents:            []agentResourceDocument{materializedKitAgent(names, doc, providers[0])},
-		Skills:            []skillResourceDocument{materializedKitSkill(names, doc)},
+		Kit:               kitDoc,
+		Agents:            []agentResourceDocument{agentDoc},
+		Skills:            []skillResourceDocument{skillDoc},
 		Tools:             []toolResourceDocument{tool},
 		TeamTemplates:     []agent.TeamTemplate{team},
 		PolicyRules:       []policyRuleResourceDocument{policy},
@@ -1132,231 +994,278 @@ func (s *Server) materializedKitBundle(preset kitScaffoldPreset, req kitScaffold
 	}, nil
 }
 
-func materializedKitAgent(names kitMaterializedResourceNames, doc kitResourceDocument, provider string) agentResourceDocument {
-	return agentResourceDocument{
-		ID:          names.Agent,
-		Name:        kitMaterializedTitle(doc, "Agent"),
-		Description: "Starter agent generated with a linked kit; keep tool access narrow and route write work through explicit approval.",
-		SystemPrompt: strings.TrimSpace(fmt.Sprintf(`You are the entry agent for the %s kit.
-Use the linked skill, workflow, team template, and policy gate as the default operating model.
-Keep outputs concise, evidence-backed, and suitable for downstream workflow nodes.
-Prefer compact artifacts and explicit assumptions when the task is long or ambiguous.`, doc.Name)),
-		Provider:         firstKitScaffoldValue(provider, "primary"),
-		MaxIterations:    6,
-		AllowedToolKinds: []string{"read"},
-		AllowedTools:     []string{names.Tool + "/ping", names.Tool + "/read_text"},
-		ToolPolicy:       "confirm",
-		Mode:             "chat",
+func (s *Server) renderMaterializedKitResource(preset scaffold.KitPreset, names kitMaterializedResourceNames) (kitResourceDocument, error) {
+	runtimeHome := ""
+	if s != nil && s.runtime != nil {
+		runtimeHome = s.runtime.RuntimeHome()
+	}
+	content, err := scaffold.RenderMaterializedKitYAML(runtimeHome, preset, materializedSharedNames(names))
+	if err != nil {
+		return kitResourceDocument{}, err
+	}
+	var doc kitResourceDocument
+	if err := yaml.Unmarshal([]byte(content), &doc); err != nil {
+		return kitResourceDocument{}, fmt.Errorf("parse materialized kit scaffold: %w", err)
+	}
+	doc = normalizeKitResource(doc, names.Kit)
+	return doc, nil
+}
+
+func (s *Server) renderMaterializedAgentResource(preset scaffold.KitPreset, names kitMaterializedResourceNames) (agentResourceDocument, error) {
+	runtimeHome := ""
+	if s != nil && s.runtime != nil {
+		runtimeHome = s.runtime.RuntimeHome()
+	}
+	content, err := scaffold.RenderMaterializedAgentConfig(runtimeHome, preset, materializedSharedNames(names))
+	if err != nil {
+		return agentResourceDocument{}, err
+	}
+	parsed := make(map[string]agentResourceDocument)
+	if err := yaml.Unmarshal([]byte(content), &parsed); err != nil {
+		return agentResourceDocument{}, fmt.Errorf("parse materialized agent scaffold: %w", err)
+	}
+	doc, ok := parsed[names.Agent]
+	if !ok {
+		return agentResourceDocument{}, fmt.Errorf("materialized agent scaffold missing %q", names.Agent)
+	}
+	doc.ID = names.Agent
+	doc.Path = ""
+	return doc, nil
+}
+
+func (s *Server) renderMaterializedSkillResource(preset scaffold.KitPreset, names kitMaterializedResourceNames) (skillResourceDocument, error) {
+	runtimeHome := ""
+	if s != nil && s.runtime != nil {
+		runtimeHome = s.runtime.RuntimeHome()
+	}
+	content, err := scaffold.RenderMaterializedSkillMarkdown(runtimeHome, preset, materializedSharedNames(names))
+	if err != nil {
+		return skillResourceDocument{}, err
+	}
+	return parseMaterializedSkillResource(runtimeHome, names.Skill, content)
+}
+
+func (s *Server) renderMaterializedWorkflowResource(preset scaffold.KitPreset, names kitMaterializedResourceNames) (agent.WorkflowGraphDocument, error) {
+	runtimeHome := ""
+	if s != nil && s.runtime != nil {
+		runtimeHome = s.runtime.RuntimeHome()
+	}
+	content, err := scaffold.RenderMaterializedWorkflowYAML(runtimeHome, preset, materializedSharedNames(names))
+	if err != nil {
+		return agent.WorkflowGraphDocument{}, err
+	}
+	var doc agent.WorkflowGraphDocument
+	if err := yaml.Unmarshal([]byte(content), &doc); err != nil {
+		return agent.WorkflowGraphDocument{}, fmt.Errorf("parse materialized workflow scaffold: %w", err)
+	}
+	if strings.TrimSpace(doc.Name) == "" {
+		doc.Name = names.Workflow
+	}
+	return doc, nil
+}
+
+func (s *Server) renderMaterializedWorkflowTemplateResource(preset scaffold.KitPreset, names kitMaterializedResourceNames) (agent.WorkflowTemplate, error) {
+	runtimeHome := ""
+	if s != nil && s.runtime != nil {
+		runtimeHome = s.runtime.RuntimeHome()
+	}
+	content, err := scaffold.RenderMaterializedWorkflowTemplateYAML(runtimeHome, preset, materializedSharedNames(names))
+	if err != nil {
+		return agent.WorkflowTemplate{}, err
+	}
+	var doc agent.WorkflowTemplate
+	if err := yaml.Unmarshal([]byte(content), &doc); err != nil {
+		return agent.WorkflowTemplate{}, fmt.Errorf("parse materialized workflow template scaffold: %w", err)
+	}
+	if strings.TrimSpace(doc.Name) == "" {
+		doc.Name = names.WorkflowTemplate
+	}
+	if strings.TrimSpace(doc.Title) == "" {
+		doc.Title = strings.TrimSpace(preset.Title + " Workflow Template")
+	}
+	if strings.TrimSpace(doc.Description) == "" {
+		doc.Description = "Reusable linked workflow template generated from a GoFlow kit scaffold."
+	}
+	if strings.TrimSpace(doc.Category) == "" {
+		doc.Category = firstKitScaffoldValue(preset.Category, "custom")
+	}
+	if len(doc.Tags) == 0 {
+		doc.Tags = mergeKitStringRefs(preset.Tags, []string{"materialized", "starter", "linked"}, false)
+	}
+	if strings.TrimSpace(doc.Graph.Name) == "" {
+		doc.Graph.Name = doc.Name
+	}
+	return doc, nil
+}
+
+func (s *Server) renderMaterializedTeamTemplateResource(preset scaffold.KitPreset, names kitMaterializedResourceNames) (agent.TeamTemplate, error) {
+	runtimeHome := ""
+	if s != nil && s.runtime != nil {
+		runtimeHome = s.runtime.RuntimeHome()
+	}
+	content, err := scaffold.RenderMaterializedTeamTemplateYAML(runtimeHome, preset, materializedSharedNames(names))
+	if err != nil {
+		return agent.TeamTemplate{}, err
+	}
+	var doc agent.TeamTemplate
+	if err := yaml.Unmarshal([]byte(content), &doc); err != nil {
+		return agent.TeamTemplate{}, fmt.Errorf("parse materialized team template scaffold: %w", err)
+	}
+	if strings.TrimSpace(doc.Name) == "" {
+		doc.Name = names.TeamTemplate
+	}
+	if strings.TrimSpace(doc.Title) == "" {
+		doc.Title = strings.TrimSpace(preset.Title + " Team")
+	}
+	if strings.TrimSpace(doc.Description) == "" {
+		doc.Description = "Linked starter team template generated with the kit scaffold."
+	}
+	if strings.TrimSpace(doc.Category) == "" {
+		doc.Category = firstKitScaffoldValue(preset.Category, "custom")
+	}
+	if len(doc.Tags) == 0 {
+		doc.Tags = mergeKitStringRefs(preset.Tags, []string{"materialized", "starter", "team"}, false)
+	}
+	if strings.TrimSpace(doc.RecommendedWorkflow) == "" {
+		doc.RecommendedWorkflow = names.Workflow
+	}
+	if strings.TrimSpace(doc.RecommendedEntryAgent) == "" {
+		doc.RecommendedEntryAgent = names.Agent
+	}
+	return doc, nil
+}
+
+func (s *Server) renderMaterializedPolicyRuleResource(preset scaffold.KitPreset, names kitMaterializedResourceNames) (policyRuleResourceDocument, error) {
+	runtimeHome := ""
+	if s != nil && s.runtime != nil {
+		runtimeHome = s.runtime.RuntimeHome()
+	}
+	content, err := scaffold.RenderMaterializedPolicyRuleYAML(runtimeHome, preset, materializedSharedNames(names))
+	if err != nil {
+		return policyRuleResourceDocument{}, err
+	}
+	var definition agent.WorkflowPolicyRuleDefinition
+	if err := yaml.Unmarshal([]byte(content), &definition); err != nil {
+		return policyRuleResourceDocument{}, fmt.Errorf("parse materialized policy rule scaffold: %w", err)
+	}
+	return policyRuleResourceFromDefinition(agent.MigrateWorkflowPolicyRuleDefinition(definition), ""), nil
+}
+
+func parseMaterializedSkillResource(runtimeHome, name, content string) (skillResourceDocument, error) {
+	base := runtimeHome
+	if strings.TrimSpace(base) == "" {
+		base = os.TempDir()
+	}
+	base = filepath.Join(base, ".goflow", "tmp")
+	if err := os.MkdirAll(base, 0o755); err != nil {
+		return skillResourceDocument{}, fmt.Errorf("create materialized skill temp root: %w", err)
+	}
+	tmpRoot, err := os.MkdirTemp(base, "materialized-skill-*")
+	if err != nil {
+		return skillResourceDocument{}, fmt.Errorf("create materialized skill temp dir: %w", err)
+	}
+	defer os.RemoveAll(tmpRoot)
+	tmpDir := filepath.Join(tmpRoot, name)
+	if err := os.MkdirAll(tmpDir, 0o755); err != nil {
+		return skillResourceDocument{}, fmt.Errorf("create materialized skill directory: %w", err)
+	}
+	tmpPath := filepath.Join(tmpDir, "SKILL.md")
+	if err := os.WriteFile(tmpPath, []byte(content), 0o644); err != nil {
+		return skillResourceDocument{}, fmt.Errorf("write materialized skill file: %w", err)
+	}
+	parsed, err := skillpkg.ParseFile(tmpPath)
+	if err != nil {
+		return skillResourceDocument{}, err
+	}
+	doc := skillResourceFromSchema(*parsed)
+	doc.Path = ""
+	return doc, nil
+}
+
+func materializedSharedNames(names kitMaterializedResourceNames) scaffold.MaterializedKitNames {
+	return scaffold.MaterializedKitNames{
+		Kit:              names.Kit,
+		Agent:            names.Agent,
+		Skill:            names.Skill,
+		Tool:             names.Tool,
+		Workflow:         names.Workflow,
+		WorkflowTemplate: names.WorkflowTemplate,
+		TeamTemplate:     names.TeamTemplate,
+		PolicyRule:       names.PolicyRule,
 	}
 }
 
-func materializedKitSkill(names kitMaterializedResourceNames, doc kitResourceDocument) skillResourceDocument {
-	return skillResourceDocument{
-		Name:             names.Skill,
-		Description:      "Linked starter skill for planning, evidence collection, review, and handoff inside a generated kit workflow.",
-		Version:          "1.0.0",
-		Author:           "GoFlow Studio",
-		Format:           "goflow",
-		Mode:             "chat",
-		PreferredAgent:   names.Agent,
-		AllowedToolKinds: []string{"read"},
-		OutputKind:       "structured_handoff",
-		Priority:         50,
-		MaxIterations:    4,
-		Tools: []schema.SkillTool{
-			{Name: names.Tool + "/read_text", Required: false},
-		},
-		Params: []schema.SkillParam{
-			{Name: "request", Type: "string", Description: "User task or workflow stage request.", Required: true},
-			{Name: "scope", Type: "string", Description: "Bounded domain, repository, target, or operating scope.", Required: false},
-			{Name: "upstream", Type: "string", Description: "Compact output from an earlier workflow node.", Required: false},
-		},
-		Activation: schema.Activation{
-			Keywords:             []string{doc.Name, names.Skill, "starter-kit", "workflow-handoff"},
-			EmbeddingDescription: "Use for generated starter kit workflows that need planning, evidence, review, and concise downstream handoff.",
-		},
-		Metadata: map[string]string{
-			"kit":                   names.Kit,
-			"generated_agent":       names.Agent,
-			"generated_tool":        names.Tool,
-			"generated_workflow":    names.Workflow,
-			"generated_policy_rule": names.PolicyRule,
-		},
-		Instructions: strings.TrimSpace(`## Role
-
-Operate as a reusable workflow skill for this kit. Produce compact, structured outputs that can be passed to the next workflow node.
-
-## Workflow
-
-1. Restate the current task, scope, assumptions, and missing inputs.
-2. Collect only the evidence required for the current stage. Use the linked read-only helper tool when a workspace file must be inspected.
-3. Emit clear sections for Findings, Decisions, Risks, Next Inputs, and Acceptance Criteria.
-4. Keep large raw evidence out of the final answer; reference artifact IDs or file paths instead.
-5. When blocked, state the exact missing input or approval required so the workflow can route correctly.`),
+func materializedKitPresetForTemplate(preset kitScaffoldPreset, doc kitResourceDocument) scaffold.KitPreset {
+	examples := make([]scaffold.KitExample, 0, len(doc.Examples))
+	for _, example := range doc.Examples {
+		examples = append(examples, scaffold.KitExample{
+			Title:       example.Title,
+			Description: example.Description,
+			Request:     example.Request,
+			Workflow:    example.Workflow,
+			Agent:       example.Agent,
+		})
+	}
+	return scaffold.KitPreset{
+		Name:                preset.Name,
+		DefaultKitName:      doc.Name,
+		Title:               doc.Title,
+		Description:         doc.Description,
+		Category:            doc.Category,
+		Tags:                append([]string(nil), doc.Tags...),
+		Providers:           append([]string(nil), doc.Providers...),
+		Agents:              append([]string(nil), doc.Agents...),
+		Skills:              append([]string(nil), doc.Skills...),
+		Tools:               append([]string(nil), doc.Tools...),
+		Workflows:           append([]string(nil), doc.Workflows...),
+		WorkflowTemplates:   append([]string(nil), doc.WorkflowTemplates...),
+		TeamTemplates:       append([]string(nil), doc.TeamTemplates...),
+		PolicyRules:         append([]string(nil), doc.PolicyRules...),
+		RequiredEnv:         append([]string(nil), doc.RequiredEnv...),
+		RecommendedWorkflow: doc.Metadata["recommended_workflow"],
+		RecommendedAgent:    doc.Metadata["recommended_agent"],
+		Examples:            examples,
+		Metadata:            copyMap(doc.Metadata),
 	}
 }
 
-func materializedKitWorkflowGraph(names kitMaterializedResourceNames, doc kitResourceDocument, preset kitScaffoldPreset) agent.WorkflowGraphDocument {
-	return agent.WorkflowGraphDocument{
-		Name:        names.Workflow,
-		Description: "Linked starter workflow generated from a kit scaffold. Outputs from earlier nodes are passed into later nodes.",
-		Stages: []agent.WorkflowGraphStageDocument{
-			{Name: "start", NodeType: "start", Next: []string{"team"}, Position: agent.WorkflowGraphPosition{X: 80, Y: 260}},
-			{
-				Name:     "team",
-				NodeType: "team",
-				Agent:    names.Agent,
-				Params: map[string]string{
-					"team":    names.TeamTemplate,
-					"execute": "false",
-				},
-				Outputs:  map[string]string{"team": "result.structured", "roles": "result.roles"},
-				Next:     []string{"plan"},
-				Position: agent.WorkflowGraphPosition{X: 340, Y: 260},
-			},
-			{
-				Name:     "plan",
-				NodeType: "skill",
-				Agent:    names.Agent,
-				Skill:    names.Skill,
-				Input: map[string]string{
-					"request": "params.request",
-					"scope":   "params.scope",
-					"team":    "stages.team.outputs.team",
-				},
-				Outputs: map[string]string{"summary": "result.summary", "plan": "result.output", "findings": "result.findings"},
-				Artifacts: []agent.WorkflowGraphArtifactDocument{{
-					Name:    "starter-plan",
-					Kind:    "plan",
-					Ref:     "result.output",
-					Title:   kitMaterializedTitle(doc, "Plan"),
-					Summary: "Initial plan and evidence requirements for the linked starter workflow.",
-				}},
-				Next:     []string{"gate"},
-				Position: agent.WorkflowGraphPosition{X: 620, Y: 260},
-			},
-			{
-				Name:     "gate",
-				NodeType: "policy_guard",
-				Params: map[string]string{
-					"rule":   names.PolicyRule,
-					"ref":    "stages.plan.outputs.summary",
-					"reason": "The planning stage did not produce a usable handoff summary.",
-				},
-				Routes:   map[string]string{"allow": "report", "deny": "revise"},
-				Position: agent.WorkflowGraphPosition{X: 900, Y: 260},
-			},
-			{
-				Name:     "report",
-				NodeType: "skill",
-				Agent:    names.Agent,
-				Skill:    names.Skill,
-				Input: map[string]string{
-					"request":  "Build the final handoff from the approved plan.",
-					"upstream": "stages.plan.outputs.plan",
-				},
-				Outputs: map[string]string{"final_report": "result.output", "summary": "result.summary"},
-				Artifacts: []agent.WorkflowGraphArtifactDocument{{
-					Name:    "starter-final-report",
-					Kind:    "report",
-					Ref:     "result.output",
-					Title:   kitMaterializedTitle(doc, "Final Report"),
-					Summary: firstKitScaffoldValue(preset.Description, doc.Description),
-				}},
-				Next:     []string{"end"},
-				Position: agent.WorkflowGraphPosition{X: 1190, Y: 180},
-			},
-			{
-				Name:     "revise",
-				NodeType: "skill",
-				Agent:    names.Agent,
-				Skill:    names.Skill,
-				Input: map[string]string{
-					"request":  "Revise the workflow handoff because the policy gate denied the previous output.",
-					"upstream": "stages.gate.outputs.reason",
-				},
-				Outputs:  map[string]string{"revision_plan": "result.output", "summary": "result.summary"},
-				Next:     []string{"end"},
-				Position: agent.WorkflowGraphPosition{X: 1190, Y: 360},
-			},
-			{Name: "end", NodeType: "end", Position: agent.WorkflowGraphPosition{X: 1500, Y: 260}},
-		},
+func (s *Server) materializedKitToolDocument(preset kitScaffoldPreset, names kitMaterializedResourceNames) (toolResourceDocument, error) {
+	runtimeHome := ""
+	if s != nil && s.runtime != nil {
+		runtimeHome = s.runtime.RuntimeHome()
 	}
-}
-
-func materializedKitTeamTemplate(names kitMaterializedResourceNames, doc kitResourceDocument) agent.TeamTemplate {
-	return agent.TeamTemplate{
-		TeamTemplateSummary: agent.TeamTemplateSummary{
-			Name:                  names.TeamTemplate,
-			Title:                 kitMaterializedTitle(doc, "Team"),
-			Description:           "Linked starter team template generated with the kit scaffold.",
-			Category:              firstKitScaffoldValue(doc.Category, "custom"),
-			Tags:                  mergeKitStringRefs(doc.Tags, []string{"materialized", "starter", "team"}, false),
-			RecommendedWorkflow:   names.Workflow,
-			RecommendedEntryAgent: names.Agent,
-		},
-		RoleTemplates: []agent.TeamRoleTemplate{
-			{
-				Name:             "planner",
-				Label:            "Planner",
-				Agent:            names.Agent,
-				Skill:            names.Skill,
-				Responsibilities: []string{"clarify scope", "produce a compact execution plan", "declare evidence and acceptance criteria"},
-				Produces:         []string{"plan", "acceptance_criteria"},
-				Tools:            []string{names.Tool + "/read_text"},
-			},
-			{
-				Name:             "reviewer",
-				Label:            "Reviewer",
-				Agent:            names.Agent,
-				Skill:            names.Skill,
-				Responsibilities: []string{"review the plan", "identify risks", "approve or request revision"},
-				Consumes:         []string{"plan"},
-				Produces:         []string{"review_decision", "risk_notes"},
-			},
-		},
-		Handoffs: []agent.TeamHandoffTemplate{{
-			From:        "planner",
-			To:          "reviewer",
-			Kind:        "review",
-			Subject:     "Plan review and risk check",
-			Artifacts:   []string{"starter-plan"},
-			Blackboard:  []string{"task_scope", "risk_register"},
-			Description: "Reviewer consumes the compact plan and decides whether the workflow should continue or revise.",
-		}},
-		BlackboardTemplates: []agent.TeamBlackboardTemplate{
-			{Kind: "task_scope", Title: "Task Scope", OwnerRole: "planner", Status: "open", Tags: []string{"scope"}, Description: "Current scope, constraints, and assumptions."},
-			{Kind: "risk_register", Title: "Risk Register", OwnerRole: "reviewer", Status: "open", Tags: []string{"risk"}, Description: "Risks that should affect policy routing or approvals."},
-		},
-		QuorumPresets: []agent.TeamQuorumPreset{{
-			Name:         "default-review",
-			Title:        "Default review quorum",
-			Description:  "Require one reviewer approval before using the final handoff path.",
-			Required:     1,
-			Roles:        []string{"reviewer"},
-			RejectBlocks: true,
-			Default:      true,
-		}},
-		OutputContract: []string{"plan", "review_decision", "risk_notes", "final_report"},
+	content, err := scaffold.RenderMaterializedToolConfig(runtimeHome, materializedKitPresetForTemplate(preset, kitResourceDocument{Name: names.Kit}), materializedSharedNames(names))
+	if err != nil {
+		return toolResourceDocument{}, err
 	}
-}
-
-func materializedKitPolicyRule(names kitMaterializedResourceNames, doc kitResourceDocument) policyRuleResourceDocument {
-	return policyRuleResourceDocument{
-		Name:        names.PolicyRule,
-		Label:       kitMaterializedTitle(doc, "Gate"),
-		Description: "Allow the starter workflow to continue only when the planning handoff produced a truthy summary.",
-		Operator:    "ref_truthy",
-		Reason:      "Planning output must produce a compact summary before downstream reporting.",
-		Defaults:    map[string]string{"ref": "stages.plan.outputs.summary"},
-		Params: []agent.WorkflowNodeFieldOption{{
-			Name:        "ref",
-			Label:       "Plan summary reference",
-			Type:        "reference",
-			Description: "Workflow reference that must resolve to a non-empty value.",
-			Required:    true,
-		}},
+	var cfg toolResourceConfigDocument
+	if err := yaml.Unmarshal([]byte(content), &cfg); err != nil {
+		return toolResourceDocument{}, fmt.Errorf("parse materialized tool config scaffold: %w", err)
 	}
+	if len(cfg.MCPServers) != 1 {
+		return toolResourceDocument{}, fmt.Errorf("materialized tool config scaffold must contain exactly one mcp server")
+	}
+	doc := toolResourceFromServerDocument(cfg.MCPServers[0])
+	doc.Name = names.Tool
+	doc.Description = fmt.Sprintf("Read-only containerized helper MCP server for the %s kit.", names.Kit)
+	doc.Path = ""
+	doc.ConfigPath = ""
+	doc.Code = ""
+	if preset.Name == "binary-analysis" {
+		doc.Description = fmt.Sprintf("Read-only static binary triage helper MCP server for the %s kit.", names.Kit)
+		code, err := scaffold.RenderBinaryAnalysisPythonMCPToolCode(s.runtimeHomeForScaffold(), names.Tool)
+		if err != nil {
+			code, _ = scaffold.RenderBinaryAnalysisPythonMCPToolCode("", names.Tool)
+		}
+		doc.Code = code
+	} else {
+		code, err := scaffold.RenderPythonMCPToolCode(s.runtimeHomeForScaffold(), names.Tool)
+		if err != nil {
+			code, _ = scaffold.RenderPythonMCPToolCode("", names.Tool)
+		}
+		doc.Code = code
+	}
+	return doc, nil
 }
 
 func (s *Server) kitMaterializationConflicts(bundle kitBundleDocument) []kitBundleSavedResource {
@@ -1430,14 +1339,6 @@ func kitMaterializedActivationSteps(names kitMaterializedResourceNames) []string
 		fmt.Sprintf("Open %q in Workflow Studio to customize node positions, policy routing, and team roles.", names.WorkflowTemplate),
 		"Switch the helper tool scaffold to a write-capable container preset only when the workflow truly needs workspace mutation.",
 	}
-}
-
-func kitMaterializedTitle(doc kitResourceDocument, suffix string) string {
-	base := strings.TrimSpace(doc.Title)
-	if base == "" {
-		base = strings.ReplaceAll(doc.Name, "-", " ")
-	}
-	return strings.TrimSpace(base + " " + suffix)
 }
 
 func firstKitScaffoldValue(values ...string) string {

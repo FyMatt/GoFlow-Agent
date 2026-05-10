@@ -1,0 +1,341 @@
+#!/usr/bin/env python3
+"""{{.ServerName}} MCP server scaffold.
+
+This server uses stdio JSON-RPC and performs static binary triage only.
+It keeps file paths inside GOFLOW_WORKSPACE_ROOT and never executes binaries.
+Its startup config belongs in configs/mcp_servers/{{.Name}}.yaml.
+"""
+from __future__ import annotations
+
+import hashlib
+import json
+import math
+import os
+import re
+import string
+import sys
+from pathlib import Path
+
+
+MAX_TEXT_BYTES = 1024 * 1024
+MAX_BINARY_BYTES = 8 * 1024 * 1024
+SERVER_NAME = "{{.ServerName}}"
+
+
+def workspace_root() -> Path:
+    value = os.environ.get("GOFLOW_WORKSPACE_ROOT", "").strip()
+    if value:
+        return Path(value).resolve()
+    return Path(os.environ.get("WORKSPACE_ROOT") or os.getcwd()).resolve()
+
+
+WORKSPACE_ROOT = workspace_root()
+
+
+def respond(request_id, result=None, error=None):
+    payload = {"jsonrpc": "2.0", "id": request_id}
+    if error is not None:
+        payload["error"] = {"code": -32000, "message": str(error)}
+    else:
+        payload["result"] = result
+    print(json.dumps(payload, ensure_ascii=False), flush=True)
+
+
+def resolve_path(raw, must_exist=True, allow_root=False):
+    if not isinstance(raw, str) or not raw.strip():
+        raise ValueError("path is required")
+    candidate = Path(raw)
+    if not candidate.is_absolute():
+        candidate = WORKSPACE_ROOT / candidate
+    candidate = candidate.resolve(strict=False)
+    try:
+        candidate.relative_to(WORKSPACE_ROOT)
+    except ValueError as exc:
+        raise ValueError(f'path "{raw}" escapes workspace root') from exc
+    if not allow_root and candidate == WORKSPACE_ROOT:
+        raise ValueError("path must not be workspace root")
+    if must_exist:
+        if not candidate.exists():
+            raise FileNotFoundError(str(candidate))
+        candidate = candidate.resolve(strict=True)
+        try:
+            candidate.relative_to(WORKSPACE_ROOT)
+        except ValueError as exc:
+            raise ValueError(f'path "{raw}" resolves outside workspace root') from exc
+        if not allow_root and candidate == WORKSPACE_ROOT:
+            raise ValueError("path must not be workspace root")
+        return candidate
+
+    parent = candidate.parent
+    while not parent.exists():
+        if parent == parent.parent:
+            raise ValueError(f'path "{raw}" has no existing parent inside workspace')
+        parent = parent.parent
+    parent = parent.resolve(strict=True)
+    try:
+        parent.relative_to(WORKSPACE_ROOT)
+    except ValueError as exc:
+        raise ValueError(f'path "{raw}" resolves outside workspace root') from exc
+    return candidate
+
+
+def relative_path(path):
+    try:
+        return path.relative_to(WORKSPACE_ROOT).as_posix()
+    except ValueError:
+        return str(path)
+
+
+def read_limited(path: Path, limit: int) -> bytes:
+    size = path.stat().st_size
+    if size > limit:
+        raise ValueError(f"file too large: {size} bytes exceeds {limit}")
+    return path.read_bytes()
+
+
+def read_text_limited(path: Path) -> str:
+    data = read_limited(path, MAX_TEXT_BYTES)
+    return data.decode("utf-8-sig")
+
+
+def printable_ascii(data: bytes) -> str:
+    return "".join(chr(byte) if 32 <= byte <= 126 else "." for byte in data)
+
+
+def shannon_entropy(data: bytes) -> float:
+    if not data:
+        return 0.0
+    counts = {}
+    for byte in data:
+        counts[byte] = counts.get(byte, 0) + 1
+    entropy = 0.0
+    total = len(data)
+    for count in counts.values():
+        probability = count / total
+        entropy -= probability * math.log2(probability)
+    return entropy
+
+
+def looks_text(data: bytes) -> bool:
+    if not data:
+        return True
+    allowed = set(bytes(string.printable, "ascii")) | {0x0A, 0x0D, 0x09}
+    printable_count = sum(1 for byte in data if byte in allowed)
+    return printable_count / len(data) > 0.85
+
+
+def bounded_int(value, minimum: int, maximum: int) -> int:
+    try:
+        parsed = int(value)
+    except (TypeError, ValueError):
+        parsed = minimum
+    return max(minimum, min(maximum, parsed))
+
+
+def extract_ascii_strings(data: bytes, min_length: int, limit: int) -> list[dict]:
+    results = []
+    current = bytearray()
+    start = 0
+    printable = set(bytes(string.printable, "ascii")) - {0x0B, 0x0C}
+    for index, byte in enumerate(data + b"\x00"):
+        if byte in printable and byte not in b"\r\n\t":
+            if not current:
+                start = index
+            current.append(byte)
+            continue
+        if len(current) >= min_length:
+            results.append({"encoding": "ascii", "offset": start, "value": current.decode("ascii", errors="replace")})
+            if len(results) >= limit:
+                return results
+        current = bytearray()
+    return results
+
+
+def extract_utf16le_strings(data: bytes, min_length: int, limit: int) -> list[dict]:
+    results = []
+    pattern = re.compile((rb"(?:[\x20-\x7e]\x00){" + str(min_length).encode("ascii") + rb",}"))
+    for match in pattern.finditer(data):
+        value = match.group(0).decode("utf-16le", errors="replace")
+        results.append({"encoding": "utf-16le", "offset": match.start(), "value": value})
+        if len(results) >= limit:
+            break
+    return results
+
+
+def list_tools():
+    return {
+        "tools": [
+            {
+                "name": "ping",
+                "description": "Return a health response from this MCP server.",
+                "kind": "read",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {},
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "read_text",
+                "description": "Read a UTF-8 text file inside the workspace.",
+                "kind": "read",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "binary_file_info",
+                "description": "Return static metadata for a binary or opaque artifact inside the workspace.",
+                "kind": "read",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "binary_strings",
+                "description": "Extract printable ASCII and UTF-16LE strings from a binary workspace artifact.",
+                "kind": "read",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "min_length": {"type": "integer", "minimum": 3, "maximum": 64},
+                        "max_results": {"type": "integer", "minimum": 1, "maximum": 1000},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+            {
+                "name": "hex_preview",
+                "description": "Return a bounded hex/ascii preview from a binary workspace artifact.",
+                "kind": "read",
+                "input_schema": {
+                    "type": "object",
+                    "properties": {
+                        "path": {"type": "string"},
+                        "offset": {"type": "integer", "minimum": 0, "maximum": MAX_BINARY_BYTES},
+                        "length": {"type": "integer", "minimum": 1, "maximum": 4096},
+                    },
+                    "required": ["path"],
+                    "additionalProperties": False,
+                },
+            },
+        ]
+    }
+
+
+def handle_ping(_args):
+    return {"server": SERVER_NAME, "status": "ok"}
+
+
+def handle_read_text(args):
+    path = resolve_path(args.get("path", ""))
+    return {"path": str(path), "relative_path": relative_path(path), "content": read_text_limited(path)}
+
+
+def handle_binary_file_info(args):
+    path = resolve_path(args.get("path", ""))
+    data = read_limited(path, MAX_BINARY_BYTES)
+    sample = data[:65536]
+    return {
+        "path": str(path),
+        "relative_path": relative_path(path),
+        "size": len(data),
+        "sha256": hashlib.sha256(data).hexdigest(),
+        "magic_hex": data[:32].hex(" "),
+        "magic_ascii": printable_ascii(data[:32]),
+        "entropy_sample": round(shannon_entropy(sample), 4),
+        "looks_text": looks_text(sample),
+    }
+
+
+def handle_binary_strings(args):
+    path = resolve_path(args.get("path", ""))
+    data = read_limited(path, MAX_BINARY_BYTES)
+    min_length = bounded_int(args.get("min_length", 4), 3, 64)
+    max_results = bounded_int(args.get("max_results", 200), 1, 1000)
+    strings_found = []
+    strings_found.extend(extract_ascii_strings(data, min_length, max_results))
+    if len(strings_found) < max_results:
+        strings_found.extend(extract_utf16le_strings(data, min_length, max_results - len(strings_found)))
+    return {
+        "path": str(path),
+        "relative_path": relative_path(path),
+        "min_length": min_length,
+        "max_results": max_results,
+        "strings": strings_found[:max_results],
+    }
+
+
+def handle_hex_preview(args):
+    path = resolve_path(args.get("path", ""))
+    offset = bounded_int(args.get("offset", 0), 0, MAX_BINARY_BYTES)
+    length = bounded_int(args.get("length", 256), 1, 4096)
+    with path.open("rb") as handle:
+        handle.seek(offset)
+        data = handle.read(length)
+    lines = []
+    for index in range(0, len(data), 16):
+        chunk = data[index : index + 16]
+        lines.append({"offset": offset + index, "hex": chunk.hex(" "), "ascii": printable_ascii(chunk)})
+    return {"path": str(path), "relative_path": relative_path(path), "offset": offset, "length": len(data), "lines": lines}
+
+
+def call_tool(params):
+    name = params.get("name", "") if isinstance(params, dict) else ""
+    args = params.get("arguments") if isinstance(params, dict) else {}
+    if args is None:
+        args = {}
+    if not isinstance(args, dict):
+        return {"content": "arguments must be an object", "is_error": True}
+    handlers = {
+        "ping": handle_ping,
+        "read_text": handle_read_text,
+        "binary_file_info": handle_binary_file_info,
+        "binary_strings": handle_binary_strings,
+        "hex_preview": handle_hex_preview,
+    }
+    handler = handlers.get(name)
+    if handler is None:
+        return {"content": f"unknown tool: {name}", "is_error": True}
+    try:
+        body = handler(args)
+        return {"content": json.dumps(body, ensure_ascii=False), "is_error": False}
+    except Exception as exc:
+        return {"content": str(exc), "is_error": True}
+
+
+def handle(request):
+    method = request.get("method")
+    params = request.get("params") or {}
+    if method == "initialize":
+        return {"server": SERVER_NAME, "capabilities": {"tools": True}}
+    if method == "tools/list":
+        return list_tools()
+    if method == "tools/call":
+        return call_tool(params)
+    raise ValueError(f"unknown method: {method}")
+
+
+def main():
+    for line in sys.stdin:
+        if not line.strip():
+            continue
+        request_id = None
+        try:
+            request = json.loads(line)
+            request_id = request.get("id")
+            respond(request.get("id"), handle(request))
+        except Exception as exc:
+            respond(request_id, error=exc)
+
+
+if __name__ == "__main__":
+    main()

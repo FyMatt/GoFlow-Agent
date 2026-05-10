@@ -26,6 +26,12 @@ mode: audit
 preferred_agent: auditor
 allowed_tool_kinds: [read, exec, network]
 output_kind: findings
+next_skills: [code-writing, execution-plan]
+metadata:
+  domain: software-security
+  recommended_workflow: software-quality-gate
+  recommended_team: software-task-team
+  role: reviewer
 ---
 
 ## Role

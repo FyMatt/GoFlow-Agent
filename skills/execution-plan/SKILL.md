@@ -27,6 +27,11 @@ preferred_agent: planner
 allowed_tool_kinds: [read, network]
 output_kind: plan
 next_skills: [code-writing, code-audit]
+metadata:
+  domain: planning
+  recommended_workflow: task-decomposition-plan
+  recommended_team: framework-extension-team
+  role: planner
 ---
 
 ## Role

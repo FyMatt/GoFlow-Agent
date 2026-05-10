@@ -1,0 +1,79 @@
+# Loaded automatically from templates/teams/*.yaml.
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: {{.Names.TeamTemplate}}
+title: {{.Preset.Title}} Team
+description: Linked starter team template generated with the kit scaffold.
+category: {{.Preset.Category}}
+tags:
+{{ range .Preset.Tags }}
+  - {{.}}
+{{ end }}
+  - materialized
+  - starter
+  - team
+recommended_workflow: {{.Names.Workflow}}
+recommended_entry_agent: {{.Names.Agent}}
+role_templates:
+  - name: planner
+    label: Planner
+    agent: {{.Names.Agent}}
+    skill: {{.Names.Skill}}
+    responsibilities:
+      - clarify scope
+      - produce a compact execution plan
+      - declare evidence and acceptance criteria
+    produces: [plan, acceptance_criteria]
+{{ if .PlannerTools }}
+    tools:
+{{ range .PlannerTools }}
+      - {{.}}
+{{ end }}
+{{ end }}
+  - name: reviewer
+    label: Reviewer
+    agent: {{.Names.Agent}}
+    skill: {{.Names.Skill}}
+    responsibilities:
+      - review the plan
+      - identify risks
+      - approve or request revision
+    consumes: [plan]
+    produces: [review_decision, risk_notes]
+{{ if .ReviewerTools }}
+    tools:
+{{ range .ReviewerTools }}
+      - {{.}}
+{{ end }}
+{{ end }}
+handoffs:
+  - from: planner
+    to: reviewer
+    kind: review
+    subject: Plan review and risk check
+    artifacts: [starter-plan]
+    blackboard: [task_scope, risk_register]
+    description: Reviewer consumes the compact plan and decides whether the workflow should continue or revise.
+blackboard_templates:
+  - kind: task_scope
+    title: Task Scope
+    owner_role: planner
+    status: open
+    tags: [scope]
+    description: Current scope, constraints, and assumptions.
+  - kind: risk_register
+    title: Risk Register
+    owner_role: reviewer
+    status: open
+    tags: [risk]
+    description: Risks that should affect policy routing or approvals.
+quorum_presets:
+  - name: default-review
+    title: Default review quorum
+    description: Require one reviewer approval before using the final handoff path.
+    required: 1
+    roles: [reviewer]
+    reject_blocks: true
+    default: true
+output_contract: [plan, review_decision, risk_notes, final_report]

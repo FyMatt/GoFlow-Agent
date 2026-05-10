@@ -1,0 +1,17 @@
+# Loaded automatically from policies/workflow_rules/*.yaml.
+kind: goflow.workflow_policy_rule
+version: 1
+min_supported_version: 1
+name: {{.Names.PolicyRule}}
+label: {{.Preset.Title}} Gate
+description: Allow the starter workflow to continue only when the planning handoff produced a truthy summary.
+operator: ref_truthy
+reason: Planning output must produce a compact summary before downstream reporting.
+defaults:
+  ref: stages.plan.outputs.summary
+params:
+  - name: ref
+    label: Plan summary reference
+    type: reference
+    description: Workflow reference that must resolve to a non-empty value.
+    required: true

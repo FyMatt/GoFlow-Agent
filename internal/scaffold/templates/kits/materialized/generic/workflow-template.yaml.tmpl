@@ -1,0 +1,97 @@
+# Loaded automatically from templates/workflows/*.yaml.
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: {{.Names.WorkflowTemplate}}
+title: {{.Preset.Title}} Workflow Template
+description: Reusable linked workflow template generated from a GoFlow kit scaffold.
+category: {{.Preset.Category}}
+tags:
+{{ range .Preset.Tags }}
+  - {{.}}
+{{ end }}
+  - materialized
+  - starter
+  - linked
+graph:
+  name: {{.Names.WorkflowTemplate}}
+  description: Linked starter workflow. Earlier node outputs are passed into later node inputs.
+  stages:
+    - name: start
+      node_type: start
+      next: [team]
+      position: {x: 80, y: 260}
+    - name: team
+      node_type: team
+      agent: {{.Names.Agent}}
+      params:
+        team: {{.Names.TeamTemplate}}
+        execute: "false"
+      outputs:
+        team: result.structured
+        roles: result.roles
+      next: [plan]
+      position: {x: 340, y: 260}
+    - name: plan
+      node_type: skill
+      agent: {{.Names.Agent}}
+      skill: {{.Names.Skill}}
+      input:
+        request: params.request
+        scope: params.scope
+        team: stages.team.outputs.team
+      outputs:
+        summary: result.summary
+        plan: result.output
+        findings: result.findings
+      artifacts:
+        - name: starter-plan
+          kind: plan
+          ref: result.output
+          title: {{.Preset.Title}} Plan
+          summary: Initial plan and evidence requirements for the linked starter workflow.
+      next: [gate]
+      position: {x: 620, y: 260}
+    - name: gate
+      node_type: policy_guard
+      params:
+        rule: {{.Names.PolicyRule}}
+        ref: stages.plan.outputs.summary
+        reason: The planning stage did not produce a usable handoff summary.
+      routes:
+        allow: report
+        deny: revise
+      position: {x: 900, y: 260}
+    - name: report
+      node_type: skill
+      agent: {{.Names.Agent}}
+      skill: {{.Names.Skill}}
+      input:
+        request: Build the final handoff from the approved plan.
+        upstream: stages.plan.outputs.plan
+      outputs:
+        final_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: starter-final-report
+          kind: report
+          ref: result.output
+          title: {{.Preset.Title}} Final Report
+          summary: "{{.Preset.Description}}"
+      next: [end]
+      position: {x: 1190, y: 180}
+    - name: revise
+      node_type: skill
+      agent: {{.Names.Agent}}
+      skill: {{.Names.Skill}}
+      input:
+        request: Revise the workflow handoff because the policy gate denied the previous output.
+        upstream: stages.gate.outputs.reason
+      outputs:
+        revision_plan: result.output
+        summary: result.summary
+      next: [end]
+      position: {x: 1190, y: 360}
+    - name: end
+      node_type: end
+      position: {x: 1500, y: 260}

@@ -1,0 +1,43 @@
+# Loaded automatically from configs/mcp_servers/*.yaml on next startup.
+# Generated helper runs through Docker/Podman-style container isolation.
+mcp_servers:
+  - name: {{.Names.Tool}}
+    command: python
+    args:
+      - {{.Tool.Target}}
+    enabled: true
+    timeout: 30s
+    workdir: .
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
+    network_disabled: true
+    isolation: container
+    isolation_options:
+      runtime: docker
+      image: ghcr.io/fymatt/goflow-agent-mcp-python:latest
+      workspace_mount: ro
+      workspace_target: /workspace
+      container_workdir: /workspace
+      network: disabled
+      ipc: none
+      userns: auto
+      memory: 256m
+      memory_swap: 256m
+      cpus: "0.5"
+      pids_limit: "64"
+      pull_policy: missing
+      readonly_rootfs: "true"
+      no_new_privileges: "true"
+      cap_drop: all
+      tmpfs: /tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m
+      init: "true"
+      tool_mount: ro
+      tool_source: {{.Tool.Source}}
+      tool_target: {{.Tool.Target}}
+      user: 65532:65532
+    restart_limit: 3
+    cooldown: 10s
+    max_concurrent_calls: 1
+    allowed_commands:
+      - python
+    max_request_bytes: 65536
+    max_response_bytes: 2097152

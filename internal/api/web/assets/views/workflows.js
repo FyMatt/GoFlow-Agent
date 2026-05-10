@@ -67,6 +67,94 @@ let workflowZoomEndTimer = 0;
 let expressionAssistTimer = 0;
 let expressionAssistRequestSeq = 0;
 const examplePlaceholder = value => escapeHTML(t("common.exampleValue", { value }));
+const workflowInspectorWidthStorageKey = "goflow.workflow.inspectorWidth";
+const workflowInspectorWidthBounds = { min: 340, max: 720, defaultValue: 440 };
+
+function clampWorkflowInspectorWidth(width) {
+  const parsed = Number.parseInt(width, 10);
+  if (!Number.isFinite(parsed)) return workflowInspectorWidthBounds.defaultValue;
+  return Math.min(workflowInspectorWidthBounds.max, Math.max(workflowInspectorWidthBounds.min, parsed));
+}
+
+function workflowInspectorWidth() {
+  try {
+    return clampWorkflowInspectorWidth(localStorage.getItem(workflowInspectorWidthStorageKey));
+  } catch {
+    return workflowInspectorWidthBounds.defaultValue;
+  }
+}
+
+function applyWorkflowInspectorWidth(root, width = workflowInspectorWidth()) {
+  const nextWidth = clampWorkflowInspectorWidth(width);
+  const studio = root.querySelector(".studio");
+  if (studio) studio.style.setProperty("--workflow-inspector-width", `${nextWidth}px`);
+  const resizer = root.querySelector("#workflowInspectorResizer");
+  if (resizer) {
+    resizer.setAttribute("aria-valuemin", String(workflowInspectorWidthBounds.min));
+    resizer.setAttribute("aria-valuemax", String(workflowInspectorWidthBounds.max));
+    resizer.setAttribute("aria-valuenow", String(nextWidth));
+  }
+  return nextWidth;
+}
+
+function setWorkflowInspectorWidth(root, width) {
+  const nextWidth = applyWorkflowInspectorWidth(root, width);
+  try {
+    localStorage.setItem(workflowInspectorWidthStorageKey, String(nextWidth));
+  } catch {
+    // Persisting the preference is nice to have; layout still updates without it.
+  }
+  return nextWidth;
+}
+
+function bindWorkflowInspectorResizer(root) {
+  const resizer = root.querySelector("#workflowInspectorResizer");
+  const studio = root.querySelector(".studio");
+  if (!resizer || !studio) return;
+
+  const pointerWidth = event => {
+    const rect = studio.getBoundingClientRect();
+    return rect.right - event.clientX - 4;
+  };
+  const stopResize = () => {
+    studio.classList.remove("resizing-inspector");
+    document.removeEventListener("pointermove", moveResize);
+    document.removeEventListener("pointerup", stopResize);
+    document.removeEventListener("pointercancel", stopResize);
+  };
+  const moveResize = event => {
+    event.preventDefault();
+    setWorkflowInspectorWidth(root, pointerWidth(event));
+  };
+
+  resizer.addEventListener("pointerdown", event => {
+    if (event.button !== 0) return;
+    event.preventDefault();
+    studio.classList.add("resizing-inspector");
+    setWorkflowInspectorWidth(root, pointerWidth(event));
+    document.addEventListener("pointermove", moveResize);
+    document.addEventListener("pointerup", stopResize, { once: true });
+    document.addEventListener("pointercancel", stopResize, { once: true });
+  });
+
+  resizer.addEventListener("keydown", event => {
+    const current = workflowInspectorWidth();
+    const step = event.shiftKey ? 80 : 24;
+    if (event.key === "ArrowLeft") {
+      event.preventDefault();
+      setWorkflowInspectorWidth(root, current + step);
+    } else if (event.key === "ArrowRight") {
+      event.preventDefault();
+      setWorkflowInspectorWidth(root, current - step);
+    } else if (event.key === "Home") {
+      event.preventDefault();
+      setWorkflowInspectorWidth(root, workflowInspectorWidthBounds.max);
+    } else if (event.key === "End") {
+      event.preventDefault();
+      setWorkflowInspectorWidth(root, workflowInspectorWidthBounds.min);
+    }
+  });
+}
 
 export async function renderWorkflows(root) {
   state.activeRoot = root;
@@ -173,6 +261,7 @@ export async function renderWorkflows(root) {
         </div>
       </section>
 
+      <div id="workflowInspectorResizer" class="workflow-inspector-resizer" role="separator" aria-orientation="vertical" aria-controls="stageForm" aria-label="${escapeHTML(t("workflow.inspectorResize"))}" tabindex="0"></div>
       <aside class="studio-right" aria-label="${escapeHTML(t("workflow.inspectorRail"))}">
         <div class="panel flat workflow-inspector-panel" data-tour-id="workflow-inspector">
           <div class="workflow-inspector-head">
@@ -204,6 +293,7 @@ export async function renderWorkflows(root) {
               <label class="check" data-stage-field="approval"><input id="stageApproval" type="checkbox"> ${t("workflow.requireApproval")}</label>
             </div>
             <div id="stageGuidance" class="workflow-stage-guidance"></div>
+            <div id="stageDataFlow" class="workflow-stage-data-flow hidden"></div>
             <details id="stageAdvancedPanel" class="workflow-advanced-panel">
               <summary>
                 <span>
@@ -213,7 +303,8 @@ export async function renderWorkflows(root) {
                 <i id="stageAdvancedCount">${t("workflow.optional")}</i>
               </summary>
               <div class="workflow-advanced-body">
-                <label data-stage-field="next_strategy"><span>${t("workflow.branchStrategy")}</span><input id="stageNextStrategy" placeholder="${escapeHTML(t("workflow.branchPlaceholder"))}"></label>
+                <div id="stageAdvancedGuide" class="workflow-advanced-guide"></div>
+                <label data-stage-field="next_strategy"><span>${t("workflow.branchStrategy")}</span><input id="stageNextStrategy" placeholder="${escapeHTML(t("workflow.branchPlaceholder"))}"><small class="workflow-field-hint">${t("workflow.branchStrategyHelp")}</small></label>
                 <div id="stageAdvancedFields" class="workflow-advanced-fields">
                   <strong>${t("workflow.advancedFields")}</strong>
                   <div id="stageControlHelp" class="workflow-control-help hidden"></div>
@@ -235,10 +326,10 @@ export async function renderWorkflows(root) {
                   <label data-field="param_max_iterations"><span>${t("workflow.loopMaxIterations")}</span><input id="stageParamMaxIterations" type="number" min="1" placeholder="${examplePlaceholder("3")}"></label>
                   <label data-field="param_wait_for"><span>${t("workflow.joinWaitFor")}</span><input id="stageParamWaitFor" placeholder="${escapeHTML(t("workflow.joinWaitForPlaceholder"))}"></label>
                   <label data-field="param_prompt"><span>${t("workflow.checkpointPrompt")}</span><input id="stageParamPrompt" placeholder="${escapeHTML(t("workflow.checkpointPromptPlaceholder"))}"></label>
-                  <label data-field="input"><span>${t("workflow.inputMap")}</span><textarea id="stageInputMap" class="compact-textarea" placeholder="${escapeHTML(t("workflow.inputMapPlaceholder"))}"></textarea></label>
-                  <label data-field="outputs"><span>${t("workflow.outputsMap")}</span><textarea id="stageOutputsMap" class="compact-textarea" placeholder="${escapeHTML(t("workflow.outputsMapPlaceholder"))}"></textarea></label>
+                  <label data-field="input"><span>${t("workflow.inputMap")}</span><textarea id="stageInputMap" class="compact-textarea" placeholder="${escapeHTML(t("workflow.inputMapPlaceholder"))}"></textarea><small class="workflow-field-hint">${t("workflow.inputMapHelp")}</small></label>
+                  <label data-field="outputs"><span>${t("workflow.outputsMap")}</span><textarea id="stageOutputsMap" class="compact-textarea" placeholder="${escapeHTML(t("workflow.outputsMapPlaceholder"))}"></textarea><small class="workflow-field-hint">${t("workflow.outputsMapHelp")}</small></label>
                 </div>
-                <label data-stage-field="params"><span>${t("workflow.parameters")}</span><textarea id="stageParams" class="compact-textarea" placeholder="${escapeHTML(t("workflow.paramsPlaceholder"))}"></textarea></label>
+                <label data-stage-field="params"><span>${t("workflow.parameters")}</span><textarea id="stageParams" class="compact-textarea" placeholder="${escapeHTML(t("workflow.paramsPlaceholder"))}"></textarea><small class="workflow-field-hint">${t("workflow.paramsHelp")}</small></label>
               </div>
             </details>
             <details id="stageArtifactsPanel" class="workflow-advanced-panel workflow-artifacts-panel">
@@ -250,6 +341,7 @@ export async function renderWorkflows(root) {
                 <i id="stageArtifactsCount">${t("workflow.optional")}</i>
               </summary>
               <div id="stageArtifactsEditor" class="artifact-editor" data-stage-field="artifacts">
+                <div id="stageArtifactsGuide" class="workflow-artifact-guide"></div>
                 <div class="artifact-editor-head">
                   <div>
                     <strong>${t("workflow.artifacts")}</strong>
@@ -258,6 +350,17 @@ export async function renderWorkflows(root) {
                   <button id="addArtifact" type="button" class="ghost-button">${t("workflow.addArtifact")}</button>
                 </div>
                 <div id="stageArtifactsList" class="artifact-list"></div>
+                <div id="stageAcceptanceEditor" class="artifact-editor workflow-acceptance-editor" data-stage-field="acceptance_criteria">
+                  <div id="stageAcceptanceGuide" class="workflow-artifact-guide workflow-acceptance-guide"></div>
+                  <div class="artifact-editor-head">
+                    <div>
+                      <strong>${t("workflow.acceptanceCriteria")}</strong>
+                      <span>${t("workflow.acceptanceCriteriaHelp")}</span>
+                    </div>
+                    <button id="addAcceptanceCriterion" type="button" class="ghost-button">${t("workflow.addAcceptanceCriterion")}</button>
+                  </div>
+                  <div id="stageAcceptanceList" class="artifact-list"></div>
+                </div>
               </div>
             </details>
             <div class="toolbar">
@@ -293,6 +396,7 @@ export async function renderWorkflows(root) {
       </aside>
     </div>`;
 
+  applyWorkflowInspectorWidth(root);
   await loadWorkflowList();
   await loadWorkflowTemplates();
   await openRequestedWorkflow();
@@ -883,6 +987,7 @@ function formatRouteText(route) {
 
 function paletteButton(option) {
   const template = option.type;
+  const group = nodeLibraryGroup(option);
   const tags = Array.isArray(option.tags) && option.tags.length
     ? `<small>${escapeHTML(option.tags.slice(0, 3).map(workflowDisplayValue).join(" / "))}</small>`
     : "";
@@ -895,7 +1000,7 @@ function paletteButton(option) {
     hints ? t("workflow.nodePaletteHints", { count: hints }) : "",
     warnings ? t("workflow.nodePaletteWarnings", { count: warnings }) : ""
   ].filter(Boolean);
-  return `<button type="button" class="palette-${escapeHTML(template)} palette-${escapeHTML(nodeTypeCategory(template))}" draggable="true" data-template="${escapeHTML(template)}" data-node-type="${escapeHTML(template)}">
+  return `<button type="button" class="palette-${escapeHTML(template)} palette-${escapeHTML(group)}" draggable="true" data-template="${escapeHTML(template)}" data-node-type="${escapeHTML(template)}">
     <i></i><strong>${escapeHTML(nodeTypeLabel(option))}</strong><span>${escapeHTML(nodeTypeHelp(option))}</span>
     ${tags}
     ${chips.length ? `<div class="palette-meta">${chips.slice(0, 3).map(chip => `<em>${escapeHTML(chip)}</em>`).join("")}</div>` : ""}
@@ -938,7 +1043,7 @@ function refreshNodePalette(root) {
 }
 
 function nodeLibraryGroups() {
-  const order = ["visual", "execute", "control", "data"];
+  const order = ["visual", "execute", "control", "quality", "integration"];
   const buckets = new Map(order.map(id => [id, []]));
   for (const option of filteredNodeTypeOptions()) {
     const group = nodeLibraryGroup(option);
@@ -987,8 +1092,10 @@ function nodeLibraryGroup(optionOrType) {
   const option = typeof optionOrType === "object" && optionOrType ? optionOrType : null;
   const type = option ? option.type : optionOrType;
   const category = String(option?.category || "").trim();
-  if (["visual", "execute", "control", "data"].includes(category)) return category;
-  if (type === "input_gate") return "data";
+  if (["quality_gate", "quality_guard", "policy_guard", "guard"].includes(type)) return "quality";
+  if (["tool", "team", "agent_team", "team_template", "sub_workflow", "subworkflow", "workflow"].includes(type)) return "integration";
+  if (["visual", "execute", "control", "quality", "integration"].includes(category)) return category;
+  if (category === "data") return "integration";
   if (visualTypes.has(type)) return "visual";
   if (controlTypes.has(type)) return "control";
   return "execute";
@@ -1128,6 +1235,12 @@ async function loadWorkflowTemplates() {
 }
 
 async function openRequestedWorkflow() {
+  const requestedTemplate = localStorage.getItem("goflow.workflow.template");
+  if (requestedTemplate) {
+    localStorage.removeItem("goflow.workflow.template");
+    await applyWorkflowTemplate(null, requestedTemplate, { force: true });
+    return;
+  }
   const requested = localStorage.getItem("goflow.workflow.open");
   if (!requested) return;
   localStorage.removeItem("goflow.workflow.open");
@@ -1146,6 +1259,7 @@ async function openRequestedWorkflow() {
 
 function bind(root) {
   const canvas = root.querySelector("#canvas");
+  bindWorkflowInspectorResizer(root);
   root.querySelector("#newGraph").onclick = () => { createPresetGraph(); clearWorkflowValidation(root); clearWorkflowTransfer(root); renderAll(root); };
   root.querySelector("#saveGraph").onclick = () => saveGraph(root);
   root.querySelector("#deleteGraph").onclick = () => deleteGraph(root);
@@ -1306,24 +1420,86 @@ function bind(root) {
     if (!button) return;
     insertExpressionSuggestion(root, button.dataset.expressionSuggestion || "");
   });
+  root.querySelector("#stageDataFlow").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-copy-stage-ref]") : null;
+    if (!button) return;
+    addDataFlowReferenceToStageInput(root, button.dataset.copyStageRef || "");
+  });
+  root.querySelector("#stageNodeTypeMeta").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-node-type-action]") : null;
+    if (!button) return;
+    const action = button.dataset.nodeTypeAction || "";
+    if (action === "apply-default") {
+      applyNodeTypeDefaultStage(root, button.dataset.nodeType || "");
+      return;
+    }
+    if (action === "apply-example") {
+      const index = Number.parseInt(button.dataset.exampleIndex || "", 10);
+      if (!Number.isFinite(index)) return;
+      applyNodeTypeExampleStage(root, button.dataset.nodeType || "", index);
+    }
+  });
+  root.querySelector("#stageAdvancedGuide").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-advanced-guide-example]") : null;
+    if (!button) return;
+    applyAdvancedGuideExample(root, button.dataset.advancedGuideExample || "");
+  });
+  root.querySelector("#stageArtifactsGuide").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-artifact-guide-action]") : null;
+    if (!button) return;
+    addArtifactGuideExample(root, button.dataset.artifactGuideAction || "");
+  });
+  root.querySelector("#stageAcceptanceGuide").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-acceptance-guide-action]") : null;
+    if (!button) return;
+    addAcceptanceGuideExample(root, button.dataset.acceptanceGuideAction || "");
+  });
   root.querySelector("#addArtifact").onclick = () => {
     const stage = selectedStage();
     if (!stage) return;
     stage.artifacts = normalizeArtifacts(stage.artifacts);
     stage.artifacts.push(createArtifactDraft(stage));
     renderArtifactsEditor(root, stage);
+    updateStageArtifactsGuide(root, stage, normalizedNodeType(stage));
+    updateWorkflowFormPanels(root);
+    updateStagePlainSummary(root, stage, normalizedNodeType(stage));
+    renderCanvas(root);
+  };
+  root.querySelector("#addAcceptanceCriterion").onclick = () => {
+    const stage = selectedStage();
+    if (!stage) return;
+    stage.acceptance_criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria);
+    stage.acceptance_criteria.push(createAcceptanceCriterionDraft(stage));
+    renderAcceptanceEditor(root, stage);
+    updateStageAcceptanceGuide(root, stage, normalizedNodeType(stage));
     updateWorkflowFormPanels(root);
     updateStagePlainSummary(root, stage, normalizedNodeType(stage));
     renderCanvas(root);
   };
   root.querySelector("#stageArtifactsList").addEventListener("input", () => {
     syncArtifactsFromForm(root);
+    updateStageArtifactsGuide(root, selectedStage(), normalizedNodeType(selectedStage()));
     updateWorkflowFormPanels(root);
     updateStagePlainSummary(root, selectedStage(), normalizedNodeType(selectedStage()));
     scheduleWorkflowRepaint(root);
   });
   root.querySelector("#stageArtifactsList").addEventListener("change", () => {
     syncArtifactsFromForm(root);
+    updateStageArtifactsGuide(root, selectedStage(), normalizedNodeType(selectedStage()));
+    updateWorkflowFormPanels(root);
+    updateStagePlainSummary(root, selectedStage(), normalizedNodeType(selectedStage()));
+    scheduleWorkflowRepaint(root);
+  });
+  root.querySelector("#stageAcceptanceList").addEventListener("input", () => {
+    syncAcceptanceCriteriaFromForm(root);
+    updateStageAcceptanceGuide(root, selectedStage(), normalizedNodeType(selectedStage()));
+    updateWorkflowFormPanels(root);
+    updateStagePlainSummary(root, selectedStage(), normalizedNodeType(selectedStage()));
+    scheduleWorkflowRepaint(root);
+  });
+  root.querySelector("#stageAcceptanceList").addEventListener("change", () => {
+    syncAcceptanceCriteriaFromForm(root);
+    updateStageAcceptanceGuide(root, selectedStage(), normalizedNodeType(selectedStage()));
     updateWorkflowFormPanels(root);
     updateStagePlainSummary(root, selectedStage(), normalizedNodeType(selectedStage()));
     scheduleWorkflowRepaint(root);
@@ -1336,6 +1512,20 @@ function bind(root) {
     const index = Number.parseInt(button.dataset.removeArtifact || "", 10);
     stage.artifacts = normalizeArtifacts(stage.artifacts).filter((_, itemIndex) => itemIndex !== index);
     renderArtifactsEditor(root, stage);
+    updateStageArtifactsGuide(root, stage, normalizedNodeType(stage));
+    updateWorkflowFormPanels(root);
+    updateStagePlainSummary(root, stage, normalizedNodeType(stage));
+    renderCanvas(root);
+  });
+  root.querySelector("#stageAcceptanceList").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-remove-acceptance]") : null;
+    if (!button) return;
+    const stage = selectedStage();
+    if (!stage) return;
+    const index = Number.parseInt(button.dataset.removeAcceptance || "", 10);
+    stage.acceptance_criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria).filter((_, itemIndex) => itemIndex !== index);
+    renderAcceptanceEditor(root, stage);
+    updateStageAcceptanceGuide(root, stage, normalizedNodeType(stage));
     updateWorkflowFormPanels(root);
     updateStagePlainSummary(root, stage, normalizedNodeType(stage));
     renderCanvas(root);
@@ -1479,6 +1669,70 @@ function defaultStageForType(type) {
   const source = nodeTypeOption(type)?.default_stage;
   if (!source || typeof source !== "object") return null;
   return JSON.parse(JSON.stringify(source));
+}
+
+function exampleStageForType(type, index) {
+  const examples = Array.isArray(nodeTypeOption(type)?.examples) ? nodeTypeOption(type).examples : [];
+  const source = examples[index]?.stage;
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  return JSON.parse(JSON.stringify(source));
+}
+
+function normalizeStagePresetForApply(source, fallbackNodeType) {
+  if (!source || typeof source !== "object" || Array.isArray(source)) return null;
+  const preset = JSON.parse(JSON.stringify(source));
+  const nodeType = fallbackNodeType || normalizedNodeType(preset);
+  return {
+    node_type: nodeType,
+    agent: String(preset.agent || ""),
+    skill: String(preset.skill || ""),
+    tool: String(preset.tool || ""),
+    next: Array.isArray(preset.next) ? preset.next.map(item => slug(item)).filter(Boolean) : [],
+    next_strategy: String(preset.next_strategy || ""),
+    condition: String(preset.condition || ""),
+    policy: String(preset.policy || ""),
+    switch_on: String(preset.switch_on || ""),
+    routes: preset.routes && typeof preset.routes === "object" && !Array.isArray(preset.routes) ? preset.routes : {},
+    cases: preset.cases && typeof preset.cases === "object" && !Array.isArray(preset.cases) ? preset.cases : {},
+    input: preset.input && typeof preset.input === "object" && !Array.isArray(preset.input) ? preset.input : {},
+    outputs: preset.outputs && typeof preset.outputs === "object" && !Array.isArray(preset.outputs) ? preset.outputs : {},
+    params: preset.params && typeof preset.params === "object" && !Array.isArray(preset.params) ? preset.params : {},
+    artifacts: normalizeArtifacts(preset.artifacts),
+    acceptance_criteria: normalizeAcceptanceCriteria(preset.acceptance_criteria || preset.acceptance),
+    approval: !!preset.approval
+  };
+}
+
+function applyStagePresetToSelection(root, source, nodeType) {
+  const stage = selectedStage();
+  if (!stage) return;
+  const preset = normalizeStagePresetForApply(source, nodeType || normalizedNodeType(stage));
+  if (!preset) return;
+  const keepName = stage.name || uniqueStageName(preset.node_type || "stage");
+  const keepPosition = stage.position ? { ...stage.position } : undefined;
+  for (const key of Object.keys(stage)) delete stage[key];
+  Object.assign(stage, preset, {
+    name: keepName,
+    position: keepPosition
+  });
+  state.graphValidation = null;
+  state.graphTransfer = null;
+  pruneUnsupportedStageFields(stage, normalizedNodeType(stage));
+  pruneEmptyStageFields(stage);
+  renderAll(root);
+  renderCanvas(root);
+}
+
+function applyNodeTypeDefaultStage(root, nodeType) {
+  const preset = defaultStageForType(nodeType);
+  if (!preset) return;
+  applyStagePresetToSelection(root, preset, nodeType);
+}
+
+function applyNodeTypeExampleStage(root, nodeType, index) {
+  const preset = exampleStageForType(nodeType, index);
+  if (!preset) return;
+  applyStagePresetToSelection(root, preset, nodeType);
 }
 
 function renderAll(root) {
@@ -1671,6 +1925,9 @@ function renderWorkflowTemplateList(root) {
     button.type = "button";
     const badge = workflowTemplateBadge(template);
     const hint = workflowTemplateHint(template);
+    const nodeTypes = workflowTemplateNodeTypeChips(template);
+    const resourceRefs = workflowTemplateResourceRefs(template);
+    const capabilities = workflowTemplateCapabilityChips(template);
     button.className = `workflow-template-card ${badge ? "workflow-template-card-featured" : ""}`.trim();
     const tags = Array.isArray(template.tags) ? template.tags.slice(0, 3).map(localizedText).filter(Boolean) : [];
     button.innerHTML = `
@@ -1684,6 +1941,17 @@ function renderWorkflowTemplateList(root) {
         <span>${escapeHTML(workflowTemplateCategoryLabel(template.category || template.source || t("workflow.templateStarter")))}</span>
         <em>${escapeHTML(t("workflow.templateStageCount", { count: template.stages || 0 }))}</em>
       </div>
+      ${nodeTypes.length ? `
+        <div class="workflow-template-section">
+          <b>${escapeHTML(t("workflow.templateNodeTypes"))}</b>
+          <div class="workflow-template-chip-row">${nodeTypes.map(item => `<span>${escapeHTML(item)}</span>`).join("")}</div>
+        </div>` : ""}
+      ${resourceRefs.length ? `
+        <div class="workflow-template-section">
+          <b>${escapeHTML(t("workflow.templateUses"))}</b>
+          <div class="workflow-template-chip-row workflow-template-resource-row">${resourceRefs.map(item => `<span title="${escapeHTML(item.title)}"><i>${escapeHTML(item.kind)}</i>${escapeHTML(item.value)}</span>`).join("")}</div>
+        </div>` : ""}
+      ${capabilities.length ? `<div class="workflow-template-capabilities">${capabilities.map(item => `<span class="${escapeHTML(item.tone)}">${escapeHTML(item.label)}</span>`).join("")}</div>` : ""}
       ${tags.length ? `<div class="workflow-template-tags">${tags.map(tag => `<span>${escapeHTML(tag)}</span>`).join("")}</div>` : ""}`;
     button.onclick = () => applyWorkflowTemplate(root, template.name);
     list.appendChild(button);
@@ -1718,6 +1986,12 @@ function filteredWorkflowTemplates(templates) {
       workflowTemplateCategoryLabel(template.category),
       template.source,
       workflowTemplateCategoryLabel(template.source),
+      ...workflowTemplateValues(template, "node_types"),
+      ...workflowTemplateValues(template, "agents"),
+      ...workflowTemplateValues(template, "skills"),
+      ...workflowTemplateValues(template, "tools"),
+      ...workflowTemplateValues(template, "team_templates"),
+      ...workflowTemplateValues(template, "policy_rules"),
       ...(Array.isArray(template.tags) ? template.tags : [])
     ].filter(Boolean).join(" ").toLowerCase();
     return haystack.includes(query);
@@ -1765,6 +2039,46 @@ function workflowTemplateHint(template) {
   if (name === "operations-runbook") return t("workflow.templateOperationsStarterHint");
   if (name === "customer-support-triage") return t("workflow.templateSupportStarterHint");
   return "";
+}
+
+function workflowTemplateNodeTypeChips(template) {
+  const values = workflowTemplateValues(template, "node_types").slice(0, 6);
+  return values.map(type => nodeTypeLabel(nodeTypeOption(type))).filter(Boolean);
+}
+
+function workflowTemplateResourceRefs(template) {
+  const groups = [
+    { key: "agents", kind: t("workflow.templateResourceAgent"), title: t("workflow.templateResourceAgentTitle") },
+    { key: "skills", kind: t("workflow.templateResourceSkill"), title: t("workflow.templateResourceSkillTitle") },
+    { key: "tools", kind: t("workflow.templateResourceTool"), title: t("workflow.templateResourceToolTitle") },
+    { key: "team_templates", kind: t("workflow.templateResourceTeam"), title: t("workflow.templateResourceTeamTitle") },
+    { key: "policy_rules", kind: t("workflow.templateResourcePolicy"), title: t("workflow.templateResourcePolicyTitle") }
+  ];
+  const refs = [];
+  for (const group of groups) {
+    for (const value of workflowTemplateValues(template, group.key)) {
+      refs.push({ kind: group.kind, value: localizedText(value), title: group.title });
+      if (refs.length >= 6) return refs;
+    }
+  }
+  return refs;
+}
+
+function workflowTemplateCapabilityChips(template) {
+  const chips = [];
+  const nodeTypes = workflowTemplateValues(template, "node_types");
+  const hasControl = Boolean(template?.has_control_flow) || nodeTypes.some(type => controlTypes.has(type));
+  const hasQuality = Boolean(template?.has_quality_gate) || nodeTypes.some(type => type === "quality_gate" || type === "quality_guard");
+  if (hasControl) chips.push({ tone: "control", label: t("workflow.templateCapabilityControl") });
+  if (template?.has_data_flow) chips.push({ tone: "data", label: t("workflow.templateCapabilityData") });
+  if (template?.has_approval) chips.push({ tone: "approval", label: t("workflow.templateCapabilityApproval") });
+  if (hasQuality) chips.push({ tone: "quality", label: t("workflow.templateCapabilityQuality") });
+  return chips;
+}
+
+function workflowTemplateValues(template, key) {
+  const values = Array.isArray(template?.[key]) ? template[key] : [];
+  return workflowStudioEndpointCandidates(...values);
 }
 
 function workflowTemplateCategoryLabel(value) {
@@ -2124,6 +2438,8 @@ function renderStageForm(root) {
   const stage = selectedStage();
   form.classList.toggle("hidden", !stage);
   empty.classList.toggle("hidden", !!stage);
+  form.style.display = stage ? "grid" : "none";
+  empty.style.display = stage ? "none" : "";
   if (!stage) {
     if (selectionBadge) {
       selectionBadge.textContent = t("workflow.noSelection");
@@ -2133,6 +2449,13 @@ function renderStageForm(root) {
     return;
   }
   const nodeType = normalizedNodeType(stage);
+  const basicSection = root.querySelector("[data-workflow-form-section='basic']");
+  basicSection?.classList.remove("hidden");
+  const stageKey = `${state.selected}:${stage.name || ""}:${nodeType}`;
+  if (form.dataset.stageKey !== stageKey) {
+    form.dataset.stageKey = stageKey;
+    root.querySelector(".workflow-inspector-panel")?.scrollTo({ top: 0, left: 0 });
+  }
   if (selectionBadge) {
     selectionBadge.textContent = nodeDisplayType(nodeType);
     selectionBadge.className = `badge ${controlTypes.has(nodeType) ? "info" : executableTypes.has(nodeType) ? "good" : "neutral"}`.trim();
@@ -2174,15 +2497,20 @@ function renderStageForm(root) {
   root.querySelector("#stageTeamExecute").checked = isTruthyParam(stage.params?.execute);
   root.querySelector("#stageApproval").checked = !!stage.approval;
   renderArtifactsEditor(root, stage);
+  updateStageArtifactsGuide(root, stage, nodeType);
+  renderAcceptanceEditor(root, stage);
+  updateStageAcceptanceGuide(root, stage, nodeType);
   updateStageFieldVisibility(root, nodeType);
   updateAdvancedFieldVisibility(root, nodeType);
   updateControlHelp(root, nodeType);
+  updateStageAdvancedGuide(root, stage, nodeType);
   updateNodeTypeMeta(root, nodeType);
   updateTeamQuorumPresetOptions(root, stage, nodeType);
   updateTeamTemplatePreview(root, stage, nodeType);
   updateStagePlainSummary(root, stage, nodeType);
   updateStageRoutePreview(root, stage, nodeType);
   updateStageGuidance(root, stage, nodeType);
+  updateStageDataFlow(root, stage, nodeType);
   updateWorkflowFormPanels(root);
   updatePolicyRuleHelp(root);
   scheduleExpressionValidation(root);
@@ -2217,6 +2545,144 @@ function updateControlHelp(root, nodeType) {
     <strong>${escapeHTML(detail.title)}</strong>
     <small>${escapeHTML(detail.body)}</small>
     ${detail.example ? `<code>${escapeHTML(detail.example)}</code>` : ""}`;
+}
+
+function updateStageAdvancedGuide(root, stage, nodeType) {
+  const guide = root.querySelector("#stageAdvancedGuide");
+  if (!guide || !stage) return;
+  const visible = new Set([
+    ...stageFieldSet(nodeType),
+    ...advancedFieldSet(nodeType)
+  ]);
+  const items = advancedGuideItems(nodeType, visible);
+  guide.classList.toggle("hidden", !items.length);
+  if (!items.length) {
+    guide.innerHTML = "";
+    return;
+  }
+  guide.innerHTML = `
+    <div class="workflow-advanced-guide-head">
+      <span>${escapeHTML(t("workflow.advancedGuideKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.advancedGuideTitle"))}</strong>
+    </div>
+    <p>${escapeHTML(advancedGuideBody(nodeType))}</p>
+    <div class="workflow-advanced-guide-list">
+      ${items.map(item => `
+        <section>
+          <strong>${escapeHTML(item.title)}</strong>
+          <span>${escapeHTML(item.body)}</span>
+          ${item.example ? `<div class="workflow-advanced-guide-example">
+            <code>${escapeHTML(item.example)}</code>
+            ${item.fillable ? `<button type="button" class="ghost-button" data-advanced-guide-example="${escapeHTML(item.field)}">${escapeHTML(t("workflow.advancedGuideUseExample"))}</button>` : ""}
+          </div>` : ""}
+        </section>`).join("")}
+    </div>`;
+}
+
+function advancedGuideItems(nodeType, visible) {
+  const items = [];
+  const add = (field, titleKey, bodyKey, exampleKey) => {
+    if (!visible.has(field)) return;
+    items.push({
+      field,
+      title: t(titleKey),
+      body: t(bodyKey),
+      example: exampleKey ? t(exampleKey) : "",
+      fillable: Boolean(exampleKey && advancedGuideExampleTarget(field))
+    });
+  };
+  add("next_strategy", "workflow.advancedGuide.nextStrategyTitle", "workflow.advancedGuide.nextStrategyBody", "workflow.advancedGuide.nextStrategyExample");
+  add("condition", "workflow.advancedGuide.conditionTitle", "workflow.advancedGuide.conditionBody", "workflow.advancedGuide.conditionExample");
+  add("switch_on", "workflow.advancedGuide.switchTitle", "workflow.advancedGuide.switchBody", "workflow.advancedGuide.switchExample");
+  add("routes", "workflow.advancedGuide.routesTitle", "workflow.advancedGuide.routesBody", "workflow.advancedGuide.routesExample");
+  add("cases", "workflow.advancedGuide.casesTitle", "workflow.advancedGuide.casesBody", "workflow.advancedGuide.casesExample");
+  add("policy_rule", "workflow.advancedGuide.policyTitle", "workflow.advancedGuide.policyBody", "workflow.advancedGuide.policyExample");
+  add("input", "workflow.advancedGuide.inputTitle", "workflow.advancedGuide.inputBody", "workflow.advancedGuide.inputExample");
+  add("outputs", "workflow.advancedGuide.outputsTitle", "workflow.advancedGuide.outputsBody", "workflow.advancedGuide.outputsExample");
+  add("params", "workflow.advancedGuide.paramsTitle", "workflow.advancedGuide.paramsBody", "workflow.advancedGuide.paramsExample");
+  add("input_fields_json", "workflow.advancedGuide.inputGateTitle", "workflow.advancedGuide.inputGateBody", "workflow.advancedGuide.inputGateExample");
+  add("param_items", "workflow.advancedGuide.eachTitle", "workflow.advancedGuide.eachBody", "workflow.advancedGuide.eachExample");
+  add("param_stage", "workflow.advancedGuide.bodyStageTitle", "workflow.advancedGuide.bodyStageBody", "workflow.advancedGuide.bodyStageExample");
+  add("param_until", "workflow.advancedGuide.loopTitle", "workflow.advancedGuide.loopBody", "workflow.advancedGuide.loopExample");
+  add("param_max_iterations", "workflow.advancedGuide.maxIterationsTitle", "workflow.advancedGuide.maxIterationsBody", "workflow.advancedGuide.maxIterationsExample");
+  add("param_wait_for", "workflow.advancedGuide.joinTitle", "workflow.advancedGuide.joinBody", "workflow.advancedGuide.joinExample");
+  add("param_workflow", "workflow.advancedGuide.subWorkflowTitle", "workflow.advancedGuide.subWorkflowBody", "workflow.advancedGuide.subWorkflowExample");
+  add("param_prompt", "workflow.advancedGuide.checkpointTitle", "workflow.advancedGuide.checkpointBody", "workflow.advancedGuide.checkpointExample");
+  if (!items.length && nodeType !== "start" && nodeType !== "end") {
+    items.push({
+      field: "",
+      title: t("workflow.advancedGuide.defaultTitle"),
+      body: t("workflow.advancedGuide.defaultBody"),
+      example: "",
+      fillable: false
+    });
+  }
+  return items.slice(0, 5);
+}
+
+function advancedGuideExampleTarget(field) {
+  return {
+    next_strategy: "stageNextStrategy",
+    condition: "stageCondition",
+    switch_on: "stageSwitchOn",
+    routes: "stageRoutes",
+    cases: "stageCases",
+    input: "stageInputMap",
+    outputs: "stageOutputsMap",
+    params: "stageParams",
+    input_fields_json: "stageInputFieldsJson",
+    param_workflow: "stageParamWorkflow",
+    param_items: "stageParamItems",
+    param_stage: "stageParamStage",
+    param_until: "stageParamUntil",
+    param_max_iterations: "stageParamMaxIterations",
+    param_wait_for: "stageParamWaitFor",
+    param_prompt: "stageParamPrompt"
+  }[field] || "";
+}
+
+function advancedGuideExampleValue(field) {
+  const keys = {
+    next_strategy: "workflow.advancedGuide.nextStrategyExample",
+    condition: "workflow.advancedGuide.conditionExample",
+    switch_on: "workflow.advancedGuide.switchExample",
+    routes: "workflow.advancedGuide.routesExample",
+    cases: "workflow.advancedGuide.casesExample",
+    input: "workflow.advancedGuide.inputExample",
+    outputs: "workflow.advancedGuide.outputsExample",
+    params: "workflow.advancedGuide.paramsExample",
+    input_fields_json: "workflow.advancedGuide.inputGateExample",
+    param_workflow: "workflow.advancedGuide.subWorkflowExample",
+    param_items: "workflow.advancedGuide.eachExample",
+    param_stage: "workflow.advancedGuide.bodyStageExample",
+    param_until: "workflow.advancedGuide.loopExample",
+    param_max_iterations: "workflow.advancedGuide.maxIterationsExample",
+    param_wait_for: "workflow.advancedGuide.joinExample",
+    param_prompt: "workflow.advancedGuide.checkpointExample"
+  };
+  return keys[field] ? t(keys[field]) : "";
+}
+
+function applyAdvancedGuideExample(root, field) {
+  const targetId = advancedGuideExampleTarget(field);
+  if (!targetId) return;
+  const input = root.querySelector(`#${targetId}`);
+  if (!input) return;
+  const value = advancedGuideExampleValue(field);
+  if (!value) return;
+  input.value = value;
+  if (field === "input_fields_json") {
+    renderInputFieldsBuilder(root);
+    updateInputFieldsPreview(root);
+  }
+  syncStageFromForm(root);
+  if (typeof input.focus === "function") input.focus();
+}
+
+function advancedGuideBody(nodeType) {
+  if (controlTypes.has(nodeType)) return t("workflow.advancedGuideBody.control");
+  if (executableTypes.has(nodeType)) return t("workflow.advancedGuideBody.execute");
+  return t("workflow.advancedGuideBody.default");
 }
 
 function renderInputFieldsBuilder(root, stage = selectedStage()) {
@@ -2544,7 +3010,9 @@ function updateNodeTypeMeta(root, nodeType) {
   const fields = Array.isArray(option.fields) ? option.fields.filter(field => String(field?.name || "").trim()) : [];
   const outputs = Array.isArray(option.outputs) ? option.outputs.filter(output => String(output?.name || "").trim()) : [];
   const hasDefaultStage = option.default_stage && typeof option.default_stage === "object" && Object.keys(option.default_stage).length;
-  const hasMeta = option.source || option.path || tags.length || hints.length || warnings.length || examples.length || fields.length || outputs.length || hasDefaultStage;
+  const hasApplicableExample = examples.some(example => example?.stage && typeof example.stage === "object" && !Array.isArray(example.stage));
+  const sourcePath = nodeTypeMetadataSourcePath(option);
+  const hasMeta = option.source || sourcePath || tags.length || hints.length || warnings.length || examples.length || fields.length || outputs.length || hasDefaultStage;
   panel.classList.toggle("hidden", !hasMeta);
   if (!hasMeta) {
     panel.innerHTML = "";
@@ -2557,14 +3025,28 @@ function updateNodeTypeMeta(root, nodeType) {
       ${source ? `<span>${escapeHTML(source)}</span>` : ""}
     </div>
     ${renderNodeTypeMetaSummary({ fields, outputs, examples, hints, warnings, hasDefaultStage })}
-    ${option.path ? `<div class="workflow-node-type-source"><span>${escapeHTML(t("workflow.nodeTypeSourcePath"))}</span><code>${escapeHTML(option.path)}</code></div>` : ""}
+    ${hasDefaultStage || hasApplicableExample ? `<div class="workflow-node-type-actions">
+      <small>${escapeHTML(t("workflow.nodeTypeApplyHelp"))}</small>
+    </div>` : ""}
+    ${sourcePath ? `<div class="workflow-node-type-source"><span>${escapeHTML(t("workflow.nodeTypeOverridePath"))}</span><code title="${escapeHTML(sourcePath)}">${escapeHTML(shortWorkflowResourcePath(sourcePath))}</code></div>` : ""}
     ${tags.length ? `<div class="workflow-node-type-tags">${tags.map(tag => `<em>${escapeHTML(workflowDisplayValue(tag))}</em>`).join("")}</div>` : ""}
     ${hints.length ? `<ul class="workflow-node-type-hints">${hints.map(item => `<li>${escapeHTML(workflowDisplayText(item))}</li>`).join("")}</ul>` : ""}
     ${warnings.length ? `<ul class="workflow-node-type-warnings">${warnings.map(item => `<li>${escapeHTML(workflowDisplayText(item))}</li>`).join("")}</ul>` : ""}
     ${fields.length ? renderNodeTypeFieldSummary(fields) : ""}
     ${outputs.length ? renderNodeTypeOutputSummary(outputs) : ""}
-    ${hasDefaultStage ? renderNodeTypeDefaultStage(option.default_stage) : ""}
-    ${examples.length ? `<div class="workflow-node-type-examples">${examples.map(renderNodeTypeExample).join("")}</div>` : ""}`;
+    ${hasDefaultStage ? renderNodeTypeDefaultStage(option.default_stage, nodeType) : ""}
+    ${examples.length ? `<div class="workflow-node-type-examples">${examples.map((example, index) => renderNodeTypeExample(example, index, nodeType)).join("")}</div>` : ""}`;
+}
+
+function nodeTypeMetadataSourcePath(option = {}) {
+  if (!option?.path || !isCustomWorkflowMetadata(option)) return "";
+  return String(option.path || "").trim();
+}
+
+function shortWorkflowResourcePath(path) {
+  const parts = String(path || "").split(/[\\/]+/).filter(Boolean);
+  if (parts.length <= 2) return parts.join("/");
+  return `${parts.at(-2)}/${parts.at(-1)}`;
 }
 
 function renderNodeTypeMetaSummary({ fields = [], outputs = [], examples = [], hints = [], warnings = [], hasDefaultStage = false } = {}) {
@@ -2601,6 +3083,12 @@ function renderNodeTypeField(field) {
   const label = localizedText(field?.label || name);
   const type = localizedText(field?.type || t("workflow.nodeTypeFieldAny"));
   const options = Array.isArray(field?.options) ? field.options.filter(Boolean).slice(0, 4) : [];
+  const examples = Array.isArray(field?.examples) ? field.examples.filter(Boolean).slice(0, 3) : [];
+  const hints = Array.isArray(field?.hints) ? field.hints.filter(Boolean).slice(0, 2) : [];
+  const details = [
+    field?.default ? [t("workflow.nodeTypeFieldDefault"), field.default] : null,
+    field?.placeholder ? [t("workflow.nodeTypeFieldPlaceholder"), field.placeholder] : null
+  ].filter(Boolean);
   return `<article class="workflow-node-type-field">
     <div>
       <strong>${escapeHTML(label)}</strong>
@@ -2609,6 +3097,9 @@ function renderNodeTypeField(field) {
     <span>${escapeHTML(type)}${field?.required ? ` / ${escapeHTML(t("workflow.nodeTypeRequired"))}` : ""}</span>
     ${field?.description ? `<p>${escapeHTML(workflowDisplayText(field.description))}</p>` : ""}
     ${options.length ? `<div class="workflow-node-type-options">${options.map(item => `<em>${escapeHTML(workflowDisplayText(item))}</em>`).join("")}</div>` : ""}
+    ${details.length ? `<div class="workflow-node-type-field-details">${details.map(([key, value]) => `<small><b>${escapeHTML(key)}</b><code>${escapeHTML(workflowDisplayText(value))}</code></small>`).join("")}</div>` : ""}
+    ${examples.length ? `<div class="workflow-node-type-field-examples"><b>${escapeHTML(t("workflow.nodeTypeFieldExamples"))}</b>${examples.map(item => `<code>${escapeHTML(workflowDisplayText(item))}</code>`).join("")}</div>` : ""}
+    ${hints.length ? `<ul class="workflow-node-type-field-hints">${hints.map(item => `<li>${escapeHTML(workflowDisplayText(item))}</li>`).join("")}</ul>` : ""}
   </article>`;
 }
 
@@ -2643,12 +3134,15 @@ function renderNodeTypeOutput(output) {
   </article>`;
 }
 
-function renderNodeTypeDefaultStage(stage) {
+function renderNodeTypeDefaultStage(stage, nodeType) {
   const summary = nodeTypeDefaultStageSummary(stage);
   return `<section class="workflow-node-type-default">
     <strong>${escapeHTML(t("workflow.nodeTypeDefaultStage"))}</strong>
     <span>${escapeHTML(t("workflow.nodeTypeDefaultStageHelp"))}</span>
     ${summary ? `<p>${escapeHTML(summary)}</p>` : ""}
+    <div class="workflow-node-type-actions">
+      <button type="button" class="ghost-button" data-node-type-action="apply-default" data-node-type="${escapeHTML(nodeType)}">${escapeHTML(t("workflow.nodeTypeApplyDefault"))}</button>
+    </div>
   </section>`;
 }
 
@@ -2662,20 +3156,62 @@ function nodeTypeDefaultStageSummary(stage) {
   return parts.join(" / ");
 }
 
-function renderNodeTypeExample(example) {
+function renderNodeTypeExample(example, index, nodeType) {
   if (typeof example === "string") return `<code>${escapeHTML(workflowDisplayText(example))}</code>`;
   const title = workflowDisplayText(example?.title || example?.name || t("workflow.nodeTypeExample"));
   const body = workflowDisplayText(example?.description || example?.body || example?.example || "");
   const yaml = example?.yaml || "";
   const stageSummary = nodeTypeExampleStageSummary(example?.stage);
+  const stageCode = yaml || workflowExampleStageCode(example?.stage);
   const notes = Array.isArray(example?.notes) ? example.notes.filter(Boolean).slice(0, 3).map(localizedText) : [];
+  const canApply = example?.stage && typeof example.stage === "object" && !Array.isArray(example.stage);
   return `<article>
     <strong>${escapeHTML(title)}</strong>
     ${body ? `<small>${escapeHTML(body)}</small>` : ""}
     ${stageSummary ? `<small><b>${escapeHTML(t("workflow.nodeTypeExampleStage"))}</b> ${escapeHTML(stageSummary)}</small>` : ""}
-    ${yaml ? `<code>${escapeHTML(yaml)}</code>` : ""}
+    ${canApply ? `<div class="workflow-node-type-actions">
+      <button type="button" class="ghost-button" data-node-type-action="apply-example" data-node-type="${escapeHTML(nodeType)}" data-example-index="${index}">${escapeHTML(t("workflow.nodeTypeApplyExample"))}</button>
+    </div>` : ""}
+    ${stageCode ? `<pre class="workflow-node-type-example-code"><code>${escapeHTML(stageCode)}</code></pre>` : ""}
     ${notes.length ? `<ul>${notes.map(note => `<li>${escapeHTML(note)}</li>`).join("")}</ul>` : ""}
   </article>`;
+}
+
+function workflowExampleStageCode(stage) {
+  const cleaned = cleanWorkflowExampleValue(stage);
+  if (!cleaned || typeof cleaned !== "object" || Array.isArray(cleaned)) return "";
+  try {
+    return JSON.stringify(cleaned, null, 2);
+  } catch {
+    return "";
+  }
+}
+
+function cleanWorkflowExampleValue(value) {
+  if (Array.isArray(value)) {
+    const items = value.map(cleanWorkflowExampleValue).filter(item => !isEmptyWorkflowExampleValue(item));
+    return items.length ? items : null;
+  }
+  if (value && typeof value === "object") {
+    const out = {};
+    for (const [key, item] of Object.entries(value)) {
+      const cleaned = cleanWorkflowExampleValue(item);
+      if (!isEmptyWorkflowExampleValue(cleaned)) out[key] = cleaned;
+    }
+    return Object.keys(out).length ? out : null;
+  }
+  if (typeof value === "string") {
+    const trimmed = value.trim();
+    return trimmed ? trimmed : null;
+  }
+  if (value === null || value === undefined) return null;
+  return value;
+}
+
+function isEmptyWorkflowExampleValue(value) {
+  return value === null || value === undefined || value === "" ||
+    (Array.isArray(value) && !value.length) ||
+    (value && typeof value === "object" && !Array.isArray(value) && !Object.keys(value).length);
 }
 
 function nodeTypeExampleStageSummary(stage) {
@@ -3158,6 +3694,7 @@ function expressionFunctionRank(fn, nodeType, mode) {
 function renderExpressionFunctionCard(fn) {
   const insert = fn.insert_text || expressionFunctionExampleText(fn.examples?.[0]) || `${fn.name}()`;
   const source = isCustomWorkflowMetadata(fn) ? t("workflow.expressionFunctionCustom") : t("workflow.expressionFunctionBuiltIn");
+  const sourcePath = expressionFunctionSourcePath(fn);
   const signature = fn.signature || `${fn.name}(...)`;
   const returnType = fn.return_type ? localizedText(fn.return_type) : "";
   const allHints = Array.isArray(fn.hints) ? fn.hints : [];
@@ -3176,7 +3713,7 @@ function renderExpressionFunctionCard(fn) {
     <span>${escapeHTML(source)}${returnType ? ` / ${escapeHTML(returnType)}` : ""}</span>
     ${renderExpressionFunctionSummary(fn, { args: allArgs, examples: allExamples, hints: allHints, warnings: allWarnings })}
     ${fn.description ? `<p>${escapeHTML(workflowDisplayText(fn.description))}</p>` : ""}
-    ${fn.path ? `<code class="workflow-expression-function-path">${escapeHTML(t("workflow.expressionFunctionSourcePath"))}: ${escapeHTML(fn.path)}</code>` : ""}
+    ${sourcePath ? `<code class="workflow-expression-function-path" title="${escapeHTML(sourcePath)}">${escapeHTML(t("workflow.expressionFunctionOverridePath"))}: ${escapeHTML(shortWorkflowResourcePath(sourcePath))}</code>` : ""}
     ${args.length ? `<div class="workflow-expression-function-args">${args.map(renderExpressionFunctionArg).join("")}</div>` : ""}
     ${hints.length ? `<ul class="hint">${hints.map(item => `<li>${escapeHTML(workflowDisplayText(item))}</li>`).join("")}</ul>` : ""}
     ${warnings.length ? `<ul class="warn">${warnings.map(item => `<li>${escapeHTML(workflowDisplayText(item))}</li>`).join("")}</ul>` : ""}
@@ -3185,6 +3722,11 @@ function renderExpressionFunctionCard(fn) {
       return `<button type="button" data-expression-suggestion="${escapeHTML(text)}">${escapeHTML(text)}</button>`;
     }).join("")}</div>` : ""}
   </article>`;
+}
+
+function expressionFunctionSourcePath(fn = {}) {
+  if (!fn?.path || !isCustomWorkflowMetadata(fn)) return "";
+  return String(fn.path || "").trim();
 }
 
 function renderExpressionFunctionSummary(fn, { args = [], examples = [], hints = [], warnings = [] } = {}) {
@@ -3261,6 +3803,117 @@ function updateStageGuidance(root, stage, nodeType) {
     </div>
     <p>${escapeHTML(t(`workflow.stageGuide.${tone}`))}</p>
     <ul>${items.map(item => `<li class="${escapeHTML(item.tone)}">${escapeHTML(item.text)}</li>`).join("")}</ul>`;
+}
+
+function updateStageDataFlow(root, stage, nodeType) {
+  const target = root.querySelector("#stageDataFlow");
+  if (!target || !stage) return;
+  const inputs = workflowStageMapEntries(stage.input);
+  const outputs = workflowStageMapEntries(stage.outputs);
+  const refs = workflowStageReferenceEntries(stage);
+  const available = workflowAvailableOutputRefs(stage).slice(0, 8);
+  const hasData = inputs.length || outputs.length || refs.length || available.length;
+  target.classList.toggle("hidden", !hasData);
+  if (!hasData) {
+    target.innerHTML = "";
+    return;
+  }
+  target.innerHTML = `
+    <div class="workflow-stage-data-flow-head">
+      <div>
+        <span>${escapeHTML(t("workflow.dataFlowKicker"))}</span>
+        <strong>${escapeHTML(t("workflow.dataFlowTitle"))}</strong>
+      </div>
+      <em>${escapeHTML(nodeDisplayType(nodeType))}</em>
+    </div>
+    <div class="workflow-stage-data-flow-grid">
+      ${renderWorkflowDataFlowBlock(t("workflow.dataFlowInputs"), inputs, t("workflow.dataFlowNoInputs"), "input")}
+      ${renderWorkflowDataFlowBlock(t("workflow.dataFlowOutputs"), outputs, t("workflow.dataFlowNoOutputs"), "output")}
+    </div>
+    ${refs.length ? `<div class="workflow-stage-data-flow-refs"><strong>${escapeHTML(t("workflow.dataFlowReads"))}</strong>${refs.slice(0, 6).map(ref => `<code>${escapeHTML(ref)}</code>`).join("")}</div>` : ""}
+    ${available.length ? `<div class="workflow-stage-data-flow-refs muted-list"><strong>${escapeHTML(t("workflow.dataFlowAvailable"))}</strong>${available.map(ref => `<button type="button" data-copy-stage-ref="${escapeHTML(ref)}">${escapeHTML(ref)}</button>`).join("")}</div>` : ""}`;
+}
+
+function workflowStageMapEntries(map) {
+  return Object.entries(map || {})
+    .map(([key, value]) => [String(key || "").trim(), String(value || "").trim()])
+    .filter(([key, value]) => key || value);
+}
+
+function renderWorkflowDataFlowBlock(title, entries, emptyText, kind) {
+  return `<section class="workflow-stage-data-flow-block ${escapeHTML(kind)}">
+    <strong>${escapeHTML(title)}</strong>
+    ${entries.length
+      ? `<div>${entries.slice(0, 5).map(([key, value]) => `<span><b>${escapeHTML(key || "-")}</b><code>${escapeHTML(value || "-")}</code></span>`).join("")}</div>`
+      : `<p>${escapeHTML(emptyText)}</p>`}
+    ${entries.length > 5 ? `<small>${escapeHTML(t("workflow.dataFlowMore", { count: entries.length - 5 }))}</small>` : ""}
+  </section>`;
+}
+
+function workflowStageReferenceEntries(stage) {
+  const values = [
+    ...Object.values(stage.input || {}),
+    ...Object.values(stage.params || {}),
+    stage.condition,
+    stage.policy,
+    stage.switch_on
+  ];
+  const refs = [];
+  const seen = new Set();
+  const pattern = /stages\.([A-Za-z0-9_.-]+)\.outputs\.([A-Za-z0-9_.-]+)/g;
+  for (const value of values) {
+    const text = String(value || "");
+    let match;
+    while ((match = pattern.exec(text)) !== null) {
+      const ref = `stages.${match[1]}.outputs.${match[2]}`;
+      if (!seen.has(ref)) {
+        seen.add(ref);
+        refs.push(ref);
+      }
+    }
+  }
+  return refs;
+}
+
+function workflowAvailableOutputRefs(stage) {
+  const selectedName = String(stage?.name || "");
+  const selectedIndex = state.graph.stages.findIndex(item => item === stage || item.name === selectedName);
+  const stages = (state.graph.stages || []).filter((item, index) => item && item.name && item.name !== selectedName && (selectedIndex < 0 || index < selectedIndex));
+  const refs = [];
+  for (const item of stages) {
+    const outputs = Object.keys(item.outputs || {}).filter(Boolean);
+    for (const output of outputs) refs.push(`stages.${item.name}.outputs.${output}`);
+  }
+  return refs;
+}
+
+function addDataFlowReferenceToStageInput(root, ref) {
+  const stage = selectedStage();
+  const value = String(ref || "").trim();
+  if (!stage || !value) return;
+  stage.input = stage.input && typeof stage.input === "object" && !Array.isArray(stage.input) ? { ...stage.input } : {};
+  if (Object.values(stage.input).includes(value)) return;
+  const base = workflowInputKeyFromRef(value);
+  let key = base;
+  let index = 2;
+  while (stage.input[key]) {
+    key = `${base}_${index}`;
+    index += 1;
+  }
+  stage.input[key] = value;
+  clearWorkflowValidation(root);
+  clearWorkflowTransfer(root);
+  renderStageForm(root);
+  renderCanvas(root);
+}
+
+function workflowInputKeyFromRef(ref) {
+  const parts = String(ref || "").split(".");
+  const output = parts[parts.length - 1] || "upstream";
+  return output
+    .trim()
+    .replace(/[^A-Za-z0-9_]+/g, "_")
+    .replace(/^_+|_+$/g, "") || "upstream";
 }
 
 function updateStagePlainSummary(root, stage, nodeType) {
@@ -3460,8 +4113,10 @@ function stageSummaryNext(stage, nodeType) {
 function stageSummaryEvidence(stage) {
   const artifacts = normalizeArtifacts(stage.artifacts).length;
   const outputs = Object.keys(stage.outputs || {}).length;
+  const acceptance = normalizeAcceptanceCriteria(stage.acceptance_criteria).length;
   if (artifacts) return t("workflow.stageSummaryArtifactCount", { count: artifacts });
   if (outputs) return t("workflow.stageSummaryOutputCount", { count: outputs });
+  if (acceptance) return t("workflow.stageSummaryAcceptanceCount", { count: acceptance });
   return t("workflow.stageSummaryNoEvidence");
 }
 
@@ -3541,17 +4196,19 @@ function updateWorkflowFormPanels(root) {
     if (!visibleAdvanced) advanced.open = false;
   }
   const artifacts = root.querySelector("#stageArtifactsPanel");
-  const editor = root.querySelector("#stageArtifactsEditor");
-  if (artifacts && editor) {
-    const visibleArtifacts = !editor.classList.contains("hidden");
-    artifacts.classList.toggle("hidden", !visibleArtifacts);
+  const artifactEditor = root.querySelector("#stageArtifactsEditor");
+  const acceptanceEditor = root.querySelector("#stageAcceptanceEditor");
+  if (artifacts && artifactEditor && acceptanceEditor) {
+    const visibleArtifacts = !artifactEditor.classList.contains("hidden");
+    const visibleAcceptance = !acceptanceEditor.classList.contains("hidden");
+    artifacts.classList.toggle("hidden", !visibleArtifacts && !visibleAcceptance);
     const badge = root.querySelector("#stageArtifactsCount");
     if (badge) {
       const stage = selectedStage();
-      const count = normalizeArtifacts(stage?.artifacts).length;
-      badge.textContent = count ? t("workflow.artifactCount", { count }) : t("workflow.optional");
+      const count = normalizeArtifacts(stage?.artifacts).length + normalizeAcceptanceCriteria(stage?.acceptance_criteria).length;
+      badge.textContent = count ? t("workflow.resultConfigCount", { count }) : t("workflow.optional");
     }
-    if (!visibleArtifacts) artifacts.open = false;
+    if (!visibleArtifacts && !visibleAcceptance) artifacts.open = false;
   }
 }
 
@@ -3562,31 +4219,34 @@ function stageFieldSet(nodeType) {
   const fields = nodeFieldNames(nodeType);
   for (const field of fields) {
     const base = field.split(".")[0];
-    if (["agent", "skill", "tool", "next", "next_strategy", "artifacts", "approval"].includes(base)) {
+    if (["agent", "skill", "tool", "next", "next_strategy", "artifacts", "acceptance_criteria", "approval"].includes(base)) {
       visible.add(base);
     }
     if (base === "params") visible.add("params");
   }
-  if (executableTypes.has(nodeType)) visible.add("params");
+  if (executableTypes.has(nodeType)) {
+    visible.add("params");
+    visible.add("artifacts");
+    visible.add("acceptance_criteria");
+    visible.add("approval");
+  }
 
   if (!fields.size) {
     if (["agent", "skill", "custom"].includes(nodeType)) {
       visible.add("agent");
       visible.add("skill");
+      visible.add("acceptance_criteria");
     }
     if (nodeType === "tool") {
       visible.add("agent");
       visible.add("skill");
       visible.add("tool");
+      visible.add("acceptance_criteria");
     }
     if (nodeType === "team") {
       visible.add("team_template");
       visible.add("params");
-    }
-    if (executableTypes.has(nodeType)) {
-      visible.add("params");
-      visible.add("artifacts");
-      visible.add("approval");
+      visible.add("acceptance_criteria");
     }
     if (controlTypes.has(nodeType)) visible.add("params");
   }
@@ -3609,6 +4269,7 @@ function stageFieldSet(nodeType) {
     visible.delete("tool");
     visible.delete("params");
     visible.delete("artifacts");
+    visible.delete("acceptance_criteria");
     visible.delete("approval");
     visible.delete("next_strategy");
   }
@@ -3713,6 +4374,96 @@ function renderArtifactsEditor(root, stage) {
   list.innerHTML = artifacts.map((artifact, index) => artifactForm(index, artifact)).join("");
 }
 
+function renderAcceptanceEditor(root, stage) {
+  const list = root.querySelector("#stageAcceptanceList");
+  if (!list) return;
+  const criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria);
+  if (!criteria.length) {
+    list.innerHTML = `<div class="artifact-empty">${escapeHTML(t("workflow.acceptanceCriteriaEmpty"))}</div>`;
+    return;
+  }
+  list.innerHTML = criteria.map((criterion, index) => acceptanceCriterionForm(index, criterion)).join("");
+}
+
+function updateStageArtifactsGuide(root, stage, nodeType) {
+  const guide = root.querySelector("#stageArtifactsGuide");
+  if (!guide || !stage) return;
+  const supportsArtifacts = stageFieldSet(nodeType).has("artifacts");
+  guide.classList.toggle("hidden", !supportsArtifacts);
+  if (!supportsArtifacts) {
+    guide.innerHTML = "";
+    return;
+  }
+  const artifacts = normalizeArtifacts(stage.artifacts);
+  const tone = artifacts.length ? "ready" : "neutral";
+  guide.className = `workflow-artifact-guide ${tone}`;
+  guide.innerHTML = `
+    <div class="workflow-artifact-guide-head">
+      <span>${escapeHTML(t("workflow.artifactGuideKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.artifactGuideTitle"))}</strong>
+    </div>
+    <p>${escapeHTML(t("workflow.artifactGuideBody"))}</p>
+    <div class="workflow-artifact-guide-grid">
+      <section>
+        <strong>${escapeHTML(t("workflow.artifactGuideRefTitle"))}</strong>
+        <span>${escapeHTML(t("workflow.artifactGuideRefBody"))}</span>
+        <code>ref=result.output</code>
+        <button type="button" class="ghost-button" data-artifact-guide-action="report">${escapeHTML(t("workflow.artifactGuideAddReport"))}</button>
+      </section>
+      <section>
+        <strong>${escapeHTML(t("workflow.artifactGuideContentTitle"))}</strong>
+        <span>${escapeHTML(t("workflow.artifactGuideContentBody"))}</span>
+        <code>content=...</code>
+        <button type="button" class="ghost-button" data-artifact-guide-action="evidence">${escapeHTML(t("workflow.artifactGuideAddEvidence"))}</button>
+      </section>
+      <section>
+        <strong>${escapeHTML(t("workflow.artifactGuideDownstreamTitle"))}</strong>
+        <span>${escapeHTML(t("workflow.artifactGuideDownstreamBody"))}</span>
+        <code>stages.${escapeHTML(stage.name || "stage")}.artifacts.report</code>
+      </section>
+    </div>`;
+}
+
+function updateStageAcceptanceGuide(root, stage, nodeType) {
+  const guide = root.querySelector("#stageAcceptanceGuide");
+  if (!guide || !stage) return;
+  const supportsCriteria = stageFieldSet(nodeType).has("acceptance_criteria");
+  guide.parentElement?.classList.toggle("hidden", !supportsCriteria);
+  guide.classList.toggle("hidden", !supportsCriteria);
+  if (!supportsCriteria) {
+    guide.innerHTML = "";
+    return;
+  }
+  const criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria);
+  const tone = criteria.length ? "ready" : "neutral";
+  guide.className = `workflow-artifact-guide workflow-acceptance-guide ${tone}`;
+  guide.innerHTML = `
+    <div class="workflow-artifact-guide-head">
+      <span>${escapeHTML(t("workflow.acceptanceGuideKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.acceptanceGuideTitle"))}</strong>
+    </div>
+    <p>${escapeHTML(t("workflow.acceptanceGuideBody"))}</p>
+    <div class="workflow-artifact-guide-grid">
+      <section>
+        <strong>${escapeHTML(t("workflow.acceptanceGuideRefTitle"))}</strong>
+        <span>${escapeHTML(t("workflow.acceptanceGuideRefBody"))}</span>
+        <code>ref=result.output</code>
+        <button type="button" class="ghost-button" data-acceptance-guide-action="contains">${escapeHTML(t("workflow.acceptanceGuideAddContains"))}</button>
+      </section>
+      <section>
+        <strong>${escapeHTML(t("workflow.acceptanceGuideCheckTitle"))}</strong>
+        <span>${escapeHTML(t("workflow.acceptanceGuideCheckBody"))}</span>
+        <code>contains=scope</code>
+        <button type="button" class="ghost-button" data-acceptance-guide-action="exists">${escapeHTML(t("workflow.acceptanceGuideAddExists"))}</button>
+      </section>
+      <section>
+        <strong>${escapeHTML(t("workflow.acceptanceGuideGateTitle"))}</strong>
+        <span>${escapeHTML(t("workflow.acceptanceGuideGateBody"))}</span>
+        <code>quality_gate</code>
+      </section>
+    </div>`;
+}
+
 function artifactForm(index, artifact) {
   return `<section class="artifact-item" data-artifact-index="${index}">
     <div class="artifact-item-head">
@@ -3720,27 +4471,60 @@ function artifactForm(index, artifact) {
       <button type="button" class="ghost-button danger-text" data-remove-artifact="${index}">${escapeHTML(t("workflow.removeArtifact"))}</button>
     </div>
     <div class="artifact-grid">
-      ${artifactInput(index, "name", t("workflow.artifactName"), artifact.name, "audit-report")}
-      ${artifactInput(index, "kind", t("workflow.artifactKind"), artifact.kind, "report")}
-      ${artifactInput(index, "title", t("workflow.artifactTitle"), artifact.title, t("workflow.artifactTitlePlaceholder"))}
-      ${artifactInput(index, "ref", t("workflow.artifactRef"), artifact.ref, "result.output")}
-      ${artifactInput(index, "summary", t("workflow.artifactSummary"), artifact.summary, "result.summary")}
+      ${artifactInput(index, "name", t("workflow.artifactName"), artifact.name, "audit-report", t("workflow.artifactNameHelp"))}
+      ${artifactInput(index, "kind", t("workflow.artifactKind"), artifact.kind, "report", t("workflow.artifactKindHelp"))}
+      ${artifactInput(index, "title", t("workflow.artifactTitle"), artifact.title, t("workflow.artifactTitlePlaceholder"), t("workflow.artifactTitleHelp"))}
+      ${artifactInput(index, "ref", t("workflow.artifactRef"), artifact.ref, "result.output", t("workflow.artifactRefHelp"))}
+      ${artifactInput(index, "summary", t("workflow.artifactSummary"), artifact.summary, "result.summary", t("workflow.artifactSummaryHelp"))}
       <label class="artifact-field artifact-field-wide">
         <span>${escapeHTML(t("workflow.artifactContent"))}</span>
         <textarea data-artifact-field="content" class="compact-textarea" placeholder="${escapeHTML(t("workflow.artifactContentPlaceholder"))}">${escapeHTML(artifact.content || "")}</textarea>
+        <small class="workflow-field-hint">${escapeHTML(t("workflow.artifactContentHelp"))}</small>
       </label>
       <label class="artifact-field artifact-field-wide">
         <span>${escapeHTML(t("workflow.artifactMetadata"))}</span>
         <textarea data-artifact-field="metadata" class="compact-textarea" placeholder="${escapeHTML(t("workflow.artifactMetadataPlaceholder"))}">${escapeHTML(formatMap(artifact.metadata))}</textarea>
+        <small class="workflow-field-hint">${escapeHTML(t("workflow.artifactMetadataHelp"))}</small>
       </label>
     </div>
   </section>`;
 }
 
-function artifactInput(index, field, label, value, placeholder) {
+function acceptanceCriterionForm(index, criterion) {
+  return `<section class="artifact-item workflow-acceptance-item" data-acceptance-index="${index}">
+    <div class="artifact-item-head">
+      <strong>${escapeHTML(criterion.name || t("workflow.acceptanceCriterion"))}</strong>
+      <button type="button" class="ghost-button danger-text" data-remove-acceptance="${index}">${escapeHTML(t("workflow.removeAcceptanceCriterion"))}</button>
+    </div>
+    <div class="artifact-grid workflow-acceptance-grid">
+      ${artifactInput(index, "name", t("workflow.acceptanceName"), criterion.name, "has-scope", t("workflow.acceptanceNameHelp"), "data-acceptance-field")}
+      ${artifactInput(index, "ref", t("workflow.acceptanceRef"), criterion.ref, "result.output", t("workflow.acceptanceRefHelp"), "data-acceptance-field")}
+      ${artifactInput(index, "contains", t("workflow.acceptanceContains"), criterion.contains, "scope", t("workflow.acceptanceContainsHelp"), "data-acceptance-field")}
+      ${artifactInput(index, "equals", t("workflow.acceptanceEquals"), criterion.equals, "passed", t("workflow.acceptanceEqualsHelp"), "data-acceptance-field")}
+      ${artifactInput(index, "expected", t("workflow.acceptanceExpected"), criterion.expected, "Must include scope and report", t("workflow.acceptanceExpectedHelp"), "data-acceptance-field")}
+      <label class="artifact-field">
+        <span>${escapeHTML(t("workflow.acceptanceExists"))}</span>
+        <select data-acceptance-field="exists">
+          <option value="">${escapeHTML(t("workflow.acceptanceExistsAny"))}</option>
+          <option value="true"${criterion.exists === true ? " selected" : ""}>${escapeHTML(t("workflow.acceptanceExistsTrue"))}</option>
+          <option value="false"${criterion.exists === false ? " selected" : ""}>${escapeHTML(t("workflow.acceptanceExistsFalse"))}</option>
+        </select>
+        <small class="workflow-field-hint">${escapeHTML(t("workflow.acceptanceExistsHelp"))}</small>
+      </label>
+      <label class="artifact-field artifact-field-wide">
+        <span>${escapeHTML(t("workflow.acceptanceDescription"))}</span>
+        <textarea data-acceptance-field="description" class="compact-textarea" placeholder="${escapeHTML(t("workflow.acceptanceDescriptionPlaceholder"))}">${escapeHTML(criterion.description || "")}</textarea>
+        <small class="workflow-field-hint">${escapeHTML(t("workflow.acceptanceDescriptionHelp"))}</small>
+      </label>
+    </div>
+  </section>`;
+}
+
+function artifactInput(index, field, label, value, placeholder, help = "", attributeName = "data-artifact-field") {
   return `<label class="artifact-field">
     <span>${escapeHTML(label)}</span>
-    <input data-artifact-field="${escapeHTML(field)}" value="${escapeHTML(value || "")}" placeholder="${escapeHTML(placeholder)}">
+    <input ${attributeName}="${escapeHTML(field)}" value="${escapeHTML(value || "")}" placeholder="${escapeHTML(placeholder)}">
+    ${help ? `<small class="workflow-field-hint">${escapeHTML(help)}</small>` : ""}
   </label>`;
 }
 
@@ -3769,6 +4553,31 @@ function readArtifactsFromForm(root) {
   }).filter(hasArtifactValue);
 }
 
+function syncAcceptanceCriteriaFromForm(root) {
+  const stage = selectedStage();
+  if (!stage) return;
+  stage.acceptance_criteria = readAcceptanceCriteriaFromForm(root);
+  pruneEmptyStageFields(stage);
+}
+
+function readAcceptanceCriteriaFromForm(root) {
+  const rows = root.querySelectorAll("#stageAcceptanceList .workflow-acceptance-item");
+  return [...rows].map(row => {
+    const criterion = {};
+    row.querySelectorAll("[data-acceptance-field]").forEach(input => {
+      const field = input.dataset.acceptanceField;
+      const value = typeof input.value === "string" ? input.value.trim() : "";
+      if (field === "exists") {
+        if (value === "true") criterion.exists = true;
+        if (value === "false") criterion.exists = false;
+        return;
+      }
+      if (value) criterion[field] = value;
+    });
+    return criterion;
+  }).filter(hasAcceptanceCriterionValue);
+}
+
 function normalizeArtifacts(value) {
   if (!Array.isArray(value)) return [];
   return value
@@ -3785,6 +4594,22 @@ function normalizeArtifacts(value) {
     .filter(hasArtifactValue);
 }
 
+function normalizeAcceptanceCriteria(value) {
+  if (!Array.isArray(value)) return [];
+  return value
+    .filter(item => item && typeof item === "object")
+    .map(item => ({
+      name: String(item.name || ""),
+      description: String(item.description || ""),
+      ref: String(item.ref || ""),
+      equals: String(item.equals || ""),
+      contains: String(item.contains || ""),
+      expected: String(item.expected || ""),
+      exists: typeof item.exists === "boolean" ? item.exists : null
+    }))
+    .filter(hasAcceptanceCriterionValue);
+}
+
 function hasArtifactValue(artifact) {
   return Boolean(
     artifact.name ||
@@ -3794,6 +4619,18 @@ function hasArtifactValue(artifact) {
     artifact.summary ||
     artifact.content ||
     Object.keys(artifact.metadata || {}).length
+  );
+}
+
+function hasAcceptanceCriterionValue(criterion) {
+  return Boolean(
+    criterion.name ||
+    criterion.description ||
+    criterion.ref ||
+    criterion.equals ||
+    criterion.contains ||
+    criterion.expected ||
+    typeof criterion.exists === "boolean"
   );
 }
 
@@ -3814,6 +4651,106 @@ function createArtifactDraft(stage) {
     content: "",
     metadata: {}
   };
+}
+
+function createNamedArtifactDraft(stage, baseName, overrides = {}) {
+  const used = new Set(normalizeArtifacts(stage.artifacts).map(item => item.name));
+  const safeBase = slug(baseName || "artifact") || "artifact";
+  let name = safeBase;
+  let index = 2;
+  while (used.has(name)) {
+    name = `${safeBase}-${index}`;
+    index++;
+  }
+  return {
+    ...createArtifactDraft(stage),
+    name,
+    ...overrides
+  };
+}
+
+function addArtifactGuideExample(root, kind) {
+  const stage = selectedStage();
+  if (!stage) return;
+  const artifact = kind === "evidence"
+    ? createNamedArtifactDraft(stage, "evidence", {
+      kind: "evidence",
+      title: t("workflow.artifactGuideEvidenceTitle"),
+      ref: "result.output",
+      summary: "result.summary"
+    })
+    : createNamedArtifactDraft(stage, "report", {
+      kind: "report",
+      title: t("workflow.artifactGuideReportTitle"),
+      ref: "result.output",
+      summary: "result.summary"
+    });
+  stage.artifacts = normalizeArtifacts(stage.artifacts);
+  stage.artifacts.push(artifact);
+  renderArtifactsEditor(root, stage);
+  updateStageArtifactsGuide(root, stage, normalizedNodeType(stage));
+  updateWorkflowFormPanels(root);
+  updateStagePlainSummary(root, stage, normalizedNodeType(stage));
+  renderCanvas(root);
+}
+
+function createAcceptanceCriterionDraft(stage) {
+  const used = new Set(normalizeAcceptanceCriteria(stage.acceptance_criteria).map(item => item.name));
+  let index = used.size + 1;
+  let name = `criterion-${index}`;
+  while (used.has(name)) {
+    index++;
+    name = `criterion-${index}`;
+  }
+  return {
+    name,
+    description: "",
+    ref: "result.output",
+    equals: "",
+    contains: "",
+    expected: "",
+    exists: null
+  };
+}
+
+function createNamedAcceptanceCriterionDraft(stage, baseName, overrides = {}) {
+  const used = new Set(normalizeAcceptanceCriteria(stage.acceptance_criteria).map(item => item.name));
+  const safeBase = slug(baseName || "criterion") || "criterion";
+  let name = safeBase;
+  let index = 2;
+  while (used.has(name)) {
+    name = `${safeBase}-${index}`;
+    index++;
+  }
+  return {
+    ...createAcceptanceCriterionDraft(stage),
+    name,
+    ...overrides
+  };
+}
+
+function addAcceptanceGuideExample(root, kind) {
+  const stage = selectedStage();
+  if (!stage) return;
+  const criterion = kind === "exists"
+    ? createNamedAcceptanceCriterionDraft(stage, "has-output", {
+      description: t("workflow.acceptanceGuideExistsDescription"),
+      ref: "result.output",
+      exists: true
+    })
+    : createNamedAcceptanceCriterionDraft(stage, "contains-scope", {
+      description: t("workflow.acceptanceGuideContainsDescription"),
+      ref: "result.output",
+      contains: "scope",
+      expected: t("workflow.acceptanceGuideContainsExpected")
+    });
+  stage.acceptance_criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria);
+  stage.acceptance_criteria.push(criterion);
+  renderAcceptanceEditor(root, stage);
+  updateStageAcceptanceGuide(root, stage, normalizedNodeType(stage));
+  updateWorkflowFormPanels(root);
+  updateStagePlainSummary(root, stage, normalizedNodeType(stage));
+  renderCanvas(root);
 }
 
 function renderExecutionOrder(root) {
@@ -3976,6 +4913,7 @@ function syncStageFromForm(root) {
     delete stage.params.rule;
   }
   stage.artifacts = readArtifactsFromForm(root);
+  stage.acceptance_criteria = readAcceptanceCriteriaFromForm(root);
   stage.approval = root.querySelector("#stageApproval").checked;
   const nodeType = normalizedNodeType(stage);
   if (!executableTypes.has(nodeType)) {
@@ -3986,14 +4924,20 @@ function syncStageFromForm(root) {
   }
   pruneUnsupportedStageFields(stage, nodeType);
   pruneEmptyStageFields(stage);
+  renderArtifactsEditor(root, stage);
+  updateStageArtifactsGuide(root, stage, nodeType);
+  renderAcceptanceEditor(root, stage);
+  updateStageAcceptanceGuide(root, stage, nodeType);
   updateStageFieldVisibility(root, nodeType);
   updateAdvancedFieldVisibility(root, nodeType);
   updateControlHelp(root, nodeType);
+  updateStageAdvancedGuide(root, stage, nodeType);
   updateNodeTypeMeta(root, nodeType);
   updateTeamTemplatePreview(root, stage, nodeType);
   updateStagePlainSummary(root, stage, nodeType);
   updateStageRoutePreview(root, stage, nodeType);
   updateStageGuidance(root, stage, nodeType);
+  updateStageDataFlow(root, stage, nodeType);
   updatePolicyRuleHelp(root);
   scheduleExpressionValidation(root, { force: true });
   scheduleWorkflowRepaint(root);
@@ -4009,6 +4953,7 @@ function pruneUnsupportedStageFields(stage, nodeType) {
   if (!baseVisible.has("tool")) delete stage.tool;
   if (!baseVisible.has("approval")) delete stage.approval;
   if (!baseVisible.has("artifacts")) delete stage.artifacts;
+  if (!baseVisible.has("acceptance_criteria")) delete stage.acceptance_criteria;
   if (!baseVisible.has("params")) {
     if (advancedVisible.has("policy_rule")) {
       const rule = stage.params?.rule;
@@ -4035,6 +4980,7 @@ function pruneEmptyStageFields(stage) {
     if (!stage[key] || !Object.keys(stage[key]).length) delete stage[key];
   }
   if (!Array.isArray(stage.artifacts) || !stage.artifacts.length) delete stage.artifacts;
+  if (!Array.isArray(stage.acceptance_criteria) || !stage.acceptance_criteria.length) delete stage.acceptance_criteria;
 }
 
 function addConnection(sourceName, targetName) {
@@ -4473,9 +5419,9 @@ function workflowValidationFallbackMessage(text, issue = {}) {
       : t("workflow.validationFallbackInvalid", { field, detail: text });
   }
   if (lower.includes("complex workflow") || lower.includes("quality") || lower.includes("acceptance") || lower.includes("evidence")) {
-    return t("workflow.validationFallbackSuggestion", { detail: workflowDisplayText(text) });
+    return t("workflow.validationFallbackSuggestion", { detail: workflowPlainDisplayText(text) });
   }
-  return workflowDisplayText(text);
+  return workflowPlainDisplayText(text);
 }
 
 function workflowValidationIssueRow(issue = {}) {
@@ -4729,6 +5675,7 @@ async function importGraphFile(root, file) {
 }
 
 function renderWorkflowTransfer(root) {
+  if (!root) return;
   const panel = root.querySelector("#workflowTransferPanel");
   if (!panel) return;
   const snapshot = state.graphTransfer;
@@ -4749,9 +5696,9 @@ function clearWorkflowTransfer(root) {
   if (root) renderWorkflowTransfer(root);
 }
 
-async function applyWorkflowTemplate(root, name) {
+async function applyWorkflowTemplate(root, name, options = {}) {
   if (!name) return;
-  if (state.graph.stages.length && !confirm(t("workflow.templateApplyConfirm"))) return;
+  if (!options.force && state.graph.stages.length && !confirm(t("workflow.templateApplyConfirm"))) return;
   try {
     state.graphTransfer = { tone: "loading", title: t("workflow.templateLoading"), body: t("workflow.templateLoadingHelp", { name }) };
     renderWorkflowTransfer(root);
@@ -4764,8 +5711,10 @@ async function applyWorkflowTemplate(root, name) {
     state.connectSource = "";
     state.graphValidation = null;
     state.graphTransfer = { tone: "ready", title: t("workflow.templateApplied"), body: t("workflow.templateAppliedHelp", { name: template.title || template.name || name, graph: state.graph.name }) };
-    renderAll(root);
-    window.setTimeout(() => fitCanvas(root), 40);
+    if (root) {
+      renderAll(root);
+      window.setTimeout(() => fitCanvas(root), 40);
+    }
   } catch (error) {
     state.graphTransfer = { tone: "error", title: t("workflow.templateApplyFailed"), body: t("workflow.templateApplyFailedHelp", { message: localizedWorkflowErrorMessage(error, t("workflow.templateApplyFailed")) }) };
     renderWorkflowTransfer(root);
@@ -5337,6 +6286,7 @@ function normalizeGraph(doc) {
     stage.input = stage.input || {};
     stage.outputs = stage.outputs || {};
     stage.artifacts = normalizeArtifacts(stage.artifacts);
+    stage.acceptance_criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria || stage.acceptance);
     ensurePosition(stage, index);
   });
   return graph;
@@ -5444,6 +6394,12 @@ function workflowDisplayText(value) {
   if (!text) return "";
   const validation = localizeWorkflowValidationMessage(text);
   if (validation && validation !== text) return validation;
+  return workflowPlainDisplayText(text);
+}
+
+function workflowPlainDisplayText(value) {
+  const text = String(value || "").trim();
+  if (!text) return "";
   const translated = localizedText(text);
   if (translated !== text) return translated;
   if (workflowLooksTechnical(text)) return text;

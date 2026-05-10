@@ -12,6 +12,7 @@ mcp_servers:
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
+    max_concurrent_calls: 1
     allowed_commands:
       - go
     max_request_bytes: 65536

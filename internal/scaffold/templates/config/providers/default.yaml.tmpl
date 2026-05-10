@@ -1,0 +1,12 @@
+# Loaded automatically from configs/providers/*.yaml on next startup.
+# Fill in provider details before assigning agents to this provider.
+{{.Name}}:
+  provider: openai-compatible
+  base_url: https://api.example.com/v1
+  api_key: ${{"{"}}{{.EnvAPIKey}}{{"}"}}
+  model: model-name
+  timeout: 60s
+  temperature: 0.2
+  max_tokens: 4096
+  retry_count: 2
+  retry_backoff: 2s

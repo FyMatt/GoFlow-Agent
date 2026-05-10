@@ -178,6 +178,14 @@ func (m workspaceGatedMCP) HealthStatus(ctx context.Context) map[string]string {
 	return m.mcp.HealthStatus(ctx)
 }
 
+func (m workspaceGatedMCP) MCPCallMetrics() map[string]interfaces.MCPServerCallMetrics {
+	reporter, ok := m.mcp.(interfaces.MCPMetricsReporter)
+	if !ok {
+		return nil
+	}
+	return reporter.MCPCallMetrics()
+}
+
 func (m workspaceGatedMCP) ToolNames() []string {
 	names := m.mcp.ToolNames()
 	if len(names) == 0 {

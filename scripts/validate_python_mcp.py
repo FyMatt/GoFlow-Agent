@@ -103,7 +103,11 @@ def main() -> int:
             raise AssertionError(f"expected workspace escape rejection, got {escape}")
         if symlink_supported:
             symlink_escape = json.loads(lines[6])["result"]
-            if not symlink_escape.get("is_error") or "resolves outside workspace root" not in symlink_escape.get("content", ""):
+            symlink_content = symlink_escape.get("content", "")
+            if not symlink_escape.get("is_error") or (
+                "resolves outside workspace root" not in symlink_content
+                and "escapes workspace root" not in symlink_content
+            ):
                 raise AssertionError(f"expected symlink escape rejection, got {symlink_escape}")
         if decoded[1]["functions"][0]["name"] != "hello":
             raise AssertionError(f"unexpected AST summary: {decoded[1]}")

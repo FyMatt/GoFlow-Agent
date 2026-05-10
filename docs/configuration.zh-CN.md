@@ -82,6 +82,21 @@ Web Studio 可通过资源 API 创建、编辑、删除 Provider，并同步到�
 
 MCP server 建议放在 `configs/mcp_servers/<name>.yaml`。
 
+常用可靠性字段：
+
+- `timeout`：单次 MCP 请求超时。
+- `restart_limit`：连续失败多少次后进入冷却。
+- `cooldown`：冷却时长。
+- `max_concurrent_calls`：同一个 MCP server 允许同时排队或执行的调用数。默认
+  `1`，符合当前单 stdio 连接模型。除非 server 和 transport 明确支持并发，建议保
+  持 `1`。
+
+运行状态会暴露每个 server 的当前调用槽压力。`GET /api/runtime` 会在
+`mcp_servers[]` 中返回 `active_calls`、`queued_calls`、`available_call_slots`
+和 `max_concurrent_calls`，方便 Web Studio 在用户调整并发前先解释工作流为什么等待。
+Web Studio 的 Observability / 观测页面会把这些字段渲染成 MCP 工具压力卡片，
+用于区分一次长运行是在等待工具、等待模型输出，还是卡在审批。
+
 强隔离推荐：
 
 ```yaml
@@ -136,6 +151,34 @@ Web Studio 应优先通过后端资源 API 管理配置，不要直接在浏览�
 保存资源后，后端会进行校验，并在可热加载的场景中刷新 runtime。
 
 Kit scaffold 支持 `multi-domain-agent`、`software-engineering`、`agent-framework`、`web-security`、`security-research`、`binary-analysis`、`documentation`、`operations-runbook` 和 `customer-support`。`multi-domain-agent` 是推荐的新手入口，会把多领域 Agent、Skill、Tool、Team、Workflow Template 和 Kit 串起来；`agent-framework` 是面向二开的 starter，用于生成互相关联的 Agent、Skill、Tool、Workflow、Team、Policy 和 Kit 资源。
+
+Policy rule scaffold 支持 `risk-threshold`、`truthy-reference`、`contains-text`、`minimum-count`、`team-review-quorum` 和 `expression`。内置 preset 从 `internal/scaffold/templates/policies/scaffolds/presets.yaml` 内嵌进二进制，运行目录可以通过 `templates/policies/scaffolds/*.yaml` 添加或覆盖；CLI `/new-policy-rule` 和 HTTP `/api/resources/policy-rules/scaffolds` 共用同一套加载逻辑。
+
+Team template scaffold preset 也已经文件化：内置 preset 位于 `internal/scaffold/templates/teams/scaffolds/presets.yaml`，运行目录可以通过 `templates/teams/scaffolds/*.yaml` 添加或覆盖；CLI `/new-team` 和 HTTP `/api/resources/team-templates/scaffolds` 共用同一套加载逻辑。
+
+Workflow Node 的内置编辑器 metadata 也已经文件化：内置节点 catalog 来自 `internal/agent/templates/workflow_nodes/*.yaml`，运行目录可以通过 `templates/workflow_nodes/*.yaml` 或 `metadata/workflow_nodes/*.yaml` 覆盖节点 label、字段说明、输出说明、示例、提示和默认 stage。
+
+当 Web Studio 需要启动 workflow 时，应使用
+`/api/workflow-options.workflow_executors`。当 Web Studio 需要编辑图文件时，才使用
+`/api/workflow-graphs`。前者包含可运行入口，包括兼容执行器；后者只包含可保存、
+可删除的 YAML 图资源。
+
+`GET /api/update-policy` 返回设置页使用的更新策略元数据。
+`POST /api/update-policy/check` 才会执行显式 release 发布源检查。可以用
+`GOFLOW_RELEASE_FEED` 覆盖兼容 GitHub release JSON 的发布源；离线部署可以设置
+`GOFLOW_DISABLE_UPDATE_CHECKS=1`，这样 Studio 会隐藏检查按钮，检查接口会返回 `403`。
+检查响应包含 `asset_summary`，方便 Studio 在后续下载或替换前展示当前平台安装包、
+校验和、SBOM 和 Sigstore 签名包是否齐全。资源足够时，
+`asset_summary.verify_steps` 会提供手动 checksum 和 Sigstore 校验命令，GoFlow
+不会自动执行这些命令。
+
+`GET /console` 提供 Web Studio。可以通过 `lang` 或 `locale` query 参数设置并保存
+界面语言：`?lang=zh` 使用简体中文，`?lang=en` 使用英文，也可以和 hash 深链一起用，
+例如 `/console?lang=zh#settings`。
+
+Workflow Policy Rule 的内置编辑器 metadata 也已经文件化：`/api/workflow-options` 返回的内置规则说明、operator 和参数定义来自 `internal/agent/templates/policy_rules/*.yaml`。运行目录下真正可执行的自定义规则仍然存放在 `policies/workflow_rules/*.yaml`。
+
+Expression helper 的内置编辑器 metadata 也已经文件化：内置资源位于 `internal/agent/templates/expression_helpers/*.yaml`，运行目录可以通过 `templates/expression_helpers/*.yaml`、`templates/workflow_expressions/*.yaml`、`metadata/expression_helpers/*.yaml` 或 `metadata/workflow_expressions/*.yaml` 覆盖展示说明、签名、参数、示例和提示。
 
 ## Durable run 与运行成本
 

@@ -1,0 +1,52 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: binary-analysis-kit
+title: Binary Analysis Kit
+description: Triage binary artifacts with built-in Python metadata, strings, hex preview, reverse-engineering, and vulnerability-research skills.
+category: security
+tags:
+    - binary
+    - reverse-engineering
+    - security
+agents:
+    - binary-analyst
+    - security-researcher
+    - auditor
+providers:
+    - primary
+skills:
+    - binary-vulnerability-research
+    - reverse-engineering
+    - vulnerability-research
+tools:
+    - python_notes/binary_file_info
+    - python_notes/binary_strings
+    - python_notes/hex_preview
+workflows:
+    - skill-chain
+workflow_templates:
+    - binary-triage
+team_templates:
+    - binary-triage-team
+policy_rules:
+    - risk_at_least
+    - team_approval_gate
+examples:
+    - title: Triage a binary artifact
+      description: Inspect metadata, strings, and suspicious offsets before producing an evidence-backed report.
+      request: Analyze sample.bin for risky imports, protocol strings, packed sections, and likely vulnerability surfaces.
+      workflow: skill-chain
+      agent: binary-analyst
+    - title: Defensive binary workflow
+      description: Plan static analysis, collect evidence, branch on risk, and report next reversing actions.
+      request: Run static binary triage on sample.bin without executing it.
+      workflow: binary-triage
+      agent: binary-analyst
+metadata:
+    preset: binary-analysis
+    recommended_agent: binary-analyst
+    recommended_workflow: binary-triage
+    scaffold_preset: binary-analysis
+    recommended_team: binary-triage-team
+    primary_skill: binary-vulnerability-research

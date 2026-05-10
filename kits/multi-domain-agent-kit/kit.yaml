@@ -1,0 +1,95 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: multi-domain-agent-kit
+title: Multi-Domain Agent Starter Kit
+description: One connected starter kit that routes mixed requests into software, security, binary, documentation, operations, support, or framework-extension workflows.
+category: starter
+tags:
+    - starter
+    - multi-domain
+    - workflow
+    - team
+    - quality
+agents:
+    - chat
+    - planner
+    - fixer
+    - auditor
+    - software-engineer
+    - security-researcher
+    - web-security-researcher
+    - binary-analyst
+    - documentation-specialist
+    - operations-specialist
+    - support-specialist
+    - framework-extension-architect
+providers:
+    - primary
+skills:
+    - execution-plan
+    - code-writing
+    - code-audit
+    - vulnerability-research
+    - web-vulnerability-research
+    - binary-vulnerability-research
+    - reverse-engineering
+tools:
+    - file_tools/read_file
+    - file_tools/search_files
+    - file_tools/write_file
+    - web_tools/web_search
+    - web_tools/fetch_url
+    - web_tools/fetch_page_assets
+    - python_notes/binary_file_info
+    - python_notes/binary_strings
+    - python_notes/hex_preview
+workflows:
+    - plan-fix-audit
+    - skill-chain
+workflow_templates:
+    - multi-domain-intake-router
+    - task-decomposition-plan
+    - plan-fix-audit
+    - software-quality-gate
+    - software-team-review-gate
+    - web-research-risk
+    - security-audit-evidence-gate
+    - binary-triage
+    - docs-review-publish
+    - operations-runbook
+    - customer-support-triage
+    - agent-framework-extension
+team_templates:
+    - software-task-team
+    - audit-security-team
+    - web-research-team
+    - binary-triage-team
+    - documentation-team
+    - operations-runbook-team
+    - customer-support-team
+    - framework-extension-team
+policy_rules:
+    - expression
+    - contains
+    - risk_at_least
+    - ref_truthy
+    - team_approval_gate
+examples:
+    - title: Route a mixed request
+      description: Collect the user's domain, target, and desired output, route to a domain team, and quality-check the handoff.
+      request: Help me decide how to handle this project request and route it to the right workflow.
+      workflow: multi-domain-intake-router
+      agent: chat
+    - title: Create a new vertical extension
+      description: Use the platform team to design a reusable Agent/Skill/Tool/Workflow kit.
+      request: Create a vertical Agent kit for security operations handoff.
+      workflow: agent-framework-extension
+      agent: framework-extension-architect
+metadata:
+    preset: multi-domain-agent
+    recommended_agent: chat
+    recommended_workflow: multi-domain-intake-router
+    recommended_team: framework-extension-team
+    primary_skill: execution-plan
+    scaffold_preset: multi-domain-agent

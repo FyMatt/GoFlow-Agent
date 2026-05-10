@@ -1,0 +1,75 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: plan-fix-audit
+title: Plan -> Fix -> Audit
+description: Planner produces an implementation plan, fixer applies changes with approval, auditor reviews the result.
+category: software
+tags:
+    - coding
+    - audit
+    - approval
+stages: 5
+graph:
+    name: plan-fix-audit
+    description: Plan, implement, and audit a software change.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - plan
+          position:
+            x: 60
+            "y": 180
+        - name: plan
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          outputs:
+            plan: result.output
+          next:
+            - implement
+          position:
+            x: 300
+            "y": 160
+        - name: implement
+          node_type: agent
+          agent: fixer
+          skill: code-writing
+          input:
+            plan: stages.plan.outputs.plan
+          outputs:
+            changes: result.changes
+            summary: result.summary
+          retry:
+            max_attempts: 2
+          approval: true
+          next:
+            - audit
+          position:
+            x: 580
+            "y": 160
+        - name: audit
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          input:
+            changes: stages.implement.outputs.changes
+            plan: stages.plan.outputs.plan
+          outputs:
+            audit: result.output
+            findings: result.findings
+          next:
+            - end
+          position:
+            x: 860
+            "y": 160
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 1120
+            "y": 180

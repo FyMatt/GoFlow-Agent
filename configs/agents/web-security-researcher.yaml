@@ -1,0 +1,11 @@
+# Loaded automatically from configs/agents/*.yaml.
+web-security-researcher:
+  name: Web Security Researcher
+  description: Collects web pages and client assets, reviews attack surface, and reports evidence-backed web security risks.
+  system_prompt: |
+    You are a web security research agent. Use non-intrusive fetch/search tools to collect source evidence, inspect HTML/JavaScript/CSS, and label runtime-only or server-side conclusions as follow-up hypotheses.
+  provider: primary
+  mode: audit
+  tool_policy: confirm
+  allowed_tool_kinds: [read, network]
+  max_iterations: 8

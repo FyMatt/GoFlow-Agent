@@ -162,8 +162,21 @@ tool boundaries remain clear.
 
 The repository includes `.github/workflows/ci.yml` with:
 
+- shared preflight via `python scripts/run_preflight.py --browser-required`
 - Linux `go test ./...`
 - Python MCP smoke tests
+- resource-link validation for bundled Agents, Skills, Tools, Kits, Teams,
+  Policy Rules, Workflow Templates, Skill handoffs, Team roles, and Workflow
+  stage references
+- static Web Studio i18n validation for English/Chinese translation keys
+- public Markdown link, bilingual-pair, and private-plan reference validation
+- embedded HTTP Studio smoke test for `/console`, `/workflows`, static assets,
+  and key JSON API endpoints
+- required browser Studio smoke test for `/console`, `/workflows`,
+  `/console#playground`, `/console#approvals`, `/console#catalog`,
+  `/console#status`, `/console#workspace`, `/console#settings`, and Chinese
+  `?lang=zh` deep links in CI; local runs can omit `--required` to skip when no
+  Chrome, Edge, or Chromium browser is installed
 - deployment asset validation
 - Docker image builds for the runtime and MCP Python tool runtime
 - container startup check against `GET /api/session`
@@ -172,6 +185,12 @@ Run local deployment validation without Docker:
 
 ```bash
 python scripts/validate_deployment_assets.py
+```
+
+Run the same shared preflight locally:
+
+```bash
+python scripts/run_preflight.py --browser-required
 ```
 
 For tag-based binary archives and GHCR image publishing, see

@@ -1,0 +1,98 @@
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: documentation-team
+title: Documentation Team
+category: documentation
+description: Plan, draft, review, and publication-check documentation work.
+tags: [docs, review, publish]
+recommended_workflow: docs-review-publish
+recommended_entry_agent: planner
+role_templates:
+  - name: docs-planner
+    label: Docs Planner
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - identify audience
+      - define outline
+      - spot stale docs
+    produces: [outline, doc_targets]
+  - name: docs-writer
+    label: Docs Writer
+    agent: fixer
+    skill: code-writing
+    responsibilities:
+      - edit documentation files
+      - keep examples runnable
+      - avoid unrelated rewrites
+    consumes: [outline, doc_targets]
+    produces: [draft_changes]
+  - name: docs-reviewer
+    label: Docs Reviewer
+    agent: auditor
+    skill: code-audit
+    responsibilities:
+      - check accuracy
+      - check install/deployment steps
+      - flag missing warnings
+    consumes: [draft_changes]
+    produces: [review_notes]
+  - name: publish-operator
+    label: Publish Operator
+    agent: chat
+    skill: execution-plan
+    responsibilities:
+      - prepare release handoff
+      - list verification and publish commands
+      - wait for operator approval
+    consumes: [review_notes]
+    produces: [publish_handoff]
+handoffs:
+  - from: docs-planner
+    to: docs-writer
+    kind: outline_handoff
+    subject: Documentation outline
+    artifacts: [outline, doc_targets]
+  - from: docs-writer
+    to: docs-reviewer
+    kind: review_request
+    subject: Documentation draft
+    artifacts: [draft_changes]
+  - from: docs-reviewer
+    to: publish-operator
+    kind: publish_gate
+    subject: Reviewed documentation
+    artifacts: [review_notes]
+blackboard_templates:
+  - kind: request
+    title: Original request and constraints
+    owner_role: docs-planner
+    status: open
+    tags: [scope]
+    description: The user request, allowed scope, and assumptions that should survive handoffs.
+  - kind: plan
+    title: Working plan
+    owner_role: docs-planner
+    status: open
+    tags: [plan]
+    description: Current executable plan, stage ordering, and known blockers.
+  - kind: evidence
+    title: Evidence and observations
+    owner_role: docs-planner
+    status: open
+    tags: [evidence]
+    description: Tool observations, source references, test output, or collected artifacts.
+  - kind: decision
+    title: Decisions and approvals
+    owner_role: docs-planner
+    status: open
+    tags: [decision]
+    description: Decisions made by agents or the operator, including approval gates.
+  - kind: finding
+    title: Findings and risks
+    owner_role: docs-planner
+    status: open
+    tags: [risk]
+    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+output_contract: [doc_targets, draft_changes, review_notes, publish_handoff]

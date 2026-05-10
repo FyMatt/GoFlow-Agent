@@ -1,0 +1,131 @@
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: framework-extension-team
+title: Framework Extension Team
+category: platform
+description: Product, platform, safety, and authoring roles for building linked Agent/Skill/Tool/Workflow/Team extensions.
+tags: [agent-framework, extension, kit, second-development]
+recommended_workflow: agent-framework-extension
+recommended_entry_agent: planner
+role_templates:
+  - name: product-architect
+    label: Product Architect
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - clarify vertical use case
+      - define user journey
+      - identify required resources and acceptance criteria
+    produces: [extension_brief, acceptance_criteria]
+  - name: platform-engineer
+    label: Platform Engineer
+    agent: fixer
+    skill: code-writing
+    responsibilities:
+      - map the brief to modular resource files
+      - create or update Agent/Skill/Tool/Workflow/Team definitions
+      - keep generated resources versionable
+    consumes: [extension_brief]
+    produces: [resource_changes, validation_notes]
+  - name: workflow-designer
+    label: Workflow Designer
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - define workflow node contracts
+      - connect outputs to downstream inputs
+      - add quality gates and approval checkpoints
+    consumes: [extension_brief]
+    produces: [workflow_design, data_flow]
+  - name: safety-reviewer
+    label: Safety Reviewer
+    agent: auditor
+    skill: code-audit
+    responsibilities:
+      - review tool permissions
+      - check sandbox and approval boundaries
+      - flag over-broad prompts or missing validation
+    consumes: [resource_changes, workflow_design]
+    produces: [safety_review, required_changes]
+  - name: handoff-writer
+    label: Handoff Writer
+    agent: chat
+    skill: execution-plan
+    responsibilities:
+      - summarize created resources
+      - state restart or reload steps
+      - prepare front-end/operator guidance
+    consumes: [safety_review, validation_notes]
+    produces: [operator_handoff]
+handoffs:
+  - from: product-architect
+    to: workflow-designer
+    kind: brief_handoff
+    subject: Extension brief and acceptance criteria
+    artifacts: [extension_brief, acceptance_criteria]
+    blackboard: [request, plan]
+  - from: workflow-designer
+    to: platform-engineer
+    kind: resource_plan
+    subject: Workflow data flow and resource map
+    artifacts: [workflow_design, data_flow]
+    blackboard: [plan, decision]
+  - from: platform-engineer
+    to: safety-reviewer
+    kind: review_request
+    subject: Generated extension resources
+    artifacts: [resource_changes, validation_notes]
+    blackboard: [evidence, finding]
+  - from: safety-reviewer
+    to: handoff-writer
+    kind: final_review
+    subject: Safety review and required operator steps
+    artifacts: [safety_review, required_changes]
+    blackboard: [decision, finding]
+blackboard_templates:
+  - kind: request
+    title: Original request and constraints
+    owner_role: product-architect
+    status: open
+    tags: [scope]
+    description: The user request, allowed scope, and assumptions that should survive handoffs.
+  - kind: plan
+    title: Working plan
+    owner_role: product-architect
+    status: open
+    tags: [plan]
+    description: Current executable plan, stage ordering, and known blockers.
+  - kind: evidence
+    title: Evidence and observations
+    owner_role: product-architect
+    status: open
+    tags: [evidence]
+    description: Tool observations, source references, test output, or collected artifacts.
+  - kind: decision
+    title: Decisions and approvals
+    owner_role: product-architect
+    status: open
+    tags: [decision]
+    description: Decisions made by agents or the operator, including approval gates.
+  - kind: finding
+    title: Findings and risks
+    owner_role: product-architect
+    status: open
+    tags: [risk]
+    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+quorum_presets:
+  - name: extension-review
+    title: Extension safety review
+    description: Require workflow designer and safety reviewer approval before handoff.
+    required: 2
+    roles: [workflow-designer, safety-reviewer]
+    reject_blocks: true
+    default: true
+  - name: full-extension-team
+    title: Full extension team approval
+    description: Require every extension role to approve high-impact framework changes.
+    required: 5
+    roles: [product-architect, platform-engineer, workflow-designer, safety-reviewer, handoff-writer]
+    reject_blocks: true
+output_contract: [extension_brief, workflow_design, resource_changes, safety_review, operator_handoff]

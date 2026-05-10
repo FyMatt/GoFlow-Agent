@@ -208,6 +208,9 @@ mcp_servers:
     workdir: .
     env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
     isolation: process_group
+    restart_limit: 3
+    cooldown: 10s
+    max_concurrent_calls: 1
     allowed_commands:
       - python
     max_request_bytes: 65536

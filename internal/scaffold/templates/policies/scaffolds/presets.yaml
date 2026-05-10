@@ -1,0 +1,148 @@
+presets:
+  - name: risk-threshold
+    default_name: high-risk-gate
+    title: Risk Threshold Gate
+    description: Pass when a referenced risk or severity value is at least the configured threshold.
+    category: security
+    tags: [risk, security, branching]
+    operator: risk_at_least
+    reason: risk threshold was not met
+    defaults:
+      ref: stages.audit.outputs.risk
+      minimum: high
+    params:
+      - name: params.ref
+        label: Evidence reference
+        type: reference
+        description: Reference to a stage output containing low, medium, high, or critical.
+        placeholder: stages.audit.outputs.risk
+        required: true
+        examples:
+          - stages.audit.outputs.risk
+          - stages.security_review.outputs.severity
+      - name: params.minimum
+        label: Minimum severity
+        type: select
+        required: true
+        options: [low, medium, high, critical]
+        default: high
+
+  - name: truthy-reference
+    default_name: finding-present-gate
+    title: Truthy Reference Gate
+    description: Pass when a referenced workflow output is present and truthy.
+    category: control-flow
+    tags: [reference, branching]
+    operator: ref_truthy
+    reason: required reference was empty
+    defaults:
+      ref: stages.audit.outputs.finding
+    params:
+      - name: params.ref
+        label: Reference
+        type: reference
+        description: Reference that must be truthy for the guard to pass.
+        placeholder: stages.audit.outputs.finding
+        required: true
+        examples:
+          - stages.scan.outputs.findings
+          - stages.plan.outputs.ready
+
+  - name: contains-text
+    default_name: output-contains-gate
+    title: Contains Text Gate
+    description: Pass when a referenced output contains an expected substring.
+    category: control-flow
+    tags: [text, branching]
+    operator: contains
+    reason: expected text was not found
+    defaults:
+      ref: stages.review.outputs.summary
+      needle: approved
+    params:
+      - name: params.ref
+        label: Reference
+        type: reference
+        placeholder: stages.review.outputs.summary
+        required: true
+      - name: params.needle
+        label: Expected text
+        type: text
+        placeholder: approved
+        required: true
+        examples:
+          - approved
+          - ready_for_release
+
+  - name: minimum-count
+    default_name: minimum-findings-gate
+    title: Minimum Count Gate
+    description: Pass when a referenced list or count reaches a configured minimum.
+    category: quality
+    tags: [count, quality, branching]
+    operator: min_count
+    reason: minimum count was not reached
+    defaults:
+      ref: stages.audit.outputs.findings
+      minimum: "1"
+    params:
+      - name: params.ref
+        label: List/count reference
+        type: reference
+        placeholder: stages.audit.outputs.findings
+        required: true
+      - name: params.minimum
+        label: Minimum count
+        type: number
+        default: "1"
+        required: true
+
+  - name: team-review-quorum
+    default_name: team-review-gate
+    title: Team Review Quorum Gate
+    description: Pass, block, or pause based on executable team approval or rejection quorum state.
+    category: collaboration
+    tags: [team, quorum, approval]
+    operator: team_approval_gate
+    reason: team review quorum was not satisfied
+    defaults:
+      status: passed
+      wait_for_quorum: "true"
+    params:
+      - name: params.team
+        label: Team
+        type: text
+        description: Optional team name to filter approval packets.
+        placeholder: software-task-team
+      - name: params.status
+        label: Required status
+        type: select
+        options: [passed, blocked, pending]
+        default: passed
+      - name: params.approval_quorum
+        label: Approval quorum
+        type: number
+        placeholder: "2"
+      - name: params.approval_preset
+        label: Quorum preset
+        type: text
+        description: Reusable quorum preset from the selected team template.
+        placeholder: software-review
+
+  - name: expression
+    default_name: custom-expression-gate
+    title: Custom Expression Gate
+    description: Pass when a custom workflow expression evaluates truthy.
+    category: advanced
+    tags: [expression, custom]
+    operator: expression
+    expression: "{{params.ref}} == true"
+    reason: custom expression did not pass
+    defaults:
+      ref: stages.audit.outputs.passed
+    params:
+      - name: params.ref
+        label: Reference
+        type: reference
+        placeholder: stages.audit.outputs.passed
+        required: true

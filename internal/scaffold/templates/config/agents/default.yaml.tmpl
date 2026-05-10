@@ -1,0 +1,15 @@
+# Loaded automatically from configs/agents/*.yaml on next startup.
+# Keep this profile narrow. Route write/exec work to a dedicated fixer-style agent.
+{{.Name}}:
+  name: {{.Title}}
+  description: Describe this agent's role and permission boundary.
+  provider: primary
+  mode: chat
+  tool_policy: confirm
+  allowed_tool_kinds: [read]
+  # Optional: restrict this agent to exact tools even within allowed kinds.
+  # allowed_tools: [file_tools/list_tree, file_tools/read_file]
+  # For a network researcher, prefer a narrow allowlist:
+  # allowed_tool_kinds: [read, network]
+  # allowed_tools: [web_tools/fetch_url, web_tools/web_search]
+  max_iterations: 6

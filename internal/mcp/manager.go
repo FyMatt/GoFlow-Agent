@@ -9,6 +9,7 @@ import (
 	"sync"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
@@ -150,6 +151,25 @@ func (m *Manager) HealthStatus(ctx context.Context) map[string]string {
 		status["none"] = "disabled"
 	}
 	return status
+}
+
+// MCPCallMetrics reports live queue and active call-slot pressure per server.
+func (m *Manager) MCPCallMetrics() map[string]interfaces.MCPServerCallMetrics {
+	if m == nil {
+		return nil
+	}
+	m.mu.RLock()
+	clients := make(map[string]*Client, len(m.clients))
+	for name, client := range m.clients {
+		clients[name] = client
+	}
+	m.mu.RUnlock()
+
+	metrics := make(map[string]interfaces.MCPServerCallMetrics, len(clients))
+	for name, client := range clients {
+		metrics[name] = client.CallMetrics()
+	}
+	return metrics
 }
 
 // ToolNames returns cached tool names in sorted order.

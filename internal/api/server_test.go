@@ -104,8 +104,10 @@ func (s *apiGateLLM) StreamChat(ctx context.Context, _ schema.ChatRequest, _ int
 func (s *apiGateLLM) Capabilities() []string { return []string{"chat", "stream"} }
 
 type apiTestMCP struct {
-	result schema.ToolResult
-	calls  int
+	result    schema.ToolResult
+	calls     int
+	toolNames []string
+	metrics   map[string]interfaces.MCPServerCallMetrics
 }
 
 func (m *apiTestMCP) ListTools(context.Context) ([]schema.Tool, error) {
@@ -126,7 +128,25 @@ func (m *apiTestMCP) CallTool(context.Context, string, []byte) (schema.ToolResul
 func (m *apiTestMCP) HealthStatus(context.Context) map[string]string {
 	return map[string]string{"stub": "ready"}
 }
-func (m *apiTestMCP) ToolNames() []string { return []string{"write_file"} }
+func (m *apiTestMCP) MCPCallMetrics() map[string]interfaces.MCPServerCallMetrics {
+	if len(m.metrics) == 0 {
+		return nil
+	}
+	out := make(map[string]interfaces.MCPServerCallMetrics, len(m.metrics))
+	for name, metric := range m.metrics {
+		out[name] = metric
+	}
+	return out
+}
+func (m *apiTestMCP) SetMetrics(metrics map[string]interfaces.MCPServerCallMetrics) {
+	m.metrics = metrics
+}
+func (m *apiTestMCP) ToolNames() []string {
+	if len(m.toolNames) > 0 {
+		return append([]string(nil), m.toolNames...)
+	}
+	return []string{"write_file"}
+}
 
 type apiTestSkillManager struct{}
 
@@ -173,6 +193,20 @@ func newAPITestRuntimeWithStateHomeResponsesMCPAndCostControl(t *testing.T, stat
 
 func newAPITestRuntimeWithStateHomeResponsesMCPCostAndRiskPolicy(t *testing.T, state *session.State, runtimeHome string, responses []schema.ChatResponse, mcpRefs []config.MCPServerRef, costControl config.CostControlConfig, riskPolicy config.ToolRiskPolicyConfig) *agent.Runtime {
 	t.Helper()
+	return newAPITestRuntimeWithStateHomeResponsesMCPCostRiskPolicyAndExtraAgents(t, state, runtimeHome, responses, mcpRefs, costControl, riskPolicy, nil)
+}
+
+func newAPITestRuntimeWithDomainResources(t *testing.T) *agent.Runtime {
+	t.Helper()
+	return newAPITestRuntimeWithStateHomeResponsesMCPCostRiskPolicyAndExtraAgents(t, session.New(8), "", []schema.ChatResponse{
+		{Message: schema.Message{Content: "plan ready"}, Usage: schema.TokenUsage{PromptTokens: 11, OutputTokens: 3, CachedTokens: 2}},
+		{Message: schema.Message{Content: "fix completed"}, Usage: schema.TokenUsage{PromptTokens: 13, OutputTokens: 4}},
+		{Message: schema.Message{Content: "audit done"}, Usage: schema.TokenUsage{PromptTokens: 17, OutputTokens: 5}},
+	}, nil, config.CostControlConfig{}, config.ToolRiskPolicyConfig{}, apiTestDomainAgentProfiles())
+}
+
+func newAPITestRuntimeWithStateHomeResponsesMCPCostRiskPolicyAndExtraAgents(t *testing.T, state *session.State, runtimeHome string, responses []schema.ChatResponse, mcpRefs []config.MCPServerRef, costControl config.CostControlConfig, riskPolicy config.ToolRiskPolicyConfig, extraAgents map[string]config.AgentProfile) *agent.Runtime {
+	t.Helper()
 	if state == nil {
 		state = session.New(8)
 	}
@@ -200,7 +234,24 @@ func newAPITestRuntimeWithStateHomeResponsesMCPCostAndRiskPolicy(t *testing.T, s
 		},
 		MCP: append([]config.MCPServerRef(nil), mcpRefs...),
 	}
-	mcpClient := &apiTestMCP{result: schema.ToolResult{CallID: "call-1", ToolName: "write_file", Content: "ok"}}
+	for name, profile := range extraAgents {
+		cfg.Agents[name] = profile
+	}
+	mcpClient := &apiTestMCP{
+		result: schema.ToolResult{CallID: "call-1", ToolName: "write_file", Content: "ok"},
+		toolNames: []string{
+			"write_file",
+			"file_tools/read_file",
+			"file_tools/search_files",
+			"file_tools/write_file",
+			"web_tools/web_search",
+			"web_tools/fetch_url",
+			"web_tools/fetch_page_assets",
+			"python_notes/binary_file_info",
+			"python_notes/binary_strings",
+			"python_notes/hex_preview",
+		},
+	}
 	clients := map[string]interfaces.LLMClient{
 		"primary": &apiTestLLM{responses: responses},
 	}
@@ -209,6 +260,19 @@ func newAPITestRuntimeWithStateHomeResponsesMCPCostAndRiskPolicy(t *testing.T, s
 		t.Fatalf("NewRuntime: %v", err)
 	}
 	return runtimeRef
+}
+
+func apiTestDomainAgentProfiles() map[string]config.AgentProfile {
+	return map[string]config.AgentProfile{
+		"software-engineer":             {Name: "Software Engineer", Provider: "primary", Mode: "fix", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+		"security-researcher":           {Name: "Security Researcher", Provider: "primary", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindNetwork}, ToolPolicy: config.ToolPolicyConfirm},
+		"web-security-researcher":       {Name: "Web Security Researcher", Provider: "primary", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindNetwork}, ToolPolicy: config.ToolPolicyConfirm},
+		"binary-analyst":                {Name: "Binary Analyst", Provider: "primary", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindUnknown}, ToolPolicy: config.ToolPolicyConfirm},
+		"documentation-specialist":      {Name: "Documentation Specialist", Provider: "primary", Mode: "fix", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+		"operations-specialist":         {Name: "Operations Specialist", Provider: "primary", Mode: "plan", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+		"support-specialist":            {Name: "Support Specialist", Provider: "primary", Mode: "chat", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindNetwork}, ToolPolicy: config.ToolPolicyConfirm},
+		"framework-extension-architect": {Name: "Framework Extension Architect", Provider: "primary", Mode: "plan", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+	}
 }
 
 func newAPICancellableWorkflowRuntime(t *testing.T) (*agent.Runtime, *apiBlockingLLM) {
@@ -1299,6 +1363,17 @@ func TestServerExpandAtFileReferencesUsesWorkspaceSafety(t *testing.T) {
 	}
 }
 
+func TestServerExpandAtFileReferencesRejectsNonUTF8Text(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "binary.bin"), []byte{0xff, 0xfe, 0xfd}, 0o644); err != nil {
+		t.Fatalf("write binary file: %v", err)
+	}
+	server := NewServerWithWorkspace(newAPITestRuntime(t), workspace.New(root, true))
+	if _, err := server.expandAtReferences(context.Background(), "summarize @binary.bin", nil); err == nil || !strings.Contains(err.Error(), "valid UTF-8") {
+		t.Fatalf("expected HTTP @file UTF-8 rejection, got %v", err)
+	}
+}
+
 func TestServerExpandAtFileReferencesRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
@@ -1310,7 +1385,7 @@ func TestServerExpandAtFileReferencesRejectsSymlinkEscape(t *testing.T) {
 	}
 	server := NewServerWithWorkspace(newAPITestRuntime(t), workspace.New(root, true))
 	_, err := server.expandAtReferences(context.Background(), "summarize @outside-link.txt", nil)
-	if err == nil || !strings.Contains(err.Error(), "resolve real path") {
+	if err == nil || (!strings.Contains(err.Error(), "resolve real path") && !strings.Contains(err.Error(), "resolves outside workspace root")) {
 		t.Fatalf("expected HTTP @file symlink escape rejection, got %v", err)
 	}
 }
@@ -1340,7 +1415,9 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 		!strings.Contains(optionsResponse.Body.String(), `"policy_rules"`) || !strings.Contains(optionsResponse.Body.String(), `"risk_at_least"`) ||
 		!strings.Contains(optionsResponse.Body.String(), `"expression_functions"`) || !strings.Contains(optionsResponse.Body.String(), `"risk_rank"`) ||
 		!strings.Contains(optionsResponse.Body.String(), `"templates"`) || !strings.Contains(optionsResponse.Body.String(), `"plan-fix-audit"`) ||
-		!strings.Contains(optionsResponse.Body.String(), `"team_templates"`) || !strings.Contains(optionsResponse.Body.String(), `"software-task-team"`) {
+		!strings.Contains(optionsResponse.Body.String(), `"team_templates"`) || !strings.Contains(optionsResponse.Body.String(), `"software-task-team"`) ||
+		!strings.Contains(optionsResponse.Body.String(), `"workflow_executors"`) || !strings.Contains(optionsResponse.Body.String(), `"source":"legacy_executor"`) ||
+		!strings.Contains(optionsResponse.Body.String(), `"compatibility":true`) || !strings.Contains(optionsResponse.Body.String(), `"skill-chain"`) {
 		t.Fatalf("expected workflow options, got %s", optionsResponse.Body.String())
 	}
 
@@ -1467,6 +1544,13 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 		!strings.Contains(templateListResponse.Body.String(), `"multi-domain-intake-router"`) {
 		t.Fatalf("expected reusable workflow templates, got %s", templateListResponse.Body.String())
 	}
+	if !strings.Contains(templateListResponse.Body.String(), `"node_types"`) ||
+		!strings.Contains(templateListResponse.Body.String(), `"team_templates"`) ||
+		!strings.Contains(templateListResponse.Body.String(), `"policy_rules"`) ||
+		!strings.Contains(templateListResponse.Body.String(), `"has_control_flow":true`) ||
+		!strings.Contains(templateListResponse.Body.String(), `"has_data_flow":true`) {
+		t.Fatalf("expected workflow template composition metadata, got %s", templateListResponse.Body.String())
+	}
 
 	templateRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-templates/human-input-security-review", nil)
 	templateResponse := httptest.NewRecorder()
@@ -1503,6 +1587,12 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"customer-support-team"`) ||
 		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"quality_gate"`) {
 		t.Fatalf("expected multi-domain starter template graph, got %d body=%s", multiDomainTemplateResponse.Code, multiDomainTemplateResponse.Body.String())
+	}
+	if !strings.Contains(multiDomainTemplateResponse.Body.String(), `"team_templates":["`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"software-task-team"`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"agents":["`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"has_quality_gate":true`) {
+		t.Fatalf("expected multi-domain starter template detail metadata, got %d body=%s", multiDomainTemplateResponse.Code, multiDomainTemplateResponse.Body.String())
 	}
 
 	forkTemplateRequest := httptest.NewRequest(http.MethodPost, "/api/resources/workflow-templates/forked-security-review/fork", strings.NewReader(`{
@@ -1857,6 +1947,45 @@ func TestServerTeamTemplateEndpoints(t *testing.T) {
 	}
 }
 
+func TestServerTeamTemplateScaffoldPresetsLoadRuntimeOverrides(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	presetDir := filepath.Join(runtimeRef.RuntimeHome(), "templates", "teams", "scaffolds")
+	if err := os.MkdirAll(presetDir, 0o755); err != nil {
+		t.Fatalf("mkdir team scaffold preset dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(presetDir, "custom.yaml"), []byte(`
+presets:
+  - name: software-review
+    default_name: custom-platform-review-team
+    title: Platform Review Team
+    description: Runtime override for software review.
+    category: platform
+    base_template: software-task-team
+    recommended_workflow: plan-fix-audit
+    recommended_entry_agent: planner
+  - name: finance-review
+    default_name: finance-review-team
+    title: Finance Review Team
+    description: Finance review collaboration preset.
+    category: finance
+    base_template: documentation-team
+    recommended_workflow: docs-review-publish
+    recommended_entry_agent: planner
+`), 0o644); err != nil {
+		t.Fatalf("write custom team scaffold preset: %v", err)
+	}
+
+	server := NewServer(runtimeRef)
+	request := httptest.NewRequest(http.MethodGet, "/api/resources/team-templates/scaffolds", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `"finance-review"`) || !strings.Contains(body, `"Platform Review Team"`) {
+		t.Fatalf("expected runtime team scaffold presets, got %d body=%s", response.Code, body)
+	}
+}
+
 func TestServerTeamStateEndpoint(t *testing.T) {
 	runtimeRef := newAPITestRuntime(t)
 	runtimeRef.AddCollaborationMessage(session.CollaborationMessageSnapshot{
@@ -1945,6 +2074,11 @@ func TestServerKitResourceEndpoints(t *testing.T) {
 	server.ServeHTTP(listResponse, listRequest)
 	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"software-kit"`) || !strings.Contains(listResponse.Body.String(), `"valid":true`) {
 		t.Fatalf("expected kit list with saved kit, got %d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	if !strings.Contains(listResponse.Body.String(), `"agent_refs":["chat","fixer"]`) ||
+		!strings.Contains(listResponse.Body.String(), `"workflow_template_refs":["human-input-security-review"]`) ||
+		!strings.Contains(listResponse.Body.String(), `"policy_rule_refs":["expression"]`) {
+		t.Fatalf("expected kit list to expose linked resource references, got %s", listResponse.Body.String())
 	}
 
 	detailRequest := httptest.NewRequest(http.MethodGet, "/api/kits/software-kit", nil)
@@ -2178,7 +2312,28 @@ func TestServerKitBundleExportImport(t *testing.T) {
 }
 
 func TestServerKitScaffoldEndpoints(t *testing.T) {
-	runtimeRef := newAPITestRuntime(t)
+	runtimeRef := newAPITestRuntimeWithDomainResources(t)
+	customPresetDir := filepath.Join(runtimeRef.RuntimeHome(), "templates", "kits", "scaffolds")
+	if err := os.MkdirAll(customPresetDir, 0o755); err != nil {
+		t.Fatalf("mkdir custom preset dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(customPresetDir, "observability.yaml"), []byte(`
+name: observability
+title: Observability Kit
+description: Custom runtime kit scaffold preset.
+category: operations
+agents: [operations-specialist]
+skills: [execution-plan]
+workflow_templates: [operations-runbook]
+team_templates: [operations-runbook-team]
+examples:
+  - title: Build an observability plan
+    request: Create an observability rollout checklist.
+    workflow: operations-runbook
+    agent: operations-specialist
+`), 0o644); err != nil {
+		t.Fatalf("write custom preset: %v", err)
+	}
 	server := NewServer(runtimeRef)
 
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/resources/kits/scaffolds", nil)
@@ -2186,6 +2341,9 @@ func TestServerKitScaffoldEndpoints(t *testing.T) {
 	server.ServeHTTP(listResponse, listRequest)
 	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"software-engineering"`) || !strings.Contains(listResponse.Body.String(), `"web-security"`) || !strings.Contains(listResponse.Body.String(), `"multi-domain-agent"`) {
 		t.Fatalf("expected scaffold list, got %d body=%s", listResponse.Code, listResponse.Body.String())
+	}
+	if !strings.Contains(listResponse.Body.String(), `"observability"`) {
+		t.Fatalf("expected custom runtime kit scaffold preset, got %s", listResponse.Body.String())
 	}
 	if !strings.Contains(listResponse.Body.String(), `"operations-runbook"`) ||
 		!strings.Contains(listResponse.Body.String(), `"customer-support"`) ||
@@ -2290,6 +2448,11 @@ func TestServerKitScaffoldEndpoints(t *testing.T) {
 	if !materialized.Materialized || !materialized.RestartRequired || materialized.Kit.Name != "acme-linked" || !materialized.Kit.Validation.Valid {
 		t.Fatalf("expected valid materialized kit response, got %#v", materialized)
 	}
+	if materialized.Kit.Metadata["recommended_agent"] != "acme-linked-agent" ||
+		materialized.Kit.Metadata["recommended_workflow"] != "acme-linked-workflow" ||
+		materialized.Kit.Metadata["recommended_team"] != "acme-linked-team" {
+		t.Fatalf("expected generated recommended metadata, got %#v", materialized.Kit.Metadata)
+	}
 	for _, want := range []string{"kit", "agent", "skill", "tool", "workflow", "workflow_template", "team_template", "policy_rule"} {
 		if !kitBundleSavedResourceKindExists(materialized.Resources, want) {
 			t.Fatalf("expected materialized resources to include %s, got %#v", want, materialized.Resources)
@@ -2310,6 +2473,36 @@ func TestServerKitScaffoldEndpoints(t *testing.T) {
 			t.Fatalf("expected materialized resource at %s: %v", path, err)
 		}
 	}
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "configs", "agents", "acme-linked-agent.yaml"), "acme-linked-helper/read_text")
+
+	binaryRequest := httptest.NewRequest(http.MethodPost, "/api/resources/kits/scaffolds/binary-analysis?materialize=1", strings.NewReader(`{
+		"name": "acme-binary",
+		"title": "ACME Binary Analysis Kit"
+	}`))
+	binaryRequest.Header.Set("Content-Type", "application/json")
+	binaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(binaryResponse, binaryRequest)
+	if binaryResponse.Code != http.StatusCreated {
+		t.Fatalf("expected binary materialized scaffold create 201, got %d body=%s", binaryResponse.Code, binaryResponse.Body.String())
+	}
+	var binaryMaterialized kitScaffoldResponse
+	if err := json.NewDecoder(binaryResponse.Body).Decode(&binaryMaterialized); err != nil {
+		t.Fatalf("decode binary materialized scaffold response: %v", err)
+	}
+	if !binaryMaterialized.Materialized || !binaryMaterialized.RestartRequired || binaryMaterialized.Kit.Name != "acme-binary" || !binaryMaterialized.Kit.Validation.Valid {
+		t.Fatalf("expected valid binary materialized kit response, got %#v", binaryMaterialized)
+	}
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "kits", "acme-binary", "kit.yaml"), "recommended_agent: acme-binary-agent")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "configs", "agents", "acme-binary-agent.yaml"), "acme-binary-helper/binary_file_info")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "configs", "agents", "acme-binary-agent.yaml"), "acme-binary-helper/binary_strings")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "configs", "agents", "acme-binary-agent.yaml"), "acme-binary-helper/hex_preview")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "skills", "acme-binary-skill", "SKILL.md"), "binary_file_info")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "skills", "acme-binary-skill", "SKILL.md"), "binary_strings")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "mcp_servers", "acme-binary-helper.py"), "\"name\": \"binary_file_info\"")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "mcp_servers", "acme-binary-helper.py"), "\"name\": \"binary_strings\"")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "mcp_servers", "acme-binary-helper.py"), "\"name\": \"hex_preview\"")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "templates", "teams", "acme-binary-team.yaml"), "acme-binary-helper/binary_file_info")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "templates", "teams", "acme-binary-team.yaml"), "acme-binary-helper/hex_preview")
 }
 
 func kitBundleSavedResourceKindExists(items []kitBundleSavedResource, kind string) bool {
@@ -2350,8 +2543,52 @@ func TestServerConsolePageAndAssets(t *testing.T) {
 	if catalogResponse.Code != http.StatusOK {
 		t.Fatalf("expected catalog asset 200, got %d", catalogResponse.Code)
 	}
-	if !strings.Contains(catalogResponse.Body.String(), "<code>skills/") {
-		t.Fatalf("expected catalog asset to avoid nested template backticks, got %s", catalogResponse.Body.String())
+	if strings.Contains(catalogResponse.Body.String(), "skills/<name>/SKILL.md") || strings.Contains(catalogResponse.Body.String(), "<code>skills/") {
+		t.Fatalf("expected catalog asset to hide low-level skill storage paths from the primary resource UI, got %s", catalogResponse.Body.String())
+	}
+
+	workflowsAssetRequest := httptest.NewRequest(http.MethodGet, "/assets/views/workflows.js", nil)
+	workflowsAssetResponse := httptest.NewRecorder()
+	server.ServeHTTP(workflowsAssetResponse, workflowsAssetRequest)
+	if workflowsAssetResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflows asset 200, got %d", workflowsAssetResponse.Code)
+	}
+	workflowsAsset := workflowsAssetResponse.Body.String()
+	for _, want := range []string{
+		"data-node-type-action",
+		"data-advanced-guide-example",
+		"data-artifact-guide-action",
+		"data-acceptance-guide-action",
+		"nodeTypeMetadataSourcePath",
+		"shortWorkflowResourcePath",
+		"expressionFunctionSourcePath",
+	} {
+		if !strings.Contains(workflowsAsset, want) {
+			t.Fatalf("expected workflow Studio asset to contain %q", want)
+		}
+	}
+	if strings.Contains(workflowsAsset, `<code>${escapeHTML(option.path)}</code>`) {
+		t.Fatalf("expected workflow Studio asset to avoid rendering raw node metadata paths in the main inspector")
+	}
+
+	i18nAssetRequest := httptest.NewRequest(http.MethodGet, "/assets/i18n.js", nil)
+	i18nAssetResponse := httptest.NewRecorder()
+	server.ServeHTTP(i18nAssetResponse, i18nAssetRequest)
+	if i18nAssetResponse.Code != http.StatusOK {
+		t.Fatalf("expected i18n asset 200, got %d", i18nAssetResponse.Code)
+	}
+	i18nAsset := i18nAssetResponse.Body.String()
+	for _, want := range []string{
+		"workflow.nodeTypeApplyExample",
+		"workflow.advancedGuideUseExample",
+		"workflow.artifactGuideAddReport",
+		"workflow.acceptanceGuideAddContains",
+		"workflow.nodeTypeOverridePath",
+		"workflow.expressionFunctionOverridePath",
+	} {
+		if !strings.Contains(i18nAsset, want) {
+			t.Fatalf("expected i18n asset to contain %q", want)
+		}
 	}
 
 	faviconRequest := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
@@ -2395,6 +2632,65 @@ func TestServerRuntimeStatusAndUpdatePolicy(t *testing.T) {
 	}
 	if !strings.Contains(updateResponse.Body.String(), `"release-archive"`) || !strings.Contains(updateResponse.Body.String(), `"docker"`) {
 		t.Fatalf("expected update strategies, got %s", updateResponse.Body.String())
+	}
+	if !strings.Contains(updateResponse.Body.String(), `"/api/update-policy/check"`) || !strings.Contains(updateResponse.Body.String(), `"network_opt_in":true`) {
+		t.Fatalf("expected opt-in update check metadata, got %s", updateResponse.Body.String())
+	}
+
+	oldVersion := version.Version
+	version.Version = "v0.1.0"
+	t.Cleanup(func() { version.Version = oldVersion })
+	feedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet {
+			t.Fatalf("expected release feed GET, got %s", r.Method)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		archive := fmt.Sprintf("goflow-agent_v0.1.1_%s_%s.%s", goruntime.GOOS, goruntime.GOARCH, map[bool]string{true: "zip", false: "tar.gz"}[goruntime.GOOS == "windows"])
+		_, _ = w.Write([]byte(`{
+			"tag_name":"v0.1.1",
+			"name":"GoFlow Agent v0.1.1",
+			"html_url":"https://github.com/FyMatt/GoFlow-Agent/releases/tag/v0.1.1",
+			"body":"Bug fixes and release notes.",
+			"assets":[
+				{"name":"` + archive + `","size":1234,"browser_download_url":"https://example.invalid/download.zip"},
+				{"name":"SHA256SUMS","size":256,"browser_download_url":"https://example.invalid/SHA256SUMS"},
+				{"name":"SBOM.spdx.json","size":2048,"browser_download_url":"https://example.invalid/SBOM.spdx.json"},
+				{"name":"` + archive + `.sigstore.json","size":512,"browser_download_url":"https://example.invalid/archive.sigstore.json"},
+				{"name":"SHA256SUMS.sigstore.json","size":512,"browser_download_url":"https://example.invalid/SHA256SUMS.sigstore.json"},
+				{"name":"SBOM.spdx.json.sigstore.json","size":512,"browser_download_url":"https://example.invalid/SBOM.spdx.json.sigstore.json"}
+			]
+		}`))
+	}))
+	defer feedServer.Close()
+	t.Setenv("GOFLOW_RELEASE_FEED", feedServer.URL)
+	checkRequest := httptest.NewRequest(http.MethodPost, "/api/update-policy/check", nil)
+	checkResponse := httptest.NewRecorder()
+	server.ServeHTTP(checkResponse, checkRequest)
+	if checkResponse.Code != http.StatusOK {
+		t.Fatalf("expected update check 200, got %d body=%s", checkResponse.Code, checkResponse.Body.String())
+	}
+	for _, want := range []string{`"latest_version":"v0.1.1"`, `"update_available":true`, `"asset_summary"`, `"verification_ready":true`, `"has_checksums":true`, `"has_sbom":true`, `"verify_steps"`, "cosign verify-blob"} {
+		if !strings.Contains(checkResponse.Body.String(), want) {
+			t.Fatalf("expected update check response to contain %s, got %s", want, checkResponse.Body.String())
+		}
+	}
+
+	t.Setenv("GOFLOW_DISABLE_UPDATE_CHECKS", "true")
+	disabledPolicyRequest := httptest.NewRequest(http.MethodGet, "/api/update-policy", nil)
+	disabledPolicyResponse := httptest.NewRecorder()
+	server.ServeHTTP(disabledPolicyResponse, disabledPolicyRequest)
+	if disabledPolicyResponse.Code != http.StatusOK {
+		t.Fatalf("expected disabled update policy 200, got %d", disabledPolicyResponse.Code)
+	}
+	if !strings.Contains(disabledPolicyResponse.Body.String(), `"check_enabled":false`) ||
+		!strings.Contains(disabledPolicyResponse.Body.String(), `"disabled_reason"`) {
+		t.Fatalf("expected disabled update check metadata, got %s", disabledPolicyResponse.Body.String())
+	}
+	disabledCheckRequest := httptest.NewRequest(http.MethodPost, "/api/update-policy/check", nil)
+	disabledCheckResponse := httptest.NewRecorder()
+	server.ServeHTTP(disabledCheckResponse, disabledCheckRequest)
+	if disabledCheckResponse.Code != http.StatusForbidden {
+		t.Fatalf("expected disabled update check 403, got %d body=%s", disabledCheckResponse.Code, disabledCheckResponse.Body.String())
 	}
 }
 
@@ -2676,6 +2972,47 @@ func TestServerRuntimeStatusWarnsContainerRootUser(t *testing.T) {
 	}
 	if strings.Contains(body, `"non_root_user"`) {
 		t.Fatalf("expected runtime status not to claim non_root_user for root user, got %s", body)
+	}
+}
+
+func TestServerRuntimeStatusExposesMCPCallMetrics(t *testing.T) {
+	runtimeRef := newAPITestRuntimeWithStateHomeResponsesAndMCP(t, session.New(8), "", nil, []config.MCPServerRef{{
+		Name:               "file_tools",
+		Command:            "file_tools",
+		Enabled:            true,
+		MaxConcurrentCalls: 3,
+	}})
+	mcpClient, ok := runtimeRef.MCPForTesting().(*apiTestMCP)
+	if !ok {
+		t.Fatalf("expected apiTestMCP, got %T", runtimeRef.MCPForTesting())
+	}
+	mcpClient.SetMetrics(map[string]interfaces.MCPServerCallMetrics{
+		"file_tools": {
+			MaxConcurrentCalls: 3,
+			ActiveCalls:        1,
+			QueuedCalls:        2,
+			AvailableCallSlots: 2,
+		},
+	})
+	server := NewServer(runtimeRef)
+	request := httptest.NewRequest(http.MethodGet, "/api/runtime", nil)
+	response := httptest.NewRecorder()
+
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected runtime status 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var decoded runtimeStatusResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
+		t.Fatalf("decode runtime status: %v", err)
+	}
+	summary := mcpServerSummaryByName(decoded.MCPServers, "file_tools")
+	if summary == nil {
+		t.Fatalf("expected file_tools summary, got %#v", decoded.MCPServers)
+	}
+	if summary.MaxConcurrentCalls != 3 || summary.ActiveCalls != 1 || summary.QueuedCalls != 2 || summary.AvailableCallSlots != 2 {
+		t.Fatalf("expected MCP call metrics in runtime status, got %#v", summary)
 	}
 }
 
@@ -4276,6 +4613,7 @@ func TestServerToolResourceSaveWritesCodeAndConfigSnippet(t *testing.T) {
 		"isolation":"process_group",
 		"restart_limit":3,
 		"cooldown":"10s",
+		"max_concurrent_calls":1,
 		"allowed_commands":["python"],
 		"max_request_bytes":65536,
 		"max_response_bytes":2097152,
@@ -4583,6 +4921,44 @@ func TestServerToolScaffoldContainerImageDefaultsToReleaseVersion(t *testing.T) 
 	if !strings.Contains(response.Body.String(), `"image":"ghcr.io/fymatt/goflow-agent-mcp-python:v9.8.7"`) ||
 		strings.Contains(response.Body.String(), `"image":"ghcr.io/fymatt/goflow-agent-mcp-python:latest"`) {
 		t.Fatalf("expected release-versioned default MCP Python image, got %s", response.Body.String())
+	}
+}
+
+func TestServerToolScaffoldPresetsLoadRuntimeOverrides(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	dir := filepath.Join(runtimeRef.RuntimeHome(), "templates", "tools", "scaffolds")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("create custom tool scaffold dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "custom.yaml"), []byte(`
+name: python-notes-local
+default_name: notes-helper
+title: Python Notes Helper
+description: Runtime-defined local helper preset.
+category: local
+language: python
+isolation: process_group
+requires_restart: true
+capabilities: [stdio-json-rpc]
+`), 0o644); err != nil {
+		t.Fatalf("write custom tool scaffold preset: %v", err)
+	}
+
+	server := NewServer(runtimeRef)
+	request := httptest.NewRequest(http.MethodGet, "/api/resources/tools/scaffolds", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected tool scaffold list 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var presets []toolScaffoldPreset
+	if err := json.Unmarshal(response.Body.Bytes(), &presets); err != nil {
+		t.Fatalf("decode tool scaffold presets: %v", err)
+	}
+	custom := toolScaffoldPresetByName(presets, "python-notes-local")
+	if custom == nil || custom.Title != "Python Notes Helper" || custom.Language != "python" {
+		t.Fatalf("expected runtime-defined tool preset, got %#v", presets)
 	}
 }
 
@@ -5053,6 +5429,46 @@ func TestServerPolicyRuleResourceRejectsInvalidRule(t *testing.T) {
 	}
 	if result.Valid || result.Name != "bad-rule" || len(result.Issues) != 1 || result.Issues[0].Field != "expression" || result.Issues[0].Code != "required_expression" {
 		t.Fatalf("unexpected policy rule validation result: %#v", result)
+	}
+}
+
+func TestServerPolicyRuleScaffoldPresetsLoadRuntimeOverrides(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	presetDir := filepath.Join(runtimeRef.RuntimeHome(), "templates", "policies", "scaffolds")
+	if err := os.MkdirAll(presetDir, 0o755); err != nil {
+		t.Fatalf("mkdir policy scaffold preset dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(presetDir, "custom.yaml"), []byte(`
+presets:
+  - name: risk-threshold
+    default_name: custom-risk-gate
+    title: Custom Risk Gate
+    description: Runtime override for risk threshold.
+    category: custom
+    operator: risk_at_least
+    defaults:
+      ref: stages.security.outputs.risk
+      minimum: critical
+  - name: release-window
+    default_name: release-window-gate
+    title: Release Window Gate
+    description: Require an operations release-window signal.
+    category: operations
+    operator: ref_truthy
+    defaults:
+      ref: stages.ops.outputs.release_window_open
+`), 0o644); err != nil {
+		t.Fatalf("write custom policy scaffold preset: %v", err)
+	}
+
+	server := NewServer(runtimeRef)
+	request := httptest.NewRequest(http.MethodGet, "/api/resources/policy-rules/scaffolds", nil)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+
+	body := response.Body.String()
+	if response.Code != http.StatusOK || !strings.Contains(body, `"release-window"`) || !strings.Contains(body, `"Custom Risk Gate"`) || !strings.Contains(body, `"critical"`) {
+		t.Fatalf("expected runtime policy scaffold presets, got %d body=%s", response.Code, body)
 	}
 }
 
@@ -7260,7 +7676,9 @@ func TestServerRunEndpointReturnsAgentResult(t *testing.T) {
 
 func TestWorkspaceAPIConfirmClearAndSelect(t *testing.T) {
 	runtimeRef := newAPITestRuntime(t)
-	workspaceState := workspace.New(`D:\Projects\demo`, false)
+	demoRoot := filepath.Join(t.TempDir(), "demo")
+	otherRoot := filepath.Join(t.TempDir(), "other")
+	workspaceState := workspace.New(demoRoot, false)
 	runtimeRef.SetWorkspaceConfirmed(workspaceState.Confirmed())
 	server := NewServerWithWorkspace(runtimeRef, workspaceState)
 
@@ -7370,7 +7788,7 @@ func TestWorkspaceAPIConfirmClearAndSelect(t *testing.T) {
 		t.Fatalf("expected cleared workspace confirmation, code=%d body=%s", clearResponse.Code, clearResponse.Body.String())
 	}
 
-	selectRequest := httptest.NewRequest(http.MethodPost, "/api/workspace/select", strings.NewReader(`{"path":"D:\\Projects\\other"}`))
+	selectRequest := httptest.NewRequest(http.MethodPost, "/api/workspace/select", strings.NewReader(fmt.Sprintf(`{"path":%q}`, otherRoot)))
 	selectRequest.Header.Set("Content-Type", "application/json")
 	selectResponse := httptest.NewRecorder()
 	server.ServeHTTP(selectResponse, selectRequest)
@@ -7386,27 +7804,27 @@ func TestWorkspaceAPIConfirmClearAndSelect(t *testing.T) {
 	}
 	if !selectBody.RestartRequired ||
 		!selectBody.RequiresRuntimeRestart ||
-		selectBody.NormalizedSelectedPath != `D:\Projects\other` ||
+		selectBody.NormalizedSelectedPath != otherRoot ||
 		!workflowStringSliceContains(selectBody.SwitchBlockers, "session_state_and_approvals_are_workspace_scoped") ||
 		!workspaceSwitchBlockerDetailExists(selectBody.SwitchBlockerDetails, "session_state_and_approvals_are_workspace_scoped", "session_scope", false) ||
 		!selectBody.SwitchPlan.RequiresMCPRebootstrap ||
 		!selectBody.SwitchPlan.RequiresApprovalScopeReset ||
 		!selectBody.SwitchPlan.RequiresToolPolicyRebuild ||
 		!workspaceSwitchBlockerDetailExists(selectBody.SwitchPlan.BlockerDetails, "tool_policy_is_evaluated_against_startup_workspace", "tool_policy", false) ||
-		selectBody.SwitchPlan.TargetPath != `D:\Projects\other` ||
-		selectBody.SwitchPlan.NormalizedTargetPath != `D:\Projects\other` ||
+		selectBody.SwitchPlan.TargetPath != otherRoot ||
+		selectBody.SwitchPlan.NormalizedTargetPath != otherRoot ||
 		selectBody.SwitchPlan.Strategy != "restart" ||
 		len(selectBody.SwitchPlan.SuggestedArgs) != 2 ||
-		selectBody.SwitchPlan.SuggestedArgs[1] != `D:\Projects\other` ||
+		selectBody.SwitchPlan.SuggestedArgs[1] != otherRoot ||
 		len(selectBody.RestartCommandHint) != 3 ||
-		selectBody.RestartCommandHint[2] != `D:\Projects\other` ||
+		selectBody.RestartCommandHint[2] != otherRoot ||
 		!workspaceResponseHasAction(selectBody, "switch", true) ||
 		len(selectBody.SuggestedArgs) != 2 ||
-		selectBody.SuggestedArgs[1] != `D:\Projects\other` {
+		selectBody.SuggestedArgs[1] != otherRoot {
 		t.Fatalf("expected workspace switch action guidance, got %#v", selectBody)
 	}
 
-	sameSelectRequest := httptest.NewRequest(http.MethodPost, "/api/workspace/select", strings.NewReader(`{"path":"D:\\Projects\\demo"}`))
+	sameSelectRequest := httptest.NewRequest(http.MethodPost, "/api/workspace/select", strings.NewReader(fmt.Sprintf(`{"path":%q}`, demoRoot)))
 	sameSelectRequest.Header.Set("Content-Type", "application/json")
 	sameSelectResponse := httptest.NewRecorder()
 	server.ServeHTTP(sameSelectResponse, sameSelectRequest)
@@ -7419,7 +7837,7 @@ func TestWorkspaceAPIConfirmClearAndSelect(t *testing.T) {
 	}
 	if sameSelectBody.RestartRequired ||
 		sameSelectBody.RequiresRuntimeRestart ||
-		sameSelectBody.NormalizedSelectedPath != `D:\Projects\demo` ||
+		sameSelectBody.NormalizedSelectedPath != demoRoot ||
 		!workspaceResponseHasAction(sameSelectBody, "clear", false) ||
 		!workspaceResponseHasAction(sameSelectBody, "select_same", false) {
 		t.Fatalf("expected same workspace selection without restart requirement, got %#v", sameSelectBody)
@@ -7428,7 +7846,9 @@ func TestWorkspaceAPIConfirmClearAndSelect(t *testing.T) {
 
 func TestWorkspaceAPISelectRebindsWhenSupported(t *testing.T) {
 	runtimeRef := newAPITestRuntime(t)
-	workspaceState := workspace.New(`D:\Projects\demo`, true)
+	demoRoot := filepath.Join(t.TempDir(), "demo")
+	otherRoot := filepath.Join(t.TempDir(), "other")
+	workspaceState := workspace.New(demoRoot, true)
 	runtimeRef.SetWorkspaceConfirmed(workspaceState.Confirmed())
 	reboundRuntime := newAPITestRuntime(t)
 	var reboundPath string
@@ -7456,14 +7876,14 @@ func TestWorkspaceAPISelectRebindsWhenSupported(t *testing.T) {
 		t.Fatalf("expected dynamic rebind capabilities, got %#v", statusBody.Capabilities)
 	}
 
-	selectRequest := httptest.NewRequest(http.MethodPost, "/api/workspace/select", strings.NewReader(`{"path":"D:\\Projects\\other"}`))
+	selectRequest := httptest.NewRequest(http.MethodPost, "/api/workspace/select", strings.NewReader(fmt.Sprintf(`{"path":%q}`, otherRoot)))
 	selectRequest.Header.Set("Content-Type", "application/json")
 	selectResponse := httptest.NewRecorder()
 	server.ServeHTTP(selectResponse, selectRequest)
 	if selectResponse.Code != http.StatusOK {
 		t.Fatalf("expected dynamic rebind 200, got %d body=%s", selectResponse.Code, selectResponse.Body.String())
 	}
-	if reboundPath != `D:\Projects\other` {
+	if reboundPath != otherRoot {
 		t.Fatalf("expected rebinder path, got %q", reboundPath)
 	}
 	var selectBody workspaceResponse
@@ -7472,7 +7892,7 @@ func TestWorkspaceAPISelectRebindsWhenSupported(t *testing.T) {
 	}
 	if selectBody.RestartRequired ||
 		selectBody.RequiresRuntimeRestart ||
-		selectBody.Root != `D:\Projects\other` ||
+		selectBody.Root != otherRoot ||
 		!selectBody.Confirmed ||
 		selectBody.SwitchPlan.Mode != "dynamic_rebind" ||
 		selectBody.SwitchPlan.RequiresRuntimeRestart ||
@@ -7488,7 +7908,7 @@ func TestWorkspaceAPISelectRebindsWhenSupported(t *testing.T) {
 	if err := json.NewDecoder(runtimeStatusRecorder.Body).Decode(&runtimeBody); err != nil {
 		t.Fatalf("decode runtime status response: %v", err)
 	}
-	if runtimeBody.Workspace.Root != `D:\Projects\other` ||
+	if runtimeBody.Workspace.Root != otherRoot ||
 		!runtimeBody.WorkspaceCapabilities.RuntimeRebindSupported ||
 		runtimeBody.WorkspaceCapabilities.RequiresRuntimeRestart {
 		t.Fatalf("expected rebound runtime status, got %#v", runtimeBody.WorkspaceCapabilities)
@@ -10963,6 +11383,17 @@ func workflowStringSliceContains(values []string, want string) bool {
 		}
 	}
 	return false
+}
+
+func assertFileContains(t *testing.T, path, needle string) {
+	t.Helper()
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read %s: %v", path, err)
+	}
+	if !strings.Contains(string(data), needle) {
+		t.Fatalf("expected %s to contain %q; got:\n%s", path, needle, string(data))
+	}
 }
 
 func runCollectionAvailableActionExists(items []runCollectionAvailableAction, name, path string, requiresBody bool) bool {

@@ -59,6 +59,12 @@ The generated `SKILL.md` includes:
 - an example request
 - extension notes for keywords, tools, agent boundary, and follow-up skills
 
+Skill scaffold templates are file-backed. Built-ins are embedded from
+`internal/scaffold/templates/skills/scaffolds/templates.yaml`; a runtime home can
+add or override templates with `templates/skills/scaffolds/*.yaml`. The
+`/skill-templates` list and `/new-skill` creation command use the same loader,
+so custom templates appear before users generate new skills.
+
 After editing:
 
 ```text
@@ -85,6 +91,24 @@ The generated server includes:
 - strict object schemas with `additionalProperties: false`
 - `GOFLOW_WORKSPACE_ROOT` path scoping
 - sample `ping`, `read_text`, and `write_text` tools
+
+The generated Python server and modular MCP config are file-backed. Built-ins
+are embedded from:
+
+- `internal/scaffold/templates/tools/python/server.py.tmpl`
+- `internal/scaffold/templates/tools/python/config.yaml.tmpl`
+
+A runtime home can override them with:
+
+- `templates/tools/python/server.py.tmpl`
+- `templates/tools/python/config.yaml.tmpl`
+
+Both `/new-tool python` and the HTTP Studio default Python tool resource use
+this renderer. Templates are Go `text/template` files with:
+
+- `.Name`: normalized resource name, such as `workspace-helper`
+- `.ServerName`: MCP server id derived from the name, such as
+  `workspace_helper`
 
 Add it as a modular MCP server config, for example
 `configs/mcp_servers/workspace-helper.yaml`:
@@ -149,6 +173,13 @@ Current presets:
 Preset list responses include `default_image` and `default_isolation_options`
 for container presets so Studio can show the generated runtime boundary before
 opening a named detail preview.
+
+Tool scaffold presets are file-backed. Built-ins are embedded from
+`internal/scaffold/templates/tools/scaffolds/presets.yaml`; a runtime can add or
+override presets with YAML files under `templates/tools/scaffolds/*.yaml`.
+Container presets may omit `default_image` and `default_isolation_options`; the
+backend fills those from the current GoFlow version and the named container
+isolation profile before returning the preset to Studio.
 
 Example request:
 
@@ -230,6 +261,18 @@ Create an agent config snippet:
 
 The generated file is stored under `configs/agents/<name>.yaml`. GoFlow loads `configs/agents/*.yaml` on startup and merges those profiles over the top-level `agents:` map, so keep each custom agent as its own versionable file and restart GoFlow after changing runtime agent config.
 
+The default Agent scaffold is file-backed. The embedded template is
+`internal/scaffold/templates/config/agents/default.yaml.tmpl`, and runtime homes
+can override it with `templates/config/agents/default.yaml.tmpl`. The template
+is a Go `text/template` with:
+
+- `.Name`: normalized resource name, such as `domain-reviewer`
+- `.Title`: display title derived from the name
+
+Keep generated agents narrow by default. For chat-only roles prefer
+`allowed_tool_kinds: [read]`; add `network`, `write`, or `exec` only for
+dedicated roles with explicit approval and sandbox policy.
+
 Start narrow:
 
 ```yaml
@@ -260,6 +303,14 @@ Create a model provider config snippet:
 ```
 
 The generated file is stored under `configs/providers/<name>.yaml`. GoFlow loads `configs/providers/*.yaml` on startup and merges those provider definitions over the top-level `providers:` map. Fill in `base_url`, `api_key`, and `model`, then restart GoFlow so the provider registry is rebuilt.
+
+The default Provider scaffold is also file-backed. The embedded template is
+`internal/scaffold/templates/config/providers/default.yaml.tmpl`, and runtime
+homes can override it with `templates/config/providers/default.yaml.tmpl`. The
+template receives:
+
+- `.Name`: normalized provider id
+- `.EnvAPIKey`: generated environment variable name, such as `DEEPSEEK_API_KEY`
 
 Example:
 
@@ -308,6 +359,7 @@ GET /api/workflow-templates/{name}
 Current built-in templates:
 
 - `task-decomposition-plan`
+- `multi-domain-intake-router`
 - `agent-framework-extension`
 - `plan-fix-audit`
 - `software-quality-gate`
@@ -325,6 +377,11 @@ Use `task-decomposition-plan` before high-risk or broad tasks when you want the
 agent to produce a reviewable workflow draft with node contracts, data flow,
 artifacts, risk labels, and acceptance criteria before any implementation
 workflow runs.
+
+Use `multi-domain-intake-router` as the broad first-run template. It collects
+domain and scope information, routes to software, security, binary,
+documentation, operations, support, or framework-extension team templates, and
+then sends the team output through synthesis and quality-gate handoff stages.
 
 Use `agent-framework-extension` when the task is to create or reshape GoFlow
 itself: a vertical Agent, skill, MCP tool, workflow, team template, policy rule,
@@ -375,6 +432,13 @@ Generated files live under `templates/workflows/*.yaml` and use the versioned
 `goflow.workflow_template_resource` envelope. After editing, restart GoFlow or
 reload the runtime that owns workflow resources, then create workflows from it:
 
+Built-in workflow templates are file-backed instead of hardcoded in Go. The
+shipped catalog is embedded from `internal/agent/templates/workflows/*.yaml`,
+and runtime homes can add or override entries with
+`templates/workflows/*.yaml`. A custom `templates/workflows/plan-fix-audit.yaml`
+replaces the shipped `plan-fix-audit` template everywhere: `/workflow-templates`,
+workflow creation, validation, fork, and Studio template pickers.
+
 ```text
 /new-workflow release-check --template custom-plan-template
 ```
@@ -403,6 +467,13 @@ Generated files live under `policies/workflow_rules/*.yaml` and use the
 versioned `goflow.workflow_policy_rule` envelope. After creating or editing a
 rule, restart GoFlow or reload the runtime that owns workflow resources, then
 inspect:
+
+Policy rule scaffold presets are file-backed. Built-ins are embedded from
+`internal/scaffold/templates/policies/scaffolds/presets.yaml`; a runtime home
+can add or override presets with `templates/policies/scaffolds/*.yaml`. The CLI
+`/new-policy-rule` command and the HTTP
+`GET/POST /api/resources/policy-rules/scaffolds` endpoints use the same loader,
+so Web Studio and CLI users see the same preset catalog.
 
 ```text
 /policy-rules
@@ -453,6 +524,20 @@ Generated files live under `templates/teams/*.yaml` and use the versioned
 /teams
 /teams custom-review-team
 ```
+
+Team scaffold presets are also file-backed. Built-ins are embedded from
+`internal/scaffold/templates/teams/scaffolds/presets.yaml`; a runtime home can
+add or override presets with `templates/teams/scaffolds/*.yaml`. The CLI
+`/new-team` command and the HTTP
+`GET/POST /api/resources/team-templates/scaffolds` endpoints use the same
+preset catalog.
+
+Built-in team templates are file-backed instead of hardcoded in Go. The shipped
+catalog is embedded from `internal/agent/templates/teams/*.yaml`, and runtime
+homes can add or override entries with `templates/teams/*.yaml`. This means a
+custom `templates/teams/web-research-team.yaml` replaces the shipped
+`web-research-team` everywhere: `/teams`, workflow options, validation,
+execution, TeamState, and Studio forms.
 
 Use the team from a workflow:
 
@@ -508,6 +593,19 @@ planning skill, the planning output feeds a policy gate, and the approved or
 denied route feeds a report or revision node. The generated helper tool uses
 Docker/Podman `isolation: container` with read-only workspace access by default.
 
+The `binary-analysis` preset is domain-specific when materialized. Its generated
+Agent, Skill, Team Template, and helper MCP server use static binary triage
+tools (`binary_file_info`, `binary_strings`, and `hex_preview`) plus `read_text`
+for UTF-8 analyst notes. Raw binaries should be passed as paths such as
+`sample.bin`, not as `@file` text references.
+
+The binary-analysis helper code uses the same Python tool template loader. The
+embedded template is
+`internal/scaffold/templates/tools/python/binary-analysis-server.py.tmpl`, and
+runtime homes can override it with
+`templates/tools/python/binary-analysis-server.py.tmpl`. Both CLI
+materialization and HTTP Studio materialization use that renderer.
+
 For the broadest starter path, use `multi-domain-agent`. It creates or
 references one connected entry kit that can route software engineering, web
 security, security research, binary analysis, documentation, operations,
@@ -528,6 +626,66 @@ Available presets:
 - `documentation`
 - `operations-runbook`
 - `customer-support`
+
+Built-in kit scaffold presets are file-backed instead of hardcoded in the CLI
+or HTTP handler. The shipped catalog lives at
+`internal/scaffold/templates/kits/scaffolds/presets.yaml` and is embedded into
+release binaries for out-of-the-box use. A runtime can add or override presets
+with YAML files under `templates/kits/scaffolds/*.yaml`; the same files are used
+by `/new-kit` and `GET/POST /api/resources/kits/scaffolds`.
+
+Materialized kit output is also file-backed. The built-in templates are embedded
+from `internal/scaffold/templates/kits/materialized/generic/*.tmpl`; at runtime,
+GoFlow checks `templates/kits/materialized/<preset>/<file>.tmpl` first, then
+`templates/kits/materialized/generic/<file>.tmpl`, then the embedded defaults.
+Both CLI and HTTP materialization use this same renderer.
+
+Template filenames:
+
+- `kit.yaml.tmpl`
+- `agent.yaml.tmpl`
+- `skill.md.tmpl`
+- `tool-config.yaml.tmpl`
+- `workflow.yaml.tmpl`
+- `workflow-template.yaml.tmpl`
+- `team.yaml.tmpl`
+- `policy-rule.yaml.tmpl`
+- `workflow.md.tmpl`
+
+Templates are Go `text/template` files with `.Preset`, `.Names`,
+`.PrimaryProvider`, the generated container helper paths `.Tool.Source` and
+`.Tool.Target`, and tool lists such as `.AgentTools`, `.SkillTools`,
+`.PlannerTools`, and `.ReviewerTools`. Keep rendered YAML compatible with the
+same resource schemas Studio edits, because HTTP materialization renders the
+template and parses it back through the normal resource validators.
+
+Custom preset files may contain either one preset:
+
+```yaml
+name: observability
+title: Observability Kit
+description: Build dashboards, alerts, and runbook handoffs.
+category: operations
+agents: [operations-specialist]
+skills: [execution-plan]
+workflow_templates: [operations-runbook]
+team_templates: [operations-runbook-team]
+examples:
+  - title: Build an observability plan
+    request: Create an observability rollout checklist.
+    workflow: operations-runbook
+    agent: operations-specialist
+```
+
+or a batch:
+
+```yaml
+presets:
+  - name: finance-analysis
+    title: Finance Analysis Kit
+    description: Analyze finance requests with domain-specific workflows.
+    category: finance
+```
 
 Use the HTTP resource APIs when you need validation, import/export, or bundle
 workflows:
@@ -562,7 +720,7 @@ needed:
 4. Run a small request before using the scaffold in a larger workflow.
 5. Check `/status` and `/session` when a workflow or approval pauses.
 
-## Complete Extension Example
+## Packaged Examples
 
 See `examples/extension-workflow` for a copyable example that combines:
 
@@ -579,5 +737,27 @@ Run the packaged smoke test before copying the example into a runtime home:
 
 ```bash
 python scripts/validate_extension_workflow.py
+```
+
+See `examples/binary-analysis-kit` for a fuller materialized kit example that
+connects:
+
+- a modular Agent under `configs/agents/`
+- a GoFlow native Skill under `skills/`
+- a Docker/Podman-isolated Python MCP helper under `mcp_servers/`
+- a Workflow under `workflows/`
+- a Workflow Template under `templates/workflows/`
+- a Team Template under `templates/teams/`
+- a Policy Rule under `policies/workflow_rules/`
+- a Kit manifest under `kits/`
+
+That example keeps the generated runtime resources out of the default startup
+path until an operator copies them into a runtime home and sets the helper
+`tool_source` environment variable.
+
+Validate the packaged binary example before copying it:
+
+```bash
+python scripts/validate_binary_analysis_kit.py
 ```
 

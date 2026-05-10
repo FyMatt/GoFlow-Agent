@@ -816,7 +816,7 @@ func (r *configDiagnosticsResponse) checkToolRiskPolicyDiagnostics(cfg *config.C
 		case "container":
 			r.addDiagnosticFor("info", "tool_risk_policy_mcp_broad_sandbox", "mcp server "+name+" uses container isolation, which satisfies tool_risk_policy for write, exec, network, and unknown-kind tools", "", "mcp_server", name, "isolation", "still review image provenance, mounts, network mode, and resource limits before trusting the container boundary")
 		case "linux_netns":
-			r.addDiagnosticFor("info", "tool_risk_policy_mcp_network_sandbox", "mcp server "+name+" uses linux_netns, which satisfies tool_risk_policy for network-kind tools only", "", "mcp_server", name, "isolation", "use isolation: container when this server exposes write, exec, or unknown-kind tools that also need a broad sandbox boundary")
+			r.addDiagnosticFor("info", "tool_risk_policy_mcp_network_sandbox", "mcp server "+name+" uses linux_netns, which satisfies tool_risk_policy for network-kind tools only", "", "mcp_server", name, "isolation", "linux_netns satisfies tool_risk_policy for network-kind tools only; use isolation: container when this server exposes write, exec, or unknown-kind tools that also need a broad sandbox boundary")
 		default:
 			message := "tool_risk_policy will treat risky tools from mcp server " + name + " as unsandboxed because isolation " + isolation + " is not a broad sandbox boundary"
 			recommendation := "use isolation: container for a broad enforced boundary, or linux_netns only for network-only tools on Linux"

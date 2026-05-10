@@ -26,16 +26,8 @@ jobs:
         with:
           python-version: "3.13"
 
-      - name: Go tests
-        run: go test ./...
-
-      - name: Python MCP smoke tests
-        run: |
-          python scripts/validate_python_mcp.py
-          python scripts/validate_extension_workflow.py
-
-      - name: Deployment asset validation
-        run: python scripts/validate_deployment_assets.py
+      - name: Shared preflight
+        run: python scripts/run_preflight.py --browser-required
 
   docker-build:
     name: docker build

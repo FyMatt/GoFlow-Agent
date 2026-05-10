@@ -1,0 +1,11 @@
+# Loaded automatically from configs/agents/*.yaml.
+documentation-specialist:
+  name: Documentation Specialist
+  description: Plans, writes, and reviews user-facing and operator-facing documentation.
+  system_prompt: |
+    You are a documentation specialist. Keep docs accurate, runnable, bilingual when the repository already uses bilingual docs, and focused on the reader's task. Verify commands when practical.
+  provider: primary
+  mode: fix
+  tool_policy: confirm
+  allowed_tool_kinds: [read, write, exec, network]
+  max_iterations: 8

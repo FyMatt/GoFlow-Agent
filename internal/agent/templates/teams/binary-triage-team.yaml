@@ -1,0 +1,99 @@
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: binary-triage-team
+title: Binary Triage Team
+category: security
+description: Static binary triage, reverse-engineering notes, and vulnerability review.
+tags: [binary, reverse, triage]
+recommended_workflow: binary-triage
+recommended_entry_agent: auditor
+role_templates:
+  - name: triage-lead
+    label: Triage Lead
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - define binary analysis scope
+      - choose safe static-only checks first
+      - set artifact naming
+    produces: [triage_plan]
+  - name: reverse-analyst
+    label: Reverse Analyst
+    agent: auditor
+    skill: reverse-engineering
+    responsibilities:
+      - summarize binary metadata
+      - extract strings and suspicious imports
+      - map code areas for review
+    tools: [python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview]
+    consumes: [triage_plan]
+    produces: [reverse_notes, evidence]
+  - name: vulnerability-analyst
+    label: Vulnerability Analyst
+    agent: auditor
+    skill: binary-vulnerability-research
+    responsibilities:
+      - review evidence for vulnerability classes
+      - classify exploitability cautiously
+      - recommend next static/dynamic checks
+    consumes: [reverse_notes, evidence]
+    produces: [findings, next_checks]
+  - name: reporter
+    label: Reporter
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - produce defensive report
+      - preserve uncertainty
+      - list reproduction prerequisites
+    consumes: [findings, next_checks]
+    produces: [final_report]
+handoffs:
+  - from: triage-lead
+    to: reverse-analyst
+    kind: triage_plan
+    subject: Static analysis plan
+    artifacts: [triage_plan]
+  - from: reverse-analyst
+    to: vulnerability-analyst
+    kind: evidence_handoff
+    subject: Reverse notes and evidence
+    artifacts: [reverse_notes, evidence]
+  - from: vulnerability-analyst
+    to: reporter
+    kind: report_handoff
+    subject: Findings and next checks
+    artifacts: [findings, next_checks]
+blackboard_templates:
+  - kind: request
+    title: Original request and constraints
+    owner_role: triage-lead
+    status: open
+    tags: [scope]
+    description: The user request, allowed scope, and assumptions that should survive handoffs.
+  - kind: plan
+    title: Working plan
+    owner_role: triage-lead
+    status: open
+    tags: [plan]
+    description: Current executable plan, stage ordering, and known blockers.
+  - kind: evidence
+    title: Evidence and observations
+    owner_role: triage-lead
+    status: open
+    tags: [evidence]
+    description: Tool observations, source references, test output, or collected artifacts.
+  - kind: decision
+    title: Decisions and approvals
+    owner_role: triage-lead
+    status: open
+    tags: [decision]
+    description: Decisions made by agents or the operator, including approval gates.
+  - kind: finding
+    title: Findings and risks
+    owner_role: triage-lead
+    status: open
+    tags: [risk]
+    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+output_contract: [reverse_notes, findings, next_checks, final_report]

@@ -1,0 +1,11 @@
+# Loaded automatically from configs/agents/*.yaml.
+framework-extension-architect:
+  name: Framework Extension Architect
+  description: Designs linked GoFlow Agent, Skill, Tool, Workflow, Team, Policy, and Kit extensions for vertical second development.
+  system_prompt: |
+    You are a GoFlow framework extension architect. Design resources as a connected kit: agent profile, skill contract, tool boundary, workflow data flow, team roles, policy gates, validation, and operator reload steps.
+  provider: primary
+  mode: plan
+  tool_policy: confirm
+  allowed_tool_kinds: [read, write, exec, network]
+  max_iterations: 10

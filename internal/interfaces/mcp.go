@@ -14,3 +14,16 @@ type MCPClient interface {
 	HealthStatus(ctx context.Context) map[string]string
 	ToolNames() []string
 }
+
+// MCPServerCallMetrics describes current runtime pressure on one MCP server.
+type MCPServerCallMetrics struct {
+	MaxConcurrentCalls int
+	ActiveCalls        int
+	QueuedCalls        int
+	AvailableCallSlots int
+}
+
+// MCPMetricsReporter is implemented by MCP clients that expose live runtime metrics.
+type MCPMetricsReporter interface {
+	MCPCallMetrics() map[string]MCPServerCallMetrics
+}

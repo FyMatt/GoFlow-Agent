@@ -1278,7 +1278,7 @@ func handleCommand(ctx context.Context, input string, skillManager *skill.Manage
 		fmt.Print(formatSkillsOutput(rows))
 		return true
 	case "/skill-templates":
-		return handleSkillTemplatesCommand()
+		return handleSkillTemplatesCommand(skillManager)
 	case "/new-skill":
 		return handleNewSkillCommand(fields, skillManager)
 	case "/new-tool":

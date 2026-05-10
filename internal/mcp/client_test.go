@@ -18,18 +18,19 @@ func TestNewClientAppliesIsolationConfig(t *testing.T) {
 	t.Setenv("HOME", "/tmp/home")
 
 	client := NewClient(config.MCPServerRef{
-		Name:             "file_tools",
-		Command:          "go",
-		Args:             []string{"run", "./mcp_servers/file_tools"},
-		WorkDir:          "./sandbox",
-		EnvAllowlist:     []string{"PATH", "HOME", "PATH", "MISSING"},
-		NetworkDisabled:  true,
-		Isolation:        "process_group",
-		RestartLimit:     4,
-		Cooldown:         15 * time.Second,
-		Timeout:          5 * time.Second,
-		MaxRequestBytes:  1024,
-		MaxResponseBytes: 2048,
+		Name:               "file_tools",
+		Command:            "go",
+		Args:               []string{"run", "./mcp_servers/file_tools"},
+		WorkDir:            "./sandbox",
+		EnvAllowlist:       []string{"PATH", "HOME", "PATH", "MISSING"},
+		NetworkDisabled:    true,
+		Isolation:          "process_group",
+		RestartLimit:       4,
+		Cooldown:           15 * time.Second,
+		MaxConcurrentCalls: 2,
+		Timeout:            5 * time.Second,
+		MaxRequestBytes:    1024,
+		MaxResponseBytes:   2048,
 	})
 
 	if client.workDir != "./sandbox" {
@@ -47,6 +48,9 @@ func TestNewClientAppliesIsolationConfig(t *testing.T) {
 	if client.cooldown != 15*time.Second {
 		t.Fatalf("unexpected cooldown: %s", client.cooldown)
 	}
+	if client.maxConcurrent != 2 || cap(client.callGate) != 2 {
+		t.Fatalf("unexpected max concurrent call gate: max=%d cap=%d", client.maxConcurrent, cap(client.callGate))
+	}
 	expected := []string{"PATH=/usr/local/bin", "HOME=/tmp/home"}
 	if runtime.GOOS == "windows" {
 		expected = append(expected,
@@ -57,6 +61,72 @@ func TestNewClientAppliesIsolationConfig(t *testing.T) {
 	}
 	if !reflect.DeepEqual(client.env, expected) {
 		t.Fatalf("unexpected env: %#v", client.env)
+	}
+}
+
+func TestNewClientDefaultsMaxConcurrentCalls(t *testing.T) {
+	client := NewClient(config.MCPServerRef{Name: "file_tools"})
+	if client.maxConcurrent != 1 || cap(client.callGate) != 1 {
+		t.Fatalf("expected default max concurrent call gate, got max=%d cap=%d", client.maxConcurrent, cap(client.callGate))
+	}
+}
+
+func TestAcquireCallSlotHonorsContextCancellation(t *testing.T) {
+	client := NewClient(config.MCPServerRef{Name: "file_tools", MaxConcurrentCalls: 1})
+	if err := client.acquireCallSlot(context.Background()); err != nil {
+		t.Fatalf("acquire first slot: %v", err)
+	}
+	metrics := client.CallMetrics()
+	if metrics.ActiveCalls != 1 || metrics.QueuedCalls != 0 || metrics.AvailableCallSlots != 0 {
+		t.Fatalf("unexpected metrics after first acquire: %#v", metrics)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	err := client.acquireCallSlot(ctx)
+	client.releaseCallSlot()
+	if err == nil || !strings.Contains(err.Error(), "mcp call queue wait cancelled") {
+		t.Fatalf("expected queue wait cancellation error, got %v", err)
+	}
+	metrics = client.CallMetrics()
+	if metrics.ActiveCalls != 0 || metrics.QueuedCalls != 0 || metrics.AvailableCallSlots != 1 {
+		t.Fatalf("unexpected metrics after cancelled wait and release: %#v", metrics)
+	}
+}
+
+func TestAcquireCallSlotReportsQueuedAndActiveMetrics(t *testing.T) {
+	client := NewClient(config.MCPServerRef{Name: "file_tools", MaxConcurrentCalls: 1})
+	if err := client.acquireCallSlot(context.Background()); err != nil {
+		t.Fatalf("acquire first slot: %v", err)
+	}
+	acquired := make(chan error, 1)
+	go func() {
+		acquired <- client.acquireCallSlot(context.Background())
+	}()
+
+	deadline := time.Now().Add(time.Second)
+	for {
+		metrics := client.CallMetrics()
+		if metrics.ActiveCalls == 1 && metrics.QueuedCalls == 1 && metrics.AvailableCallSlots == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("timed out waiting for queued metrics, got %#v", metrics)
+		}
+		time.Sleep(time.Millisecond)
+	}
+
+	client.releaseCallSlot()
+	if err := <-acquired; err != nil {
+		t.Fatalf("acquire queued slot: %v", err)
+	}
+	metrics := client.CallMetrics()
+	if metrics.ActiveCalls != 1 || metrics.QueuedCalls != 0 || metrics.AvailableCallSlots != 0 {
+		t.Fatalf("unexpected metrics after queued acquire: %#v", metrics)
+	}
+	client.releaseCallSlot()
+	metrics = client.CallMetrics()
+	if metrics.ActiveCalls != 0 || metrics.QueuedCalls != 0 || metrics.AvailableCallSlots != 1 {
+		t.Fatalf("unexpected metrics after final release: %#v", metrics)
 	}
 }
 

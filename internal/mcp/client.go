@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
@@ -56,10 +57,16 @@ type Client struct {
 	isolationOptions map[string]string
 	restartLimit     int
 	cooldown         time.Duration
+	maxConcurrent    int
+	callGate         chan struct{}
 	maxRequestBytes  int
 	maxResponseBytes int
 	killTimeout      time.Duration
 	isolationHandle  *processIsolation
+
+	metricsMu   sync.Mutex
+	activeCalls int
+	queuedCalls int
 
 	mu                 sync.Mutex
 	nextID             int
@@ -82,6 +89,10 @@ func NewClient(cfg config.MCPServerRef) *Client {
 	if cfg.Timeout > 0 && cfg.Timeout < killTimeout {
 		killTimeout = cfg.Timeout
 	}
+	maxConcurrent := cfg.MaxConcurrentCalls
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
 	return &Client{
 		name:             cfg.Name,
 		command:          cfg.Command,
@@ -96,6 +107,8 @@ func NewClient(cfg config.MCPServerRef) *Client {
 		isolationOptions: cloneStringMap(cfg.IsolationOptions),
 		restartLimit:     cfg.RestartLimit,
 		cooldown:         cfg.Cooldown,
+		maxConcurrent:    maxConcurrent,
+		callGate:         make(chan struct{}, maxConcurrent),
 		maxRequestBytes:  cfg.MaxRequestBytes,
 		maxResponseBytes: cfg.MaxResponseBytes,
 		killTimeout:      killTimeout,
@@ -381,6 +394,32 @@ func (c *Client) HealthStatus(ctx context.Context) string {
 	return fmt.Sprintf("%s, restarts=%d", c.lastHealth, c.restartCount)
 }
 
+// CallMetrics returns live call-slot pressure for this MCP server.
+func (c *Client) CallMetrics() interfaces.MCPServerCallMetrics {
+	if c == nil {
+		return interfaces.MCPServerCallMetrics{}
+	}
+	c.metricsMu.Lock()
+	active := c.activeCalls
+	queued := c.queuedCalls
+	c.metricsMu.Unlock()
+
+	maxConcurrent := c.maxConcurrent
+	if maxConcurrent <= 0 {
+		maxConcurrent = 1
+	}
+	available := maxConcurrent - active
+	if available < 0 {
+		available = 0
+	}
+	return interfaces.MCPServerCallMetrics{
+		MaxConcurrentCalls: maxConcurrent,
+		ActiveCalls:        active,
+		QueuedCalls:        queued,
+		AvailableCallSlots: available,
+	}
+}
+
 // ListTools requests the tool list from the remote MCP server.
 func (c *Client) ListTools(ctx context.Context) ([]schema.Tool, error) {
 	var out struct {
@@ -416,9 +455,74 @@ func (c *Client) CallTool(ctx context.Context, name string, arguments []byte) (s
 }
 
 func (c *Client) call(ctx context.Context, method string, params interface{}, out interface{}) error {
+	if err := c.acquireCallSlot(ctx); err != nil {
+		return err
+	}
+	defer c.releaseCallSlot()
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return c.callLocked(ctx, method, params, out)
+}
+
+func (c *Client) acquireCallSlot(ctx context.Context) error {
+	if c.callGate == nil {
+		c.incrementActiveCalls()
+		return nil
+	}
+	select {
+	case c.callGate <- struct{}{}:
+		c.incrementActiveCalls()
+		return nil
+	default:
+	}
+	c.incrementQueuedCalls()
+	defer c.decrementQueuedCalls()
+	select {
+	case c.callGate <- struct{}{}:
+		c.incrementActiveCalls()
+		return nil
+	case <-ctx.Done():
+		return fmt.Errorf("mcp call queue wait cancelled: %w", ctx.Err())
+	}
+}
+
+func (c *Client) releaseCallSlot() {
+	c.decrementActiveCalls()
+	if c.callGate == nil {
+		return
+	}
+	select {
+	case <-c.callGate:
+	default:
+	}
+}
+
+func (c *Client) incrementActiveCalls() {
+	c.metricsMu.Lock()
+	c.activeCalls++
+	c.metricsMu.Unlock()
+}
+
+func (c *Client) decrementActiveCalls() {
+	c.metricsMu.Lock()
+	if c.activeCalls > 0 {
+		c.activeCalls--
+	}
+	c.metricsMu.Unlock()
+}
+
+func (c *Client) incrementQueuedCalls() {
+	c.metricsMu.Lock()
+	c.queuedCalls++
+	c.metricsMu.Unlock()
+}
+
+func (c *Client) decrementQueuedCalls() {
+	c.metricsMu.Lock()
+	if c.queuedCalls > 0 {
+		c.queuedCalls--
+	}
+	c.metricsMu.Unlock()
 }
 
 func (c *Client) callLocked(ctx context.Context, method string, params interface{}, out interface{}) error {

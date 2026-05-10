@@ -15,9 +15,17 @@ That makes it useful for:
 - building specialized agents by adding skills and MCP tools
 - exposing the same runtime through CLI or HTTP
 
-See [examples/extension-workflow](./examples/extension-workflow) for a complete extension that combines a Python MCP server, a custom read-only agent, a skill, and a graph workflow.
+Packaged examples:
 
-You can smoke-test that packaged example with `python scripts/validate_extension_workflow.py`.
+- [examples](./examples): overview of copyable extension examples.
+- [examples/extension-workflow](./examples/extension-workflow): a compact
+  extension that combines a Python MCP server, a custom read-only agent, a
+  skill, and a graph workflow. Smoke-test it with
+  `python scripts/validate_extension_workflow.py`.
+- [examples/binary-analysis-kit](./examples/binary-analysis-kit): a fuller
+  materialized kit that connects an Agent, Skill, containerized MCP helper,
+  Workflow, Workflow Template, Team Template, and Policy Rule for binary
+  triage. Validate it with `python scripts/validate_binary_analysis_kit.py`.
 
 Deployment files can be checked locally without Docker using `python scripts/validate_deployment_assets.py`.
 
@@ -28,7 +36,8 @@ For end-user installation and deployment commands, see [Installation And Deploym
 - Multi-agent runtime with named agent profiles
 - Modular resource storage for agents, providers, MCP servers, skills,
   workflows, workflow templates, team templates, policy rules, and kits
-- Registry-backed built-in workflows plus runtime-home custom workflow graphs
+- Registry-backed built-in workflows and file-backed workflow templates plus
+  runtime-home custom workflow graphs
 - Branded CLI startup banner with runtime/workspace summary
 - Best-effort terminal title updates in interactive CLI sessions
 - Blocking workflow approvals with arrow-key + Enter selection and numeric fallback
@@ -49,6 +58,39 @@ For end-user installation and deployment commands, see [Installation And Deploym
 - Docker/Podman is the recommended strong isolation path for generated,
   third-party, write, exec, and network MCP tools
 - HTTP JSON API and SSE streaming via `--http`
+
+## Built-in Domain Resources
+
+GoFlow ships with linked starter resources for common vertical domains:
+
+- Agents: `software-engineer`, `security-researcher`,
+  `web-security-researcher`, `binary-analyst`, `documentation-specialist`,
+  `operations-specialist`, `support-specialist`, and
+  `framework-extension-architect`
+- Skills: `execution-plan`, `code-writing`, `code-audit`,
+  `vulnerability-research`, `web-vulnerability-research`,
+  `binary-vulnerability-research`, and `reverse-engineering`
+- Kit presets: `multi-domain-agent`, `software-engineering`,
+  `agent-framework`, `web-security`, `security-research`, `binary-analysis`,
+  `documentation`, `operations-runbook`, and `customer-support`
+- Workflow templates and team templates for those domains, including
+  `multi-domain-intake-router` as the recommended first-run path. Built-in
+  workflow templates are embedded from `internal/agent/templates/workflows/*.yaml`
+  and can be overridden from `templates/workflows/*.yaml`.
+
+Use `/kits multi-domain-agent-kit` or `/workflow-templates
+multi-domain-intake-router` to inspect how Agent, Skill, Tool, Team, Workflow
+Template, Policy Rule, and Kit resources connect.
+
+Recommended first-run paths:
+
+| Goal | Start from | What it gives you |
+| --- | --- | --- |
+| General onboarding | `multi-domain-agent-kit` | linked agents, skills, tools, teams, policy gates, and the `multi-domain-intake-router` workflow template |
+| Software changes | `software-engineering-kit` | planner/fixer/auditor style implementation workflow with review gates |
+| Web security review | `web-security-kit` | page and client-asset collection plus evidence-based security review |
+| Binary triage | `binary-analysis-kit` | static binary metadata, strings, hex preview, team review, and report handoff |
+| Framework extension | `agent-framework-kit` | starter resources for creating new Agent, Skill, Tool, Workflow, Team, Policy, and Kit packages |
 
 ## Quick start
 
@@ -132,6 +174,40 @@ GoFlow HTTP API ready. runtime=C:\path\to\agent workspace=D:\my-empty-project ad
 Use `Ctrl+C` to stop HTTP mode. GoFlow shuts the server down gracefully and saves
 the session snapshot before exiting.
 
+### Use Web Studio
+
+Open `http://127.0.0.1:8080/console` after starting HTTP mode.
+Use `?lang=zh` or `?lang=en` when you want a shareable language-specific link,
+for example `http://127.0.0.1:8080/console?lang=zh#workspace`.
+
+For the lowest-friction path:
+
+1. Open **Resources**.
+2. Choose the `multi-domain-agent` starter kit.
+3. Use **Create linked starter** to materialize its Agent, Skill, Tool,
+   Workflow, Workflow Template, Team Template, Policy Rule, and Kit files.
+4. Open **Workflow Studio**.
+5. Start from `multi-domain-intake-router`, inspect the template cards for node
+   mix and linked resources, then run or fork the graph.
+
+Workflow Studio exposes node metadata, examples, input/output references,
+approval gates, quality gates, and template composition so users do not need to
+guess which fields are valid before editing YAML.
+
+The **Observability** page shows live runtime health, current run focus, model
+cost diagnostics, and MCP tool pressure. Use the MCP pressure panel to spot
+active tool calls, queued calls, and saturated tool servers before increasing a
+workflow's concurrency or retrying a stalled run.
+
+If you are unsure how to configure a node in Studio, or what to put in
+`input`, `outputs`, `artifacts`, or `acceptance_criteria`, go straight to
+[Workflow Graphs](./docs/workflows.md), especially the node quick reference,
+Studio panel guide, and node-type usage sections.
+
+If you are unsure how Agents, Skills, Tools, Workflows, Team Templates, Policy
+Rules, and Kits differ or connect, use the
+[Resources And Settings Guide](./docs/resources.md).
+
 ### Run with Docker
 
 For local source checkouts, copy `.env.example` to `.env`, fill in provider values, then run:
@@ -158,12 +234,14 @@ Containerized Python MCP tool presets use the companion
 
 ## Current status
 
-The backend runtime baseline is complete for the current product scope: CLI,
-HTTP APIs, resource management, MCP tools, skills, workflows, durable runs,
-approvals, workspace lifecycle, cost diagnostics, Docker-first isolation, and
-CI/release packaging are implemented. Follow-up work is primarily frontend
-Studio polish, richer templates, and real deployment feedback; any backend
-follow-up is optional hardening or measurement-driven enhancement.
+The current baseline is usable end to end through CLI and Web Studio: resource
+management, MCP tools, skills, workflows, durable ordinary Agent runs, durable
+Workflow runs, approvals, workspace lifecycle, cost diagnostics, Docker-first
+isolation, and CI/release packaging are implemented. Built-in resources now
+include connected multi-domain Agent, Skill, Tool, Team, Workflow Template,
+Policy Rule, and Kit packages. Ongoing work should be driven by real deployment
+feedback, additional domain templates, and measurement-based cost and sandbox
+hardening rather than by missing core runtime pieces.
 
 ## Common CLI commands
 
@@ -213,13 +291,63 @@ exit
 
 `/new-workflow <name> [--template <template>]` creates `workflows/<name>/workflow.yaml`. The default template is `plan-fix-audit`; richer built-ins include `agent-framework-extension`, `software-quality-gate`, `web-research-risk`, `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`, `docs-review-publish`, `operations-runbook`, `customer-support-triage`, `human-input-security-review`, and `software-team-review-gate`. That file is executable through `/workflow <name> <request>` and can declare named stages with `agent`, `skill`, explicit `input`/`outputs`, replay `artifacts`, control nodes such as `condition`, `policy_guard`, `quality_gate`, `parallel`/`join`, `for_each`, `loop`, and `sub_workflow`, approval gates, and `next` edges.
 
+`plan-fix-audit` and `skill-chain` remain runnable compatibility executors.
+Custom graph files are the editable model. In HTTP, `/api/workflow-graphs`
+lists editable graph files, while `/api/workflow-options.workflow_executors`
+lists every runnable workflow entry for run selectors. Saving a valid graph
+with the same name as a compatibility executor overrides that executor.
+
 `/workflow-templates`, `/workflow-node-metadata`, and `/expression-helpers`
 expose the workflow authoring catalog from the terminal. They mirror the
 Studio-facing workflow template, node metadata, and expression helper APIs so
 CLI users can inspect available node types, editable fields, outputs, helper
 signatures, examples, and custom metadata paths without opening the browser.
+Built-in workflow node metadata is embedded from
+`internal/agent/templates/workflow_nodes/*.yaml`.
+Built-in expression helper metadata is embedded from
+`internal/agent/templates/expression_helpers/*.yaml`, with runtime overrides
+available under `metadata/expression_helpers/*.yaml` and related template paths.
+Built-in workflow policy rule metadata is embedded from
+`internal/agent/templates/policy_rules/*.yaml`; custom executable rules still
+live under `policies/workflow_rules/*.yaml`.
 
-`/kits` lists local vertical Agent packages from `kits/<name>/kit.yaml`, and `/kits <name>` shows one manifest's referenced providers, agents, skills, tools, workflows, teams, policies, examples, metadata, and environment warnings. `/kits <name> --export [--format json|yaml] [--include-secrets]` prints a portable kit bundle, and `/kits --import <path> [--replace]` imports one into the current runtime home. `/new-kit <preset> <name>` creates a starter kit manifest; add `--materialize` or `--full` to generate a linked starter bundle with its own agent, skill, Docker/Podman containerized MCP helper, workflow, workflow template, team template, policy rule, and kit manifest. Built-in presets include `software-engineering`, `agent-framework`, `web-security`, `security-research`, `binary-analysis`, `documentation`, `operations-runbook`, and `customer-support`. The manifest stays versionable and can later be validated, edited, exported, or imported through Studio resource APIs.
+`/kits` lists local vertical Agent packages from `kits/<name>/kit.yaml`, and `/kits <name>` shows one manifest's referenced providers, agents, skills, tools, workflows, teams, policies, examples, metadata, and environment warnings. `/kits <name> --export [--format json|yaml] [--include-secrets]` prints a portable kit bundle, and `/kits --import <path> [--replace]` imports one into the current runtime home. `/new-kit <preset> <name>` creates a starter kit manifest; add `--materialize` or `--full` to generate a linked starter bundle with its own agent, skill, Docker/Podman containerized MCP helper, workflow, workflow template, team template, policy rule, and kit manifest. Built-in presets include `multi-domain-agent`, `software-engineering`, `agent-framework`, `web-security`, `security-research`, `binary-analysis`, `documentation`, `operations-runbook`, and `customer-support`. The manifest stays versionable and can later be validated, edited, exported, or imported through Studio resource APIs.
+
+When `binary-analysis` is materialized, the generated helper is a static binary
+triage MCP server with `binary_file_info`, `binary_strings`, and `hex_preview`.
+Use ordinary paths such as `sample.bin` for binary inputs; `@file` references
+are reserved for UTF-8 text content. That helper is template-backed as well:
+the embedded template is
+`internal/scaffold/templates/tools/python/binary-analysis-server.py.tmpl`, with
+runtime overrides at
+`templates/tools/python/binary-analysis-server.py.tmpl`.
+
+Tool scaffold presets are file-backed. Built-ins are embedded from
+`internal/scaffold/templates/tools/scaffolds/presets.yaml`; a runtime can add or
+override presets with YAML files under `templates/tools/scaffolds/*.yaml`.
+The generated Python MCP tool server and its modular MCP config are
+file-backed too: built-ins live under
+`internal/scaffold/templates/tools/python/server.py.tmpl` and
+`internal/scaffold/templates/tools/python/config.yaml.tmpl`, with runtime
+overrides at `templates/tools/python/server.py.tmpl` and
+`templates/tools/python/config.yaml.tmpl`. `/new-tool python` and Studio's
+default Python tool resource use the same renderer.
+
+Kit scaffold presets are file-backed. Built-ins are embedded from
+`internal/scaffold/templates/kits/scaffolds/presets.yaml`, and a runtime can add
+or override presets with YAML files under `templates/kits/scaffolds/*.yaml`.
+Materialized kit resources are file-backed too: the default `kit.yaml`,
+`agent.yaml`, `SKILL.md`, container MCP config, workflow, workflow template,
+team template, policy rule, and workflow note templates are embedded from
+`internal/scaffold/templates/kits/materialized/generic/*.tmpl`. Override them
+per preset with `templates/kits/materialized/<preset>/*.tmpl`, or override the
+generic fallback with `templates/kits/materialized/generic/*.tmpl`.
+
+Team templates are file-backed as well. Built-ins are embedded from
+`internal/agent/templates/teams/*.yaml`; runtime homes can add new reusable
+teams or override shipped teams with `templates/teams/*.yaml`. The same catalog
+is used by `/teams`, workflow `team` node validation, Kit materialization, and
+Studio resource forms.
 
 `/workflow-schemas` lists observed workflow output schemas captured from
 completed runs. `/workflow-schemas <name>` shows stage output fields and types,
@@ -228,11 +356,17 @@ versioned bundle compatible with the HTTP import API, `--import <path>` imports
 that bundle or a raw schema JSON file, `--rebuild` rebuilds the catalog from
 retained run history, and `--clear` removes one schema or all schemas. The same
 catalog powers Studio expression suggestions and reusable schema resources under
-`schemas/workflows/*.json`.
+`schemas/workflows/*.json`. That directory is optional and normally starts
+empty; built-in workflow templates are embedded separately from
+`internal/agent/templates/workflows/*.yaml`.
 
-Custom `policy_guard` rules can be stored as YAML under `policies/workflow_rules/*.yaml`; they appear in `/api/workflow-options` alongside built-in guard rules for Studio forms and workflow execution.
+Custom `policy_guard` rules can be stored as YAML under `policies/workflow_rules/*.yaml`; they appear in `/api/workflow-options` alongside built-in guard rules for Studio forms and workflow execution. Policy rule scaffold presets are also YAML-backed: built-ins live in `internal/scaffold/templates/policies/scaffolds/presets.yaml`, and runtime homes can add or override presets with `templates/policies/scaffolds/*.yaml`.
 
-`/new-agent <name>`, `/new-provider <name>`, and the Studio tool builder create modular runtime config files under `configs/agents/`, `configs/providers/`, and `configs/mcp_servers/`. These files are loaded on startup, so custom agents, model providers, and MCP servers can stay versionable without bloating the main `configs/goflow.yaml`.
+`/new-agent <name>`, `/new-provider <name>`, and the Studio tool builder create modular runtime config files under `configs/agents/`, `configs/providers/`, and `configs/mcp_servers/`. These files are loaded on startup, so custom agents, model providers, and MCP servers can stay versionable without bloating the main `configs/goflow.yaml`. The default Agent and Provider scaffolds are file-backed too: built-ins live under `internal/scaffold/templates/config/agents/default.yaml.tmpl` and `internal/scaffold/templates/config/providers/default.yaml.tmpl`, and runtime homes can override them with `templates/config/agents/default.yaml.tmpl` and `templates/config/providers/default.yaml.tmpl`.
+
+`/skill-templates` and `/new-skill <template> <name>` use file-backed Skill scaffold templates. Built-ins are embedded from `internal/scaffold/templates/skills/scaffolds/templates.yaml`, and runtime homes can add or override templates with `templates/skills/scaffolds/*.yaml`.
+
+`/new-team <preset> <name>` and `/api/resources/team-templates/scaffolds` use file-backed Team scaffold presets. Built-ins are embedded from `internal/scaffold/templates/teams/scaffolds/presets.yaml`, with runtime overrides in `templates/teams/scaffolds/*.yaml`.
 
 Running `/workflow` without arguments prints usage plus discovered custom workflows.
 
@@ -416,6 +550,11 @@ settings/update guidance. The workflow APIs expose reusable graph templates
 and multi-agent team templates for Studio scaffolding. The Playground can choose a specific agent before a
 run, the resource catalog includes a validated Skill editor, and the main UI supports English and Chinese. Custom workflow graphs are persisted under
 `workflows/<name>/workflow.yaml`. See [Workflow Graphs](./docs/workflows.md).
+
+The Settings page shows the release update strategy without contacting GitHub
+automatically. Users explicitly click the update check button, which calls
+`POST /api/update-policy/check` and compares the running build with the
+configured release feed.
 ## Built-in MCP tools
 
 - `file_tools/list_dir`
@@ -436,7 +575,7 @@ run, the resource catalog includes a validated Skill editor, and the main UI sup
 - `python_notes/binary_strings`
 - `python_notes/hex_preview`
 
-File, note, source-inspection, and binary-inspection tools resolve every path under the active workspace root and reject path traversal or symlink escapes. If the workspace was only defaulted from the current directory, GoFlow hides workspace-scoped read/write/exec tools from the model until you confirm it. Write operations render git-like CLI summaries with status letters, added/deleted line counts, changed line ranges, byte counts, and compact colored diff hunks. In the interactive CLI, type `@` to show workspace file suggestions, then type a prefix and press `Tab` to complete a unique match or show candidates. Workspace file suggestions skip dependency/build directories such as `.venv`, `node_modules`, `.git`, `__pycache__`, `vendor`, `dist`, and `build` before result limits are applied, and filename fragments work as contains searches. You can reference workspace files inline with `@relative/path.ext`; GoFlow reads the file through the normal `file_tools/read_file` path, prints the same tool logs, and attaches the file content before the request reaches the agent. In non-interactive input, type `@prefix` as a full line to list matching references.
+File, note, source-inspection, and binary-inspection tools resolve every path under the active workspace root and reject path traversal or symlink escapes. Text file reads are decoded as UTF-8, UTF-8 BOM is accepted and stripped, and non-UTF-8 bytes are rejected for text tools so binary inspection tools can handle them instead. If the workspace was only defaulted from the current directory, GoFlow hides workspace-scoped read/write/exec tools from the model until you confirm it. Write operations render git-like CLI summaries with status letters, added/deleted line counts, changed line ranges, byte counts, and compact colored diff hunks. In the interactive CLI, type `@` to show workspace file suggestions, then type a prefix and press `Tab` to complete a unique match or show candidates. Workspace file suggestions skip dependency/build directories such as `.venv`, `node_modules`, `.git`, `__pycache__`, `vendor`, `dist`, and `build` before result limits are applied, and filename fragments work as contains searches. You can reference workspace files inline with `@relative/path.ext`; GoFlow reads the file through the normal `file_tools/read_file` path, prints the same tool logs, and attaches the file content before the request reaches the agent. In non-interactive input, type `@prefix` as a full line to list matching references.
 
 Workspace switching is intentionally conservative. The CLI `/workspace use
 <path>` and packaged HTTP `/api/workspace/select` can dynamically rebind only
@@ -472,11 +611,32 @@ Then ask:
 Please generate an initial README and docs/overview.md for this empty project.
 ```
 
+### Explore a linked kit
+
+```text
+/kits binary-analysis-kit
+/workflow-templates binary-triage
+```
+
+For a copyable materialized version with its own Agent, Skill, MCP helper,
+Workflow, Team Template, and Policy Rule, see
+[examples/binary-analysis-kit](./examples/binary-analysis-kit).
+
+### Triage binary artifacts
+
+```text
+/workflow skill-chain analyze sample.bin for suspicious imports, strings, and likely attack surfaces
+```
+
+Use a plain workspace path for raw binaries. `@file` references are reserved for
+UTF-8 text content.
+
 ## Documentation
 
 - [Installation And Deployment](./docs/install.md)
 - [Architecture](./docs/architecture.md)
 - [Configuration](./docs/configuration.md)
+- [Resources And Settings Guide](./docs/resources.md)
 - [Deployment](./docs/deployment.md)
 - [Release Packaging](./docs/release.md)
 - [MCP Integration](./docs/mcp.md)

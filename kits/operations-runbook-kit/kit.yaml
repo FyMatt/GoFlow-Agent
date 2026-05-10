@@ -1,0 +1,52 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: operations-runbook-kit
+title: Operations Runbook Kit
+description: Create operator-safe runbooks with prechecks, rollback, risk review, approval gates, and execution handoff.
+category: operations
+tags:
+    - operations
+    - runbook
+    - rollback
+    - approval
+agents:
+    - operations-specialist
+    - documentation-specialist
+    - planner
+    - fixer
+    - auditor
+providers:
+    - primary
+skills:
+    - execution-plan
+    - code-writing
+    - code-audit
+tools:
+    - file_tools/read_file
+    - file_tools/search_files
+    - file_tools/write_file
+workflows:
+    - plan-fix-audit
+workflow_templates:
+    - operations-runbook
+    - docs-review-publish
+team_templates:
+    - operations-runbook-team
+    - documentation-team
+policy_rules:
+    - expression
+    - team_approval_gate
+examples:
+    - title: Create a deployment runbook
+      description: Draft a runbook with prechecks, execution steps, rollback, success signals, and approval notes.
+      request: Create an operations runbook for this deployment with rollback guidance.
+      workflow: operations-runbook
+      agent: operations-specialist
+metadata:
+    preset: operations-runbook
+    recommended_agent: operations-specialist
+    recommended_workflow: operations-runbook
+    recommended_team: operations-runbook-team
+    primary_skill: execution-plan
+    scaffold_preset: operations-runbook

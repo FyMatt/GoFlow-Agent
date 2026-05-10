@@ -195,7 +195,19 @@ The default runtime includes baseline skills for common framework usage:
 - `binary-vulnerability-research`: triage binaries and reversing artifacts with Python binary metadata, strings, and hex preview tools
 - `execution-plan`: implementation plans designed for later fixer/auditor handoff
 - `reverse-engineering`: static reverse-engineering assessment from workspace artifacts
-- `weekly-report`: engineering work summary drafts
+
+These skills are intentionally linked through `next_skills` and metadata such
+as `recommended_workflow` and `recommended_team`. For example,
+`web-vulnerability-research` can hand off to `vulnerability-research` or
+`code-audit`, while `reverse-engineering` can hand off to
+`binary-vulnerability-research`. Web Studio should surface those links as
+suggested follow-up skills instead of treating each skill as an isolated prompt.
+
+For complex domains, keep `SKILL.md` as the concise workflow guide and put
+deterministic helpers under `scripts/`, larger references under `references/`,
+and reusable output templates under `templates/`. Declared scripts still run
+only through `skill_runner/run_script` and remain subject to the active Agent's
+`exec` permission, approval policy, audit logging, and MCP isolation.
 
 ## CLI scaffolds
 
@@ -213,6 +225,9 @@ Example:
 ```
 
 This creates `skills/custom-audit/SKILL.md`, validates it, reloads skills, and makes it visible in `/skills`.
+Skill scaffold templates are YAML-backed. Built-ins are embedded from
+`internal/scaffold/templates/skills/scaffolds/templates.yaml`; runtime homes can
+add or override templates with `templates/skills/scaffolds/*.yaml`.
 
 ## Skill-chain workflow
 

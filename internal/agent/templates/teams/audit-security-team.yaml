@@ -1,0 +1,99 @@
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: audit-security-team
+title: Audit And Security Team
+category: security
+description: Scope, threat-model, audit, policy gate, and evidence report pattern.
+tags: [audit, security, risk, policy]
+recommended_workflow: human-input-security-review
+recommended_entry_agent: auditor
+role_templates:
+  - name: scope-lead
+    label: Scope Lead
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - collect target scope
+      - define allowed actions
+      - set evidence requirements
+    produces: [scope, constraints]
+  - name: security-analyst
+    label: Security Analyst
+    agent: auditor
+    skill: vulnerability-research
+    responsibilities:
+      - enumerate likely weaknesses
+      - map evidence to risks
+      - avoid unsupported claims
+    consumes: [scope]
+    produces: [risk_register, evidence]
+  - name: code-auditor
+    label: Code Auditor
+    agent: auditor
+    skill: code-audit
+    responsibilities:
+      - review relevant source
+      - classify findings
+      - propose safe validation
+    consumes: [risk_register, evidence]
+    produces: [findings]
+  - name: policy-reviewer
+    label: Policy Reviewer
+    agent: auditor
+    skill: execution-plan
+    responsibilities:
+      - check scope compliance
+      - flag approval needs
+      - prepare disclosure-safe summary
+    consumes: [findings, constraints]
+    produces: [policy_decision, final_report]
+handoffs:
+  - from: scope-lead
+    to: security-analyst
+    kind: scope_handoff
+    subject: Authorized scope
+    artifacts: [scope, constraints]
+  - from: security-analyst
+    to: code-auditor
+    kind: evidence_handoff
+    subject: Evidence and risk register
+    artifacts: [risk_register, evidence]
+  - from: code-auditor
+    to: policy-reviewer
+    kind: policy_review
+    subject: Findings require policy review
+    artifacts: [findings]
+    condition: risk_at_least(high)
+blackboard_templates:
+  - kind: request
+    title: Original request and constraints
+    owner_role: scope-lead
+    status: open
+    tags: [scope]
+    description: The user request, allowed scope, and assumptions that should survive handoffs.
+  - kind: plan
+    title: Working plan
+    owner_role: scope-lead
+    status: open
+    tags: [plan]
+    description: Current executable plan, stage ordering, and known blockers.
+  - kind: evidence
+    title: Evidence and observations
+    owner_role: scope-lead
+    status: open
+    tags: [evidence]
+    description: Tool observations, source references, test output, or collected artifacts.
+  - kind: decision
+    title: Decisions and approvals
+    owner_role: scope-lead
+    status: open
+    tags: [decision]
+    description: Decisions made by agents or the operator, including approval gates.
+  - kind: finding
+    title: Findings and risks
+    owner_role: scope-lead
+    status: open
+    tags: [risk]
+    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+output_contract: [scope, evidence, findings, policy_decision, final_report]

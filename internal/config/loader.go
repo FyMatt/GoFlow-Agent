@@ -27,6 +27,7 @@ const (
 	defaultSessionMaxHistory   = 6
 	defaultMCPRestartLimit     = 3
 	defaultMCPCooldown         = 10 * time.Second
+	defaultMCPMaxConcurrent    = 1
 )
 
 // Load reads the main YAML config file into the runtime Config.
@@ -472,21 +473,34 @@ func applyDefaults(cfg *Config) {
 		cfg.Providers[name] = provider
 	}
 	for i := range cfg.MCP {
-		if cfg.MCP[i].MaxRequestBytes <= 0 {
-			cfg.MCP[i].MaxRequestBytes = defaultMCPMaxRequestBytes
-		}
-		if cfg.MCP[i].MaxResponseBytes <= 0 {
-			cfg.MCP[i].MaxResponseBytes = defaultMCPMaxResponseBytes
-		}
-		if cfg.MCP[i].RestartLimit <= 0 {
-			cfg.MCP[i].RestartLimit = defaultMCPRestartLimit
-		}
-		if cfg.MCP[i].Cooldown <= 0 {
-			cfg.MCP[i].Cooldown = defaultMCPCooldown
-		}
-		if strings.TrimSpace(cfg.MCP[i].WorkDir) == "" {
-			cfg.MCP[i].WorkDir = "."
-		}
+		ApplyMCPServerDefaults(&cfg.MCP[i])
+	}
+}
+
+// ApplyMCPServerDefaults fills runtime-safe defaults for a single MCP server.
+// Resource APIs use this when validating one modular server snippet outside the
+// full config loader.
+func ApplyMCPServerDefaults(server *MCPServerRef) {
+	if server == nil {
+		return
+	}
+	if server.MaxRequestBytes <= 0 {
+		server.MaxRequestBytes = defaultMCPMaxRequestBytes
+	}
+	if server.MaxResponseBytes <= 0 {
+		server.MaxResponseBytes = defaultMCPMaxResponseBytes
+	}
+	if server.RestartLimit <= 0 {
+		server.RestartLimit = defaultMCPRestartLimit
+	}
+	if server.Cooldown <= 0 {
+		server.Cooldown = defaultMCPCooldown
+	}
+	if server.MaxConcurrentCalls <= 0 {
+		server.MaxConcurrentCalls = defaultMCPMaxConcurrent
+	}
+	if strings.TrimSpace(server.WorkDir) == "" {
+		server.WorkDir = "."
 	}
 }
 
@@ -876,6 +890,9 @@ func ValidateMCPServerRef(server MCPServerRef) error {
 	}
 	if server.Cooldown <= 0 {
 		return fmt.Errorf("mcp server %s cooldown must be greater than 0", server.Name)
+	}
+	if server.MaxConcurrentCalls <= 0 {
+		return fmt.Errorf("mcp server %s max_concurrent_calls must be greater than 0", server.Name)
 	}
 	if server.MaxRequestBytes <= 0 {
 		return fmt.Errorf("mcp server %s max_request_bytes must be greater than 0", server.Name)

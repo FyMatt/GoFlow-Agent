@@ -1,0 +1,84 @@
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: web-research-team
+title: Web Research Team
+category: security
+description: Collect web assets, audit client/server evidence, and branch on risk.
+tags: [web, research, assets, risk]
+recommended_workflow: web-research-risk
+recommended_entry_agent: auditor
+role_templates:
+  - name: asset-collector
+    label: Asset Collector
+    agent: auditor
+    skill: web-vulnerability-research
+    responsibilities:
+      - fetch target page
+      - collect linked scripts and source evidence
+      - record reachable surfaces
+    tools: [web_tools/fetch_url, web_tools/fetch_page_assets]
+    produces: [asset_inventory, page_evidence]
+  - name: js-reviewer
+    label: JavaScript Reviewer
+    agent: auditor
+    skill: code-audit
+    responsibilities:
+      - inspect collected scripts
+      - identify risky sinks and sources
+      - separate evidence from speculation
+    consumes: [asset_inventory, page_evidence]
+    produces: [client_findings]
+  - name: risk-analyst
+    label: Risk Analyst
+    agent: auditor
+    skill: vulnerability-research
+    responsibilities:
+      - classify impact
+      - decide whether deeper verification is needed
+      - prepare remediation outline
+    consumes: [client_findings]
+    produces: [risk_decision, report]
+handoffs:
+  - from: asset-collector
+    to: js-reviewer
+    kind: asset_handoff
+    subject: Fetched web evidence
+    artifacts: [asset_inventory, page_evidence]
+  - from: js-reviewer
+    to: risk-analyst
+    kind: finding_handoff
+    subject: Client-side findings
+    artifacts: [client_findings]
+blackboard_templates:
+  - kind: request
+    title: Original request and constraints
+    owner_role: asset-collector
+    status: open
+    tags: [scope]
+    description: The user request, allowed scope, and assumptions that should survive handoffs.
+  - kind: plan
+    title: Working plan
+    owner_role: asset-collector
+    status: open
+    tags: [plan]
+    description: Current executable plan, stage ordering, and known blockers.
+  - kind: evidence
+    title: Evidence and observations
+    owner_role: asset-collector
+    status: open
+    tags: [evidence]
+    description: Tool observations, source references, test output, or collected artifacts.
+  - kind: decision
+    title: Decisions and approvals
+    owner_role: asset-collector
+    status: open
+    tags: [decision]
+    description: Decisions made by agents or the operator, including approval gates.
+  - kind: finding
+    title: Findings and risks
+    owner_role: asset-collector
+    status: open
+    tags: [risk]
+    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+output_contract: [asset_inventory, client_findings, risk_decision, report]

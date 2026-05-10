@@ -5,9 +5,11 @@ import (
 	"fmt"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
+	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
 	"gopkg.in/yaml.v3"
 )
 
@@ -146,85 +148,7 @@ func (s *Server) teamTemplateScaffoldPreset(name string, includeDocument bool) (
 }
 
 func (s *Server) teamTemplateScaffoldPresets(includeDocument bool) []teamTemplateScaffoldPreset {
-	presets := []teamTemplateScaffoldPreset{
-		{
-			Name:                  "software-review",
-			DefaultName:           "custom-software-review-team",
-			Title:                 "Custom Software Review Team",
-			Description:           "Planner, implementer, reviewer, and reporter team for code changes with reusable review quorum.",
-			Category:              "software",
-			Tags:                  []string{"software", "review", "quality"},
-			BaseTemplate:          "software-task-team",
-			RecommendedWorkflow:   "plan-fix-audit",
-			RecommendedEntryAgent: "planner",
-		},
-		{
-			Name:                  "security-review",
-			DefaultName:           "custom-security-review-team",
-			Title:                 "Custom Security Review Team",
-			Description:           "Scope, analysis, audit, and policy-review team for evidence-backed security reviews.",
-			Category:              "security",
-			Tags:                  []string{"security", "audit", "evidence"},
-			BaseTemplate:          "audit-security-team",
-			RecommendedWorkflow:   "human-input-security-review",
-			RecommendedEntryAgent: "auditor",
-		},
-		{
-			Name:                  "web-research",
-			DefaultName:           "custom-web-research-team",
-			Title:                 "Custom Web Research Team",
-			Description:           "Asset collection, JavaScript review, and risk-analysis team for scoped web research.",
-			Category:              "security",
-			Tags:                  []string{"web", "assets", "risk"},
-			BaseTemplate:          "web-research-team",
-			RecommendedWorkflow:   "web-research-risk",
-			RecommendedEntryAgent: "auditor",
-		},
-		{
-			Name:                  "binary-triage",
-			DefaultName:           "custom-binary-triage-team",
-			Title:                 "Custom Binary Triage Team",
-			Description:           "Static binary triage, reverse-analysis, vulnerability review, and report handoff team.",
-			Category:              "security",
-			Tags:                  []string{"binary", "reverse", "triage"},
-			BaseTemplate:          "binary-triage-team",
-			RecommendedWorkflow:   "binary-triage",
-			RecommendedEntryAgent: "auditor",
-		},
-		{
-			Name:                  "documentation",
-			DefaultName:           "custom-documentation-team",
-			Title:                 "Custom Documentation Team",
-			Description:           "Plan, draft, review, and publication-handoff team for documentation changes.",
-			Category:              "documentation",
-			Tags:                  []string{"docs", "review", "publish"},
-			BaseTemplate:          "documentation-team",
-			RecommendedWorkflow:   "docs-review-publish",
-			RecommendedEntryAgent: "planner",
-		},
-		{
-			Name:                  "operations-runbook",
-			DefaultName:           "custom-operations-runbook-team",
-			Title:                 "Custom Operations Runbook Team",
-			Description:           "Operational planning, runbook authoring, risk review, and operator handoff team.",
-			Category:              "operations",
-			Tags:                  []string{"ops", "runbook", "approval"},
-			BaseTemplate:          "operations-runbook-team",
-			RecommendedWorkflow:   "operations-runbook",
-			RecommendedEntryAgent: "planner",
-		},
-		{
-			Name:                  "customer-support",
-			DefaultName:           "custom-customer-support-team",
-			Title:                 "Custom Customer Support Team",
-			Description:           "Triage, context gathering, response drafting, and support-review handoff team.",
-			Category:              "support",
-			Tags:                  []string{"support", "triage", "response"},
-			BaseTemplate:          "customer-support-team",
-			RecommendedWorkflow:   "customer-support-triage",
-			RecommendedEntryAgent: "chat",
-		},
-	}
+	presets := s.teamTemplateScaffoldPresetDefinitions()
 	for i := range presets {
 		if doc, err := teamTemplateFromScaffold(presets[i], teamTemplateScaffoldRequest{Name: presets[i].DefaultName}); err == nil {
 			presets[i].RoleCount = len(doc.RoleTemplates)
@@ -235,6 +159,39 @@ func (s *Server) teamTemplateScaffoldPresets(includeDocument bool) []teamTemplat
 		}
 	}
 	return presets
+}
+
+func (s *Server) teamTemplateScaffoldPresetDefinitions() []teamTemplateScaffoldPreset {
+	if s == nil || s.runtime == nil || strings.TrimSpace(s.runtime.RuntimeHome()) == "" {
+		return teamTemplateScaffoldPresetsFromShared(scaffold.BuiltInTeamPresets())
+	}
+	presets, err := scaffold.TeamPresetsFromDirs(filepath.Join(s.runtime.RuntimeHome(), "templates", "teams", "scaffolds"))
+	if err != nil {
+		return teamTemplateScaffoldPresetsFromShared(scaffold.BuiltInTeamPresets())
+	}
+	return teamTemplateScaffoldPresetsFromShared(presets)
+}
+
+func teamTemplateScaffoldPresetsFromShared(presets []scaffold.TeamPreset) []teamTemplateScaffoldPreset {
+	out := make([]teamTemplateScaffoldPreset, 0, len(presets))
+	for _, preset := range presets {
+		out = append(out, teamTemplateScaffoldPresetFromShared(preset))
+	}
+	return out
+}
+
+func teamTemplateScaffoldPresetFromShared(preset scaffold.TeamPreset) teamTemplateScaffoldPreset {
+	return teamTemplateScaffoldPreset{
+		Name:                  preset.Name,
+		DefaultName:           preset.DefaultName,
+		Title:                 preset.Title,
+		Description:           preset.Description,
+		Category:              preset.Category,
+		Tags:                  append([]string(nil), preset.Tags...),
+		BaseTemplate:          preset.BaseTemplate,
+		RecommendedWorkflow:   preset.RecommendedWorkflow,
+		RecommendedEntryAgent: preset.RecommendedEntryAgent,
+	}
 }
 
 func teamTemplateFromScaffold(preset teamTemplateScaffoldPreset, req teamTemplateScaffoldRequest) (agent.TeamTemplate, error) {

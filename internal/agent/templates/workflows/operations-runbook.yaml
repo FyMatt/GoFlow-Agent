@@ -1,0 +1,199 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: operations-runbook
+title: Operations Runbook
+description: Plan an operational change, draft a runbook, review rollback coverage, and pause before operator handoff.
+category: operations
+tags:
+    - operations
+    - runbook
+    - rollback
+    - quality_gate
+    - approval
+stages: 9
+graph:
+    name: operations-runbook
+    description: Operations runbook workflow with explicit prechecks, rollback evidence, risk review, quality routing, and operator approval.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - plan
+          position:
+            x: 60
+            "y": 240
+        - name: plan
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          params:
+            output_contract: Emit sections named Goal, Preconditions, Prechecks, Execution Steps, Rollback Plan, Success Signals, Risks, and Approvals.
+            purpose: Create a runbook plan before drafting operational instructions.
+          outputs:
+            runbook_plan: result.output
+            summary: result.summary
+          artifacts:
+            - name: runbook-plan
+              kind: plan
+              title: Runbook plan
+              ref: result.output
+              summary: Operational plan with prechecks, rollback, success signals, and approvals.
+          acceptance_criteria:
+            - name: has-prechecks
+              ref: result.output
+              contains: Prechecks
+              expected: plan names prechecks before execution
+            - name: has-rollback
+              ref: result.output
+              contains: Rollback
+              expected: plan includes rollback strategy
+            - name: has-success-signals
+              ref: result.output
+              contains: Success
+              expected: plan includes success signals
+          next:
+            - draft
+          position:
+            x: 330
+            "y": 220
+        - name: draft
+          node_type: agent
+          agent: fixer
+          skill: code-writing
+          params:
+            purpose: Draft or update the runbook document under the confirmed workspace. Keep commands explicit and reversible where possible.
+          input:
+            plan: stages.plan.outputs.runbook_plan
+          outputs:
+            changes: result.changes
+            draft: result.output
+            summary: result.summary
+          artifacts:
+            - name: runbook-draft
+              kind: document
+              title: Runbook draft
+              ref: result.output
+              summary: Drafted runbook or change summary.
+          acceptance_criteria:
+            - name: draft-has-rollback
+              ref: result.output
+              contains: rollback
+              expected: draft preserves rollback guidance
+            - name: draft-has-steps
+              ref: result.output
+              contains: step
+              expected: draft includes executable steps
+          retry:
+            max_attempts: 2
+          approval: true
+          next:
+            - risk-review
+          position:
+            x: 620
+            "y": 220
+        - name: risk-review
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          params:
+            output_contract: Emit sections named Risk Review, Blocking Issues, Rollback Coverage, Verification, and Recommendation.
+            review_scope: Review operational risk, destructive commands, rollback coverage, observability, and missing approvals.
+          input:
+            changes: stages.draft.outputs.changes
+            draft: stages.draft.outputs.draft
+            plan: stages.plan.outputs.runbook_plan
+          outputs:
+            findings: result.findings
+            risk_review: result.output
+            summary: result.summary
+          artifacts:
+            - name: runbook-risk-review
+              kind: review
+              title: Runbook risk review
+              ref: result.output
+              summary: Risk and rollback review for the operational runbook.
+          acceptance_criteria:
+            - name: risk-reviewed
+              ref: result.output
+              contains: Risk
+              expected: review covers operational risk
+            - name: rollback-reviewed
+              ref: result.output
+              contains: Rollback
+              expected: review covers rollback readiness
+          next:
+            - quality
+          position:
+            x: 920
+            "y": 220
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            min_score: "80"
+            reason: runbook does not yet have enough evidence for operator handoff
+            require_acceptance: "true"
+            require_evidence: "true"
+          routes:
+            fail: revise
+            pass: operator-check
+            warning: operator-check
+          position:
+            x: 1230
+            "y": 240
+        - name: operator-check
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          params:
+            prompt: Review the runbook, rollback plan, and risk review before operator handoff.
+          next:
+            - handoff
+          position:
+            x: 1510
+            "y": 150
+        - name: handoff
+          node_type: skill
+          agent: chat
+          skill: execution-plan
+          input:
+            quality: stages.quality.outputs.quality_status
+            risk_review: stages.risk-review.outputs.risk_review
+            runbook: stages.draft.outputs.draft
+          outputs:
+            operator_handoff: result.output
+          artifacts:
+            - name: operator-handoff
+              kind: report
+              title: Operator handoff
+              ref: result.output
+          next:
+            - end
+          position:
+            x: 1810
+            "y": 150
+        - name: revise
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            failures: stages.quality.outputs.failures
+            review: stages.risk-review.outputs.risk_review
+          outputs:
+            revision_plan: result.output
+          next:
+            - end
+          position:
+            x: 1510
+            "y": 370
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 2110
+            "y": 240

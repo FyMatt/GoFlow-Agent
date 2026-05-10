@@ -8,199 +8,23 @@ import (
 	"strings"
 	"unicode"
 
+	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
 	skillpkg "github.com/FyMatt/GoFlow-Agent/internal/skill"
 )
 
-type skillTemplateDefinition struct {
-	Name             string
-	Description      string
-	Mode             string
-	PreferredAgent   string
-	AllowedToolKinds []string
-	OutputKind       string
-	NextSkills       []string
-	Tools            []skillTemplateTool
-	Keywords         []string
-	ExampleRequest   string
-	Body             string
-}
+type skillTemplateDefinition = scaffold.SkillTemplate
+type skillTemplateTool = scaffold.SkillTemplateTool
 
-type skillTemplateTool struct {
-	Name     string
-	Required bool
-}
-
-var skillTemplates = map[string]skillTemplateDefinition{
-	"code-writing": {
-		Name:             "code-writing",
-		Description:      "Implement, refactor, or extend workspace code with scoped edits and verification.",
-		Mode:             "fix",
-		PreferredAgent:   "fixer",
-		AllowedToolKinds: []string{"read", "write", "exec"},
-		OutputKind:       "changes",
-		NextSkills:       []string{"code-audit"},
-		Tools: []skillTemplateTool{
-			{Name: "file_tools/list_tree"},
-			{Name: "file_tools/search_files"},
-			{Name: "file_tools/read_file", Required: true},
-			{Name: "file_tools/write_file", Required: true},
-		},
-		Keywords:       []string{"implement", "fix", "refactor", "write code", "add feature", "实现", "修复", "重构"},
-		ExampleRequest: `Add request validation to the config loader and run the focused tests.`,
-		Body: `## Role
-
-You are a coding specialist for scoped workspace changes.
-
-## Workflow
-
-1. Inspect the smallest useful set of files before editing.
-2. State the concrete change plan when the task is non-trivial.
-3. Modify only files needed for the requested behavior.
-4. Run focused verification when available.
-5. Summarize changed files, verification, and remaining risk.
-
-## Rules
-
-- Keep reads and writes inside the workspace.
-- Prefer existing project style and local helpers.
-- Do not claim tests passed unless a tool result confirms it.`,
-	},
-	"code-audit": {
-		Name:             "code-audit",
-		Description:      "Review source code for security, correctness, and maintainability risks.",
-		Mode:             "audit",
-		PreferredAgent:   "auditor",
-		AllowedToolKinds: []string{"read"},
-		OutputKind:       "findings",
-		Tools: []skillTemplateTool{
-			{Name: "file_tools/list_tree"},
-			{Name: "file_tools/search_files"},
-			{Name: "file_tools/read_file", Required: true},
-		},
-		Keywords:       []string{"audit", "review", "security review", "代码审计", "漏洞", "风险"},
-		ExampleRequest: `Review the authentication changes for correctness and security regressions.`,
-		Body: `## Role
-
-You are a code auditor. Prioritize bugs, exploitability, regressions, and missing verification.
-
-## Workflow
-
-1. Identify the requested review scope.
-2. Inspect relevant source and tests.
-3. Report findings first, ordered by severity.
-4. Include file paths, evidence, and concrete remediation guidance.
-
-## Output
-
-- Findings first.
-- Then open questions or assumptions.
-- Then brief test gaps or residual risk.`,
-	},
-	"web-vulnerability-research": {
-		Name:             "web-vulnerability-research",
-		Description:      "Collect web page source and linked assets for defensive vulnerability analysis.",
-		Mode:             "audit",
-		PreferredAgent:   "auditor",
-		AllowedToolKinds: []string{"read", "network"},
-		OutputKind:       "security-findings",
-		Tools: []skillTemplateTool{
-			{Name: "web_tools/fetch_page_assets", Required: true},
-			{Name: "web_tools/fetch_url"},
-			{Name: "web_tools/web_search"},
-		},
-		Keywords:       []string{"web vulnerability", "web漏洞", "网站漏洞", "xss", "csrf", "前端漏洞"},
-		ExampleRequest: `Assess https://example.com/login for client-side vulnerability indicators from page source and linked assets.`,
-		Body: `## Role
-
-You perform defensive web vulnerability research from fetched source and assets.
-
-## Workflow
-
-1. Fetch the target page and linked JavaScript/CSS assets.
-2. Identify exposed routes, client-side trust boundaries, tokens, sinks, and risky patterns.
-3. Separate confirmed evidence from hypotheses.
-4. Avoid intrusive scanning unless the operator explicitly provides authorization and tools.
-
-## Output
-
-- Target and collected assets.
-- Findings with evidence snippets and affected assets.
-- Exploitability assumptions.
-- Defensive remediation steps.`,
-	},
-	"binary-vulnerability-research": {
-		Name:             "binary-vulnerability-research",
-		Description:      "Perform static binary triage for defensive vulnerability research.",
-		Mode:             "audit",
-		PreferredAgent:   "auditor",
-		AllowedToolKinds: []string{"read"},
-		OutputKind:       "security-findings",
-		Tools: []skillTemplateTool{
-			{Name: "python_notes/binary_file_info", Required: true},
-			{Name: "python_notes/binary_strings", Required: true},
-			{Name: "python_notes/hex_preview"},
-		},
-		Keywords:       []string{"binary vulnerability", "binary audit", "reverse", "\u4e8c\u8fdb\u5236\u6f0f\u6d1e", "\u9006\u5411\u6f0f\u6d1e", "\u56fa\u4ef6\u6f0f\u6d1e"},
-		ExampleRequest: `Triage @bin/sample.exe for suspicious strings, metadata, and static vulnerability indicators.`,
-		Body: `## Role
-
-You perform static binary triage for defensive vulnerability research.
-
-## Workflow
-
-1. Identify file type, size, hashes, and obvious packing/encryption signs.
-2. Extract strings and inspect suspicious imports, paths, commands, URLs, and format strings.
-3. Use hex previews only for targeted evidence.
-4. State when deeper disassembly, debugging, or fuzzing is required.
-
-## Output
-
-- Binary metadata.
-- Suspicious indicators.
-- Potential vulnerability hypotheses with confidence.
-- Recommended next analysis steps.`,
-	},
-	"execution-plan": {
-		Name:             "execution-plan",
-		Description:      "Turn a broad request into an ordered, verifiable execution plan.",
-		Mode:             "plan",
-		PreferredAgent:   "planner",
-		AllowedToolKinds: []string{"read", "network"},
-		OutputKind:       "plan",
-		NextSkills:       []string{"code-writing", "code-audit"},
-		Tools: []skillTemplateTool{
-			{Name: "file_tools/list_tree"},
-			{Name: "file_tools/search_files"},
-			{Name: "file_tools/read_file"},
-			{Name: "web_tools/web_search"},
-		},
-		Keywords:       []string{"plan", "roadmap", "execution plan", "\u5236\u5b9a\u8ba1\u5212", "\u6267\u884c\u8ba1\u5212", "\u8ba1\u5212", "\u65b9\u6848"},
-		ExampleRequest: `Compare the current code against the current project plan and propose the next executable task.`,
-		Body: `## Role
-
-You create execution plans that another agent can implement.
-
-## Workflow
-
-1. Clarify scope from available project context.
-2. Split the work into ordered phases with verification gates.
-3. Identify dependencies, risks, and decisions.
-4. Keep tasks concrete enough for a fixer or auditor to execute.
-
-## Output
-
-- Current state.
-- Remaining work.
-- Next task.
-- Verification checklist.`,
-	},
-}
-
-func handleSkillTemplatesCommand() bool {
-	names := skillTemplateNames()
+func handleSkillTemplatesCommand(skillManager *skillpkg.Manager) bool {
+	templates, err := skillTemplatesForSkillManager(skillManager)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "skill templates error: %v\n", err)
+		templates = scaffold.BuiltInSkillTemplates()
+	}
+	names := skillTemplateNamesFromList(templates)
 	rows := make([]skillTemplateDisplayRow, 0, len(names))
 	for _, name := range names {
-		template := skillTemplates[name]
+		template, _ := skillTemplateByNameFromList(templates, name)
 		rows = append(rows, skillTemplateDisplayRow{
 			Name:           template.Name,
 			Description:    template.Description,
@@ -222,11 +46,16 @@ func handleNewSkillCommand(fields []string, skillManager *skillpkg.Manager) bool
 		fmt.Fprintln(os.Stderr, "new skill error: skill manager is unavailable")
 		return true
 	}
+	templates, err := skillTemplatesForSkillManager(skillManager)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "new skill error: %v\n", err)
+		return true
+	}
 	templateName := strings.ToLower(strings.TrimSpace(fields[1]))
-	template, ok := skillTemplates[templateName]
+	template, ok := skillTemplateByNameFromList(templates, templateName)
 	if !ok {
 		fmt.Fprintf(os.Stderr, "new skill error: unknown template %q\n", fields[1])
-		fmt.Print(formatSkillTemplateNames())
+		fmt.Print(formatSkillTemplateNamesFromList(templates))
 		return true
 	}
 	skillName, err := normalizeNewSkillName(strings.Join(fields[2:], " "))
@@ -287,16 +116,44 @@ func formatSkillTemplatesOutput(rows []skillTemplateDisplayRow) string {
 }
 
 func formatSkillTemplateNames() string {
-	return fmt.Sprintf("available templates: %s\n", strings.Join(skillTemplateNames(), ", "))
+	return formatSkillTemplateNamesFromList(scaffold.BuiltInSkillTemplates())
+}
+
+func formatSkillTemplateNamesFromList(templates []skillTemplateDefinition) string {
+	return fmt.Sprintf("available templates: %s\n", strings.Join(skillTemplateNamesFromList(templates), ", "))
 }
 
 func skillTemplateNames() []string {
-	names := make([]string, 0, len(skillTemplates))
-	for name := range skillTemplates {
-		names = append(names, name)
+	return skillTemplateNamesFromList(scaffold.BuiltInSkillTemplates())
+}
+
+func skillTemplateNamesFromList(templates []skillTemplateDefinition) []string {
+	names := make([]string, 0, len(templates))
+	for _, template := range templates {
+		if strings.TrimSpace(template.Name) != "" {
+			names = append(names, template.Name)
+		}
 	}
 	sort.Strings(names)
 	return names
+}
+
+func skillTemplateByNameFromList(templates []skillTemplateDefinition, name string) (skillTemplateDefinition, bool) {
+	name = strings.ToLower(strings.TrimSpace(name))
+	for _, template := range templates {
+		if strings.EqualFold(template.Name, name) {
+			return template, true
+		}
+	}
+	return skillTemplateDefinition{}, false
+}
+
+func skillTemplatesForSkillManager(skillManager *skillpkg.Manager) ([]skillTemplateDefinition, error) {
+	root, err := runtimeHomeFromSkillManager(skillManager)
+	if err != nil {
+		return scaffold.BuiltInSkillTemplates(), nil
+	}
+	return scaffold.SkillTemplatesFromDirs(filepath.Join(root, "templates", "skills", "scaffolds"))
 }
 
 func normalizeNewSkillName(input string) (string, error) {

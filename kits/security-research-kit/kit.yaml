@@ -1,0 +1,68 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: security-research-kit
+title: Security Research Kit
+description: Plan authorized security reviews, collect evidence, classify risk, and prepare defensive reports.
+category: security
+tags:
+    - security
+    - audit
+    - evidence
+agents:
+    - security-researcher
+    - web-security-researcher
+    - binary-analyst
+    - planner
+    - auditor
+providers:
+    - primary
+skills:
+    - execution-plan
+    - vulnerability-research
+    - web-vulnerability-research
+    - binary-vulnerability-research
+    - reverse-engineering
+    - code-audit
+tools:
+    - file_tools/read_file
+    - file_tools/search_files
+    - web_tools/web_search
+    - web_tools/fetch_url
+    - python_notes/binary_file_info
+    - python_notes/binary_strings
+    - python_notes/hex_preview
+workflows:
+    - skill-chain
+workflow_templates:
+    - web-research-risk
+    - security-audit-evidence-gate
+    - binary-triage
+    - human-input-security-review
+team_templates:
+    - audit-security-team
+    - web-research-team
+    - binary-triage-team
+policy_rules:
+    - contains
+    - risk_at_least
+    - team_approval_gate
+    - expression
+examples:
+    - title: Authorized review
+      description: Create a scoped evidence-backed security review.
+      request: Create an authorized security review plan and identify evidence requirements.
+      workflow: skill-chain
+      agent: security-researcher
+    - title: Evidence-gated review
+      description: Collect scoped evidence, audit risk, and route findings through a quality gate.
+      request: Review this authorized target and produce an evidence-backed remediation report.
+      workflow: security-audit-evidence-gate
+      agent: security-researcher
+metadata:
+    preset: security-research
+    recommended_agent: security-researcher
+    recommended_workflow: human-input-security-review
+    scaffold_preset: security-research
+    recommended_team: audit-security-team
+    primary_skill: vulnerability-research

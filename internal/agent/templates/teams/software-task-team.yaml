@@ -1,0 +1,115 @@
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: software-task-team
+title: Software Task Team
+category: software
+description: Planner, implementer, auditor, and verifier pattern for code changes.
+tags: [coding, plan, fix, audit]
+recommended_workflow: plan-fix-audit
+recommended_entry_agent: planner
+role_templates:
+  - name: planner
+    label: Planner
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - clarify task scope
+      - identify files and risks
+      - produce executable plan
+    produces: [implementation_plan, risk_notes]
+  - name: implementer
+    label: Implementer
+    agent: fixer
+    skill: code-writing
+    responsibilities:
+      - apply scoped changes
+      - run focused verification
+      - summarize changed files
+    consumes: [implementation_plan]
+    produces: [changes, verification]
+  - name: reviewer
+    label: Reviewer
+    agent: auditor
+    skill: code-audit
+    responsibilities:
+      - review behavior changes
+      - find regressions
+      - check missing tests
+    consumes: [changes, verification]
+    produces: [review_findings]
+  - name: reporter
+    label: Reporter
+    agent: chat
+    skill: execution-plan
+    responsibilities:
+      - summarize outcome
+      - surface residual risk
+      - prepare user handoff
+    consumes: [review_findings, changes]
+    produces: [final_handoff]
+handoffs:
+  - from: planner
+    to: implementer
+    kind: plan_handoff
+    subject: Implementation plan
+    artifacts: [implementation_plan]
+    blackboard: [plan, risk_notes]
+  - from: implementer
+    to: reviewer
+    kind: review_request
+    subject: Changes ready for audit
+    artifacts: [changes, verification]
+    blackboard: [changes, verification]
+  - from: reviewer
+    to: reporter
+    kind: final_review
+    subject: Review findings
+    artifacts: [review_findings]
+    blackboard: [findings, decisions]
+blackboard_templates:
+  - kind: request
+    title: Original request and constraints
+    owner_role: planner
+    status: open
+    tags: [scope]
+    description: The user request, allowed scope, and assumptions that should survive handoffs.
+  - kind: plan
+    title: Working plan
+    owner_role: planner
+    status: open
+    tags: [plan]
+    description: Current executable plan, stage ordering, and known blockers.
+  - kind: evidence
+    title: Evidence and observations
+    owner_role: planner
+    status: open
+    tags: [evidence]
+    description: Tool observations, source references, test output, or collected artifacts.
+  - kind: decision
+    title: Decisions and approvals
+    owner_role: planner
+    status: open
+    tags: [decision]
+    description: Decisions made by agents or the operator, including approval gates.
+  - kind: finding
+    title: Findings and risks
+    owner_role: planner
+    status: open
+    tags: [risk]
+    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+quorum_presets:
+  - name: software-review
+    title: Planner and reviewer approval
+    description: Require planner and reviewer approval before handoff.
+    required: 2
+    roles: [planner, reviewer]
+    reject_blocks: true
+    default: true
+  - name: full-team
+    title: Full team approval
+    description: Require every software team role to approve.
+    required: 4
+    roles: [planner, implementer, reviewer, reporter]
+    reject_blocks: true
+output_contract: [final_handoff, changed_files, verification, residual_risks]

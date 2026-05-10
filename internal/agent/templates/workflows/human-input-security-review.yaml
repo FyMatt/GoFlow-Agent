@@ -1,0 +1,111 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: human-input-security-review
+title: Human Input Security Review
+description: Collect operator scope, run targeted research, branch by risk, and report.
+category: security
+tags:
+    - manual-input
+    - security
+    - operator
+stages: 8
+graph:
+    name: human-input-security-review
+    description: Operator-guided security review workflow using a manual input gate.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - collect-scope
+          position:
+            x: 60
+            "y": 200
+        - name: collect-scope
+          node_type: input_gate
+          agent: ""
+          skill: ""
+          params:
+            fields: target,scope,severity
+            manual: "true"
+            prompt: Provide target, scope, and expected severity before analysis.
+          outputs:
+            scope: params.scope
+            target: params.target
+          next:
+            - research
+          position:
+            x: 330
+            "y": 190
+        - name: research
+          node_type: skill
+          agent: auditor
+          skill: web-vulnerability-research
+          input:
+            scope: stages.collect-scope.outputs.scope
+            target: stages.collect-scope.outputs.target
+          outputs:
+            evidence: result.output
+            findings: result.findings
+          next:
+            - risk-check
+          position:
+            x: 620
+            "y": 170
+        - name: risk-check
+          node_type: condition
+          agent: ""
+          skill: ""
+          condition: len(stages.research.outputs.findings) > 2
+          routes:
+            "false": report
+            "true": approval
+          position:
+            x: 910
+            "y": 200
+        - name: approval
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          params:
+            prompt: Findings look substantial. Approve deeper verification?
+          next:
+            - verify
+          position:
+            x: 1190
+            "y": 120
+        - name: verify
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          input:
+            evidence: stages.research.outputs.evidence
+          outputs:
+            verification: result.output
+          next:
+            - report
+          position:
+            x: 1460
+            "y": 120
+        - name: report
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            evidence: stages.research.outputs.evidence
+          outputs:
+            report: result.output
+          next:
+            - end
+          position:
+            x: 1460
+            "y": 300
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 1720
+            "y": 220

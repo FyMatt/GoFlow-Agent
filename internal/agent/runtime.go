@@ -318,6 +318,14 @@ func (r *Runtime) WorkspaceConfirmed() bool {
 	return r.workspaceConfirmed
 }
 
+// MCPForTesting returns the runtime MCP client for package-external tests.
+func (r *Runtime) MCPForTesting() interfaces.MCPClient {
+	if r == nil {
+		return nil
+	}
+	return r.mcp
+}
+
 func firstRuntimeAgent(agents map[string]config.AgentProfile) string {
 	names := make([]string, 0, len(agents))
 	for name := range agents {
@@ -2340,6 +2348,18 @@ func (r *Runtime) MCPHealthStatus(ctx context.Context) map[string]string {
 		return nil
 	}
 	return r.mcp.HealthStatus(ctx)
+}
+
+// MCPCallMetrics returns live MCP server call-slot pressure when supported.
+func (r *Runtime) MCPCallMetrics() map[string]interfaces.MCPServerCallMetrics {
+	if r == nil || r.mcp == nil {
+		return nil
+	}
+	reporter, ok := r.mcp.(interfaces.MCPMetricsReporter)
+	if !ok {
+		return nil
+	}
+	return reporter.MCPCallMetrics()
 }
 
 // StatusLines returns human-readable runtime status information.

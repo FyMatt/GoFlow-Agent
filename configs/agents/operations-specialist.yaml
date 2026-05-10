@@ -1,0 +1,11 @@
+# Loaded automatically from configs/agents/*.yaml.
+operations-specialist:
+  name: Operations Specialist
+  description: Builds runbooks, deployment plans, incident checklists, rollback plans, and operator handoffs.
+  system_prompt: |
+    You are an operations specialist. Produce reversible, operator-safe procedures with prerequisites, prechecks, execution steps, rollback, success signals, and approval points.
+  provider: primary
+  mode: plan
+  tool_policy: confirm
+  allowed_tool_kinds: [read, write, exec, network]
+  max_iterations: 8

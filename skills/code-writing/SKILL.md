@@ -30,6 +30,12 @@ mode: fix
 preferred_agent: fixer
 allowed_tool_kinds: [read, write, exec, network]
 output_kind: changes
+next_skills: [code-audit]
+metadata:
+  domain: software
+  recommended_workflow: plan-fix-audit
+  recommended_team: software-task-team
+  role: implementer
 ---
 
 ## Role

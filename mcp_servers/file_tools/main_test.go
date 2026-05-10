@@ -29,6 +29,47 @@ func TestCallToolReadFileReturnsStructuredContent(t *testing.T) {
 	}
 }
 
+func TestCallToolReadFileRejectsNonUTF8Content(t *testing.T) {
+	workspaceRoot = t.TempDir()
+	path := filepath.Join(workspaceRoot, "binary.bin")
+	if err := os.WriteFile(path, []byte{0xff, 0xfe, 0xfd}, 0o644); err != nil {
+		t.Fatalf("write binary temp file: %v", err)
+	}
+
+	params, _ := json.Marshal(map[string]any{
+		"name":      "read_file",
+		"arguments": map[string]any{"path": path},
+	})
+	result := callTool(params)
+	if !result["is_error"].(bool) || !strings.Contains(result["content"].(string), "valid UTF-8") {
+		t.Fatalf("expected UTF-8 rejection, got %#v", result)
+	}
+}
+
+func TestCallToolReadFileStripsUTF8BOM(t *testing.T) {
+	workspaceRoot = t.TempDir()
+	path := filepath.Join(workspaceRoot, "bom.txt")
+	if err := os.WriteFile(path, append([]byte{0xef, 0xbb, 0xbf}, []byte("hello\n")...), 0o644); err != nil {
+		t.Fatalf("write bom temp file: %v", err)
+	}
+
+	params, _ := json.Marshal(map[string]any{
+		"name":      "read_file",
+		"arguments": map[string]any{"path": path},
+	})
+	result := callTool(params)
+	if result["is_error"].(bool) {
+		t.Fatalf("expected success, got error: %v", result["content"])
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(result["content"].(string)), &payload); err != nil {
+		t.Fatalf("decode read payload: %v", err)
+	}
+	if got := payload["content"].(string); got != "hello\n" {
+		t.Fatalf("expected BOM stripped UTF-8 content, got %q", got)
+	}
+}
+
 func TestExtractPathRequiresPath(t *testing.T) {
 	workspaceRoot = t.TempDir()
 	_, err := extractPath(map[string]interface{}{})

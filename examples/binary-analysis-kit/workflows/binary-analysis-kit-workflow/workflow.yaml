@@ -1,0 +1,107 @@
+name: binary-analysis-kit-workflow
+description: Linked starter workflow generated from a kit scaffold. Outputs from earlier nodes are passed into later nodes.
+stages:
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next:
+        - team
+      position:
+        x: 80
+        "y": 260
+    - name: team
+      node_type: team
+      agent: binary-analysis-kit-agent
+      skill: ""
+      params:
+        execute: "false"
+        team: binary-analysis-kit-team
+      outputs:
+        roles: result.roles
+        team: result.structured
+      next:
+        - plan
+      position:
+        x: 340
+        "y": 260
+    - name: plan
+      node_type: skill
+      agent: binary-analysis-kit-agent
+      skill: binary-analysis-kit-skill
+      input:
+        request: params.request
+        scope: params.scope
+        team: stages.team.outputs.team
+      outputs:
+        findings: result.findings
+        plan: result.output
+        summary: result.summary
+      artifacts:
+        - name: starter-plan
+          kind: plan
+          title: Binary Analysis Kit Plan
+          ref: result.output
+          summary: Initial plan and evidence requirements for the linked starter workflow.
+      next:
+        - gate
+      position:
+        x: 620
+        "y": 260
+    - name: gate
+      node_type: policy_guard
+      agent: ""
+      skill: ""
+      params:
+        reason: The planning stage did not produce a usable handoff summary.
+        ref: stages.plan.outputs.summary
+        rule: binary-analysis-kit-gate
+      routes:
+        allow: report
+        deny: revise
+      position:
+        x: 900
+        "y": 260
+    - name: report
+      node_type: skill
+      agent: binary-analysis-kit-agent
+      skill: binary-analysis-kit-skill
+      input:
+        request: Build the final handoff from the approved plan.
+        upstream: stages.plan.outputs.plan
+      outputs:
+        final_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: starter-final-report
+          kind: report
+          title: Binary Analysis Kit Final Report
+          ref: result.output
+          summary: Run static binary triage with reverse-engineering and vulnerability-research skills.
+      next:
+        - end
+      position:
+        x: 1190
+        "y": 180
+    - name: revise
+      node_type: skill
+      agent: binary-analysis-kit-agent
+      skill: binary-analysis-kit-skill
+      input:
+        request: Revise the workflow handoff because the policy gate denied the previous output.
+        upstream: stages.gate.outputs.reason
+      outputs:
+        revision_plan: result.output
+        summary: result.summary
+      next:
+        - end
+      position:
+        x: 1190
+        "y": 360
+    - name: end
+      node_type: end
+      agent: ""
+      skill: ""
+      position:
+        x: 1500
+        "y": 260

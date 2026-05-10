@@ -1,0 +1,47 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: binary-analysis-kit
+title: Binary Analysis Kit
+description: Run static binary triage with reverse-engineering and vulnerability-research skills.
+category: security
+tags:
+    - binary
+    - reverse-engineering
+    - security
+agents:
+    - binary-analysis-kit-agent
+providers:
+    - primary
+skills:
+    - binary-analysis-kit-skill
+tools:
+    - binary-analysis-kit-helper
+workflows:
+    - binary-analysis-kit-workflow
+workflow_templates:
+    - binary-analysis-kit-template
+team_templates:
+    - binary-analysis-kit-team
+policy_rules:
+    - binary-analysis-kit-gate
+examples:
+    - title: Run the generated starter workflow
+      description: Uses the generated agent, skill, containerized helper tool, team template, and policy gate.
+      request: Perform static triage on sample.bin and report likely risk areas without executing it.
+      workflow: binary-analysis-kit-workflow
+      agent: binary-analysis-kit-agent
+metadata:
+    generated_agent: binary-analysis-kit-agent
+    generated_policy_rule: binary-analysis-kit-gate
+    generated_skill: binary-analysis-kit-skill
+    generated_team_template: binary-analysis-kit-team
+    generated_tool: binary-analysis-kit-helper
+    generated_workflow: binary-analysis-kit-workflow
+    generated_workflow_template: binary-analysis-kit-template
+    materialized: "true"
+    preset: binary-analysis
+    recommended_agent: binary-analysis-kit-agent
+    recommended_team: binary-analysis-kit-team
+    recommended_workflow: binary-analysis-kit-workflow
+    scaffold_preset: binary-analysis

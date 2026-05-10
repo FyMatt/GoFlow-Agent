@@ -61,6 +61,7 @@ func NewServerWithWorkspaceRebinder(runtime *agent.Runtime, workspaceState *work
 	s.mux.HandleFunc("/api/help", s.handleHelp)
 	s.mux.HandleFunc("/api/config/diagnostics", s.handleConfigDiagnostics)
 	s.mux.HandleFunc("/api/update-policy", s.handleUpdatePolicy)
+	s.mux.HandleFunc("/api/update-policy/check", s.handleUpdateCheck)
 	s.mux.HandleFunc("/api/workspace", s.handleWorkspace)
 	s.mux.HandleFunc("/api/workspace/", s.handleWorkspaceAction)
 	s.mux.HandleFunc("/api/workspace-files", s.handleWorkspaceFiles)

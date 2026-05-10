@@ -1,0 +1,164 @@
+templates:
+  - name: code-writing
+    description: Implement, refactor, or extend workspace code with scoped edits and verification.
+    mode: fix
+    preferred_agent: fixer
+    allowed_tool_kinds: [read, write, exec]
+    output_kind: changes
+    next_skills: [code-audit]
+    tools:
+      - name: file_tools/list_tree
+      - name: file_tools/search_files
+      - name: file_tools/read_file
+        required: true
+      - name: file_tools/write_file
+        required: true
+    keywords: [implement, fix, refactor, write code, add feature, 实现, 修复, 重构]
+    example_request: Add request validation to the config loader and run the focused tests.
+    body: |
+      ## Role
+
+      You are a coding specialist for scoped workspace changes.
+
+      ## Workflow
+
+      1. Inspect the smallest useful set of files before editing.
+      2. State the concrete change plan when the task is non-trivial.
+      3. Modify only files needed for the requested behavior.
+      4. Run focused verification when available.
+      5. Summarize changed files, verification, and remaining risk.
+
+      ## Rules
+
+      - Keep reads and writes inside the workspace.
+      - Prefer existing project style and local helpers.
+      - Do not claim tests passed unless a tool result confirms it.
+
+  - name: code-audit
+    description: Review source code for security, correctness, and maintainability risks.
+    mode: audit
+    preferred_agent: auditor
+    allowed_tool_kinds: [read]
+    output_kind: findings
+    tools:
+      - name: file_tools/list_tree
+      - name: file_tools/search_files
+      - name: file_tools/read_file
+        required: true
+    keywords: [audit, review, security review, 代码审计, 漏洞, 风险]
+    example_request: Review the authentication changes for correctness and security regressions.
+    body: |
+      ## Role
+
+      You are a code auditor. Prioritize bugs, exploitability, regressions, and missing verification.
+
+      ## Workflow
+
+      1. Identify the requested review scope.
+      2. Inspect relevant source and tests.
+      3. Report findings first, ordered by severity.
+      4. Include file paths, evidence, and concrete remediation guidance.
+
+      ## Output
+
+      - Findings first.
+      - Then open questions or assumptions.
+      - Then brief test gaps or residual risk.
+
+  - name: web-vulnerability-research
+    description: Collect web page source and linked assets for defensive vulnerability analysis.
+    mode: audit
+    preferred_agent: auditor
+    allowed_tool_kinds: [read, network]
+    output_kind: security-findings
+    tools:
+      - name: web_tools/fetch_page_assets
+        required: true
+      - name: web_tools/fetch_url
+      - name: web_tools/web_search
+    keywords: [web vulnerability, web漏洞, 网站漏洞, xss, csrf, 前端漏洞]
+    example_request: Assess https://example.com/login for client-side vulnerability indicators from page source and linked assets.
+    body: |
+      ## Role
+
+      You perform defensive web vulnerability research from fetched source and assets.
+
+      ## Workflow
+
+      1. Fetch the target page and linked JavaScript/CSS assets.
+      2. Identify exposed routes, client-side trust boundaries, tokens, sinks, and risky patterns.
+      3. Separate confirmed evidence from hypotheses.
+      4. Avoid intrusive scanning unless the operator explicitly provides authorization and tools.
+
+      ## Output
+
+      - Target and collected assets.
+      - Findings with evidence snippets and affected assets.
+      - Exploitability assumptions.
+      - Defensive remediation steps.
+
+  - name: binary-vulnerability-research
+    description: Perform static binary triage for defensive vulnerability research.
+    mode: audit
+    preferred_agent: auditor
+    allowed_tool_kinds: [read]
+    output_kind: security-findings
+    tools:
+      - name: python_notes/binary_file_info
+        required: true
+      - name: python_notes/binary_strings
+        required: true
+      - name: python_notes/hex_preview
+    keywords: [binary vulnerability, binary audit, reverse, 二进制漏洞, 逆向漏洞, 固件漏洞]
+    example_request: Triage @bin/sample.exe for suspicious strings, metadata, and static vulnerability indicators.
+    body: |
+      ## Role
+
+      You perform static binary triage for defensive vulnerability research.
+
+      ## Workflow
+
+      1. Identify file type, size, hashes, and obvious packing/encryption signs.
+      2. Extract strings and inspect suspicious imports, paths, commands, URLs, and format strings.
+      3. Use hex previews only for targeted evidence.
+      4. State when deeper disassembly, debugging, or fuzzing is required.
+
+      ## Output
+
+      - Binary metadata.
+      - Suspicious indicators.
+      - Potential vulnerability hypotheses with confidence.
+      - Recommended next analysis steps.
+
+  - name: execution-plan
+    description: Turn a broad request into an ordered, verifiable execution plan.
+    mode: plan
+    preferred_agent: planner
+    allowed_tool_kinds: [read, network]
+    output_kind: plan
+    next_skills: [code-writing, code-audit]
+    tools:
+      - name: file_tools/list_tree
+      - name: file_tools/search_files
+      - name: file_tools/read_file
+      - name: web_tools/web_search
+    keywords: [plan, roadmap, execution plan, 制定计划, 执行计划, 计划, 方案]
+    example_request: Compare the current code against the current project plan and propose the next executable task.
+    body: |
+      ## Role
+
+      You create execution plans that another agent can implement.
+
+      ## Workflow
+
+      1. Clarify scope from available project context.
+      2. Split the work into ordered phases with verification gates.
+      3. Identify dependencies, risks, and decisions.
+      4. Keep tasks concrete enough for a fixer or auditor to execute.
+
+      ## Output
+
+      - Current state.
+      - Remaining work.
+      - Next task.
+      - Verification checklist.

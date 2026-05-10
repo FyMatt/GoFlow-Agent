@@ -1,0 +1,18 @@
+# Loaded automatically from policies/workflow_rules/*.yaml.
+kind: goflow.workflow_policy_rule
+version: 2
+min_supported_version: 1
+migrated_from_version: 1
+name: binary-analysis-kit-gate
+label: Binary Analysis Kit Gate
+description: Allow the starter workflow to continue only when the planning handoff produced a truthy summary.
+operator: ref_truthy
+reason: Planning output must produce a compact summary before downstream reporting.
+defaults:
+    ref: stages.plan.outputs.summary
+params:
+    - name: ref
+      label: Plan summary reference
+      type: reference
+      description: Workflow reference that must resolve to a non-empty value.
+      required: true

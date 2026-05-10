@@ -126,8 +126,19 @@ runtime 文件保留在 `/app`，目标项目文件保留在 `/workspace`，这�
 
 仓库的 CI 包含：
 
+- 共享预检入口：`python scripts/run_preflight.py --browser-required`
 - `go test ./...`
 - Python MCP smoke test
+- 内置 Agent、Skill、Tool、Kit、Team、Policy Rule、Workflow Template、Skill
+  交接、Team 角色和 Workflow 阶段引用校验
+- Web Studio 中英文静态翻译键校验
+- 公开 Markdown 链接、中英文配对和内部计划文件引用校验
+- 嵌入式 HTTP Studio 冒烟测试，覆盖 `/console`、`/workflows`、静态资源和关键 JSON API
+- CI 中强制执行真实浏览器 Studio 冒烟测试，会渲染
+  `/console`、`/workflows`、`/console#playground`、`/console#approvals`、
+  `/console#catalog`、`/console#status`、`/console#workspace`、
+  `/console#settings`，以及中文 `?lang=zh` 深链；本地可不加 `--required`，没有
+  Chrome、Edge 或 Chromium 时会跳过
 - 部署资源校验
 - Docker 镜像构建
 - 容器启动检查
@@ -136,4 +147,10 @@ runtime 文件保留在 `/app`，目标项目文件保留在 `/workspace`，这�
 
 ```bash
 python scripts/validate_deployment_assets.py
+```
+
+本地运行同一套共享预检：
+
+```bash
+python scripts/run_preflight.py --browser-required
 ```

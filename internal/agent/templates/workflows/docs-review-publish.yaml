@@ -1,0 +1,82 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: docs-review-publish
+title: Docs Review -> Publish
+description: Plan documentation, draft changes, review quality, and checkpoint before publish.
+category: documentation
+tags:
+    - docs
+    - review
+    - approval
+stages: 6
+graph:
+    name: docs-review-publish
+    description: Documentation generation and review workflow.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - plan
+          position:
+            x: 60
+            "y": 180
+        - name: plan
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          outputs:
+            outline: result.output
+          next:
+            - draft
+          position:
+            x: 300
+            "y": 160
+        - name: draft
+          node_type: agent
+          agent: fixer
+          skill: code-writing
+          input:
+            outline: stages.plan.outputs.outline
+          outputs:
+            changes: result.changes
+            draft: result.output
+          approval: true
+          next:
+            - review
+          position:
+            x: 580
+            "y": 160
+        - name: review
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          input:
+            draft: stages.draft.outputs.draft
+          outputs:
+            review: result.output
+          next:
+            - publish-gate
+          position:
+            x: 860
+            "y": 160
+        - name: publish-gate
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          params:
+            prompt: Approve documentation publish or handoff?
+          next:
+            - end
+          position:
+            x: 1130
+            "y": 160
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 1390
+            "y": 180

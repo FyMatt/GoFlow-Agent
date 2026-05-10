@@ -21,7 +21,11 @@ GoFlow Agent 把 **runtime home** 和 **workspace root** 分开：
 - 通过配置扩展 Agent、Skill、Tool 和 Workflow，快速二开垂直领域 Agent。
 - 同时通过 CLI 和 HTTP/Web Studio 使用同一套运行时能力。
 
-完整二开示例见 [examples/extension-workflow](./examples/extension-workflow)。它组合了 Python MCP server、自定义只读 Agent、自定义 Skill 和图工作流。
+内置案例：
+
+- [examples](./examples)：可复制扩展示例的总览。
+- [examples/extension-workflow](./examples/extension-workflow)：一个紧凑的二开扩展示例，组合了 Python MCP server、自定义只读 Agent、自定义 Skill 和图工作流。可用 `python scripts/validate_extension_workflow.py` 做 smoke test。
+- [examples/binary-analysis-kit](./examples/binary-analysis-kit)：一个更完整的 materialized kit 示例，把 Agent、Skill、容器化 MCP helper、Workflow、Workflow Template、Team Template 和 Policy Rule 串联成二进制分析流程。可用 `python scripts/validate_binary_analysis_kit.py` 验证。
 
 ## 核心能力
 
@@ -41,6 +45,28 @@ GoFlow Agent 把 **runtime home** 和 **workspace root** 分开：
 - Docker/Podman `isolation: container` 作为推荐的强 MCP 沙箱方案。
 - Windows、Linux、Docker 部署路径。
 - GitHub Actions CI、Release、SBOM、签名和 GHCR 镜像发布。
+
+## 内置领域资源
+
+GoFlow 内置了一组可以直接联动的领域资源：
+
+- Agent：`software-engineer`、`security-researcher`、`web-security-researcher`、`binary-analyst`、`documentation-specialist`、`operations-specialist`、`support-specialist`、`framework-extension-architect`
+- Skill：`execution-plan`、`code-writing`、`code-audit`、`vulnerability-research`、`web-vulnerability-research`、`binary-vulnerability-research`、`reverse-engineering`
+- Kit preset：`multi-domain-agent`、`software-engineering`、`agent-framework`、`web-security`、`security-research`、`binary-analysis`、`documentation`、`operations-runbook`、`customer-support`
+- 对应领域的 Workflow Template 和 Team Template，其中 `multi-domain-intake-router` 是推荐的新手入口。内置 Workflow Template 从 `internal/agent/templates/workflows/*.yaml` 内嵌进二进制，运行目录可以通过 `templates/workflows/*.yaml` 覆盖。
+
+可以用 `/kits multi-domain-agent-kit` 或 `/workflow-templates multi-domain-intake-router`
+查看 Agent、Skill、Tool、Team、Workflow Template、Policy Rule 和 Kit 如何互相关联。
+
+推荐起步路径：
+
+| 目标 | 从哪里开始 | 会得到什么 |
+| --- | --- | --- |
+| 通用入门 | `multi-domain-agent-kit` | 一组串联好的 Agent、Skill、Tool、Team、Policy Gate 和 `multi-domain-intake-router` 工作流模板 |
+| 软件研发 | `software-engineering-kit` | 规划、实现、审计和质量门禁式代码变更流程 |
+| Web 安全 | `web-security-kit` | 页面与前端资源采集、证据化安全审查和风险报告 |
+| 二进制初筛 | `binary-analysis-kit` | 静态元数据、字符串、十六进制预览、团队评审和报告交接 |
+| 框架二开 | `agent-framework-kit` | 创建新 Agent、Skill、Tool、Workflow、Team、Policy、Kit 的起步资源 |
 
 ## 快速开始
 
@@ -124,12 +150,49 @@ http://127.0.0.1:8080/console
 
 注意：本地 HTTP 服务默认不是 HTTPS。如果浏览器报 `SSL_ERROR_RX_RECORD_TOO_LONG`，通常是访问了 `https://127.0.0.1:8080`，请改用 `http://127.0.0.1:8080`。
 
+### 使用 Web Studio
+
+HTTP 模式启动后打开：
+
+```text
+http://127.0.0.1:8080/console
+```
+
+需要分享固定语言入口时，可以带 `?lang=zh` 或 `?lang=en`，例如：
+
+```text
+http://127.0.0.1:8080/console?lang=zh#workspace
+```
+
+最低门槛的使用顺序：
+
+1. 打开 **Resources**。
+2. 选择 `multi-domain-agent` starter kit。
+3. 点击 **创建联动起步资源**，一次生成它引用的 Agent、Skill、Tool、Workflow、Workflow Template、Team Template、Policy Rule 和 Kit 文件。
+4. 打开 **Workflow Studio**。
+5. 从 `multi-domain-intake-router` 开始，先看模板卡片里的节点构成、引用资源和能力标签，再运行或 fork 这个工作流。
+
+Workflow Studio 会展示节点元数据、字段示例、输入输出引用、审批门禁、质量门禁和模板构成信息，用户不需要先猜 YAML 字段怎么填。
+
+**Observability / 观测** 页面会展示运行健康、当前任务焦点、模型成本诊断和 MCP
+工具压力。MCP 工具压力面板可以用来判断工具调用是否正在执行、是否排队、某个
+tool server 是否已经饱和，再决定是否提高工作流并发或重试卡住的运行。
+
+如果你在 Studio 里不知道某个节点怎么配置、`input` / `outputs` /
+`artifacts` / `acceptance_criteria` 应该怎么写，直接看
+[工作流图](./docs/workflows.zh-CN.md) 里的“节点配置速查”“对照 Studio 右侧面板填写”和“各节点怎么用”。
+
+如果你不清楚 Agent、Skill、Tool、Workflow、Team Template、Policy Rule、Kit
+分别是什么、放在哪里、怎么互相关联，直接看
+[资源与设置指南](./docs/resources.zh-CN.md)。
+
 ## 安装与部署
 
 - [安装与部署](./docs/install.zh-CN.md)
 - [部署说明](./docs/deployment.zh-CN.md)
 - [发布与校验](./docs/release.zh-CN.md)
 - [配置说明](./docs/configuration.zh-CN.md)
+- [资源与设置指南](./docs/resources.zh-CN.md)
 
 ## 二开入口
 
@@ -174,7 +237,7 @@ goflow --config /app/configs/goflow.docker.yaml --workspace /workspace --http :8
 
 ## 安全边界
 
-GoFlow 的文件工具会把所有读写限制在 active workspace root 下，并拒绝路径逃逸和符号链接逃逸。
+GoFlow 的文件工具会把所有读写限制在 active workspace root 下，并拒绝路径逃逸和符号链接逃逸。文本文件统一按 UTF-8 读取，UTF-8 BOM 会被自动去除；如果文件不是 UTF-8 文本，就交给二进制分析工具处理。
 
 MCP 工具的推荐强隔离方式是 Docker/Podman：
 
@@ -214,12 +277,62 @@ Release 工作流会构建 Windows/Linux 二进制压缩包、生成 SBOM、签�
 
 ## 脚手架模板
 
-`/new-kit <preset> <name> --materialize` 会同时生成 Kit、Agent、Skill、容器化 MCP Tool、Workflow、Workflow Template、Team Template 和 Policy Rule，并让 Workflow 节点之间通过输出/输入引用串联起来。HTTP Studio 可用 `POST /api/resources/kits/scaffolds/{preset}?materialize=1` 调用同样能力。
+`/new-kit <preset> <name> --materialize` 会同时生成 Kit、Agent、Skill、容器化 MCP Tool、Workflow、Workflow Template、Team Template 和 Policy Rule，并让 Workflow 节点之间通过输出/输入引用串联起来。HTTP Studio 可用 `POST /api/resources/kits/scaffolds/{preset}?materialize=1` 调用同样能力。内置 Workflow Template 资源也已经文件化：默认模板从 `internal/agent/templates/workflows/*.yaml` 内嵌进二进制；运行目录可以通过 `templates/workflows/*.yaml` 新增或覆盖模板。
 
-内置 Kit preset 包括 `software-engineering`、`agent-framework`、`web-security`、`security-research`、`binary-analysis`、`documentation`、`operations-runbook` 和 `customer-support`。其中 `agent-framework` 用于二开 GoFlow 本身：创建新的垂直 Agent、Skill、Tool、Workflow、Team、Policy 或 Kit。
+`plan-fix-audit` 和 `skill-chain` 仍然是可运行的兼容执行器；真正可编辑的是
+`workflows/<name>/workflow.yaml` 这种图工作流文件。HTTP 中
+`/api/workflow-graphs` 用于列出和编辑图文件，
+`/api/workflow-options.workflow_executors` 用于列出所有可运行 workflow 入口。
+如果保存了同名且有效的图工作流，它会覆盖对应兼容执行器。
+
+内置 Kit preset 包括 `multi-domain-agent`、`software-engineering`、`agent-framework`、`web-security`、`security-research`、`binary-analysis`、`documentation`、`operations-runbook` 和 `customer-support`。其中 `agent-framework` 用于二开 GoFlow 本身：创建新的垂直 Agent、Skill、Tool、Workflow、Team、Policy 或 Kit。
+
+`binary-analysis` 在 materialize 时会生成静态二进制分析 MCP helper，内置 `binary_file_info`、`binary_strings` 和 `hex_preview`。二进制输入应使用普通路径，例如 `sample.bin`；`@file` 只用于 UTF-8 文本内容。这个 helper 也已经模板化：内置模板位于
+`internal/scaffold/templates/tools/python/binary-analysis-server.py.tmpl`，运行目录可以通过
+`templates/tools/python/binary-analysis-server.py.tmpl` 覆盖。
+
+Tool scaffold preset 已经文件化。内置 preset 从 `internal/scaffold/templates/tools/scaffolds/presets.yaml` 内嵌进二进制；运行目录可以通过 `templates/tools/scaffolds/*.yaml` 添加或覆盖 preset。
+生成的 Python MCP Tool server 和模块化 MCP 配置也已经文件化：内置模板位于
+`internal/scaffold/templates/tools/python/server.py.tmpl` 和
+`internal/scaffold/templates/tools/python/config.yaml.tmpl`，运行目录可以通过
+`templates/tools/python/server.py.tmpl` 和
+`templates/tools/python/config.yaml.tmpl` 覆盖。`/new-tool python` 与 Studio
+默认 Python Tool 资源使用同一套渲染器。
+
+Kit scaffold preset 已经文件化。内置 preset 从 `internal/scaffold/templates/kits/scaffolds/presets.yaml` 内嵌进发布二进制；运行目录可以通过 `templates/kits/scaffolds/*.yaml` 添加或覆盖 preset。
+Materialized kit 的资源模板也已经文件化：默认的 `kit.yaml`、`agent.yaml`、`SKILL.md`、容器 MCP 配置、Workflow、Workflow Template、Team Template、Policy Rule 和 Workflow 说明模板从 `internal/scaffold/templates/kits/materialized/generic/*.tmpl` 内嵌进二进制。运行目录可以通过 `templates/kits/materialized/<preset>/*.tmpl` 覆盖某个 preset，也可以通过 `templates/kits/materialized/generic/*.tmpl` 覆盖通用兜底模板。
+
+Team Template 也已经文件化。内置团队模板从 `internal/agent/templates/teams/*.yaml` 内嵌进二进制；运行目录可以通过 `templates/teams/*.yaml` 新增或覆盖团队模板。同一套目录会被 `/teams`、Workflow 的 `team` 节点校验、Kit materialize 和 Studio 资源表单共同使用。
+
+## 使用案例
+
+查看内置领域包：
+
+```text
+/kits binary-analysis-kit
+/workflow-templates binary-triage
+```
+
+复制完整二进制分析 kit：
+
+```text
+examples/binary-analysis-kit
+```
+
+运行内置轻量二进制分析链路：
+
+```text
+/workflow skill-chain analyze sample.bin for suspicious imports, strings, and likely attack surfaces
+```
+
+原始二进制请直接写工作区路径，不要用 `@file`。`@file` 只用于 UTF-8 文本内容。
 
 ## 当前状态
 
-后端运行时当前基线已完成：CLI、HTTP API、Web Studio 支撑接口、模块化资源、MCP 工具、Skill、Workflow、durable run、审批、工作区生命周期、成本诊断、Docker 优先隔离、CI/Release 发布链路都已具备。
+当前基线已经可以通过 CLI 和 Web Studio 端到端使用：资源管理、MCP 工具、Skill、Workflow、普通 Agent durable run、Workflow durable run、审批、工作区生命周期、成本诊断、Docker 优先隔离、CI/Release 发布链路都已具备。
 
-后续重点主要在前端体验完善、复杂工作流产品化、更多垂直模板和真实部署场景打磨。
+内置资源基线已经包含可串联的多领域 Agent、Skill、Tool、Team、Workflow、Policy 和 Kit 模板。Agent/Provider 默认脚手架、Skill scaffold template、Team scaffold preset、Policy Rule scaffold preset、Workflow Node metadata、Workflow Policy Rule metadata 与 Expression Helper metadata 也已经文件化：Agent/Provider 默认模板位于 `internal/scaffold/templates/config/agents/default.yaml.tmpl` 和 `internal/scaffold/templates/config/providers/default.yaml.tmpl`，Skill 内置模板位于 `internal/scaffold/templates/skills/scaffolds/templates.yaml`，Team 内置 preset 位于 `internal/scaffold/templates/teams/scaffolds/presets.yaml`，Policy Rule 内置 preset 位于 `internal/scaffold/templates/policies/scaffolds/presets.yaml`，Workflow Node 内置 metadata 位于 `internal/agent/templates/workflow_nodes/*.yaml`，Workflow Policy Rule 内置 metadata 位于 `internal/agent/templates/policy_rules/*.yaml`，Expression Helper 内置 metadata 位于 `internal/agent/templates/expression_helpers/*.yaml`。运行目录可通过对应 `templates/`、`metadata/` 或 `policies/workflow_rules/` 路径添加或覆盖。
+
+设置页会显示发布更新策略，但不会自动访问 GitHub。用户需要显式点击检查更新按钮，页面才会调用 `POST /api/update-policy/check`，并把当前运行版本和配置的发布源进行比较。
+
+后续重点应由真实部署反馈、更多领域模板沉淀，以及基于实测数据的成本路由和 Docker/Podman 沙箱加固来驱动，而不是补齐缺失的核心运行时能力。

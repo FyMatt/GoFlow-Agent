@@ -269,7 +269,8 @@ export async function renderChat(root, runtime, refreshRuntime) {
   agentSelect.value = runtime.active_agent || agentSelect.value;
   const skillValues = (options.skills?.length ? options.skills : runtime.skills || []).map(item => item.name);
   const toolValues = options.tools?.length ? options.tools : runtime.tools || [];
-  fillSelect(workflowSelect, (workflows || []).filter(item => item.valid !== false).map(item => item.name), t("chat.noWorkflow"));
+  const workflowEntries = workflowExecutorEntries(options, workflows);
+  fillSelect(workflowSelect, workflowEntries, t("chat.noWorkflow"));
   fillSelect(skillSelect, skillValues, t("chat.autoSkill"));
   fillSelect(toolSelect, toolValues, t("chat.noTool"));
 
@@ -811,10 +812,33 @@ function fillSelect(select, values, emptyLabel) {
   select.appendChild(empty);
   for (const value of values || []) {
     const option = document.createElement("option");
-    option.value = value;
-    option.textContent = value;
+    if (value && typeof value === "object") {
+      option.value = value.value || value.name || "";
+      option.textContent = value.label || value.name || value.value || "";
+      if (value.title) option.title = value.title;
+      if (value.disabled) option.disabled = true;
+    } else {
+      option.value = value;
+      option.textContent = value;
+    }
     select.appendChild(option);
   }
+}
+
+function workflowExecutorEntries(options = {}, workflowGraphs = []) {
+  const executors = Array.isArray(options.workflow_executors) ? options.workflow_executors : [];
+  const source = executors.length ? executors : (workflowGraphs || []).filter(item => item.valid !== false);
+  return source
+    .filter(item => item && item.valid !== false && item.name)
+    .map(item => {
+      const suffix = item.legacy || item.compatibility ? ` (${t("chat.workflowCompatibility")})` : "";
+      return {
+        value: item.name,
+        name: item.name,
+        label: `${item.name}${suffix}`,
+        title: item.detail || item.description || ""
+      };
+    });
 }
 
 function modeLabel(value) {

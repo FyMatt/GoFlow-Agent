@@ -1,0 +1,106 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: web-research-risk
+title: Web Research -> Risk Audit
+description: Collect web evidence, audit it, branch on findings, and produce a risk report.
+category: security
+tags:
+    - web
+    - security
+    - branching
+stages: 8
+graph:
+    name: web-research-risk
+    description: Research a web target and route findings through a risk branch.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - collect
+          position:
+            x: 60
+            "y": 200
+        - name: collect
+          node_type: agent
+          agent: auditor
+          skill: web-vulnerability-research
+          outputs:
+            evidence: result.output
+            findings: result.findings
+          next:
+            - audit
+          position:
+            x: 300
+            "y": 170
+        - name: audit
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          input:
+            evidence: stages.collect.outputs.evidence
+          outputs:
+            audit: result.output
+            findings: result.findings
+          next:
+            - has-risk
+          position:
+            x: 580
+            "y": 170
+        - name: has-risk
+          node_type: condition
+          agent: ""
+          skill: ""
+          condition: contains(stages.audit.outputs.audit, "vulnerability")
+          routes:
+            "false": report-clean
+            "true": verify
+          position:
+            x: 850
+            "y": 200
+        - name: verify
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          params:
+            prompt: Review the evidence before running verification.
+          next:
+            - report-risk
+          position:
+            x: 1120
+            "y": 120
+        - name: report-risk
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            audit: stages.audit.outputs.audit
+          outputs:
+            report: result.output
+          next:
+            - end
+          position:
+            x: 1380
+            "y": 120
+        - name: report-clean
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          input:
+            audit: stages.audit.outputs.audit
+          outputs:
+            report: result.output
+          next:
+            - end
+          position:
+            x: 1120
+            "y": 300
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 1640
+            "y": 200

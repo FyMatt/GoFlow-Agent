@@ -1,0 +1,49 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: customer-support-kit
+title: Customer Support Kit
+description: Triage user issues, gather factual context, draft customer-ready replies, and flag escalation or privacy risk.
+category: support
+tags:
+    - support
+    - triage
+    - customer-response
+    - escalation
+agents:
+    - support-specialist
+    - chat
+    - planner
+    - auditor
+providers:
+    - primary
+skills:
+    - execution-plan
+    - code-audit
+tools:
+    - file_tools/read_file
+    - file_tools/search_files
+    - web_tools/web_search
+workflows:
+    - skill-chain
+workflow_templates:
+    - customer-support-triage
+    - parallel-research-review
+team_templates:
+    - customer-support-team
+policy_rules:
+    - expression
+    - team_approval_gate
+examples:
+    - title: Triage a customer issue
+      description: Classify priority, gather known facts, and draft a response with escalation notes.
+      request: Triage this customer issue and draft a clear response with missing information called out.
+      workflow: customer-support-triage
+      agent: support-specialist
+metadata:
+    preset: customer-support
+    recommended_agent: support-specialist
+    recommended_workflow: customer-support-triage
+    recommended_team: customer-support-team
+    primary_skill: execution-plan
+    scaffold_preset: customer-support

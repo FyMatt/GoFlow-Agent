@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
 	"github.com/FyMatt/GoFlow-Agent/internal/version"
 	"gopkg.in/yaml.v3"
 )
@@ -163,113 +164,7 @@ func (s *Server) toolScaffoldPreset(name string, includeDocument bool) (toolScaf
 }
 
 func (s *Server) toolScaffoldPresets(includeDocument bool) []toolScaffoldPreset {
-	presets := []toolScaffoldPreset{
-		{
-			Name:            "python-local",
-			DefaultName:     "workspace-helper",
-			Title:           "Python MCP Tool",
-			Description:     "Create a local Python stdio MCP server with read/write examples and workspace-root path checks.",
-			Category:        "local",
-			Tags:            []string{"python", "workspace", "starter"},
-			Language:        "python",
-			Isolation:       "process_group",
-			RiskLevel:       "medium",
-			RequiresRestart: true,
-			Capabilities:    []string{"stdio-json-rpc", "read_text example", "write_text example", "workspace file access"},
-			SafetyGuards:    commonPythonMCPScaffoldSafetyGuards(),
-			GeneratedPaths:  commonPythonMCPScaffoldGeneratedPaths(),
-			ActivationSteps: commonPythonMCPScaffoldActivationSteps(),
-			Recommendations: []string{"keep allowed_tools narrow on agents that can call this server", "review generated write tools before enabling them for broad agents"},
-		},
-		{
-			Name:             "python-container-readonly",
-			DefaultName:      "sandboxed-reader",
-			Title:            "Containerized Read-Only Python MCP Tool",
-			Description:      "Create a Python MCP server that runs in Docker/Podman with the generated tool file mounted read-only and the workspace mounted read-only.",
-			Category:         "container",
-			Tags:             []string{"python", "container", "readonly", "sandbox"},
-			Language:         "python",
-			Isolation:        "container",
-			WorkspaceMount:   "ro",
-			NetworkMode:      "disabled",
-			IsolationProfile: "readonly",
-			DefaultImage:     defaultPythonMCPContainerImage(),
-			DefaultOptions:   config.ContainerIsolationProfileDefaults("readonly"),
-			RiskLevel:        "low",
-			RequiresRestart:  true,
-			Capabilities:     []string{"stdio-json-rpc", "read_text example", "containerized execution", "read-only workspace mount"},
-			SafetyGuards:     append(commonPythonMCPScaffoldSafetyGuards(), "read-only workspace mount", "single generated tool file mounted read-only", "network disabled", "resource limits", "read-only container root filesystem", "dedicated tmpfs scratch mounts", "isolated IPC namespace", "user namespace where supported", "non-root container user by default", "dropped Linux capabilities where supported", "no-new-privileges where supported", "container init for child-process cleanup"),
-			GeneratedPaths:   commonPythonMCPScaffoldGeneratedPaths(),
-			ActivationSteps:  commonPythonMCPScaffoldActivationSteps(),
-			Recommendations:  []string{"use this preset for untrusted read-only helpers", "switch to a write-capable preset only when the workflow needs workspace mutation"},
-		},
-		{
-			Name:             "python-container-writer",
-			DefaultName:      "sandboxed-writer",
-			Title:            "Containerized Write-Capable Python MCP Tool",
-			Description:      "Create a Python MCP server that runs in Docker/Podman with network disabled, resource limits, and read-write workspace access.",
-			Category:         "container",
-			Tags:             []string{"python", "container", "write", "sandbox"},
-			Language:         "python",
-			Isolation:        "container",
-			WorkspaceMount:   "rw",
-			NetworkMode:      "disabled",
-			IsolationProfile: "writer",
-			DefaultImage:     defaultPythonMCPContainerImage(),
-			DefaultOptions:   config.ContainerIsolationProfileDefaults("writer"),
-			RiskLevel:        "medium",
-			RequiresRestart:  true,
-			Capabilities:     []string{"stdio-json-rpc", "read_text example", "write_text example", "containerized execution", "read-write workspace mount"},
-			SafetyGuards:     append(commonPythonMCPScaffoldSafetyGuards(), "single generated tool file mounted read-only", "network disabled", "resource limits", "read-only container root filesystem", "dedicated tmpfs scratch mounts", "isolated IPC namespace", "user namespace where supported", "dropped Linux capabilities where supported", "no-new-privileges where supported", "container init for child-process cleanup"),
-			GeneratedPaths:   commonPythonMCPScaffoldGeneratedPaths(),
-			ActivationSteps:  commonPythonMCPScaffoldActivationSteps(),
-			Recommendations:  []string{"route this tool through confirm policy", "prefer exact allowed_tools for agents using write-capable container tools"},
-		},
-		{
-			Name:             "python-container-network",
-			DefaultName:      "sandboxed-fetcher",
-			Title:            "Containerized Network Python MCP Tool",
-			Description:      "Create a Python MCP server that runs in Docker/Podman with workspace read-only access and explicit network egress enabled.",
-			Category:         "container",
-			Tags:             []string{"python", "container", "network", "fetch"},
-			Language:         "python",
-			Isolation:        "container",
-			WorkspaceMount:   "ro",
-			NetworkMode:      "bridge",
-			IsolationProfile: "network",
-			DefaultImage:     defaultPythonMCPContainerImage(),
-			DefaultOptions:   config.ContainerIsolationProfileDefaults("network"),
-			RiskLevel:        "medium",
-			RequiresRestart:  true,
-			Capabilities:     []string{"stdio-json-rpc", "read_text example", "containerized execution", "network egress", "read-only workspace mount"},
-			SafetyGuards:     append(commonPythonMCPScaffoldSafetyGuards(), "read-only workspace mount", "single generated tool file mounted read-only", "resource limits", "read-only container root filesystem", "dedicated tmpfs scratch mounts", "isolated IPC namespace", "user namespace where supported", "non-root container user by default", "dropped Linux capabilities where supported", "no-new-privileges where supported", "container init for child-process cleanup", "network egress explicitly declared"),
-			GeneratedPaths:   commonPythonMCPScaffoldGeneratedPaths(),
-			ActivationSteps:  commonPythonMCPScaffoldActivationSteps(),
-			Recommendations:  []string{"declare network tools as kind=network", "keep approvals enabled for network-capable agents"},
-		},
-		{
-			Name:             "python-container-production",
-			DefaultName:      "production-reader",
-			Title:            "Production Python MCP Tool",
-			Description:      "Create a locked-down read-only Python MCP server for production deployments that pre-pull trusted digest-pinned images.",
-			Category:         "container",
-			Tags:             []string{"python", "container", "production", "digest", "sandbox"},
-			Language:         "python",
-			Isolation:        "container",
-			WorkspaceMount:   "ro",
-			NetworkMode:      "disabled",
-			IsolationProfile: "production",
-			DefaultImage:     defaultPythonMCPContainerImage(),
-			DefaultOptions:   config.ContainerIsolationProfileDefaults("production"),
-			RiskLevel:        "medium",
-			RequiresRestart:  true,
-			Capabilities:     []string{"stdio-json-rpc", "read_text example", "containerized execution", "read-only workspace mount", "production profile defaults", "pre-pulled image mode"},
-			SafetyGuards:     append(commonPythonMCPScaffoldSafetyGuards(), "read-only workspace mount", "single generated tool file mounted read-only", "network disabled", "pull_policy=never", "resource limits", "read-only container root filesystem", "dedicated tmpfs scratch mounts", "isolated IPC namespace", "user namespace where supported", "non-root container user by default", "dropped Linux capabilities where supported", "no-new-privileges where supported", "container init for child-process cleanup"),
-			GeneratedPaths:   commonPythonMCPScaffoldGeneratedPaths(),
-			ActivationSteps:  append(commonPythonMCPScaffoldActivationSteps(), "replace the scaffold image tag with a trusted image@sha256:... reference", "pre-pull the trusted image on each deployment host before enabling the tool"),
-			Recommendations:  []string{"use this preset for production read-only helpers", "replace the default image tag with an immutable digest before deployment", "keep pull_policy=never after pre-pulling trusted images"},
-		},
-	}
+	presets := s.toolScaffoldPresetDefinitions()
 	if !includeDocument {
 		return presets
 	}
@@ -280,6 +175,97 @@ func (s *Server) toolScaffoldPresets(includeDocument bool) []toolScaffoldPreset 
 		}
 	}
 	return presets
+}
+
+func (s *Server) toolScaffoldPresetDefinitions() []toolScaffoldPreset {
+	if s == nil || s.runtime == nil || strings.TrimSpace(s.runtime.RuntimeHome()) == "" {
+		return defaultToolScaffoldPresets()
+	}
+	presets, err := scaffold.ToolPresetsFromDirs(filepath.Join(s.runtime.RuntimeHome(), "templates", "tools", "scaffolds"))
+	if err != nil {
+		return defaultToolScaffoldPresets()
+	}
+	return toolScaffoldPresetsFromShared(presets)
+}
+
+func defaultToolScaffoldPresets() []toolScaffoldPreset {
+	return toolScaffoldPresetsFromShared(scaffold.BuiltInToolPresets())
+}
+
+func toolScaffoldPresetsFromShared(presets []scaffold.ToolPreset) []toolScaffoldPreset {
+	out := make([]toolScaffoldPreset, 0, len(presets))
+	for _, preset := range presets {
+		out = append(out, toolScaffoldPresetFromShared(preset))
+	}
+	return out
+}
+
+func toolScaffoldPresetFromShared(preset scaffold.ToolPreset) toolScaffoldPreset {
+	doc := toolScaffoldPreset{
+		Name:             preset.Name,
+		DefaultName:      preset.DefaultName,
+		Title:            preset.Title,
+		Description:      preset.Description,
+		Category:         preset.Category,
+		Tags:             append([]string(nil), preset.Tags...),
+		Language:         preset.Language,
+		Isolation:        preset.Isolation,
+		WorkspaceMount:   preset.WorkspaceMount,
+		NetworkMode:      preset.NetworkMode,
+		IsolationProfile: preset.IsolationProfile,
+		DefaultImage:     preset.DefaultImage,
+		DefaultOptions:   copyMap(preset.DefaultOptions),
+		RiskLevel:        preset.RiskLevel,
+		RequiresRestart:  preset.RequiresRestart,
+		Capabilities:     append([]string(nil), preset.Capabilities...),
+		SafetyGuards:     append([]string(nil), preset.SafetyGuards...),
+		GeneratedPaths:   append([]string(nil), preset.GeneratedPaths...),
+		ActivationSteps:  append([]string(nil), preset.ActivationSteps...),
+		Recommendations:  append([]string(nil), preset.Recommendations...),
+	}
+	applyToolScaffoldPresetDefaults(&doc)
+	return doc
+}
+
+func applyToolScaffoldPresetDefaults(preset *toolScaffoldPreset) {
+	if preset == nil {
+		return
+	}
+	if strings.TrimSpace(preset.Language) == "" {
+		preset.Language = "python"
+	}
+	if strings.TrimSpace(preset.Isolation) == "" {
+		preset.Isolation = "process_group"
+	}
+	if strings.EqualFold(strings.TrimSpace(preset.Isolation), "container") {
+		if strings.TrimSpace(preset.WorkspaceMount) == "" {
+			preset.WorkspaceMount = "ro"
+		}
+		if strings.TrimSpace(preset.NetworkMode) == "" {
+			preset.NetworkMode = "disabled"
+		}
+		if strings.TrimSpace(preset.IsolationProfile) == "" {
+			preset.IsolationProfile = containerIsolationProfileForScaffold(preset.WorkspaceMount, preset.NetworkMode)
+		}
+		if strings.TrimSpace(preset.DefaultImage) == "" {
+			preset.DefaultImage = defaultPythonMCPContainerImage()
+		}
+		if len(preset.DefaultOptions) == 0 {
+			preset.DefaultOptions = config.ContainerIsolationProfileDefaults(preset.IsolationProfile)
+		}
+		if len(preset.DefaultOptions) == 0 {
+			preset.DefaultOptions = defaultPythonMCPContainerIsolationOptions(preset.WorkspaceMount, preset.NetworkMode, "")
+		}
+	}
+	if len(preset.GeneratedPaths) == 0 {
+		preset.GeneratedPaths = commonPythonMCPScaffoldGeneratedPaths()
+	}
+	if len(preset.ActivationSteps) == 0 {
+		preset.ActivationSteps = commonPythonMCPScaffoldActivationSteps()
+	}
+	if len(preset.SafetyGuards) == 0 {
+		preset.SafetyGuards = commonPythonMCPScaffoldSafetyGuards()
+	}
 }
 
 func commonPythonMCPScaffoldSafetyGuards() []string {
@@ -316,7 +302,7 @@ func (s *Server) toolDocumentFromScaffold(preset toolScaffoldPreset, req toolSca
 	if !resourceNamePattern.MatchString(name) {
 		return toolResourceDocument{}, fmt.Errorf("invalid tool name %q: use lowercase letters, numbers, hyphen, or underscore", name)
 	}
-	doc := defaultToolResource(name)
+	doc := s.defaultToolResource(name)
 	doc.Description = firstWorkflowRunQueryValue(req.Description, preset.Description, doc.Description)
 	switch preset.Isolation {
 	case "container":
@@ -355,7 +341,11 @@ func (s *Server) toolDocumentFromScaffold(preset toolScaffoldPreset, req toolSca
 	default:
 		doc.Isolation = "process_group"
 	}
-	doc.Code = renderPythonMCPToolTemplate(name)
+	code, err := scaffold.RenderPythonMCPToolCode(s.runtimeHomeForScaffold(), name)
+	if err != nil {
+		code, _ = scaffold.RenderPythonMCPToolCode("", name)
+	}
+	doc.Code = code
 	return doc, nil
 }
 

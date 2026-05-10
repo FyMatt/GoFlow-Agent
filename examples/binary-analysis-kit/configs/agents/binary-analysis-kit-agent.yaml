@@ -1,0 +1,21 @@
+# Loaded automatically from configs/agents/*.yaml.
+binary-analysis-kit-agent:
+    name: Binary Analysis Kit Agent
+    description: Starter agent generated with a linked kit; keep tool access narrow and route write work through explicit approval.
+    system_prompt: |-
+        You are the entry agent for the binary-analysis-kit kit.
+        Use the linked skill, workflow, team template, and policy gate as the default operating model.
+        Keep outputs concise, evidence-backed, and suitable for downstream workflow nodes.
+        Prefer compact artifacts and explicit assumptions when the task is long or ambiguous.
+    provider: primary
+    max_iterations: 6
+    allowed_tool_kinds:
+        - read
+    allowed_tools:
+        - binary-analysis-kit-helper/ping
+        - binary-analysis-kit-helper/read_text
+        - binary-analysis-kit-helper/binary_file_info
+        - binary-analysis-kit-helper/binary_strings
+        - binary-analysis-kit-helper/hex_preview
+    tool_policy: confirm
+    mode: chat

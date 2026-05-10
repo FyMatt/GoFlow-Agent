@@ -284,6 +284,82 @@ stages:
 	if len(summaries) != 1 || summaries[0].Name != "plan-fix-audit" || summaries[0].Source != "default" {
 		t.Fatalf("expected configured default workflow summary, got %#v", summaries)
 	}
+	executors := runtimeRef.WorkflowRunner().WorkflowExecutors()
+	var foundGraph bool
+	for _, executor := range executors {
+		if executor.Name == "plan-fix-audit" && executor.Source == "default" && executor.Editable && executor.OverridesLegacy && !executor.Overridden && !executor.Legacy {
+			foundGraph = true
+		}
+		if executor.Name == "plan-fix-audit" && executor.Source == "legacy_executor" && executor.Valid {
+			t.Fatalf("expected legacy plan-fix-audit executor to be hidden by configured graph, got %#v", executor)
+		}
+	}
+	if !foundGraph {
+		t.Fatalf("expected configured graph executor to mark legacy override, got %#v", executors)
+	}
+}
+
+func TestWorkflowRunnerWorkflowExecutorsExposeLegacyCompatibilityEntries(t *testing.T) {
+	runtimeHome := t.TempDir()
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
+
+	executors := runtimeRef.WorkflowRunner().WorkflowExecutors()
+	seen := map[string]agentWorkflowExecutorAssertion{}
+	for _, executor := range executors {
+		seen[executor.Name] = agentWorkflowExecutorAssertion{
+			source:        executor.Source,
+			valid:         executor.Valid,
+			editable:      executor.Editable,
+			legacy:        executor.Legacy,
+			compatibility: executor.Compatibility,
+			detail:        executor.Detail,
+		}
+	}
+	for _, name := range []string{"plan-fix-audit", "skill-chain"} {
+		item, ok := seen[name]
+		if !ok {
+			t.Fatalf("expected legacy executor %s in workflow executors, got %#v", name, executors)
+		}
+		if item.source != "legacy_executor" || !item.valid || item.editable || !item.legacy || !item.compatibility || item.detail == "" {
+			t.Fatalf("expected legacy executor metadata for %s, got %#v", name, item)
+		}
+	}
+}
+
+func TestWorkflowRunnerWorkflowExecutorsExposeInvalidGraphAsEditableAndBlockLegacy(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "skill-chain", `
+name: skill-chain
+description: Broken override that should still be editable.
+`)
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
+
+	executors := runtimeRef.WorkflowRunner().WorkflowExecutors()
+	var graphEntry, legacyEntry *WorkflowExecutorOption
+	for i := range executors {
+		executor := &executors[i]
+		if executor.Name == "skill-chain" && executor.Source == "default" {
+			graphEntry = executor
+		}
+		if executor.Name == "skill-chain" && executor.Source == "legacy_executor" {
+			legacyEntry = executor
+		}
+	}
+	if graphEntry == nil || graphEntry.Valid || !graphEntry.Editable || !graphEntry.OverridesLegacy || graphEntry.Error == "" {
+		t.Fatalf("expected invalid graph override to stay editable, got graph=%#v executors=%#v", graphEntry, executors)
+	}
+	if legacyEntry == nil || legacyEntry.Valid || !legacyEntry.Legacy || !legacyEntry.Compatibility || !legacyEntry.Overridden || legacyEntry.Error == "" {
+		t.Fatalf("expected invalid graph to block legacy compatibility executor, got legacy=%#v executors=%#v", legacyEntry, executors)
+	}
+}
+
+type agentWorkflowExecutorAssertion struct {
+	source        string
+	valid         bool
+	editable      bool
+	legacy        bool
+	compatibility bool
+	detail        string
 }
 
 func TestWorkflowRunnerCustomWorkflowGraphSelectsBranch(t *testing.T) {

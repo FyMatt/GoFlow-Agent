@@ -13,6 +13,7 @@ GoFlow Agent is built around a few core rules:
 5. Separate **runtime home** from **workspace root**.
 6. Reuse shared schemas across CLI, HTTP, and future transports instead of forking runtime behavior.
 7. Treat Web Studio as the visual implementation of CLI operations. New CLI capabilities should normally ship with matching HTTP/API coverage, browser UI affordances, and parity tests unless there is a documented reason they must remain terminal-only.
+8. Read workspace text files as UTF-8. UTF-8 BOM is acceptable and should be stripped; non-UTF-8 bytes should route to binary-inspection tools instead of text readers.
 
 ## Runtime home vs workspace root
 
@@ -131,7 +132,15 @@ Defines the provider-neutral request/result/event contract used by the runtime, 
 
 Workflow execution is registry-backed rather than hard-coded at the transport boundary.
 
-The built-in `plan-fix-audit` and `skill-chain` workflows are registered once and then invoked through the shared workflow runner from both CLI and HTTP paths. If a workflow name is not built in, the runner attempts to load `workflows/<name>/workflow.yaml` from runtime home and execute it as a graph-backed workflow.
+The built-in `plan-fix-audit` and `skill-chain` workflows are registered once and then invoked through the shared workflow runner from both CLI and HTTP paths. Built-in workflow templates are embedded from `internal/agent/templates/workflows/*.yaml`; runtime-home overrides under `templates/workflows/*.yaml` can add or replace reusable blueprints. If a workflow name is not built in, the runner attempts to load `workflows/<name>/workflow.yaml` from runtime home and execute it as a graph-backed workflow.
+
+The runtime intentionally distinguishes editable graph resources from runnable
+workflow entries. `/api/workflow-graphs` exposes only persisted graph files for
+editing. `/api/workflow-options.workflow_executors` exposes the runnable set:
+valid graph workflows plus legacy compatibility executors. A valid graph saved
+with the same name as a legacy executor overrides that executor; an invalid
+same-name graph blocks the compatibility executor and reports the graph error so
+Studio can prompt the operator to fix the file.
 
 HTTP streaming endpoints forward the same `schema.StreamEvent` objects used by the CLI renderer. `/api/run/stream` streams normal agent turns, `/api/workflows/<name>/stream` streams workflow stage execution and ends with a `workflow_result` event, and streamed approval endpoints can resume ordinary or workflow tool loops while preserving prompt-budget, token, task-stage, tool-result, and approval events.
 
@@ -279,15 +288,16 @@ Workflow execution writes to these stores automatically:
 - completion creates a `workflow_finished` message and a `final_summary` blackboard entry
 - failure or cancellation creates an issue-style blackboard entry
 
-Team templates are a reusable collaboration catalog. Built-ins include
-software-task, audit/security, web research, binary triage, documentation, and
-operations/runbook teams. Custom templates are versioned YAML resources under
-`templates/teams/<name>.yaml` and are merged with built-ins; a custom template
-with the same name overrides the built-in for workflow options, validation,
-execution, and TeamState. Each template exposes role-to-agent/skill mappings,
-expected handoffs, shared blackboard slots, output contracts, and a recommended
-workflow template. They can be referenced by `team` workflow nodes, which record
-the selected team as stage context and can expand to executable role stages when
+Team templates are a reusable collaboration catalog. Built-ins are embedded
+from `internal/agent/templates/teams/*.yaml` and include software-task,
+audit/security, web research, binary triage, documentation, operations/runbook,
+support, and framework-extension teams. Custom templates are versioned YAML
+resources under `templates/teams/<name>.yaml` and are merged with built-ins; a
+custom template with the same name overrides the built-in for workflow options,
+validation, execution, and TeamState. Each template exposes role-to-agent/skill
+mappings, expected handoffs, shared blackboard slots, output contracts, and a
+recommended workflow template. They can be referenced by `team` workflow nodes,
+which record the selected team as stage context and can expand to executable role stages when
 `params.execute: true` is set. The templates are visible through `/teams`,
 `/teams <name>`, `/api/team-templates`, `/api/resources/team-templates`, and
 `/api/workflow-options`. Live team state is visible through

@@ -75,6 +75,7 @@ type MCPServerRef struct {
 	IsolationOptions    map[string]string `yaml:"isolation_options"`
 	RestartLimit        int               `yaml:"restart_limit"`
 	Cooldown            time.Duration     `yaml:"cooldown"`
+	MaxConcurrentCalls  int               `yaml:"max_concurrent_calls"`
 	AllowedCommandPaths []string          `yaml:"allowed_command_paths"`
 	AllowedCommands     []string          `yaml:"allowed_commands"`
 	MaxRequestBytes     int               `yaml:"max_request_bytes"`

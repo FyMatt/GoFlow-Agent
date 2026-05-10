@@ -12,6 +12,7 @@ GoFlow Agent 的架构围绕几条规则展开：
 4. CLI、HTTP 和后续传输层复用同一套运行时契约。
 5. 明确区分 **runtime home** 和 **workspace root**。
 6. Web Studio 是 CLI 能力的可视化实现，而不是另一套独立运行时。
+7. 读取工作区文本文件时统一按 UTF-8 处理；可以接受 UTF-8 BOM 并自动去除，非 UTF-8 字节应交给二进制分析工具，而不是文本读取器。
 
 ## runtime home 与 workspace root
 
@@ -49,6 +50,7 @@ Agent 请求生命周期和多 Agent 协作核心，负责：
 - 执行 LLM/工具循环。
 - 发出流式事件。
 - 执行 built-in workflow 和 graph workflow。
+- 从 `internal/agent/templates/workflows/*.yaml` 和 `internal/agent/templates/teams/*.yaml` 加载内置 Workflow/Team 模板，并允许 runtime home 用 `templates/workflows/*.yaml`、`templates/teams/*.yaml` 覆盖。
 - 处理审批、取消、重试、durable run、输出传递、控制流和协作状态。
 
 ### `internal/api`
@@ -68,6 +70,8 @@ MCP server 管理层，负责：
 - stdio MCP 进程生命周期。
 - 工具发现、缓存、路由和健康状态。
 - 启动命令白名单。
+- 每个 server 的超时、请求/响应大小上限、`max_concurrent_calls` 队列上限、
+  `restart_limit` 和 `cooldown` 轻量熔断。
 - Docker/Podman container isolation。
 - 原生 fallback 隔离模式和风险诊断。
 
@@ -95,6 +99,19 @@ MCP server 管理层，负责：
 6. 工具结果回到 Agent，Agent 继续推理。
 7. 结果、工具调用、审批、token 和状态以统一事件模型输出。
 8. Session 持久化关键状态，支持刷新、重连和恢复。
+
+## 工作流生命周期
+
+GoFlow 会区分“可编辑图资源”和“可运行 workflow 入口”：
+
+- `/api/workflow-graphs` 只暴露 runtime home 中持久化的图工作流文件，适合
+  Web Studio 编辑和保存。
+- `/api/workflow-options.workflow_executors` 暴露可运行入口，包括有效的图工作流
+  和 `plan-fix-audit`、`skill-chain` 这类兼容执行器，适合聊天页和运行页做
+  workflow 下拉框。
+
+如果保存了一个与兼容执行器同名且有效的图工作流，它会覆盖兼容执行器；如果同名
+图存在但无效，兼容执行器会被阻断并暴露图错误，避免用户以为运行的是旧逻辑。
 
 ## Web Studio
 
