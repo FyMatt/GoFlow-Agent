@@ -46,6 +46,26 @@ func TestCallToolReadFileRejectsNonUTF8Content(t *testing.T) {
 	}
 }
 
+func TestCallToolReadFileReportsMissingPathClearly(t *testing.T) {
+	workspaceRoot = t.TempDir()
+	missing := filepath.Join("app", "models", "post.py")
+	params, _ := json.Marshal(map[string]any{
+		"name":      "read_file",
+		"arguments": map[string]any{"path": missing},
+	})
+	result := callTool(params)
+	if !result["is_error"].(bool) {
+		t.Fatalf("expected missing path error, got %#v", result)
+	}
+	content := result["content"].(string)
+	if !strings.Contains(content, "read_file path not found:") || !strings.Contains(content, missing) {
+		t.Fatalf("expected friendly missing path message, got %q", content)
+	}
+	if strings.Contains(content, "GetFileAttributesEx") || strings.Contains(content, "The system cannot find the path specified") {
+		t.Fatalf("expected raw Windows stat error to be hidden, got %q", content)
+	}
+}
+
 func TestCallToolReadFileStripsUTF8BOM(t *testing.T) {
 	workspaceRoot = t.TempDir()
 	path := filepath.Join(workspaceRoot, "bom.txt")

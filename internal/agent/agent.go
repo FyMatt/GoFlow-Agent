@@ -473,7 +473,7 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 			resumeCollected = append(resumeCollected, result)
 		}
 		if len(suspendedCalls) > 0 {
-			if runtimeRef != nil && !runtimeRef.workflowInProgress() {
+			if runtimeRef != nil && (strings.TrimSpace(execCtx.AgentRunID) != "" || !runtimeRef.workflowInProgress()) {
 				runtimeRef.CaptureOrdinaryApprovalContext(execCtx.AgentRunID, r.id, profile, state.MatchedSkill, state.SystemPrompt, mode, resumeMessages, suspendedCalls, resumeCollected)
 			}
 			structured := buildStructuredSections(resp.Message.Content, state.MatchedSkill, collectedResults, mode, fallbackUsed)

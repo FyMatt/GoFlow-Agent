@@ -431,19 +431,43 @@ function renderSafeMarkdownText(value) {
   const lines = escapeHTML(value).replace(/\r\n/g, "\n").split("\n");
   const out = [];
   let listType = "";
+  let paragraph = [];
   const closeList = () => {
     if (!listType) return;
     out.push(`</${listType}>`);
     listType = "";
   };
-  for (const line of lines) {
+  const closeParagraph = () => {
+    if (!paragraph.length) return;
+    out.push(`<p>${inlineSafeMarkdown(paragraph.join(" "))}</p>`);
+    paragraph = [];
+  };
+  const closeFlow = () => {
+    closeParagraph();
+    closeList();
+  };
+  for (let index = 0; index < lines.length; index += 1) {
+    const line = lines[index];
     const trimmed = line.trim();
     if (!trimmed) {
-      closeList();
+      closeFlow();
+      continue;
+    }
+    if (isMarkdownTableHeader(lines, index)) {
+      closeFlow();
+      const rows = [trimmed];
+      index += 2;
+      while (index < lines.length && isMarkdownTableRow(lines[index])) {
+        rows.push(lines[index].trim());
+        index += 1;
+      }
+      index -= 1;
+      out.push(renderSafeMarkdownTable(rows));
       continue;
     }
     const unordered = trimmed.match(/^[-*]\s+(.+)$/);
     if (unordered) {
+      closeParagraph();
       if (listType !== "ul") {
         closeList();
         out.push("<ul>");
@@ -454,6 +478,7 @@ function renderSafeMarkdownText(value) {
     }
     const ordered = trimmed.match(/^\d+\.\s+(.+)$/);
     if (ordered) {
+      closeParagraph();
       if (listType !== "ol") {
         closeList();
         out.push("<ol>");
@@ -462,20 +487,54 @@ function renderSafeMarkdownText(value) {
       out.push(`<li>${inlineSafeMarkdown(ordered[1])}</li>`);
       continue;
     }
-    closeList();
     const heading = trimmed.match(/^(#{1,4})\s+(.+)$/);
     if (heading) {
+      closeFlow();
       out.push(`<h${heading[1].length}>${inlineSafeMarkdown(heading[2])}</h${heading[1].length}>`);
       continue;
     }
+    if (/^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      closeFlow();
+      out.push("<hr>");
+      continue;
+    }
     if (trimmed.startsWith("&gt; ")) {
+      closeFlow();
       out.push(`<blockquote>${inlineSafeMarkdown(trimmed.slice(5))}</blockquote>`);
       continue;
     }
-    out.push(`<p>${inlineSafeMarkdown(trimmed)}</p>`);
+    closeList();
+    paragraph.push(trimmed);
   }
-  closeList();
+  closeFlow();
   return out.join("");
+}
+
+function isMarkdownTableHeader(lines, index) {
+  return isMarkdownTableRow(lines[index]) && isMarkdownTableDivider(lines[index + 1] || "");
+}
+
+function isMarkdownTableRow(line) {
+  const trimmed = String(line || "").trim();
+  return trimmed.includes("|") && !/^```/.test(trimmed);
+}
+
+function isMarkdownTableDivider(line) {
+  const cells = markdownTableCells(line);
+  return cells.length > 1 && cells.every(cell => /^:?-{3,}:?$/.test(cell.trim()));
+}
+
+function markdownTableCells(line) {
+  const trimmed = String(line || "").trim().replace(/^\|/, "").replace(/\|$/, "");
+  return trimmed.split("|").map(cell => cell.trim());
+}
+
+function renderSafeMarkdownTable(rows) {
+  const header = markdownTableCells(rows[0] || "");
+  const body = rows.slice(1).map(markdownTableCells);
+  const head = `<thead><tr>${header.map(cell => `<th>${inlineSafeMarkdown(cell)}</th>`).join("")}</tr></thead>`;
+  const rowsHTML = body.map(row => `<tr>${header.map((_, index) => `<td>${inlineSafeMarkdown(row[index] || "")}</td>`).join("")}</tr>`).join("");
+  return `<table>${head}<tbody>${rowsHTML}</tbody></table>`;
 }
 
 function inlineSafeMarkdown(value) {

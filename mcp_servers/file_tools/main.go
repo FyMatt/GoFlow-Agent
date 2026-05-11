@@ -133,7 +133,7 @@ func callTool(params json.RawMessage) map[string]any {
 		}
 		info, err := os.Stat(path)
 		if err != nil {
-			return map[string]any{"content": err.Error(), "is_error": true}
+			return map[string]any{"content": normalizeWorkspaceFileError("read_file", path, err), "is_error": true}
 		}
 		if info.IsDir() {
 			return map[string]any{"content": "path is a directory", "is_error": true}
@@ -212,7 +212,7 @@ func callTool(params json.RawMessage) map[string]any {
 		}
 		entries, err := os.ReadDir(path)
 		if err != nil {
-			return map[string]any{"content": err.Error(), "is_error": true}
+			return map[string]any{"content": normalizeWorkspaceFileError("list_dir", path, err), "is_error": true}
 		}
 		items := make([]map[string]any, 0, len(entries))
 		for _, entry := range entries {
@@ -243,7 +243,7 @@ func callTool(params json.RawMessage) map[string]any {
 		}
 		payload, err := workspaceFileInfo(path)
 		if err != nil {
-			return map[string]any{"content": err.Error(), "is_error": true}
+			return map[string]any{"content": normalizeWorkspaceFileError("file_info", path, err), "is_error": true}
 		}
 		encoded, _ := json.Marshal(payload)
 		return map[string]any{"content": string(encoded), "is_error": false}
@@ -264,7 +264,7 @@ func callTool(params json.RawMessage) map[string]any {
 		caseSensitive, _ := input.Arguments["case_sensitive"].(bool)
 		payload, err := searchWorkspaceFiles(path, query, maxResults, includeContent, caseSensitive)
 		if err != nil {
-			return map[string]any{"content": err.Error(), "is_error": true}
+			return map[string]any{"content": normalizeWorkspaceFileError("search_files", path, err), "is_error": true}
 		}
 		encoded, _ := json.Marshal(payload)
 		return map[string]any{"content": string(encoded), "is_error": false}
@@ -468,6 +468,27 @@ func decodeUTF8Text(data []byte) (string, error) {
 		return "", fmt.Errorf("file is not valid UTF-8 text; use a binary inspection tool for non-text files")
 	}
 	return strings.TrimPrefix(string(data), "\ufeff"), nil
+}
+
+func normalizeWorkspaceFileError(toolName, path string, err error) string {
+	if err == nil {
+		return ""
+	}
+	if os.IsNotExist(err) {
+		return fmt.Sprintf("%s path not found: %s", toolName, path)
+	}
+	if os.IsPermission(err) {
+		return fmt.Sprintf("%s permission denied: %s", toolName, path)
+	}
+	if pe, ok := err.(*os.PathError); ok {
+		switch {
+		case os.IsNotExist(pe.Err):
+			return fmt.Sprintf("%s path not found: %s", toolName, path)
+		case os.IsPermission(pe.Err):
+			return fmt.Sprintf("%s permission denied: %s", toolName, path)
+		}
+	}
+	return fmt.Sprintf("%s failed for %s: %v", toolName, path, err)
 }
 
 type writeChangeStats struct {

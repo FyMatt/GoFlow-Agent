@@ -2115,6 +2115,72 @@ func TestRuntimeResumeApprovedOrdinaryToolCallContinuesConversation(t *testing.T
 	}
 }
 
+func TestRuntimeCapturesOrdinaryAgentRunApprovalContextWhileWorkflowPaused(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{
+			Message: schema.Message{Content: "I will update the file."},
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call-agent-run",
+				Name:      "write_file",
+				Arguments: []byte(`{"path":"README.md","content":"updated"}`),
+			}},
+		}},
+	}}
+	mcpClient := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "write_file",
+		Kind:        "write",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}}}
+	state := session.New(8)
+	state.SetWorkflow(session.WorkflowSnapshot{
+		Name:      "paused-workflow",
+		Status:    "awaiting_tool_approval",
+		NextStage: "fix",
+		Request:   "finish workflow",
+	})
+	cfg := &config.Config{
+		Session:      config.SessionConfig{MaxHistory: 8},
+		DefaultAgent: "chat",
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:             "Chat",
+				Provider:         "chat",
+				Mode:             "chat",
+				Model:            "test-model",
+				MaxIterations:    3,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+				ToolPolicy:       config.ToolPolicyConfirm,
+			},
+		},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"chat": llm}, stubSkillManager{}, mcpClient, state, runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	runID := runtimeRef.StartAgentRun("update the README")
+	if runID == "" {
+		t.Fatal("expected durable agent run id")
+	}
+
+	first, err := runtimeRef.RunStream(WithAgentRunID(context.Background(), runID), "update the README", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if len(first.ToolResults) != 1 || !first.ToolResults[0].Suspended {
+		t.Fatalf("expected suspended write_file result, got %#v", first.ToolResults)
+	}
+	if !runtimeRef.OrdinaryToolApprovalResumable("call-agent-run") {
+		t.Fatalf("expected ordinary agent run approval to be resumable even while a workflow is paused")
+	}
+	run, ok := runtimeRef.AgentRun(runID)
+	if !ok {
+		t.Fatalf("expected agent run %s to exist", runID)
+	}
+	if run.ResumeContext == nil || len(run.ResumeContext.SuspendedCalls) != 1 {
+		t.Fatalf("expected persisted agent run resume context, got %#v", run.ResumeContext)
+	}
+}
+
 func TestRuntimeRunStreamPendingHandoffRejectReturnsCancellation(t *testing.T) {
 	runtimeRef := newRoutingTestRuntime("chat")
 	runtimeRef.session.SetPendingHandoff(session.PendingHandoffSnapshot{

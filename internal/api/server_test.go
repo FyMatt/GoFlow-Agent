@@ -10770,6 +10770,58 @@ func TestServerAgentRunToolApprovalAcceptsHyphenatedActionPaths(t *testing.T) {
 	}
 }
 
+func TestServerLegacyApprovalStreamResumesDurableAgentRun(t *testing.T) {
+	firstState := session.New(8)
+	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, []schema.ChatResponse{
+		{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"demo.txt","content":"hello"}`)}}},
+	})
+	firstServer := NewServer(firstRuntime)
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"write a file","background":true}`))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startResponse := httptest.NewRecorder()
+	firstServer.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusAccepted {
+		t.Fatalf("expected background agent 202, got %d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var accepted agentRunBackgroundResponse
+	if err := json.NewDecoder(startResponse.Body).Decode(&accepted); err != nil {
+		t.Fatalf("decode accepted agent run: %v", err)
+	}
+	paused := waitAgentRunActionAvailable(t, firstServer, firstRuntime, accepted.RunID, "approve_tool", true)
+	if len(paused.PendingApprovals) != 1 || paused.PendingApprovals[0].AgentRunID != accepted.RunID {
+		t.Fatalf("expected pending approval to reference durable run, got %#v", paused.PendingApprovals)
+	}
+
+	sessionPath := filepath.Join(t.TempDir(), "session.json")
+	if err := firstState.Save(sessionPath); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	loadedState := session.New(8)
+	if err := loadedState.Load(sessionPath); err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	secondRuntime := newAPITestRuntimeWithStateAndResponses(t, loadedState, []schema.ChatResponse{
+		{Message: schema.Message{Content: "done through legacy approval stream"}},
+	})
+	secondServer := NewServer(secondRuntime)
+	approveRequest := httptest.NewRequest(http.MethodPost, "/api/approvals/call-1/approve/stream", nil)
+	approveResponse := httptest.NewRecorder()
+	secondServer.ServeHTTP(approveResponse, approveRequest)
+	if approveResponse.Code != http.StatusOK {
+		t.Fatalf("expected legacy approval stream 200, got %d body=%s", approveResponse.Code, approveResponse.Body.String())
+	}
+	if body := approveResponse.Body.String(); !strings.Contains(body, "done through legacy approval stream") {
+		t.Fatalf("expected legacy approval stream to include resumed final output, got %s", body)
+	}
+	completed := waitAgentRunStatus(t, secondRuntime, accepted.RunID, "completed")
+	if !strings.Contains(completed.Output, "legacy approval stream") {
+		t.Fatalf("expected run to complete through legacy approval stream, got %#v", completed)
+	}
+	if len(secondRuntime.SessionSnapshot().PendingApprovals) != 0 {
+		t.Fatalf("expected pending approvals cleared after legacy approval stream, got %#v", secondRuntime.SessionSnapshot().PendingApprovals)
+	}
+}
+
 func TestServerWorkflowRunEventsEndpointSupportsSinceAndStreamReplay(t *testing.T) {
 	runtimeRef := newAPITestRuntime(t)
 	server := NewServer(runtimeRef)

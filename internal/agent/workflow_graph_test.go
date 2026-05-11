@@ -3064,6 +3064,71 @@ stages:
 	}
 }
 
+func TestWorkflowRunnerCustomWorkflowGraphApproveToolsAutoApprovesLaterMatchingStageCall(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "release-check", `
+name: release-check
+stages:
+  - name: implement
+    agent: fixer
+    skill: code-writing
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`)
+	writeTool := schema.Tool{Name: "write_file", Kind: "write", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`)}
+	mcpClient := &stubRuntimeMCP{tools: []schema.Tool{writeTool}}
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{Content: "Need first write."},
+		ToolCalls: []schema.ToolCall{{
+			ID:        "call-1",
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
+		}},
+	}, {
+		Message: schema.Message{Content: "Need second write."},
+		ToolCalls: []schema.ToolCall{{
+			ID:        "call-2",
+			Name:      "write_file",
+			Arguments: json.RawMessage(`{"path":"b.txt","content":"world"}`),
+		}},
+	}, {
+		Message: schema.Message{Content: "Implementation done."},
+	}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), mcpClient, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   fixerLLM,
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "Audit done."}}}},
+	})
+
+	first, err := runtimeRef.WorkflowRunner().Run(context.Background(), "release-check", "add the feature", true, nil)
+	if err != nil {
+		t.Fatalf("Run custom workflow graph: %v", err)
+	}
+	if first.Status != "awaiting_tool_approval" || first.NextStage != "implement" {
+		t.Fatalf("expected suspended implement stage, got %#v", first)
+	}
+
+	if err := runtimeRef.RememberPendingWorkflowToolApproval("call-1"); err != nil {
+		t.Fatalf("RememberPendingWorkflowToolApproval: %v", err)
+	}
+	resumed, err := runtimeRef.WorkflowRunner().Resume(context.Background(), "release-check", "call-1", true, nil)
+	if err != nil {
+		t.Fatalf("Resume custom workflow graph: %v", err)
+	}
+	if resumed.Status != "completed" {
+		t.Fatalf("expected workflow to complete after scoped approve-tools, got %#v", resumed)
+	}
+	if mcpClient.calls != 2 {
+		t.Fatalf("expected current and later matching write calls to execute once each, got %d", mcpClient.calls)
+	}
+	if len(runtimeRef.SessionSnapshot().PendingApprovals) != 0 {
+		t.Fatalf("expected no pending approvals after auto-approval, got %#v", runtimeRef.SessionSnapshot().PendingApprovals)
+	}
+}
+
 func TestWorkflowRunnerCustomWorkflowGraphReportsInvalidFile(t *testing.T) {
 	tests := []struct {
 		name      string

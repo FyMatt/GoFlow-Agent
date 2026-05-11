@@ -7,6 +7,7 @@ const workflowRunPollIntervalMS = 2200;
 const workflowRunHistoryPollIntervalMS = 6600;
 const defaultRunEventReconnectMS = 2200;
 const timelineEventBuffers = new Map();
+const timelineRunStates = new WeakMap();
 let timelineEventFlushFrame = 0;
 const examplePlaceholder = value => escapeHTML(t("common.exampleValue", { value }));
 
@@ -97,6 +98,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
             </div>
             <div id="runAttention" class="run-attention hidden"></div>
             <div id="messages" class="messages"></div>
+            <button id="timelineJumpLatest" class="timeline-jump-latest hidden" type="button">${t("chat.timelineJumpLatest")}</button>
           </section>
 
           <section class="run-output-stack" aria-label="${escapeHTML(t("chat.resultTitle"))}">
@@ -213,6 +215,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
     </div>`;
 
   const messages = root.querySelector("#messages");
+  const timelineJumpLatest = root.querySelector("#timelineJumpLatest");
   const resultPreview = root.querySelector("#resultPreview");
   const resultOutput = root.querySelector("#resultOutput");
   const resultEmpty = root.querySelector("#resultEmpty");
@@ -274,8 +277,10 @@ export async function renderChat(root, runtime, refreshRuntime) {
   fillSelect(skillSelect, skillValues, t("chat.autoSkill"));
   fillSelect(toolSelect, toolValues, t("chat.noTool"));
 
-  const runState = createRunState(messages, resultPreview, resultOutput, resultEmpty, resultStatus, runAttention, runTimelineHint, runLiveStatus, root, runStatus, send);
+  const runState = createRunState(messages, timelineJumpLatest, resultPreview, resultOutput, resultEmpty, resultStatus, runAttention, runTimelineHint, runLiveStatus, root, runStatus, send);
   runState.refreshRuntime = refreshRuntime;
+  const disposeTimelineLayoutSync = bindRunTimelineHeightSync(root);
+  const disposeTimelineFollow = bindTimelineFollowMode(runState);
   const collaborationState = createCollaborationState(root, runtime, runState);
   const historyState = createWorkflowHistoryState(root, runState, collaborationState, refreshRuntime);
   const referencePickerController = new AbortController();
@@ -287,6 +292,8 @@ export async function renderChat(root, runtime, refreshRuntime) {
     stopWorkflowRunPolling(runState);
     stopAgentRunPolling(runState);
     stopWorkflowHistoryPolling(historyState);
+    disposeTimelineLayoutSync();
+    disposeTimelineFollow();
     syncRunUnloadGuard(runState);
   };
   window.addEventListener("goflow:view-dispose", disposeRunView, { once: true });
@@ -927,10 +934,13 @@ function appendMessage(messages, text, type) {
   messages.scrollTop = messages.scrollHeight;
 }
 
-function createRunState(messages, resultPreview, resultOutput, resultEmpty, resultStatus, runAttention, runTimelineHint, runLiveStatus, root, runStatus, send) {
+function createRunState(messages, timelineJumpLatest, resultPreview, resultOutput, resultEmpty, resultStatus, runAttention, runTimelineHint, runLiveStatus, root, runStatus, send) {
   return {
     root,
     messages,
+    timelineJumpLatest,
+    timelinePinnedToLatest: true,
+    timelineUnseenEvents: 0,
     resultPreview,
     resultOutput,
     resultEmpty,
@@ -980,6 +990,72 @@ function createRunState(messages, resultPreview, resultOutput, resultEmpty, resu
     currentRunID: "",
     currentStage: "",
     historyRefresh: null
+  };
+}
+
+function bindRunTimelineHeightSync(root) {
+  const setup = root?.querySelector(".run-brief");
+  const timeline = root?.querySelector(".run-timeline");
+  if (!setup || !timeline) return () => {};
+  const media = window.matchMedia("(max-width: 900px)");
+  let frame = 0;
+  const clear = () => {
+    timeline.style.removeProperty("--run-setup-height");
+  };
+  const sync = () => {
+    frame = 0;
+    if (!root.isConnected) return;
+    if (media.matches) {
+      clear();
+      return;
+    }
+    const height = Math.max(1, Math.ceil(setup.getBoundingClientRect().height));
+    timeline.style.setProperty("--run-setup-height", `${height}px`);
+  };
+  const schedule = () => {
+    if (frame) return;
+    frame = requestAnimationFrame(sync);
+  };
+  const observer = typeof ResizeObserver === "function" ? new ResizeObserver(schedule) : null;
+  observer?.observe(setup);
+  window.addEventListener("resize", schedule);
+  media.addEventListener?.("change", schedule);
+  schedule();
+  return () => {
+    if (frame) cancelAnimationFrame(frame);
+    observer?.disconnect();
+    window.removeEventListener("resize", schedule);
+    media.removeEventListener?.("change", schedule);
+    clear();
+  };
+}
+
+function bindTimelineFollowMode(runState) {
+  const messages = runState?.messages;
+  const jump = runState?.timelineJumpLatest;
+  if (!messages) return () => {};
+  timelineRunStates.set(messages, runState);
+  const sync = () => {
+    const pinned = isScrollNearBottom(messages, 72);
+    runState.timelinePinnedToLatest = pinned;
+    if (pinned) {
+      runState.timelineUnseenEvents = 0;
+      setTimelineJumpLatestVisible(runState, false);
+    }
+  };
+  const jumpToLatest = () => {
+    runState.timelinePinnedToLatest = true;
+    runState.timelineUnseenEvents = 0;
+    scrollTimelineToBottom(messages);
+    setTimelineJumpLatestVisible(runState, false);
+  };
+  messages.addEventListener("scroll", sync, { passive: true });
+  jump?.addEventListener("click", jumpToLatest);
+  requestAnimationFrame(sync);
+  return () => {
+    messages.removeEventListener("scroll", sync);
+    jump?.removeEventListener("click", jumpToLatest);
+    timelineRunStates.delete(messages);
   };
 }
 
@@ -1624,11 +1700,13 @@ function renderAgentRunApprovalAttention(runState, actions, collaborationState) 
   const buttons = visible.length
     ? visible.map(action => agentRunActionButton(action)).join("")
     : `<button type="button" data-open-approvals>${escapeHTML(t("chat.openApprovals"))}</button>`;
+  const help = agentRunActionUnavailableHelp(visible);
   runState.runAttention.className = "run-attention approval";
   runState.runAttention.innerHTML = `
     <strong>${escapeHTML(t("chat.awaitingApprovalTitle"))}</strong>
     <p>${escapeHTML(t("chat.agentApprovalDurabilityHelp"))}</p>
-    <div class="workflow-run-actions agent-run-actions">${buttons}</div>`;
+    <div class="workflow-run-actions agent-run-actions">${buttons}</div>
+    ${help ? `<p class="workflow-run-action-help">${escapeHTML(help)}</p>` : ""}`;
   runState.runAttention.classList.remove("hidden");
   runState.runAttention.querySelector("[data-open-approvals]")?.addEventListener("click", () => {
     location.hash = "approvals";
@@ -1659,9 +1737,22 @@ function agentRunActionLabel(name, fallback = "") {
   if (name === "cancel") return t("chat.cancelRun");
   if (name === "retry") return t("chat.retryRun");
   if (name === "approve_tool") return t("approvals.approveTool");
+  if (name === "approve_all_tools") return t("approvals.approveAllTools");
   if (name === "approve_remember_tool") return t("approvals.approveRemember");
+  if (name === "approve_remember_all_tools") return t("approvals.approveRememberAllTools");
   if (name === "deny_tool") return t("approvals.denyTool");
+  if (name === "deny_all_tools") return t("approvals.denyAllTools");
   return runActionFallbackLabel(name, fallback, t("chat.runActionsTitle"));
+}
+
+function agentRunActionUnavailableHelp(actions) {
+  const unavailable = (actions || []).filter(action => action.available === false);
+  if (!unavailable.length) return "";
+  const remember = unavailable.find(action => action.name === "approve_remember_tool" || action.name === "approve_remember_all_tools");
+  if (remember) return localizedWorkflowActionReason(remember.reason || "") || t("chat.toolRememberBlockedByRiskPolicy");
+  const approval = unavailable.find(action => action.name === "approve_tool" || action.name === "deny_tool");
+  if (approval) return localizedWorkflowActionReason(approval.reason || "") || t("chat.agentToolContextUnavailable");
+  return localizedWorkflowActionReason(unavailable[0].reason || "") || t("chat.workflowActionUnavailableHelp");
 }
 
 async function executeAgentRunAction(runState, action, collaborationState) {
@@ -1959,7 +2050,9 @@ function workflowRunActionLabel(name, fallback = "") {
   if (name === "approve_tool") return t("approvals.approveTool");
   if (name === "approve_all_tools") return t("approvals.approveAllTools");
   if (name === "approve_remember_tool") return t("approvals.approveRemember");
+  if (name === "approve_remember_all_tools") return t("approvals.approveRememberAllTools");
   if (name === "deny_tool") return t("approvals.denyTool");
+  if (name === "deny_all_tools") return t("approvals.denyAllTools");
   if (name === "submit_input") return t("chat.submitWorkflowInput");
   if (name === "resume_sub_workflow") return t("chat.resumeSubWorkflow");
   return runActionFallbackLabel(name, fallback, t("chat.runActionsTitle"));
@@ -2108,9 +2201,12 @@ function workflowRunActionCanOpenLocally(action = {}) {
 function workflowRunActionUnavailableHelp(actions) {
   const unavailable = (actions || []).filter(action => action.available === false);
   if (!unavailable.length) return "";
-  if (unavailable.some(action => ["approve_tool", "deny_tool", "approve_all_tools"].includes(action.name))) {
+  const approval = unavailable.find(action => ["approve_tool", "deny_tool"].includes(action.name));
+  if (approval) {
     return t("chat.workflowToolApprovalUnavailableHelp");
   }
+  const remember = unavailable.find(action => ["approve_all_tools", "approve_remember_tool", "approve_remember_all_tools"].includes(action.name));
+  if (remember) return localizedWorkflowActionReason(remember.reason || "") || t("chat.toolRememberBlockedByRiskPolicy");
   return localizedWorkflowActionReason(unavailable[0].reason || "") || t("chat.workflowActionUnavailableHelp");
 }
 
@@ -2118,6 +2214,9 @@ function localizedWorkflowActionReason(reason) {
   const value = String(reason || "").trim();
   if (!value) return "";
   const lower = value.toLowerCase();
+  if (lower.includes("tool_risk_policy") && lower.includes("cannot be remembered")) {
+    return t("chat.toolRememberBlockedByRiskPolicy");
+  }
   if (lower.includes("tool approval context") && lower.includes("retry or cancel")) {
     return t("approvals.workflowToolContextLost");
   }
@@ -5149,6 +5248,9 @@ function detectRunContext(event, runState, collaborationState) {
 
 function resetRunState(state) {
   state.messages.innerHTML = "";
+  state.timelinePinnedToLatest = true;
+  state.timelineUnseenEvents = 0;
+  setTimelineJumpLatestVisible(state, false);
   state.resultPreview.innerHTML = "";
   state.resultPreview.classList.add("hidden");
   state.resultOutput.innerHTML = "";
@@ -5904,23 +6006,157 @@ function flushTimelineEvents() {
   timelineEventFlushFrame = 0;
   for (const [messages, entries] of timelineEventBuffers) {
     if (!messages?.isConnected || !entries.length) continue;
-    const stickToBottom = entries.some(item => item.options.stickToBottom ?? isScrollNearBottom(messages));
+    const runState = timelineRunStates.get(messages);
+    const stickToBottom = shouldStickTimelineToBottom(messages, entries);
     const fragment = document.createDocumentFragment();
-    for (const { event } of entries) {
+    let changed = 0;
+    for (const { event, options } of entries) {
+      const signature = timelineEventSignature(event);
+      const coalesceKey = timelineEventCoalesceKey(event);
+      const previous = options.coalesce === false ? null : findRecentTimelineEventNode(messages, fragment, signature, coalesceKey);
+      if (previous) {
+        incrementTimelineRepeat(previous, event);
+        changed += 1;
+        continue;
+      }
       const div = document.createElement("div");
       div.className = `timeline-event ${event.tone || "neutral"}`;
+      div.dataset.timelineSignature = signature;
+      div.dataset.timelineCoalesceKey = coalesceKey;
+      div.dataset.timelineRepeatCount = "1";
+      const detail = timelineEventDisplayDetail(event);
       div.innerHTML = `
         <div class="timeline-marker"></div>
         <div class="timeline-card">
           <strong>${escapeHTML(event.title || "")}</strong>
-          ${event.detail ? `<p>${escapeHTML(event.detail)}</p>` : ""}
+          ${detail ? `<p>${escapeHTML(detail)}</p>` : ""}
         </div>`;
       fragment.appendChild(div);
+      changed += 1;
     }
     messages.appendChild(fragment);
-    if (stickToBottom) messages.scrollTop = messages.scrollHeight;
+    if (stickToBottom) {
+      if (runState) {
+        runState.timelinePinnedToLatest = true;
+        runState.timelineUnseenEvents = 0;
+        setTimelineJumpLatestVisible(runState, false);
+      }
+      scrollTimelineToBottom(messages);
+    } else if (runState && changed > 0) {
+      runState.timelinePinnedToLatest = false;
+      runState.timelineUnseenEvents = Math.min(99, (runState.timelineUnseenEvents || 0) + changed);
+      setTimelineJumpLatestVisible(runState, true);
+    }
   }
   timelineEventBuffers.clear();
+}
+
+function findRecentTimelineEventNode(messages, fragment, signature, coalesceKey) {
+  const match = node => {
+    if (!node?.classList?.contains("timeline-event")) return false;
+    if (node.dataset.timelineSignature === signature) return true;
+    return Boolean(coalesceKey && node.dataset.timelineCoalesceKey === coalesceKey);
+  };
+  for (let node = fragment?.lastElementChild; node; node = node.previousElementSibling) {
+    if (match(node)) return node;
+  }
+  let scanned = 0;
+  for (let node = messages?.lastElementChild; node && scanned < 18; node = node.previousElementSibling, scanned += 1) {
+    if (match(node)) return node;
+  }
+  return null;
+}
+
+function timelineEventSignature(event = {}) {
+  return [
+    event.tone || "neutral",
+    event.title || "",
+    event.detail || ""
+  ].map(timelineSignaturePart).join("\u001f");
+}
+
+function timelineEventCoalesceKey(event = {}) {
+  const tone = timelineSignaturePart(event.tone || "neutral");
+  const title = timelineSignaturePart(event.title || "");
+  const detail = timelineSignaturePart(event.detail || "");
+  if (isLowSignalTimelineRepeat(title, detail) || isFragmentaryTimelineEvent(title, detail)) {
+    return [tone, title].join("\u001f");
+  }
+  return [tone, title, detail].join("\u001f");
+}
+
+function timelineEventDisplayDetail(event = {}) {
+  const title = timelineSignaturePart(event.title || "");
+  const detail = timelineSignaturePart(event.detail || "");
+  return isFragmentaryTimelineEvent(title, detail) ? "" : detail;
+}
+
+function isFragmentaryTimelineEvent(title, detail) {
+  if (!title || !detail) return false;
+  if (!/^[a-z0-9][a-z0-9_-]{2,}$/i.test(title) || !title.includes("-")) return false;
+  if (detail.length > 40) return false;
+  if (/[=\\]|https?:|approval|required|failed|error|completed|running/i.test(detail)) return false;
+  if (/已完成|失败|错误|审批|运行中|等待/.test(detail)) return false;
+  return true;
+}
+
+function isLowSignalTimelineRepeat(title, detail) {
+  const text = `${title} ${detail}`.toLowerCase();
+  return /\b(activated|activating|initialized|initializing|starting|started|syncing|reconnecting)\b/.test(text)
+    || /已激活|激活中|初始化|开始执行|正在同步|重新连接/.test(text);
+}
+
+function timelineSignaturePart(value) {
+  return String(value || "").replace(/\s+/g, " ").trim();
+}
+
+function incrementTimelineRepeat(node, event = {}) {
+  const next = Math.max(1, Number(node.dataset.timelineRepeatCount || "1")) + 1;
+  node.dataset.timelineRepeatCount = String(next);
+  const card = node.querySelector(".timeline-card");
+  if (!card) return;
+  const title = timelineSignaturePart(event.title || "");
+  const detail = timelineEventDisplayDetail(event);
+  const body = card.querySelector("p");
+  if (detail && body && body.textContent !== detail) body.textContent = detail;
+  if (!detail && body && isFragmentaryTimelineEvent(title, timelineSignaturePart(event.detail || ""))) body.remove();
+  let badge = card.querySelector(".timeline-repeat-count");
+  if (!badge) {
+    badge = document.createElement("span");
+    badge.className = "timeline-repeat-count";
+    card.appendChild(badge);
+  }
+  badge.textContent = `x${next}`;
+  badge.setAttribute("aria-label", `x${next}`);
+}
+
+function shouldStickTimelineToBottom(messages, entries = []) {
+  if (!messages) return true;
+  if (entries.some(item => item.options.stickToBottom === true)) return true;
+  if (entries.some(item => item.options.stickToBottom === false)) return false;
+  const runState = timelineRunStates.get(messages);
+  if (runState && runState.timelinePinnedToLatest === false) return false;
+  const eventCount = messages.querySelectorAll(".timeline-event").length;
+  if (eventCount < 3) return true;
+  return isScrollNearBottom(messages, 140);
+}
+
+function scrollTimelineToBottom(messages) {
+  if (!messages) return;
+  messages.scrollTop = messages.scrollHeight;
+  requestAnimationFrame(() => {
+    messages.scrollTop = messages.scrollHeight;
+  });
+}
+
+function setTimelineJumpLatestVisible(runState, visible) {
+  const button = runState?.timelineJumpLatest;
+  if (!button) return;
+  const count = Math.max(0, Number(runState.timelineUnseenEvents || 0));
+  button.classList.toggle("hidden", !visible || count <= 0);
+  button.textContent = count > 0
+    ? t("chat.timelineJumpLatestCount", { count })
+    : t("chat.timelineJumpLatest");
 }
 
 function captureRunViewState(state) {
@@ -5937,11 +6173,23 @@ function captureRunViewState(state) {
 function restoreRunViewState(state, viewState, options = {}) {
   if (!viewState) return;
   restoreRunScrollNode(state?.messages, viewState.timeline);
+  if (state?.messages && viewState.timeline) {
+    state.timelinePinnedToLatest = Boolean(viewState.timeline.atBottom);
+    state.timelineUnseenEvents = 0;
+    setTimelineJumpLatestVisible(state, false);
+  }
   restoreRunScrollNode(state?.resultPreview, viewState.resultPreview);
   restoreRunScrollNode(state?.resultOutput, viewState.resultOutput);
   restoreRunScrollNode(state?.runAttention, viewState.attention);
   requestAnimationFrame(() => {
     restoreRunScrollNode(state?.messages, viewState.timeline);
+    if (state?.messages && viewState.timeline) {
+      state.timelinePinnedToLatest = isScrollNearBottom(state.messages, 72);
+      if (state.timelinePinnedToLatest) {
+        state.timelineUnseenEvents = 0;
+        setTimelineJumpLatestVisible(state, false);
+      }
+    }
     restoreRunScrollNode(state?.resultPreview, viewState.resultPreview);
     restoreRunScrollNode(state?.resultOutput, viewState.resultOutput);
     restoreRunScrollNode(state?.runAttention, viewState.attention);

@@ -251,6 +251,28 @@ func (s *Server) handleApprovalAction(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	callID, action := parts[0], parts[1]
+	pending := pendingApprovalSummary(s.sessionSnapshotWithApprovalRisk().PendingApprovals, callID)
+	if strings.TrimSpace(pending.AgentRunID) != "" && strings.TrimSpace(pending.WorkflowName) == "" {
+		runAction, ok := legacyApprovalAgentRunAction(action)
+		if !ok {
+			http.NotFound(w, r)
+			return
+		}
+		if !s.agentRunToolApprovalResumable(callID) {
+			http.Error(w, agentRunToolApprovalActionReason(false), http.StatusConflict)
+			return
+		}
+		if err := s.runAgentRunToolApprovalAction(r.Context(), pending.AgentRunID, callID, runAction, nil); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
+		if updated, ok := s.runtime.AgentRun(pending.AgentRunID); ok {
+			writeJSON(w, s.agentRunWithApprovalRisk(updated))
+			return
+		}
+		http.NotFound(w, r)
+		return
+	}
 	var (
 		result schema.ToolResult
 		err    error
@@ -371,6 +393,17 @@ func (s *Server) handleApprovalActionStream(w http.ResponseWriter, r *http.Reque
 	}
 	write := s.streamHandlerWithApprovalRisk(writer.write)
 	pending := pendingApprovalSummary(s.sessionSnapshotWithApprovalRisk().PendingApprovals, callID)
+	if strings.TrimSpace(pending.AgentRunID) != "" && strings.TrimSpace(pending.WorkflowName) == "" {
+		runAction, ok := legacyApprovalAgentRunAction(action)
+		if !ok {
+			_ = write(schema.StreamEvent{Type: schema.StreamEventError, Content: "unknown approval action", IsError: true})
+			return
+		}
+		if err := s.runAgentRunToolApprovalAction(r.Context(), pending.AgentRunID, callID, runAction, write); err != nil {
+			_ = write(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), IsError: true})
+		}
+		return
+	}
 	if strings.TrimSpace(pending.WorkflowName) != "" {
 		approve, remember, ok := approvalAction(action)
 		if !ok {
@@ -378,7 +411,7 @@ func (s *Server) handleApprovalActionStream(w http.ResponseWriter, r *http.Reque
 			return
 		}
 		if approve && remember {
-			if err := s.runtime.RememberPendingToolApproval(callID); err != nil {
+			if err := s.runtime.RememberPendingWorkflowToolApproval(callID); err != nil {
 				_ = write(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), IsError: true})
 				return
 			}
@@ -418,6 +451,19 @@ func (s *Server) handleApprovalActionStream(w http.ResponseWriter, r *http.Reque
 	}
 	if resumed {
 		_ = write(schema.StreamEvent{Type: schema.StreamEventFinalMessage, Content: resumeResult.Output, AgentID: resumeResult.AgentID, Mode: resumeResult.Mode})
+	}
+}
+
+func legacyApprovalAgentRunAction(action string) (string, bool) {
+	switch action {
+	case "approve":
+		return "approve_tool", true
+	case "approve-remember":
+		return "approve_remember_tool", true
+	case "deny":
+		return "deny_tool", true
+	default:
+		return "", false
 	}
 }
 

@@ -6082,9 +6082,16 @@ func (w *WorkflowRunner) captureWorkflowGraphApprovalContext(graph workflowGraph
 }
 
 func (w *WorkflowRunner) approveWorkflowGraphTool(ctx context.Context, pending pendingApproval) (schema.ToolResult, error) {
+	if autoApproved, ok := w.runtime.AutoApprovedToolResult(ctx, pending.call.ID); ok {
+		return autoApproved, nil
+	}
 	resolved := false
 	if _, ok := w.runtime.PendingApproval(pending.call.ID); ok {
-		resolved = w.runtime.ResolvePendingApproval(pending.call.ID, true).Found
+		decision := w.runtime.ResolvePendingApproval(pending.call.ID, true)
+		resolved = decision.Found
+		if decision.Found {
+			pending = decision.Pending
+		}
 	}
 	result, err := w.runtime.mcp.CallTool(ctx, pending.call.Name, pending.call.Arguments)
 	if err != nil {
