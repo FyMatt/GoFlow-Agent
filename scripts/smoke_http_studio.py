@@ -10,6 +10,8 @@ CI on Linux and locally on Windows.
 from __future__ import annotations
 
 import argparse
+import gzip
+import hashlib
 import json
 import os
 import shutil
@@ -21,6 +23,7 @@ import textwrap
 import time
 import urllib.error
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 
@@ -187,6 +190,43 @@ def write_smoke_runtime_config(runtime_home: Path) -> Path:
     return config_path
 
 
+def write_smoke_artifact(workspace: Path) -> dict:
+    content = "# Smoke artifact\n\nFull artifact body for memory viewer."
+    encoded = content.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    ref = f"sha256:{digest}"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    artifact_dir = workspace / ".goflow" / "artifacts"
+    objects_dir = artifact_dir / "objects"
+    objects_dir.mkdir(parents=True, exist_ok=True)
+    object_path = objects_dir / f"{digest}.json.gz"
+    obj = {
+        "ref": ref,
+        "hash": digest,
+        "created_at": now,
+        "updated_at": now,
+        "mime": "text/markdown",
+        "summary": "Smoke artifact summary",
+        "content": content,
+        "size": len(encoded),
+        "stored_bytes": 0,
+        "kind": "smoke_report",
+        "title": "Smoke Artifact Report",
+        "metadata": {"source": "smoke"},
+    }
+    with gzip.open(object_path, "wt", encoding="utf-8") as file:
+        json.dump(obj, file, indent=2)
+        file.write("\n")
+    stored_bytes = object_path.stat().st_size
+    metadata = {key: value for key, value in obj.items() if key != "content"}
+    metadata["stored_bytes"] = stored_bytes
+    (artifact_dir / "index.json").write_text(
+        json.dumps({"updated_at": now, "objects": [metadata]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {"hash": digest, "ref": ref, "content": content, "title": obj["title"]}
+
+
 def smoke_endpoint(base_url: str, path: str, needles: list[str], expected_status: int = 200) -> None:
     status, body, _ = request_text(f"{base_url}{path}")
     if status != expected_status:
@@ -297,6 +337,7 @@ def main() -> int:
         cache_dir.mkdir()
         gotmp_dir.mkdir()
         workspace.mkdir()
+        smoke_artifact = write_smoke_artifact(workspace)
         config_path = write_smoke_runtime_config(runtime_home)
         env.setdefault("GOCACHE", str(cache_dir))
         env.setdefault("GOTMPDIR", str(gotmp_dir))
@@ -322,9 +363,31 @@ def main() -> int:
             stderr=subprocess.STDOUT,
         )
         wait_for_server(base_url, proc, args.timeout)
-        smoke_endpoint(base_url, "/console", ["GoFlow Console", "Agent Studio", "/assets/app.js"])
-        smoke_endpoint(base_url, "/workflows", ["GoFlow Console", "Workflow Studio", "/assets/app.js"])
-        smoke_endpoint(base_url, "/assets/app.js", ["renderWorkflows", "renderCatalog", "renderSettings"])
+        smoke_endpoint(base_url, "/console", ["GoFlow Console", "Agent Workbench", "/assets/app.js"])
+        smoke_endpoint(base_url, "/workflows", ["GoFlow Console", "Workflows", "/assets/app.js"])
+        smoke_endpoint(base_url, "/assets/app.js", ["renderWorkflows", "renderCatalog", "renderSettings", "renderMemory"])
+        smoke_endpoint(
+            base_url,
+            "/assets/views/chat.js",
+            [
+                "runHistoryLazyPanelsHTML",
+                "data-history-lazy-stack",
+                "fetchWorkflowRun(run.id, options.summary ? { summary: true } : {})",
+                "include_content: true, limit: 12",
+            ],
+        )
+        smoke_endpoint(
+            base_url,
+            "/assets/views/memory.js",
+            [
+                "renderMemory",
+                "fetchArtifactObjects",
+                "memory-artifact-form",
+                "memory-artifact-index",
+                "data-artifact-open",
+                "memory-artifact-load-button",
+            ],
+        )
         smoke_endpoint(
             base_url,
             "/assets/views/status.js",
@@ -356,8 +419,14 @@ def main() -> int:
                 "data-advanced-guide-example",
                 "data-artifact-guide-action",
                 "data-acceptance-guide-action",
+                "workflow-context-contract",
+                "stageContextInclude",
+                "stageContextMaxTokens",
                 "workflowTemplateResourceRefs",
                 "workflow-stage-data-flow",
+                "workflow-resource-picker",
+                "data-stage-resource-choice",
+                "refreshActiveWorkflowInspectorPanel",
             ],
         )
         smoke_endpoint(
@@ -370,6 +439,8 @@ def main() -> int:
                 "resource-starter-panel",
                 "resource-relation-panel",
                 "resource-override-paths",
+                "resource-dependency-picker",
+                "data-resource-dependency-choice",
             ],
         )
         smoke_endpoint(
@@ -390,6 +461,20 @@ def main() -> int:
                 "catalog.relationTitle",
                 "catalog.starterCreateFull",
                 "catalog.toolScaffolds",
+                "catalog.dependencyPickerTitle",
+                "catalog.dependencySkillTitle",
+                "catalog.starterFlowTitle",
+                "memory.recentArtifacts",
+                "memory.artifactLoading",
+                "memory.loadArtifact",
+                "workflow.contextContractTitle",
+                "workflow.contextInclude",
+                "workflow.contextMaxTokens",
+                "workflow.resourcePicker.agent.title",
+                "workflow.resourcePicker.team_template.title",
+                "chat.runHistoryLazyTitle",
+                "chat.runHistoryLazySummaryFirst",
+                "chat.runHistoryLazyLoad",
             ],
         )
         smoke_endpoint(
@@ -406,9 +491,37 @@ def main() -> int:
                 "settings-update-check-card",
                 "settings-update-integrity",
                 "settings-update-verify",
+                "workflow-context-contract",
+                "workflow-resource-picker",
+                "workflow-resource-card",
+                "resource-dependency-picker",
+                "resource-dependency-card",
+                "resource-starter-flow",
+                "content-visibility",
+                "memory-artifact-index",
+                "memory-artifact-load-button",
+                "memory-artifact-body",
+                "run-history-lazy-stack",
+                "run-history-lazy-panel",
+                "run-history-lazy-timeline",
             ],
         )
         session = smoke_json_endpoint(base_url, "/api/session", ["active_agent", "mode"])
+        memory = smoke_json_endpoint(base_url, "/api/memory", ["project", "file_index", "errors"])
+        if "Full artifact body for memory viewer" in json.dumps(memory):
+            raise AssertionError(f"/api/memory should not include full artifact content: {memory!r}")
+        artifact_index = smoke_json_endpoint(base_url, "/api/artifacts?limit=1", ["objects"])
+        index_text = json.dumps(artifact_index)
+        if smoke_artifact["hash"] not in index_text or smoke_artifact["title"] not in index_text:
+            raise AssertionError(f"/api/artifacts did not include smoke artifact metadata: {artifact_index!r}")
+        if smoke_artifact["content"] in index_text:
+            raise AssertionError(f"/api/artifacts should omit full artifact content: {artifact_index!r}")
+        artifact_meta = smoke_json_endpoint(base_url, f"/api/artifacts/{smoke_artifact['hash']}", ["ref", "hash"])
+        if artifact_meta.get("content"):
+            raise AssertionError(f"/api/artifacts/{{hash}} should omit content by default: {artifact_meta!r}")
+        artifact_detail = smoke_json_endpoint(base_url, f"/api/artifacts/{smoke_artifact['hash']}?content=1", ["ref", "hash", "content"])
+        if artifact_detail.get("content") != smoke_artifact["content"]:
+            raise AssertionError(f"/api/artifacts/{{hash}}?content=1 did not return full content: {artifact_detail!r}")
         runtime = smoke_json_endpoint(base_url, "/api/runtime", ["active_agent", "mode", "agents", "tools"])
         assert_mcp_runtime_metrics(runtime)
         update_policy = smoke_json_endpoint(base_url, "/api/update-policy", ["current_version", "release_feed", "check_endpoint", "network_opt_in", "check_enabled"])

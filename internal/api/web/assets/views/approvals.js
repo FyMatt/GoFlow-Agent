@@ -41,7 +41,7 @@ export async function renderApprovals(root, runtime, refreshRuntime, options = {
           <span id="approvalStateBadge" class="badge">${initial ? t("approvals.needsDecision") : t("approvals.nothingSelected")}</span>
         </div>
 
-        <div id="approvalEmpty" class="item muted ${initial ? "hidden" : ""}">${t("approvals.emptyDetail")}</div>
+        <div id="approvalEmpty" class="${initial ? "hidden" : ""}">${renderApprovalsEmptyDetail()}</div>
         <div id="approvalDetailBody" class="approval-detail-body ${initial ? "" : "hidden"}">
           <div class="approval-summary-card">
             <div class="approval-summary-head">
@@ -51,12 +51,20 @@ export async function renderApprovals(root, runtime, refreshRuntime, options = {
               </div>
               <span id="approvalRisk" class="badge warn">${t("approvals.needsDecision")}</span>
             </div>
-            <table class="kv compact">
-              <tr><th>${t("approvals.type")}</th><td id="approvalType">-</td></tr>
-              <tr><th>${t("approvals.callId")}</th><td id="approvalCallId">-</td></tr>
-              <tr><th>${t("approvals.subject")}</th><td id="approvalToolField">-</td></tr>
-              <tr><th>${t("approvals.arguments")}</th><td id="approvalArgs">-</td></tr>
-            </table>
+            <div class="approval-user-summary">
+              <span><small>${t("approvals.subject")}</small><b id="approvalToolField">-</b></span>
+              <span><small>${t("approvals.arguments")}</small><b id="approvalArgs">-</b></span>
+            </div>
+            <details class="approval-tech-details">
+              <summary>
+                <span>${t("approvals.technicalDetails")}</span>
+                <small>${t("approvals.technicalDetailsHelp")}</small>
+              </summary>
+              <table class="kv compact">
+                <tr><th>${t("approvals.type")}</th><td id="approvalType">-</td></tr>
+                <tr><th>${t("approvals.callId")}</th><td id="approvalCallId">-</td></tr>
+              </table>
+            </details>
           </div>
 
           <div id="approvalContext" class="approval-context"></div>
@@ -69,19 +77,20 @@ export async function renderApprovals(root, runtime, refreshRuntime, options = {
               <button class="primary hidden" data-action="approve-all">${t("approvals.approveAllTools")}</button>
               <button data-action="approve-remember">${t("approvals.approveRememberLabel")}</button>
               <button class="danger" data-action="deny">${t("approvals.denyLabel")}</button>
+              <button type="button" class="subtle" data-approval-inspect>${t("approvals.inspectRequest")}</button>
               <button class="danger hidden" data-action="cancel">${t("chat.cancelRun")}</button>
             </div>
           </div>
 
-          <div class="approval-log-card">
-            <div class="panel-head compact">
+          <details class="approval-log-card">
+            <summary class="panel-head compact">
               <div>
                 <h3>${t("approvals.resumeLog")}</h3>
                 <p class="muted">${t("approvals.resumeHelp")}</p>
               </div>
-            </div>
+            </summary>
             <pre id="approvalLog" class="log approval-log"></pre>
-          </div>
+          </details>
         </div>
       </section>
     </div>`;
@@ -100,10 +109,17 @@ export async function renderApprovals(root, runtime, refreshRuntime, options = {
   const args = root.querySelector("#approvalArgs");
   const decisionHelp = root.querySelector("#approvalDecisionHelp");
   const context = root.querySelector("#approvalContext");
+  const inspectButton = root.querySelector("[data-approval-inspect]");
 
   if (!approvals.length) {
     root.dataset.selectedApprovalId = "";
-    list.innerHTML = `<div class="item muted">${t("approvals.empty")}</div>`;
+    list.innerHTML = renderApprovalsEmptyList();
+    root.querySelectorAll("[data-approvals-target]").forEach(button => {
+      button.addEventListener("click", () => {
+        const target = button.dataset.approvalsTarget || "";
+        if (target) location.hash = target;
+      });
+    });
     registerApprovalsAutoRefresh(root, refreshRuntime, () => false);
     return;
   }
@@ -129,6 +145,11 @@ export async function renderApprovals(root, runtime, refreshRuntime, options = {
     decisionHelp.textContent = approvalDecisionHelp(approval);
     context.innerHTML = approvalContextHTML(approval);
     context.classList.toggle("hidden", !context.innerHTML.trim());
+    if (inspectButton) {
+      inspectButton.textContent = approvalInspectLabel(approval);
+      inspectButton.title = t("approvals.inspectRequestTitle");
+      inspectButton.dataset.approvalInspectTarget = approvalInspectTarget(approval);
+    }
     list.querySelectorAll(".approval-card").forEach(card => {
       card.classList.toggle("active", card.dataset.approvalId === approval.id);
     });
@@ -205,7 +226,7 @@ export async function renderApprovals(root, runtime, refreshRuntime, options = {
     }
   };
 
-  list.innerHTML = approvals.map(renderApprovalCard).join("");
+  list.innerHTML = renderApprovalGroups(approvals);
   list.querySelectorAll(".approval-card").forEach(item => {
     const approval = approvals.find(candidate => candidate.id === item.dataset.approvalId);
     item.addEventListener("click", () => updateSelection(approval));
@@ -214,10 +235,33 @@ export async function renderApprovals(root, runtime, refreshRuntime, options = {
   detailBody.querySelectorAll("[data-action]").forEach(button => {
     button.addEventListener("click", () => submitAction(button.dataset.action));
   });
+  inspectButton?.addEventListener("click", () => {
+    const approval = approvals.find(item => item.id === selectedID);
+    location.hash = approvalInspectTarget(approval);
+  });
 
   updateSelection(initial);
 
   registerApprovalsAutoRefresh(root, refreshRuntime, () => submitting);
+}
+
+function renderApprovalsEmptyList() {
+  return `<div class="approval-empty-card">
+    <strong>${escapeHTML(t("approvals.empty"))}</strong>
+    <p>${escapeHTML(t("approvals.emptyQueueHelp"))}</p>
+    <button type="button" data-approvals-target="playground">${escapeHTML(t("approvals.openRun"))}</button>
+  </div>`;
+}
+
+function renderApprovalsEmptyDetail() {
+  return `<div class="approval-empty-card detail">
+    <strong>${escapeHTML(t("approvals.emptyDetailTitle"))}</strong>
+    <p>${escapeHTML(t("approvals.emptyDetail"))}</p>
+    <div class="approval-empty-actions">
+      <button type="button" data-approvals-target="status">${escapeHTML(t("approvals.openStatus"))}</button>
+      <button type="button" data-approvals-target="workflows">${escapeHTML(t("approvals.openWorkflows"))}</button>
+    </div>
+  </div>`;
 }
 
 async function refreshRuntimeAfterApproval(refreshRuntime) {
@@ -692,6 +736,104 @@ function normalizeWorkflowRunList(value) {
   return [];
 }
 
+function renderApprovalGroups(approvals) {
+  return approvalGroups(approvals).map(group => {
+    const risk = group.risk || { label: t("approvals.needsDecision"), tone: "warn" };
+    return `<section class="approval-group" data-approval-group="${escapeHTML(group.key)}">
+      <div class="approval-group-head">
+        <div>
+          <strong>${escapeHTML(group.title)}</strong>
+          <span>${escapeHTML(group.subtitle)}</span>
+        </div>
+        <span class="badge ${escapeHTML(risk.tone || "warn")}">${escapeHTML(risk.label)}</span>
+      </div>
+      <div class="approval-group-list">
+        ${group.items.map(renderApprovalCard).join("")}
+      </div>
+    </section>`;
+  }).join("");
+}
+
+function approvalGroups(approvals) {
+  const groups = new Map();
+  (approvals || []).forEach(approval => {
+    const meta = approvalGroupMeta(approval);
+    if (!groups.has(meta.key)) {
+      groups.set(meta.key, { ...meta, items: [], risk: null, riskRank: -1 });
+    }
+    const group = groups.get(meta.key);
+    group.items.push(approval);
+    const risk = approvalRiskBadge(approval);
+    const rank = approvalRiskDisplayRank(risk);
+    if (rank > group.riskRank) {
+      group.risk = risk;
+      group.riskRank = rank;
+    }
+  });
+  return [...groups.values()].map(group => ({
+    ...group,
+    subtitle: approvalGroupSubtitle(group)
+  }));
+}
+
+function approvalGroupMeta(approval) {
+  if (approval?.kind === "workflow") {
+    const run = approval.run || {};
+    const id = String(run.id || approval.callID || approval.id || "").trim();
+    const name = approvalDisplayValue(run.name || run.workflow || t("approvals.groupWorkflow"));
+    const position = approvalDisplayValue(run.next_stage || run.pending_tool_name || run.pending_call_id || "");
+    return {
+      key: `workflow:${id || name}`,
+      title: name,
+      kindLabel: t("approvals.groupWorkflow"),
+      position
+    };
+  }
+  const raw = approval?.raw || {};
+  const agentRunID = String(raw.agent_run_id || approval.agentRunID || "").trim();
+  if (agentRunID) {
+    return {
+      key: `agent-run:${agentRunID}`,
+      title: t("approvals.groupAgentRun"),
+      kindLabel: approvalDisplayValue(raw.agent_id || t("approvals.groupAgentRun")),
+      position: agentRunID
+    };
+  }
+  const agentID = String(raw.agent_id || approval.agentID || "").trim();
+  if (agentID) {
+    return {
+      key: `agent:${agentID}`,
+      title: approvalDisplayValue(agentID),
+      kindLabel: t("approvals.groupAgent"),
+      position: approvalDisplayValue(approval.subject || approval.title || "")
+    };
+  }
+  return {
+    key: "tool-queue",
+    title: t("approvals.groupToolQueue"),
+    kindLabel: t("approvals.typeTool"),
+    position: approvalDisplayValue(approval.subject || approval.title || "")
+  };
+}
+
+function approvalGroupSubtitle(group) {
+  const parts = [
+    t("approvals.groupCount", { count: group.items.length }),
+    group.kindLabel,
+    group.position
+  ].filter(Boolean);
+  return parts.join(" / ");
+}
+
+function approvalRiskDisplayRank(risk) {
+  const tone = String(risk?.tone || "").toLowerCase();
+  if (tone === "bad") return 4;
+  if (tone === "warn") return 3;
+  if (tone === "neutral") return 2;
+  if (tone === "good") return 1;
+  return 0;
+}
+
 function renderApprovalCard(approval) {
   const badge = approvalDisplayValue(approval.typeLabel || (approval.kind === "workflow" ? t("approvals.typeWorkflow") : t("approvals.typeTool")));
   const workflowMeta = approval.workflowApprovalType === "tool"
@@ -700,14 +842,99 @@ function renderApprovalCard(approval) {
   const meta = approval.kind === "workflow" && workflowMeta
     ? `${approval.workflowApprovalType === "tool" ? t("approvals.pendingTool") : t("approvals.currentStage")}: ${approvalDisplayValue(workflowMeta)}`
     : approval.callID || "";
+  const summary = approvalDisplayText(approval.summary || t("approvals.summaryFallback"));
+  const risk = approvalRiskBadge(approval);
+  const answers = approvalCardAnswers(approval);
   return `<button type="button" class="item approval-card ${approval.kind === "workflow" ? "workflow-approval" : ""}" data-approval-id="${escapeHTML(approval.id)}">
     <div class="approval-card-head">
       <strong>${escapeHTML(approvalDisplayValue(approval.title || "-"))}</strong>
-      <span class="badge ${approval.available === false ? "bad" : "warn"}">${escapeHTML(badge)}</span>
+      <span class="badge ${escapeHTML(risk.tone || (approval.available === false ? "bad" : "warn"))}">${escapeHTML(badge)}</span>
     </div>
-    <p>${escapeHTML(approvalDisplayText(approval.summary || t("approvals.summaryFallback")))}</p>
-    <small>${escapeHTML(meta)}</small>
+    <div class="approval-card-answers">
+      ${answers.map(item => `<span>
+        <small>${escapeHTML(item.label)}</small>
+        <b>${escapeHTML(item.value)}</b>
+      </span>`).join("")}
+    </div>
+    <p>${escapeHTML(truncateText(summary, 180))}</p>
+    <small>${escapeHTML(meta || t("approvals.inspectRequestTitle"))}</small>
   </button>`;
+}
+
+function approvalCardAnswers(approval) {
+  return [
+    { label: t("approvals.cardWillRun"), value: approvalCardWillRun(approval) },
+    { label: t("approvals.cardMayTouch"), value: approvalCardMayTouch(approval) },
+    { label: t("approvals.cardWhyNeeded"), value: approvalCardWhyNeeded(approval) }
+  ];
+}
+
+function approvalCardWillRun(approval) {
+  if (approval?.kind === "workflow" && approval.workflowApprovalType === "tool") {
+    return approvalDisplayValue(approval.run?.pending_tool_name || approval.run?.pending_call_id || approval.subject || approval.title || t("approvals.approveTool"));
+  }
+  if (approval?.kind === "workflow") {
+    return approvalDisplayValue(approval.run?.next_stage || approval.subject || approval.title || t("approvals.approveStage"));
+  }
+  return approvalDisplayValue(approval?.subject || approval?.title || t("approvals.typeTool"));
+}
+
+function approvalCardMayTouch(approval) {
+  const risk = approval?.toolRisk?.risk || {};
+  const kind = String(risk.kind || "").toLowerCase();
+  const capabilities = (Array.isArray(risk.capabilities) ? risk.capabilities : [])
+    .map(item => String(item || "").toLowerCase());
+  const names = [
+    approval?.title,
+    approval?.subject,
+    approval?.raw?.tool_name,
+    approval?.run?.pending_tool_name,
+    ...(Array.isArray(approval?.toolNames) ? approval.toolNames : [])
+  ].map(item => String(item || "").toLowerCase());
+  const hasCapability = pattern => capabilities.some(item => item.includes(pattern));
+  const hasName = pattern => names.some(item => item.includes(pattern));
+  if (risk.destructive) return t("approvals.scopeDestructive");
+  if (kind.includes("exec") || kind.includes("command") || hasCapability("exec") || hasCapability("command") || hasCapability("process") || hasName("exec") || hasName("shell") || hasName("command")) {
+    return t("approvals.scopeCommands");
+  }
+  if (kind.includes("network") || hasCapability("network") || hasCapability("http") || hasName("web") || hasName("http") || hasName("fetch")) {
+    return t("approvals.scopeNetwork");
+  }
+  if (kind.includes("write") || hasCapability("write") || hasCapability("filesystem") || hasName("write") || hasName("delete") || hasName("remove") || hasName("patch")) {
+    return t("approvals.scopeWorkspaceWrite");
+  }
+  if (risk.workspace_scoped_inputs === true) {
+    return risk.workspace_scope_enforced === true ? t("approvals.scopeWorkspaceBoundary") : t("approvals.scopePathInputs");
+  }
+  const diffCount = approval?.kind === "workflow" ? workflowRunDiffs(approval.run).length : 0;
+  if (diffCount) return t("approvals.scopeChangedFiles", { count: diffCount });
+  if (approval?.kind === "workflow") return t("approvals.scopeWorkflowState");
+  return t("approvals.scopeCurrentRun");
+}
+
+function approvalCardWhyNeeded(approval) {
+  if (approval?.available === false) return t("approvals.unavailable");
+  const risk = approval?.toolRisk?.risk || {};
+  if (risk.destructive) return t("approvals.reasonDestructive");
+  if (risk.requires_approval) return t("approvals.reasonToolPolicy");
+  const reason = localizedApprovalReason(approval?.reason || "");
+  if (reason) return truncateText(reason, 90);
+  if (approval?.kind === "workflow" && approval.workflowApprovalType === "tool") {
+    return t("approvals.reasonWorkflowTool");
+  }
+  if (approval?.kind === "workflow") return t("approvals.reasonWorkflowGate");
+  return t("approvals.reasonProtectedTool");
+}
+
+function approvalInspectTarget(approval) {
+  if (approval?.kind === "workflow" || approval?.raw?.agent_run_id) return "playground";
+  return "status";
+}
+
+function approvalInspectLabel(approval) {
+  return approval?.kind === "workflow" || approval?.raw?.agent_run_id
+    ? t("approvals.inspectRun")
+    : t("approvals.inspectRequest");
 }
 
 function syncActionButtons(approval, detailBody) {

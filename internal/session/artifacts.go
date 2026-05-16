@@ -17,6 +17,9 @@ const (
 type SessionArtifactSnapshot struct {
 	ID            string            `json:"id"`
 	Ref           string            `json:"ref"`
+	ArtifactRef   string            `json:"artifact_ref,omitempty"`
+	Hash          string            `json:"hash,omitempty"`
+	Mime          string            `json:"mime,omitempty"`
 	CreatedAt     string            `json:"created_at,omitempty"`
 	Kind          string            `json:"kind,omitempty"`
 	Title         string            `json:"title,omitempty"`
@@ -24,6 +27,7 @@ type SessionArtifactSnapshot struct {
 	Content       string            `json:"content,omitempty"`
 	ContentBytes  int               `json:"content_bytes,omitempty"`
 	StoredBytes   int               `json:"stored_bytes,omitempty"`
+	Deduplicated  bool              `json:"deduplicated,omitempty"`
 	Truncated     bool              `json:"truncated,omitempty"`
 	ToolName      string            `json:"tool_name,omitempty"`
 	ToolCallID    string            `json:"tool_call_id,omitempty"`
@@ -48,9 +52,16 @@ func (s *State) AddArtifact(artifact SessionArtifactSnapshot) SessionArtifactSna
 		return SessionArtifactSnapshot{}
 	}
 	now := time.Now().UTC()
+	rawContent := artifact.Content
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	artifact = normalizeSessionArtifactLocked(s.artifacts, artifact, now)
+	if s.artifactStore != nil && rawContent != "" {
+		artifact.Content = rawContent
+		artifact.ContentBytes = len([]byte(rawContent))
+		artifact.Truncated = false
+	}
+	artifact = s.externalizeArtifactLocked(artifact)
 	s.artifacts = append([]SessionArtifactSnapshot{artifact}, s.artifacts...)
 	if len(s.artifacts) > maxSessionArtifacts {
 		s.artifacts = append([]SessionArtifactSnapshot(nil), s.artifacts[:maxSessionArtifacts]...)
@@ -67,7 +78,13 @@ func (s *State) Artifact(idOrRef string) (SessionArtifactSnapshot, bool) {
 	defer s.mu.RUnlock()
 	for _, artifact := range s.artifacts {
 		if artifact.ID == id || artifact.Ref == idOrRef {
-			return copySessionArtifact(artifact), true
+			return s.hydrateArtifactLocked(copySessionArtifact(artifact)), true
+		}
+		if strings.TrimSpace(artifact.ArtifactRef) != "" && artifact.ArtifactRef == strings.TrimSpace(idOrRef) {
+			return s.hydrateArtifactLocked(copySessionArtifact(artifact)), true
+		}
+		if strings.TrimSpace(artifact.Hash) != "" && (artifact.Hash == strings.TrimPrefix(strings.TrimSpace(idOrRef), "sha256:")) {
+			return s.hydrateArtifactLocked(copySessionArtifact(artifact)), true
 		}
 	}
 	return SessionArtifactSnapshot{}, false
@@ -110,6 +127,7 @@ func normalizeSessionArtifactLocked(existing []SessionArtifactSnapshot, artifact
 	}
 	artifact.Kind = fallbackSessionArtifactValue(artifact.Kind, "tool_result")
 	artifact.Title = fallbackSessionArtifactValue(artifact.Title, fallbackSessionArtifactValue(artifact.ToolName, "Artifact"))
+	artifact.Mime = fallbackSessionArtifactValue(artifact.Mime, "text/plain")
 	artifact.ContentBytes = len([]byte(artifact.Content))
 	if len([]byte(artifact.Content)) > maxSessionArtifactContentBytes {
 		artifact.Content = trimSessionArtifactBytes(artifact.Content, maxSessionArtifactContentBytes)
@@ -124,6 +142,73 @@ func normalizeSessionArtifactLocked(existing []SessionArtifactSnapshot, artifact
 	}
 	artifact.Metadata = copyStringMapForArtifact(artifact.Metadata)
 	return artifact
+}
+
+func (s *State) externalizeArtifactLocked(artifact SessionArtifactSnapshot) SessionArtifactSnapshot {
+	if s == nil || s.artifactStore == nil || strings.TrimSpace(artifact.Content) == "" {
+		return artifact
+	}
+	object, deduplicated, err := s.artifactStore.Put(ArtifactObject{
+		CreatedAt: artifact.CreatedAt,
+		Mime:      artifact.Mime,
+		Summary:   artifact.Summary,
+		Content:   artifact.Content,
+		Kind:      artifact.Kind,
+		Title:     artifact.Title,
+		Metadata:  artifact.Metadata,
+	})
+	if err != nil {
+		return artifact
+	}
+	artifact.ArtifactRef = object.Ref
+	artifact.Hash = object.Hash
+	artifact.ContentBytes = object.Size
+	artifact.StoredBytes = int(object.StoredBytes)
+	artifact.Deduplicated = deduplicated
+	artifact.Content = ""
+	artifact.Truncated = false
+	if strings.TrimSpace(artifact.Summary) == "" {
+		artifact.Summary = object.Summary
+	}
+	return artifact
+}
+
+func (s *State) hydrateArtifactLocked(artifact SessionArtifactSnapshot) SessionArtifactSnapshot {
+	if s == nil || s.artifactStore == nil || strings.TrimSpace(artifact.Content) != "" {
+		return artifact
+	}
+	ref := firstArtifactObjectLookup(artifact.ArtifactRef, artifact.Hash)
+	if ref == "" {
+		return artifact
+	}
+	object, ok, err := s.artifactStore.Get(ref)
+	if err != nil || !ok {
+		return artifact
+	}
+	artifact.Content = object.Content
+	artifact.ArtifactRef = fallbackSessionArtifactValue(artifact.ArtifactRef, object.Ref)
+	artifact.Hash = fallbackSessionArtifactValue(artifact.Hash, object.Hash)
+	artifact.Mime = fallbackSessionArtifactValue(artifact.Mime, object.Mime)
+	if artifact.ContentBytes == 0 {
+		artifact.ContentBytes = object.Size
+	}
+	if artifact.StoredBytes == 0 {
+		artifact.StoredBytes = int(object.StoredBytes)
+	}
+	if strings.TrimSpace(artifact.Summary) == "" {
+		artifact.Summary = object.Summary
+	}
+	return artifact
+}
+
+func firstArtifactObjectLookup(values ...string) string {
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func uniqueSessionArtifactID(existing []SessionArtifactSnapshot, artifact SessionArtifactSnapshot, now time.Time) string {
@@ -183,7 +268,7 @@ func sessionArtifactMatchesFilter(artifact SessionArtifactSnapshot, filter Sessi
 	}
 	if filter.Query != "" {
 		query := strings.ToLower(strings.TrimSpace(filter.Query))
-		if !strings.Contains(strings.ToLower(strings.Join([]string{artifact.ID, artifact.Ref, artifact.Kind, artifact.Title, artifact.Summary, artifact.ToolName, artifact.ToolCallID, artifact.AgentID, artifact.Mode}, "\n")), query) {
+		if !strings.Contains(strings.ToLower(strings.Join([]string{artifact.ID, artifact.Ref, artifact.ArtifactRef, artifact.Hash, artifact.Kind, artifact.Title, artifact.Summary, artifact.ToolName, artifact.ToolCallID, artifact.AgentID, artifact.Mode}, "\n")), query) {
 			return false
 		}
 	}

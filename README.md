@@ -50,7 +50,10 @@ For end-user installation and deployment commands, see [Installation And Deploym
 - Durable ordinary Agent runs and Workflow runs with reconnectable event
   streams, replay, diffs, export, explicit cancel/retry, and run-scoped
   approvals
-- Per-workspace session persistence with workflow and pending approval snapshots
+- Workflow Studio canvas labels control-node branches, loop bodies, and
+  post-control paths, with hover/selection scope frames for ordinary users
+- Per-workspace session persistence with a lightweight `session.json` index and
+  complete compressed `session.full.json.gz` replay archive
 - Workspace confirmation gate: pure chat can run from the default directory, while file reads/writes, `@file` references, command execution, and workflows require a confirmed workspace
 - Audit logging and CLI trace/status/session output
 - External workspace mode via `--workspace`
@@ -100,10 +103,18 @@ Recommended first-run paths:
 - Python 3 on `PATH` if you want the `python_notes` MCP server
 - Docker or Podman if you want the recommended container sandbox for risky MCP
   tools
-- An OpenAI-compatible model endpoint
-- Environment variables for provider credentials and model
+- An OpenAI-compatible model endpoint for actual Agent runs
+- Provider credentials and model settings, configured either in Web Studio,
+  `configs/providers/*.yaml`, or environment variables
 
-### Configure environment variables
+### Configure a model provider
+
+GoFlow can start before a model provider is fully configured. This lets new
+users open Web Studio, inspect diagnostics, and fill Provider settings from the
+Resources or Settings pages. Agent runs will return a setup-required message
+until `base_url`, `api_key`, and `model` are configured.
+
+Environment variables remain supported:
 
 ```bash
 export GOFLOW_BASE_URL=http://localhost:11434/v1
@@ -114,7 +125,8 @@ export GOFLOW_BACKUP_API_KEY=$GOFLOW_API_KEY
 export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
 ```
 
-For a ready-to-edit template, copy `.env.example` and fill in your own values.
+For a ready-to-edit template, copy `.env.example` and fill in your own values,
+or paste the API Key directly into the Provider resource in Web Studio.
 
 On Windows, set the key in your shell and use the bootstrap script:
 
@@ -193,6 +205,14 @@ For the lowest-friction path:
 Workflow Studio exposes node metadata, examples, input/output references,
 approval gates, quality gates, and template composition so users do not need to
 guess which fields are valid before editing YAML.
+
+Workflow Studio opens in **Simple** mode by default for ordinary users. Simple
+mode keeps the canvas, templates, task cards, resource pickers, and visual flow
+controls visible while hiding raw maps, context contracts, execution-order
+internals, and run debugging. Turn on **Expert** mode when you want the complete
+developer surface: all node types, all inspector tabs, raw params, advanced
+routing, context contracts, input/output maps, and run diagnostics. Both modes
+save the same workflow schema.
 
 The **Observability** page shows live runtime health, current run focus, model
 cost diagnostics, and MCP tool pressure. Use the MCP pressure panel to spot
@@ -289,7 +309,9 @@ exit
 
 `--approve` pre-approves the planner -> fixer stage transition. Without it, GoFlow first asks whether to enter the fixer stage, then separately prompts again if a fixer tool call requires confirmation.
 
-`/new-workflow <name> [--template <template>]` creates `workflows/<name>/workflow.yaml`. The default template is `plan-fix-audit`; richer built-ins include `agent-framework-extension`, `software-quality-gate`, `web-research-risk`, `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`, `docs-review-publish`, `operations-runbook`, `customer-support-triage`, `human-input-security-review`, and `software-team-review-gate`. That file is executable through `/workflow <name> <request>` and can declare named stages with `agent`, `skill`, explicit `input`/`outputs`, replay `artifacts`, control nodes such as `condition`, `policy_guard`, `quality_gate`, `parallel`/`join`, `for_each`, `loop`, and `sub_workflow`, approval gates, and `next` edges.
+`/new-workflow <name> [--template <template>]` creates `workflows/<name>/workflow.yaml`. The default template is `plan-fix-audit`; richer built-ins include `complex-project-delivery`, `agent-framework-extension`, `software-quality-gate`, `web-research-risk`, `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`, `docs-review-publish`, `operations-runbook`, `customer-support-triage`, `human-input-security-review`, and `software-team-review-gate`. That file is executable through `/workflow <name> <request>` and can declare named stages with `agent`, `skill`, explicit `input`/`outputs`, replay `artifacts`, control nodes such as `condition`, `policy_guard`, `quality_gate`, `parallel`/`join`, `for_each`, `loop`, and `sub_workflow`, approval gates, and `next` edges.
+
+Use `complex-project-delivery` for broad implementation work that should keep running until the accepted plan is complete: it analyzes requirements, builds a user-confirmed project plan, iterates implementation with verification and review, updates plan state, runs final validation, and emits a completion report.
 
 `plan-fix-audit` and `skill-chain` remain runnable compatibility executors.
 Custom graph files are the editable model. In HTTP, `/api/workflow-graphs`
@@ -433,6 +455,10 @@ While that handoff is pending:
 - normal write-capable work still follows the usual tool approval flow once execution begins
 
 ## HTTP API
+
+Session persistence is split for Web Studio performance: `.goflow/session.json`
+is a compact index for status polling, while `.goflow/session.full.json.gz`
+stores the complete compressed run history used for detailed replay.
 
 Current endpoints:
 - `GET /api/runtime`

@@ -6,10 +6,10 @@ import { getOnboardingState, resumeOnboarding, startOnboarding, stopOnboarding }
 export async function renderOverview(root, runtime, refreshRuntime) {
   const pending = runtimeVisibleApprovalCount(runtime);
   const workflow = runtime.session?.workflow || {};
-  const envReady = (runtime.setup?.env || []).filter(item => item.required).every(item => item.set);
+  const modelSetup = overviewModelSetupState(runtime);
   const onboarding = getOnboardingState();
   const launchpad = launchpadState(onboarding);
-  const nextSteps = recommendedNextSteps(runtime, launchpad);
+  const nextSteps = recommendedNextSteps(runtime, launchpad, modelSetup);
   root.innerHTML = `
     <section class="overview-launchpad panel" data-tour-id="overview-launchpad">
       <div class="overview-launchpad-copy">
@@ -36,7 +36,7 @@ export async function renderOverview(root, runtime, refreshRuntime) {
       ${metric(t("overview.workspace"), runtime.workspace?.confirmed ? t("overview.workspaceConfirmed") : t("overview.workspaceNeedsConfirmation"), overviewDisplayValue(runtime.workspace?.display || t("common.none")), runtime.workspace?.confirmed ? "good" : "warn")}
       ${metric(t("overview.approvals"), String(pending), pending ? t("overview.approvalsWaiting") : t("overview.approvalsEmpty"), pending ? "warn" : "good")}
       ${metric(t("overview.runtime"), `${escapeHTML(overviewDisplayValue(runtime.active_agent || "-"))} / ${escapeHTML(modeLabel(runtime.mode))}`, `${t("overview.version")} ${escapeHTML(runtime.version || "dev")}`, "neutral")}
-      ${metric(t("overview.setup"), envReady ? t("overview.setupReady") : t("overview.setupNeedsEnv"), t("overview.setupHelp"), envReady ? "good" : "warn")}
+      ${metric(t("overview.setup"), modelSetup.ready ? t("overview.setupReady") : t("overview.setupNeedsEnv"), modelSetup.detail || t("overview.setupHelp"), modelSetup.ready ? "good" : "warn")}
     </div>
 
     <div class="grid overview-grid">
@@ -177,13 +177,13 @@ function launchpadState(onboarding) {
   };
 }
 
-function recommendedNextSteps(runtime, launchpad) {
+function recommendedNextSteps(runtime, launchpad, modelSetup = overviewModelSetupState(runtime)) {
   const pending = runtimeVisibleApprovalCount(runtime);
   const workspaceReady = !!runtime.workspace?.confirmed;
   const workspaceActions = overviewWorkspaceActions(runtime);
   const confirmAction = workspaceActions.find(action => action?.name === "confirm") || null;
   const canConfirmWorkspace = !workspaceReady && overviewWorkspaceActionAvailable(workspaceActions, "confirm", Boolean(runtime.workspace?.root));
-  return [
+  const steps = [
     {
       tone: workspaceReady ? "good" : "warn",
       badge: workspaceReady ? t("overview.next.readyBadge") : t("overview.next.safetyBadge"),
@@ -195,13 +195,6 @@ function recommendedNextSteps(runtime, launchpad) {
       actionMethod: confirmAction?.method || ""
     },
     {
-      tone: "neutral",
-      badge: t("overview.next.practiceBadge"),
-      title: t("overview.next.workflowTour"),
-      body: launchpad.body,
-      target: "workflows"
-    },
-    {
       tone: pending ? "warn" : "good",
       badge: pending ? t("overview.next.approvalBadge") : t("overview.next.runBadge"),
       title: pending ? t("overview.next.approvalsPending") : t("overview.next.executionReady"),
@@ -209,6 +202,24 @@ function recommendedNextSteps(runtime, launchpad) {
       target: pending ? "approvals" : "playground"
     }
   ];
+  if (!modelSetup.ready) {
+    steps.splice(1, 0, {
+      tone: "warn",
+      badge: t("overview.next.modelBadge"),
+      title: t("overview.next.modelSetup"),
+      body: modelSetup.detail || t("overview.next.modelSetupBody"),
+      target: "settings"
+    });
+  } else {
+    steps.splice(1, 0, {
+      tone: "neutral",
+      badge: t("overview.next.practiceBadge"),
+      title: t("overview.next.workflowTour"),
+      body: launchpad.body,
+      target: "workflows"
+    });
+  }
+  return steps;
 }
 
 function nextStepCard(item) {
@@ -318,6 +329,55 @@ function overviewWorkspaceActions(runtime = {}) {
 
 function overviewWorkspaceActionRequest(path, method = "POST") {
   return request(path, { method: String(method || "POST").toUpperCase() });
+}
+
+function overviewModelSetupState(runtime = {}) {
+  const setup = runtime.setup || {};
+  if (typeof setup.model_ready === "boolean") {
+    const missing = Array.isArray(setup.missing_provider_fields) ? setup.missing_provider_fields : [];
+    return {
+      ready: setup.model_ready,
+      detail: setup.model_ready
+        ? t("overview.setupReadyHelp")
+        : t("overview.setupMissingHelp", { fields: overviewSetupFieldsLabel(missing) })
+    };
+  }
+  const providers = Array.isArray(runtime.providers) ? runtime.providers : [];
+  if (providers.length) {
+    const missing = [];
+    providers.forEach(provider => {
+      const id = String(provider?.id || "provider").trim() || "provider";
+      if (!String(provider?.base_url || "").trim()) missing.push(`${id}.base_url`);
+      if (!provider?.api_key_set) missing.push(`${id}.api_key`);
+      if (!String(provider?.model || "").trim()) missing.push(`${id}.model`);
+    });
+    return {
+      ready: missing.length === 0,
+      detail: missing.length ? t("overview.setupMissingHelp", { fields: overviewSetupFieldsLabel(missing) }) : t("overview.setupReadyHelp")
+    };
+  }
+  const env = Array.isArray(setup.env) ? setup.env : [];
+  const required = env.filter(item => item.required);
+  const missing = required.filter(item => !item.set).map(item => item.name);
+  return {
+    ready: required.length > 0 && missing.length === 0,
+    detail: missing.length ? t("overview.setupMissingHelp", { fields: overviewSetupFieldsLabel(missing) }) : t("overview.setupHelp")
+  };
+}
+
+function overviewSetupFieldsLabel(fields = []) {
+  const labels = fields.map(field => overviewSetupFieldLabel(field)).filter(Boolean);
+  if (!labels.length) return t("overview.setupFieldsUnknown");
+  return labels.slice(0, 3).join(", ");
+}
+
+function overviewSetupFieldLabel(field) {
+  const raw = String(field || "").trim();
+  const normalized = raw.split(".").pop();
+  if (normalized === "base_url") return t("catalog.providerBaseURL");
+  if (normalized === "api_key") return t("catalog.providerAPIKey");
+  if (normalized === "model") return t("catalog.providerDefaultModel");
+  return overviewDisplayValue(raw);
 }
 
 function overviewDisplayValue(value) {

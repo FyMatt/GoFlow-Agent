@@ -28,6 +28,7 @@ import (
 	apppkg "github.com/FyMatt/GoFlow-Agent/internal/app"
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/internal/skill"
 	"github.com/FyMatt/GoFlow-Agent/internal/workspace"
@@ -866,11 +867,13 @@ func commandCompletionNames() []string {
 	names := []string{
 		"/agents",
 		"/approve",
+		"/artifacts",
 		"/config-diagnostics",
 		"/cost",
 		"/deny",
 		"/help",
 		"/mode",
+		"/memory",
 		"/new-agent",
 		"/new-kit",
 		"/new-policy-rule",
@@ -1410,6 +1413,18 @@ func handleCommand(ctx context.Context, input string, skillManager *skill.Manage
 	case "/cost":
 		fmt.Print(formatCostOutput(agentRuntime.SessionSnapshot()))
 		return true
+	case "/compact":
+		summary, err := agentRuntime.CompactContext(ctx, strings.TrimSpace(strings.Join(fields[1:], " ")))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "compact error: %v\n", err)
+			return true
+		}
+		fmt.Print(formatContextSummaryOutput(summary))
+		return true
+	case "/memory":
+		return handleMemoryCommand(ctx, fields, agentRuntime)
+	case "/artifacts":
+		return handleArtifactsCommand(fields, agentRuntime)
 	case "/session":
 		snapshot := agentRuntime.SessionSnapshot()
 		workflowRow := workflowDisplayRow{
@@ -2778,6 +2793,8 @@ var knownCLICommands = []string{
 	"/workflow",
 	"/trace",
 	"/cost",
+	"/compact",
+	"/memory",
 	"/approve",
 	"/deny",
 	"/reload",
@@ -3074,6 +3091,9 @@ func formatHelpOutput() string {
 		{Command: "/workflow-schemas [name] [--rebuild|--json|--export|--import <path>|--clear]", Description: "List, inspect, import, export, rebuild, or clear observed workflow output schemas"},
 		{Command: "/team-state [run-id] [team]", Description: "Show live collaboration state for a workflow team"},
 		{Command: "/cost", Description: "Show prompt/token cost diagnostics and tuning hints"},
+		{Command: "/compact [reason]", Description: "Summarize current session context into memory without deleting full history"},
+		{Command: "/memory [project|search <query>|rebuild|errors|context]", Description: "Inspect project memory, task summaries, file index, compacted context, and error knowledge"},
+		{Command: "/artifacts [query]", Description: "List recent summary-first artifacts and hash refs"},
 		{Command: "/config-diagnostics [--json]", Description: "Validate saved config modules and show setup/safety diagnostics"},
 		{Command: "/status", Description: "Show runtime, routing, workflow, and MCP state"},
 		{Command: "/session", Description: "Show persisted session memory"},
@@ -3106,6 +3126,315 @@ func formatHelpOutput() string {
 		{Command: "/new-kit <preset> <name>", Description: "Create a vertical kit manifest"},
 		{Command: "exit", Description: "Quit the CLI"},
 	})
+	return b.String()
+}
+
+func handleMemoryCommand(ctx context.Context, fields []string, agentRuntime *agent.Runtime) bool {
+	store := agentRuntime.MemoryStore()
+	if store == nil {
+		fmt.Println(formatCommandWarning("memory store is not configured"))
+		return true
+	}
+	subcommand := ""
+	if len(fields) > 1 {
+		subcommand = strings.ToLower(strings.TrimSpace(fields[1]))
+	}
+	switch subcommand {
+	case "", "summary", "status":
+		dashboard, err := store.Dashboard(8)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "memory error: %v\n", err)
+			return true
+		}
+		fmt.Print(formatMemoryDashboardOutput(dashboard))
+	case "project":
+		project, err := store.Project()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "memory project error: %v\n", err)
+			return true
+		}
+		fmt.Print(formatMemoryProjectOutput(project))
+	case "search":
+		query := strings.TrimSpace(strings.Join(fields[2:], " "))
+		if query == "" {
+			fmt.Fprintln(os.Stderr, "usage: /memory search <query>")
+			return true
+		}
+		results, err := store.Search(query, 20)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "memory search error: %v\n", err)
+			return true
+		}
+		fmt.Print(formatMemorySearchOutput(results))
+	case "rebuild":
+		index, err := store.RebuildFiles(ctx)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "memory rebuild error: %v\n", err)
+			return true
+		}
+		fmt.Println(formatCommandSuccess("memory files indexed", fmt.Sprintf("%d files / %d bytes", index.TotalFiles, index.IndexedBytes)))
+	case "errors":
+		errorsKB, err := store.Errors()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "memory errors error: %v\n", err)
+			return true
+		}
+		fmt.Print(formatMemoryErrorsOutput(errorsKB))
+	case "context", "compact":
+		contextSummary, err := store.Context()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "memory context error: %v\n", err)
+			return true
+		}
+		fmt.Print(formatContextSummaryOutput(contextSummary))
+	default:
+		fmt.Fprintln(os.Stderr, "usage: /memory [project|search <query>|rebuild|errors|context]")
+	}
+	return true
+}
+
+func handleArtifactsCommand(fields []string, agentRuntime *agent.Runtime) bool {
+	query := ""
+	if len(fields) > 1 {
+		query = strings.TrimSpace(strings.Join(fields[1:], " "))
+	}
+	artifacts := agentRuntime.SessionArtifacts(session.SessionArtifactFilter{Query: query, Limit: 20})
+	fmt.Print(formatArtifactListOutput(artifacts))
+	return true
+}
+
+func formatMemoryDashboardOutput(dashboard memory.Dashboard) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Memory"))
+	b.WriteString("\n")
+	projectSummary := truncateCLISummaryValue(dashboard.Project.Summary)
+	if projectSummary == "" {
+		projectSummary = "project memory is empty"
+	}
+	b.WriteString(styleLabel("project"))
+	b.WriteString(" ")
+	b.WriteString(projectSummary)
+	b.WriteString("\n")
+	b.WriteString(styleLabel("tasks"))
+	b.WriteString(fmt.Sprintf(" %d retained\n", len(dashboard.Tasks)))
+	b.WriteString(styleLabel("errors"))
+	b.WriteString(fmt.Sprintf(" %d known\n", len(dashboard.Errors.Errors)))
+	b.WriteString(styleLabel("files"))
+	b.WriteString(fmt.Sprintf(" %d indexed (%d bytes)\n", dashboard.FileIndex.TotalFiles, dashboard.FileIndex.IndexedBytes))
+	if strings.TrimSpace(dashboard.Context.Summary) != "" {
+		b.WriteString(styleLabel("context"))
+		b.WriteString(fmt.Sprintf(" saved=%d updated=%s\n", dashboard.Context.EstimatedSavedTokens, firstNonEmptyString(dashboard.Context.UpdatedAt, "-")))
+	}
+	if len(dashboard.Tasks) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleHeader("Recent Tasks"))
+		b.WriteString("\n")
+		for _, task := range dashboard.Tasks {
+			b.WriteString("  ")
+			b.WriteString(styleLabel(firstNonEmptyString(task.ID, "task")))
+			b.WriteString(" ")
+			b.WriteString(truncateCLISummaryValue(task.UserGoal))
+			b.WriteString("\n")
+		}
+	}
+	b.WriteString("\n")
+	b.WriteString(styleMuted("Use /compact, /memory search <query>, /memory project, /memory rebuild, /memory context, or /memory errors.\n"))
+	return b.String()
+}
+
+func formatContextSummaryOutput(summary memory.ContextSummary) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Compacted Context"))
+	b.WriteString("\n")
+	if strings.TrimSpace(summary.Summary) == "" && strings.TrimSpace(summary.ID) == "" {
+		b.WriteString(styleMuted("no compacted context recorded\n"))
+		return b.String()
+	}
+	if summary.ID != "" {
+		b.WriteString(styleLabel("id"))
+		b.WriteString(" ")
+		b.WriteString(summary.ID)
+		b.WriteString("\n")
+	}
+	if summary.UpdatedAt != "" {
+		b.WriteString(styleLabel("updated"))
+		b.WriteString(" ")
+		b.WriteString(summary.UpdatedAt)
+		b.WriteString("\n")
+	}
+	b.WriteString(styleLabel("agent"))
+	b.WriteString(" ")
+	b.WriteString(firstNonEmptyString(summary.ActiveAgent, "-"))
+	b.WriteString(" ")
+	b.WriteString(styleLabel("mode"))
+	b.WriteString(" ")
+	b.WriteString(firstNonEmptyString(summary.Mode, "-"))
+	if summary.Auto {
+		b.WriteString(" ")
+		b.WriteString(styleStatus("auto", "ready"))
+	}
+	b.WriteString("\n")
+	if summary.EstimatedSavedTokens > 0 {
+		b.WriteString(styleLabel("estimated_saved_tokens"))
+		b.WriteString(fmt.Sprintf(" %d\n", summary.EstimatedSavedTokens))
+	}
+	if strings.TrimSpace(summary.Summary) != "" {
+		b.WriteString("\n")
+		b.WriteString(summary.Summary)
+		b.WriteString("\n")
+	}
+	writeContextSummaryList(&b, "goals", summary.RecentGoals)
+	writeContextSummaryList(&b, "decisions", summary.Decisions)
+	writeContextSummaryList(&b, "pending", summary.PendingActions)
+	writeContextSummaryList(&b, "files", summary.RelevantFiles)
+	writeContextSummaryList(&b, "artifacts", summary.ArtifactRefs)
+	return b.String()
+}
+
+func writeContextSummaryList(b *strings.Builder, label string, values []string) {
+	if len(values) == 0 {
+		return
+	}
+	b.WriteString("\n")
+	b.WriteString(styleLabel(label))
+	b.WriteString("\n")
+	limit := len(values)
+	if limit > 6 {
+		limit = 6
+	}
+	for _, value := range values[:limit] {
+		b.WriteString("  - ")
+		b.WriteString(truncateCLISummaryValue(value))
+		b.WriteString("\n")
+	}
+	if len(values) > limit {
+		b.WriteString(styleMuted(fmt.Sprintf("  ... %d more\n", len(values)-limit)))
+	}
+}
+
+func formatMemoryProjectOutput(project memory.ProjectMemory) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Project Memory"))
+	b.WriteString("\n")
+	if project.Path != "" {
+		b.WriteString(styleLabel("path"))
+		b.WriteString(" ")
+		b.WriteString(project.Path)
+		b.WriteString("\n")
+	}
+	if project.UpdatedAt != "" {
+		b.WriteString(styleLabel("updated"))
+		b.WriteString(" ")
+		b.WriteString(project.UpdatedAt)
+		b.WriteString("\n")
+	}
+	b.WriteString("\n")
+	if strings.TrimSpace(project.Content) == "" {
+		b.WriteString(styleMuted("project memory is empty\n"))
+		return b.String()
+	}
+	b.WriteString(project.Content)
+	if !strings.HasSuffix(project.Content, "\n") {
+		b.WriteString("\n")
+	}
+	return b.String()
+}
+
+func formatMemorySearchOutput(results memory.SearchResponse) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Memory Search"))
+	b.WriteString("\n")
+	b.WriteString(styleLabel("query"))
+	b.WriteString(" ")
+	b.WriteString(firstNonEmptyString(results.Query, "-"))
+	b.WriteString("\n")
+	b.WriteString(styleLabel("results"))
+	b.WriteString(fmt.Sprintf(" %d of %d\n", results.Returned, results.Total))
+	for _, result := range results.Results {
+		b.WriteString("\n")
+		b.WriteString(styleLabel(result.Kind))
+		b.WriteString(" ")
+		b.WriteString(firstNonEmptyString(result.Title, result.Path, "memory item"))
+		if result.Score > 0 {
+			b.WriteString(fmt.Sprintf(" score=%d", result.Score))
+		}
+		if result.Path != "" {
+			b.WriteString(" ref=")
+			b.WriteString(result.Path)
+		}
+		b.WriteString("\n")
+		summary := strings.ReplaceAll(strings.TrimSpace(result.Summary), "\n", " ")
+		if summary != "" {
+			b.WriteString("  ")
+			b.WriteString(truncateCLISummaryValue(summary))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func formatMemoryErrorsOutput(errorsKB memory.ErrorKnowledgeBase) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Memory Errors"))
+	b.WriteString("\n")
+	if len(errorsKB.Errors) == 0 {
+		b.WriteString(styleMuted("no error knowledge recorded\n"))
+		return b.String()
+	}
+	for _, item := range errorsKB.Errors {
+		b.WriteString(styleLabel(firstNonEmptyString(item.ID, "error")))
+		b.WriteString(" ")
+		b.WriteString(truncateCLISummaryValue(item.Error))
+		b.WriteString("\n")
+		if item.RootCause != "" {
+			b.WriteString("  cause: ")
+			b.WriteString(truncateCLISummaryValue(item.RootCause))
+			b.WriteString("\n")
+		}
+		if item.Fix != "" {
+			b.WriteString("  fix: ")
+			b.WriteString(truncateCLISummaryValue(item.Fix))
+			b.WriteString("\n")
+		}
+		if item.VerificationCommand != "" {
+			b.WriteString("  verify: ")
+			b.WriteString(truncateCLISummaryValue(item.VerificationCommand))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func formatArtifactListOutput(artifacts []session.SessionArtifactSnapshot) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Artifacts"))
+	b.WriteString("\n")
+	if len(artifacts) == 0 {
+		b.WriteString(styleMuted("no artifacts recorded\n"))
+		return b.String()
+	}
+	for _, artifact := range artifacts {
+		ref := firstNonEmptyString(artifact.ArtifactRef, artifact.Ref, artifact.Hash)
+		b.WriteString(styleLabel(firstNonEmptyString(artifact.ID, "artifact")))
+		b.WriteString(" ")
+		b.WriteString(firstNonEmptyString(artifact.Title, artifact.Kind, "Artifact"))
+		if artifact.ContentBytes > 0 {
+			b.WriteString(fmt.Sprintf(" %d bytes", artifact.ContentBytes))
+		}
+		if ref != "" {
+			b.WriteString(" ref=")
+			b.WriteString(ref)
+		}
+		if artifact.Deduplicated {
+			b.WriteString(" deduplicated")
+		}
+		b.WriteString("\n")
+		if strings.TrimSpace(artifact.Summary) != "" {
+			b.WriteString("  ")
+			b.WriteString(truncateCLISummaryValue(strings.ReplaceAll(artifact.Summary, "\n", " ")))
+			b.WriteString("\n")
+		}
+	}
 	return b.String()
 }
 
@@ -4665,6 +4994,11 @@ type cliCostTrend struct {
 	HistoryEstimatedSavedTokens  int
 	HistoryDeduplicatedItems     int
 	HistoryCompactedOlderItems   int
+	MemoryBlockSamples           int
+	MemoryEstimatedSavedTokens   int
+	ArtifactRefSamples           int
+	ArtifactOmittedTokens        int
+	SkillOmittedTokens           int
 	TotalPromptTokens            int
 	TotalOutputTokens            int
 	TotalCachedTokens            int
@@ -4713,6 +5047,17 @@ func formatCostOutput(snapshot session.Snapshot) string {
 		}
 		b.WriteString("\n")
 		fmt.Fprintf(&b, "  %s estimated=%d  system=%d  messages=%d  tools=%d  cacheable=%d\n", styleMuted("breakdown"), latest.EstimatedPromptTokens, latest.SystemTokens, latest.MessageTokens, latest.ToolSchemaTokens, latest.CacheablePrefixTokens)
+		if latest.MemoryBlockCount > 0 || latest.ArtifactRefCount > 0 || latest.SkillOmittedTokens > 0 || len(latest.OmittedContext) > 0 {
+			fmt.Fprintf(&b, "  %s memory_blocks=%d  memory_saved=%d  artifacts=%d  artifact_omitted=%d  skill_mode=%s  skill_saved=%d  omitted=%d\n",
+				styleMuted("context"),
+				latest.MemoryBlockCount,
+				latest.MemoryEstimatedSavedTokens,
+				latest.ArtifactRefCount,
+				latest.ArtifactOmittedTokens,
+				fallbackDisplayText(latest.SkillInstructionMode, "-"),
+				latest.SkillOmittedTokens,
+				len(latest.OmittedContext))
+		}
 		if latest.HistoryEstimatedSavedTokens > 0 || latest.HistoryPromptDeduplicatedItems+latest.HistoryToolDeduplicatedItems > 0 || latest.HistoryPromptCompactedOlderItems+latest.HistoryToolCompactedOlderItems > 0 {
 			fmt.Fprintf(&b, "  %s saved_est=%d  prompts=%d/%d  tools=%d/%d  deduped=%d  compacted_old=%d\n",
 				styleMuted("history"),
@@ -4724,7 +5069,7 @@ func formatCostOutput(snapshot session.Snapshot) string {
 				latest.HistoryPromptDeduplicatedItems+latest.HistoryToolDeduplicatedItems,
 				latest.HistoryPromptCompactedOlderItems+latest.HistoryToolCompactedOlderItems)
 		}
-		fmt.Fprintf(&b, "  %s exposed_tools=%d/%d  filtered=%d  prefix=%s\n", styleMuted("visibility"), latest.ExposedToolCount, latest.TotalToolCount, latest.FilteredToolCount, fallbackDisplayText(latest.PromptPrefixHash, "-"))
+		fmt.Fprintf(&b, "  %s exposed_tools=%d/%d  filtered=%d  tool_selection=%s  prefix=%s\n", styleMuted("visibility"), latest.ExposedToolCount, latest.TotalToolCount, latest.FilteredToolCount, fallbackDisplayText(latest.ToolSchemaSelection, "-"), fallbackDisplayText(latest.PromptPrefixHash, "-"))
 	}
 
 	trends := buildCLICostTrends(budgets, usages)
@@ -4817,6 +5162,11 @@ func buildCLICostTrends(budgets []schema.PromptBudget, usages []schema.TokenUsag
 		item.HistoryEstimatedSavedTokens += budget.HistoryEstimatedSavedTokens
 		item.HistoryDeduplicatedItems += budget.HistoryPromptDeduplicatedItems + budget.HistoryToolDeduplicatedItems
 		item.HistoryCompactedOlderItems += budget.HistoryPromptCompactedOlderItems + budget.HistoryToolCompactedOlderItems
+		item.MemoryBlockSamples += budget.MemoryBlockCount
+		item.MemoryEstimatedSavedTokens += budget.MemoryEstimatedSavedTokens
+		item.ArtifactRefSamples += budget.ArtifactRefCount
+		item.ArtifactOmittedTokens += budget.ArtifactOmittedTokens
+		item.SkillOmittedTokens += budget.SkillOmittedTokens
 		if budget.EstimatedPromptTokens > item.MaxEstimatedPromptTokens {
 			item.MaxEstimatedPromptTokens = budget.EstimatedPromptTokens
 		}
@@ -4899,6 +5249,20 @@ func buildCLICostRecommendations(budgets []schema.PromptBudget, trends []cliCost
 			kind:    "approval",
 			code:    "non_cacheable_context_high",
 			message: "Most prompt tokens are outside the stable cacheable prefix; keep repeated instructions/tool visibility stable.",
+		})
+	}
+	if latest.MemoryBlockCount == 0 && latest.EstimatedPromptTokens >= 1500 {
+		out = append(out, cliCostRecommendation{
+			kind:    "approval",
+			code:    "memory_not_injected",
+			message: "No memory blocks were injected; rebuild or update project/file memory for summary-first context.",
+		})
+	}
+	if latest.SkillOmittedTokens >= 500 {
+		out = append(out, cliCostRecommendation{
+			kind:    "done",
+			code:    "skill_summary_saving",
+			message: "Large skill instructions were summarized before prompt injection.",
 		})
 	}
 	_, _, _, _, uniquePrefixes := summarizePromptBudgets(budgets)
@@ -6133,11 +6497,26 @@ func formatPromptBudgetLine(budget schema.PromptBudget) string {
 	if budget.SkillTokens > 0 {
 		parts = append(parts, "skill="+formatCount(budget.SkillTokens))
 	}
+	if budget.MemoryBlockCount > 0 {
+		parts = append(parts, fmt.Sprintf("memory_blocks=%d", budget.MemoryBlockCount))
+	}
+	if budget.MemoryEstimatedSavedTokens > 0 {
+		parts = append(parts, "memory_saved="+formatCount(budget.MemoryEstimatedSavedTokens))
+	}
+	if budget.ArtifactRefCount > 0 {
+		parts = append(parts, fmt.Sprintf("artifacts=%d", budget.ArtifactRefCount))
+	}
+	if budget.ArtifactOmittedTokens > 0 {
+		parts = append(parts, "artifact_omitted="+formatCount(budget.ArtifactOmittedTokens))
+	}
 	if budget.TotalToolCount > 0 {
 		parts = append(parts, fmt.Sprintf("tool_schemas=%d/%d", budget.ExposedToolCount, budget.TotalToolCount))
 	}
 	if budget.FilteredToolCount > 0 {
 		parts = append(parts, "filtered="+formatCount(budget.FilteredToolCount))
+	}
+	if strings.TrimSpace(budget.ToolSchemaSelection) != "" {
+		parts = append(parts, "tool_selection="+budget.ToolSchemaSelection)
 	}
 	if budget.CacheablePrefixTokens > 0 {
 		parts = append(parts, "cacheable_prefix="+formatCount(budget.CacheablePrefixTokens))

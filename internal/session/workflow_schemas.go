@@ -156,6 +156,7 @@ func (s *State) mergeWorkflowSchemaFromRunLocked(run WorkflowRunSnapshot) {
 	if key == "" || len(run.CompletedStages) == 0 {
 		return
 	}
+	run.CompletedStages = hydrateWorkflowRunStagePayloads(s.artifactStore, run.CompletedStages)
 	updatedAt := firstWorkflowSchemaValue(run.UpdatedAt, run.CompletedAt, workflowRunTimestamp(time.Now().UTC()))
 	catalog := s.workflowSchemas
 	if catalog == nil {

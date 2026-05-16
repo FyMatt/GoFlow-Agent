@@ -2,10 +2,11 @@ import { discoveryMetaSupported, escapeHTML, postJSON, request } from "../api.js
 import { currentLanguage, localizedText, t } from "../i18n.js";
 
 export async function renderSettings(root, runtime, refreshRuntime) {
-  const [update, diagnostics, discovery] = await Promise.all([
+  const [update, diagnostics, discovery, providerResources] = await Promise.all([
     loadOptional("/api/update-policy"),
     loadOptional("/api/config/diagnostics?include_optional=0"),
-    loadClientDiscovery()
+    loadClientDiscovery(),
+    loadOptional("/api/resources/providers")
   ]);
   const diagnosticCapabilities = configDiagnosticCapabilities(discovery);
   if (diagnostics && typeof diagnostics === "object") {
@@ -15,7 +16,16 @@ export async function renderSettings(root, runtime, refreshRuntime) {
   root.innerHTML = `
     <div class="grid settings-grid">
       ${renderSettingsHero(diagnostics, runtime)}
-      <section class="panel span-8 settings-health-panel" data-settings-focus="config-health" tabindex="-1">
+      <section class="panel span-12 settings-essential-panel" data-settings-anchor="first-run" tabindex="-1">
+        <div class="panel-head">
+          <div>
+            <h2>${t("settings.essentialSetup")}</h2>
+            <p class="muted">${t("settings.essentialSetupHelp")}</p>
+          </div>
+        </div>
+        ${renderEssentialSetup(runtime, diagnostics, providerResources, update)}
+      </section>
+      <section class="panel span-7 settings-health-panel" data-settings-focus="config-health" tabindex="-1">
         <div class="panel-head">
           <div>
             <h2>${t("settings.configHealth")}</h2>
@@ -24,28 +34,9 @@ export async function renderSettings(root, runtime, refreshRuntime) {
           ${statusBadge(diagnostics?.status, diagnostics?.restart_required)}
         </div>
         ${renderSummaryGrid(diagnostics, diagnosticCapabilities)}
-        ${renderDiagnosticCapabilities(diagnosticCapabilities)}
         ${renderPrioritySummary(diagnostics, runtime, diagnosticCapabilities)}
         ${renderDiagnosticsList(diagnostics, diagnosticCapabilities)}
-      </section>
-      <section class="panel span-4 settings-check-panel" data-settings-anchor="first-run" tabindex="-1">
-        <div class="panel-head">
-          <div>
-            <h2>${t("settings.firstRun")}</h2>
-            <p class="muted">${t("settings.firstRunHelp")}</p>
-          </div>
-        </div>
-        ${renderEnvChecks(runtime)}
-      </section>
-      <section class="panel span-7 settings-module-panel">
-        <div class="panel-head">
-          <div>
-            <h2>${t("settings.configModules")}</h2>
-            <p class="muted">${t("settings.configModulesHelp")}</p>
-          </div>
-          <span class="badge neutral">${t("settings.moduleCount", { count: diagnostics?.modules?.length || 0 })}</span>
-        </div>
-        ${renderModules(diagnostics)}
+        ${renderAdvancedRuntimeDetails(runtime, diagnostics, diagnosticCapabilities)}
       </section>
       <section class="panel span-5 settings-tour-panel">
         <div class="panel-head">
@@ -170,9 +161,25 @@ function bindSettingsActions(root, refreshRuntime) {
       node.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
     });
   });
+  const providerForm = root.querySelector("[data-provider-setup-form]");
+  if (providerForm) {
+    const typeSelect = providerForm.querySelector("[data-provider-setup-type]");
+    typeSelect?.addEventListener("change", () => applyProviderSetupPreset(providerForm, typeSelect.value));
+    providerForm.addEventListener("submit", event => {
+      event.preventDefault();
+      providerForm.querySelector("[data-provider-setup-save]")?.click();
+    });
+    providerForm.querySelector("[data-provider-setup-save]")?.addEventListener("click", async () => {
+      await saveProviderSetup(providerForm, refreshRuntime, root);
+    });
+    providerForm.querySelector("[data-provider-setup-test]")?.addEventListener("click", async () => {
+      await testProviderSetup(providerForm);
+    });
+  }
   root.querySelectorAll("[data-settings-update-check]").forEach(button => {
     button.addEventListener("click", async () => {
-      const output = root.querySelector("[data-settings-update-output]");
+      const output = button.closest(".settings-update-basic, .settings-update-layout")?.querySelector("[data-settings-update-output]")
+        || root.querySelector("[data-settings-update-output]");
       const endpoint = button.dataset.settingsUpdateCheckPath || "/api/update-policy/check";
       setSettingsUpdateBusy(button, true);
       if (output) output.innerHTML = renderUpdateCheckLoading();
@@ -258,6 +265,8 @@ function configDiagnosticCapabilities(discovery) {
 function renderSettingsHero(diagnostics, runtime) {
   const status = diagnostics?.status || (diagnostics?.__error ? "error" : "unknown");
   const tone = statusTone(status, diagnostics?.restart_required);
+  const modelSetup = settingsModelSetupState(runtime);
+  const workspaceReady = Boolean(runtime?.workspace?.confirmed);
   const title = diagnostics?.restart_required
     ? t("settings.heroRestartTitle")
     : status === "error"
@@ -272,13 +281,25 @@ function renderSettingsHero(diagnostics, runtime) {
       : status === "error"
         ? t("settings.heroErrorBody")
         : status === "warning"
-          ? t("settings.heroWarningBody")
-          : t("settings.heroReadyBody");
-  const paths = [
-    [t("settings.configPath"), diagnostics?.config_path],
-    [t("settings.runtimeHome"), diagnostics?.runtime_home || runtime?.runtime_home],
-    [t("settings.workspaceRoot"), diagnostics?.workspace_root || runtime?.workspace?.display]
-  ].filter(([, value]) => String(value || "").trim());
+        ? t("settings.heroWarningBody")
+        : t("settings.heroReadyBody");
+  const cards = [
+    {
+      tone: modelSetup.ready ? "good" : "warn",
+      label: t("settings.heroModelLabel"),
+      value: modelSetup.ready ? t("settings.providerSetupReady") : t("settings.providerSetupNeedsConfig")
+    },
+    {
+      tone: workspaceReady ? "good" : "warn",
+      label: t("settings.heroWorkspaceLabel"),
+      value: workspaceReady ? t("workspace.confirmed") : t("workspace.needsConfirmation")
+    },
+    {
+      tone: diagnostics?.restart_required ? "warn" : statusTone(status, diagnostics?.restart_required),
+      label: t("settings.heroRuntimeLabel"),
+      value: statusLabel(status, diagnostics?.restart_required)
+    }
+  ];
 
   return `<section class="panel span-12 settings-hero settings-hero-${tone}">
     <div class="settings-hero-copy">
@@ -286,8 +307,11 @@ function renderSettingsHero(diagnostics, runtime) {
       <h2>${escapeHTML(title)}</h2>
       <p>${escapeHTML(body)}</p>
     </div>
-    <div class="settings-path-stack">
-      ${paths.map(([label, value]) => `<div class="settings-path-row"><span>${escapeHTML(label)}</span><strong title="${escapeHTML(value)}">${escapeHTML(value)}</strong></div>`).join("") || `<div class="settings-path-row"><span>${t("settings.configPath")}</span><strong>${t("common.none")}</strong></div>`}
+    <div class="settings-hero-status-grid">
+      ${cards.map(card => `<article class="${escapeHTML(card.tone)}">
+        <span>${escapeHTML(card.label)}</span>
+        <strong>${escapeHTML(card.value)}</strong>
+      </article>`).join("")}
     </div>
   </section>`;
 }
@@ -384,7 +408,7 @@ function buildPriorityActions(diagnostics, runtime, capabilities) {
   const actionable = items.filter(isActionableDiagnostic);
   const topError = actionable.find(item => String(item.severity || "").toLowerCase() === "error");
   const topWarning = actionable.find(item => String(item.severity || "").toLowerCase() === "warning" && item.code !== "restart_required");
-  const requiredEnv = (Array.isArray(runtime?.setup?.env) ? runtime.setup.env : []).filter(item => item.required && !item.set);
+  const modelSetup = settingsModelSetupState(runtime);
   const summary = diagnostics?.summary || {};
 
   if (diagnostics?.__error) {
@@ -410,14 +434,14 @@ function buildPriorityActions(diagnostics, runtime, capabilities) {
   if (topError) {
     actions.push(diagnosticPriorityAction(topError, "bad", t("settings.priorityFixErrorTitle"), capabilities));
   }
-  if (requiredEnv.length) {
+  if (!modelSetup.ready) {
     actions.push({
       tone: "warn",
       title: t("settings.priorityEnvTitle"),
-      body: t("settings.priorityEnvBody", { name: requiredEnv[0].name || t("common.required") }),
+      body: t("settings.priorityEnvBody", { name: modelSetup.missingLabel || t("common.required") }),
       meta: t("common.required"),
       scroll: "first-run",
-      cta: t("settings.priorityOpenEnvChecks")
+      cta: t("settings.priorityOpenProviderSetup")
     });
   }
   if (!runtime?.workspace?.confirmed) {
@@ -508,7 +532,7 @@ function diagnosticAction(item) {
     return { target: "workflows", cta: t("settings.priorityOpenWorkflowStudio") };
   }
   if (code.includes("provider") || code === "runtime_missing") {
-    return { scroll: "first-run", cta: t("settings.priorityOpenEnvChecks") };
+    return { scroll: "first-run", cta: t("settings.priorityOpenProviderSetup") };
   }
   return { scroll: "config-health", cta: t("settings.priorityInspectDiagnostics") };
 }
@@ -632,6 +656,51 @@ function renderDiagnosticItem(item = {}, capabilities = {}) {
   </article>`;
 }
 
+function renderEssentialSetup(runtime, diagnostics, providerResources, update) {
+  return `<div class="settings-essential-grid">
+    <div class="settings-essential-main">
+      ${renderProviderSetup(runtime, providerResources)}
+    </div>
+    <div class="settings-essential-side">
+      ${renderWorkspaceReadiness(runtime)}
+      ${renderUpdateBasics(update)}
+    </div>
+    ${renderSetupProgress(runtime, diagnostics)}
+  </div>`;
+}
+
+function renderSetupProgress(runtime = {}, diagnostics = {}) {
+  const modelSetup = settingsModelSetupState(runtime);
+  const workspaceReady = Boolean(runtime?.workspace?.confirmed);
+  const configReady = !diagnostics?.__error && diagnostics?.status !== "error" && !diagnostics?.restart_required;
+  const items = [
+    {
+      done: modelSetup.ready,
+      title: t("settings.setupStepModelTitle"),
+      body: modelSetup.ready ? t("settings.setupStepModelDone") : t("settings.setupStepModelTodo")
+    },
+    {
+      done: workspaceReady,
+      title: t("settings.setupStepWorkspaceTitle"),
+      body: workspaceReady ? t("settings.setupStepWorkspaceDone") : t("settings.setupStepWorkspaceTodo")
+    },
+    {
+      done: configReady,
+      title: t("settings.setupStepRunTitle"),
+      body: configReady ? t("settings.setupStepRunDone") : t("settings.setupStepRunTodo")
+    }
+  ];
+  return `<div class="settings-setup-progress">
+    ${items.map((item, index) => `<article class="${item.done ? "done" : "todo"}">
+      <span>${item.done ? "✓" : index + 1}</span>
+      <div>
+        <strong>${escapeHTML(item.title)}</strong>
+        <p>${escapeHTML(item.body)}</p>
+      </div>
+    </article>`).join("")}
+  </div>`;
+}
+
 function diagnosticBadgeLabel(item = {}) {
   if (isOptionalDiagnosticInfo(item)) return t("settings.diagnosticOptionalBadge");
   if (isActionableDiagnostic(item)) return t("settings.diagnosticActionableBadge");
@@ -722,8 +791,8 @@ function diagnosticFieldLabel(field) {
     title: t("catalog.title"),
     provider: t("catalog.provider"),
     model: t("catalog.model"),
-    api_key: t("catalog.providerEnvKey"),
-    env_key: t("catalog.providerEnvKey"),
+    api_key: t("catalog.providerAPIKey"),
+    env_key: t("catalog.providerAPIKey"),
     fallback_provider: t("settings.field.fallbackProvider"),
     default_model: t("catalog.providerDefaultModel"),
     base_url: t("catalog.providerBaseURL"),
@@ -799,9 +868,389 @@ function diagnosticIsolationProfileLabel(value) {
   return translated === `catalog.isolationProfile.${normalized}` ? localizedText(value) : translated;
 }
 
+function renderProviderSetup(runtime, providerResources) {
+  const provider = selectProviderSetup(runtime, providerResources);
+  const status = providerSetupState(provider);
+  const preset = providerSetupPreset(provider.provider);
+  const missing = providerSetupMissing(provider);
+  return `<form class="settings-provider-setup ${status.tone}" data-provider-setup-form data-provider-setup-api-key-set="${provider.api_key_set ? "true" : "false"}" data-provider-setup-reusable-key="${provider.reusable_api_key ? "true" : "false"}">
+    <div class="settings-provider-setup-head">
+      <div>
+        <strong>${escapeHTML(t("settings.providerSetupTitle"))}</strong>
+        <p>${escapeHTML(t(status.ready ? "settings.providerSetupReadyHelp" : "settings.providerSetupHelp"))}</p>
+      </div>
+      <span class="badge ${status.badge}">${escapeHTML(status.label)}</span>
+    </div>
+    <div class="settings-provider-plain-steps" aria-label="${escapeHTML(t("settings.providerSetupStepsTitle"))}">
+      ${["settings.providerSetupStepProvider", "settings.providerSetupStepModel", "settings.providerSetupStepKey"].map((key, index) => `<span><b>${index + 1}</b>${escapeHTML(t(key))}</span>`).join("")}
+    </div>
+    ${missing.length ? `<div class="settings-provider-missing">${missing.map(field => `<span>${escapeHTML(providerSetupFieldLabel(field))}</span>`).join("")}</div>` : ""}
+    <div class="settings-provider-form-grid">
+      <label>
+        <span>${escapeHTML(t("settings.providerSetupName"))}</span>
+        <input data-provider-setup-id value="${escapeHTML(provider.id)}" placeholder="primary" autocomplete="off">
+      </label>
+      <label>
+        <span>${escapeHTML(t("catalog.providerType"))}</span>
+        <select data-provider-setup-type>
+          ${renderProviderTypeOption("openai-compatible", provider.provider)}
+          ${renderProviderTypeOption("anthropic", provider.provider)}
+        </select>
+      </label>
+      <label class="wide">
+        <span>${escapeHTML(t("catalog.providerBaseURL"))}</span>
+        <input data-provider-setup-base-url value="${escapeHTML(provider.base_url)}" placeholder="${escapeHTML(preset.baseURL)}" autocomplete="url">
+      </label>
+      <label class="wide">
+        <span>${escapeHTML(t("catalog.providerDefaultModel"))}</span>
+        <input data-provider-setup-model value="${escapeHTML(provider.model)}" placeholder="${escapeHTML(preset.model)}" autocomplete="off">
+      </label>
+      <label class="wide">
+        <span>${escapeHTML(t("catalog.providerAPIKey"))}</span>
+        <input data-provider-setup-api-key type="password" value="" placeholder="${escapeHTML(provider.api_key_set ? t("settings.providerSetupKeyKept") : t("settings.providerSetupKeyPlaceholder"))}" autocomplete="off">
+      </label>
+    </div>
+    <div class="settings-provider-actions">
+      <button type="button" class="primary" data-provider-setup-save>${escapeHTML(t("settings.providerSetupSave"))}</button>
+      <button type="button" class="settings-provider-test-button" data-provider-setup-test>${escapeHTML(t("settings.providerSetupTest"))}</button>
+      <button type="button" data-settings-target="catalog" data-settings-resource-kind="provider" data-settings-resource-name="${escapeHTML(provider.id)}">${escapeHTML(t("settings.providerSetupAdvanced"))}</button>
+    </div>
+    <div class="settings-provider-output" data-provider-setup-output role="status" aria-live="polite"></div>
+    <p class="settings-provider-footnote">${escapeHTML(t("settings.providerSetupRestartHint"))}</p>
+  </form>`;
+}
+
+function renderProviderTypeOption(value, selected) {
+  const current = String(selected || "").trim() || "openai-compatible";
+  return `<option value="${escapeHTML(value)}" ${current === value ? "selected" : ""}>${escapeHTML(providerTypeLabel(value))}</option>`;
+}
+
+function selectProviderSetup(runtime = {}, providerResources) {
+  const resources = Array.isArray(providerResources) ? providerResources : [];
+  const runtimeProviders = Array.isArray(runtime.providers) ? runtime.providers : [];
+  const setupByID = runtimeProviderSetupByID(runtime);
+  const mergedResources = resources.map(provider => mergeProviderRuntimeSetup(provider, setupByID));
+  const mergedRuntime = runtimeProviders.map(provider => mergeProviderRuntimeSetup(provider, setupByID));
+  const incomplete = [...mergedResources, ...mergedRuntime].find(provider => provider && !providerSetupState(provider).ready);
+  const first = incomplete || mergedResources[0] || mergedRuntime[0] || {};
+  const id = normalizeProviderSetupID(first.id || first.name || first.provider_id || "primary");
+  const provider = String(first.provider || first.type || first.kind || "openai-compatible").trim() || "openai-compatible";
+  return {
+    id,
+    provider,
+    base_url: String(first.base_url || first.baseURL || "").trim(),
+    model: String(first.model || first.default_model || first.defaultModel || "").trim(),
+    api_key_set: Boolean(first.api_key_set || first.apiKeySet || String(first.api_key || "").trim()),
+    reusable_api_key: Boolean((first.apply_state || first.restart_required || first.api_key) && (first.api_key_set || first.apiKeySet || String(first.api_key || "").trim()))
+  };
+}
+
+function mergeProviderRuntimeSetup(provider = {}, setupByID = new Map()) {
+  const id = normalizeProviderSetupID(provider.id || provider.name || provider.provider_id || "primary");
+  const setup = setupByID.get(id);
+  if (!setup) return provider;
+  return {
+    ...provider,
+    id,
+    runtime_missing: Array.isArray(setup.missing) ? setup.missing : [],
+    api_key_set: Array.isArray(setup.missing) && setup.missing.includes("api_key") ? false : (provider.api_key_set || provider.apiKeySet || false)
+  };
+}
+
+function runtimeProviderSetupByID(runtime = {}) {
+  const out = new Map();
+  const providers = Array.isArray(runtime?.setup?.providers) ? runtime.setup.providers : [];
+  providers.forEach(provider => {
+    const id = normalizeProviderSetupID(provider?.id || provider?.name || "primary");
+    out.set(id, provider || {});
+  });
+  return out;
+}
+
+function providerSetupState(provider = {}) {
+  const missing = providerSetupMissing(provider);
+  return {
+    ready: missing.length === 0,
+    tone: missing.length ? "warning" : "good",
+    badge: missing.length ? "warn" : "good",
+    label: missing.length ? t("settings.providerSetupNeedsConfig") : t("settings.providerSetupReady")
+  };
+}
+
+function providerSetupMissing(provider = {}) {
+  if (Array.isArray(provider.runtime_missing) && provider.runtime_missing.length) {
+    return provider.runtime_missing.map(field => String(field || "").split(".").pop()).filter(Boolean);
+  }
+  const missing = [];
+  if (!String(provider.base_url || "").trim()) missing.push("base_url");
+  if (!String(provider.model || "").trim()) missing.push("model");
+  if (!Boolean(provider.api_key_set) && !String(provider.api_key || "").trim()) missing.push("api_key");
+  return missing;
+}
+
+function providerSetupFieldLabel(field) {
+  if (field === "base_url") return t("catalog.providerBaseURL");
+  if (field === "model") return t("catalog.providerDefaultModel");
+  if (field === "api_key") return t("catalog.providerAPIKey");
+  return localizedText(String(field || ""));
+}
+
+function settingsModelSetupState(runtime = {}) {
+  const setup = runtime.setup || {};
+  if (typeof setup.model_ready === "boolean") {
+    const missing = Array.isArray(setup.missing_provider_fields) ? setup.missing_provider_fields : [];
+    return {
+      ready: setup.model_ready,
+      missing,
+      missingLabel: settingsProviderMissingLabel(missing)
+    };
+  }
+  const providers = Array.isArray(runtime.providers) ? runtime.providers : [];
+  if (providers.length) {
+    const missing = [];
+    providers.forEach(provider => {
+      const id = normalizeProviderSetupID(provider?.id || "provider");
+      if (!String(provider?.base_url || "").trim()) missing.push(`${id}.base_url`);
+      if (!provider?.api_key_set) missing.push(`${id}.api_key`);
+      if (!String(provider?.model || "").trim()) missing.push(`${id}.model`);
+    });
+    return {
+      ready: missing.length === 0,
+      missing,
+      missingLabel: settingsProviderMissingLabel(missing)
+    };
+  }
+  const env = Array.isArray(setup.env) ? setup.env : [];
+  const missing = env.filter(item => item.required && !item.set).map(item => item.name);
+  return {
+    ready: env.length > 0 && missing.length === 0,
+    missing,
+    missingLabel: settingsProviderMissingLabel(missing)
+  };
+}
+
+function settingsProviderMissingLabel(fields = []) {
+  const labels = fields.map(field => providerSetupFieldLabel(String(field || "").split(".").pop())).filter(Boolean);
+  return labels.slice(0, 3).join(", ");
+}
+
+function providerSetupPreset(provider) {
+  switch (String(provider || "").trim()) {
+    case "anthropic":
+      return { baseURL: "https://api.anthropic.com", model: "claude-3-5-sonnet-latest" };
+    case "openai-compatible":
+    default:
+      return { baseURL: "https://api.openai.com/v1", model: "gpt-4.1-mini" };
+  }
+}
+
+function providerTypeLabel(provider) {
+  switch (String(provider || "").trim()) {
+    case "anthropic":
+      return "Anthropic";
+    case "openai-compatible":
+    default:
+      return "OpenAI-compatible";
+  }
+}
+
+function applyProviderSetupPreset(form, provider) {
+  const preset = providerSetupPreset(provider);
+  const baseURL = form.querySelector("[data-provider-setup-base-url]");
+  const model = form.querySelector("[data-provider-setup-model]");
+  if (baseURL && !String(baseURL.value || "").trim()) baseURL.placeholder = preset.baseURL;
+  if (model && !String(model.value || "").trim()) model.placeholder = preset.model;
+}
+
+async function saveProviderSetup(form, refreshRuntime, root) {
+  const output = form.querySelector("[data-provider-setup-output]");
+  const button = form.querySelector("[data-provider-setup-save]");
+  const doc = collectProviderSetupForm(form);
+  if (output) output.textContent = "";
+  const reusableKey = form.dataset.providerSetupReusableKey === "true";
+  const missing = providerSetupMissing({ ...doc, api_key_set: reusableKey || Boolean(doc.api_key) });
+  if (missing.length) {
+    if (output) output.textContent = t("settings.providerSetupMissing", { fields: missing.map(providerSetupFieldLabel).join(", ") });
+    form.classList.add("warning");
+    return;
+  }
+  setProviderSetupBusy(button, true);
+  if (output) output.textContent = t("settings.providerSetupSaving");
+  try {
+    const validation = await request(`/api/resources/providers/${encodeURIComponent(doc.id)}/validate`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(doc)
+    });
+    if (validation && validation.valid === false) {
+      const issue = Array.isArray(validation.issues) ? validation.issues[0] : null;
+      throw new Error(issue?.message || t("settings.providerSetupValidationFailed"));
+    }
+    const saved = await request(`/api/resources/providers/${encodeURIComponent(doc.id)}`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(doc)
+    });
+    markProviderSetupSaved(form, saved);
+    if (output) output.textContent = providerSetupSaveMessage(saved);
+    if (typeof refreshRuntime === "function") await refreshRuntime();
+  } catch (error) {
+    if (output) output.textContent = t("settings.providerSetupSaveFailed", { message: localizedSettingsErrorMessage(error, t("catalog.saveFailed")) });
+  } finally {
+    setProviderSetupBusy(button, false);
+  }
+}
+
+async function testProviderSetup(form) {
+  const output = form.querySelector("[data-provider-setup-output]");
+  const button = form.querySelector("[data-provider-setup-test]");
+  const doc = collectProviderSetupForm(form);
+  if (output) output.textContent = "";
+  const reusableKey = form.dataset.providerSetupReusableKey === "true";
+  const missing = providerSetupMissing({ ...doc, api_key_set: reusableKey || Boolean(doc.api_key) });
+  if (missing.length) {
+    if (output) output.textContent = t("settings.providerSetupMissing", { fields: missing.map(providerSetupFieldLabel).join(", ") });
+    form.classList.add("warning");
+    return;
+  }
+  setProviderTestBusy(button, true);
+  if (output) output.textContent = t("settings.providerSetupTesting");
+  try {
+    const result = await request(`/api/resources/providers/${encodeURIComponent(doc.id)}/test`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(doc)
+    });
+    if (!result || result.valid === false || result.status === "error") {
+      throw new Error(providerSetupTestError(result));
+    }
+    if (output) {
+      output.textContent = t("settings.providerSetupTestSucceeded", { ms: numberText(result.latency_ms || 0) });
+      output.classList.remove("error");
+      output.classList.add("success");
+    }
+  } catch (error) {
+    if (output) {
+      output.textContent = t("settings.providerSetupTestFailed", { message: localizedSettingsErrorMessage(error, t("common.failed")) });
+      output.classList.remove("success");
+      output.classList.add("error");
+    }
+  } finally {
+    setProviderTestBusy(button, false);
+  }
+}
+
+function providerSetupTestError(result = {}) {
+  const issue = Array.isArray(result?.issues) ? result.issues.find(item => item?.message) : null;
+  return issue?.message || result?.message || t("settings.providerSetupTestUnknown");
+}
+
+function collectProviderSetupForm(form) {
+  const provider = String(form.querySelector("[data-provider-setup-type]")?.value || "openai-compatible").trim() || "openai-compatible";
+  const id = normalizeProviderSetupID(form.querySelector("[data-provider-setup-id]")?.value || "primary");
+  return {
+    id,
+    provider,
+    base_url: String(form.querySelector("[data-provider-setup-base-url]")?.value || "").trim(),
+    model: String(form.querySelector("[data-provider-setup-model]")?.value || "").trim(),
+    api_key: String(form.querySelector("[data-provider-setup-api-key]")?.value || "").trim()
+  };
+}
+
+function normalizeProviderSetupID(value) {
+  const normalized = String(value || "primary").trim().toLowerCase().replace(/[^\w-]+/g, "-").replace(/^-+|-+$/g, "");
+  return normalized || "primary";
+}
+
+function setProviderSetupBusy(button, busy) {
+  if (!button) return;
+  button.disabled = Boolean(busy);
+  button.setAttribute("aria-disabled", busy ? "true" : "false");
+  button.setAttribute("aria-busy", busy ? "true" : "false");
+  button.textContent = busy ? t("settings.providerSetupSaving") : t("settings.providerSetupSave");
+}
+
+function setProviderTestBusy(button, busy) {
+  if (!button) return;
+  button.disabled = Boolean(busy);
+  button.setAttribute("aria-disabled", busy ? "true" : "false");
+  button.setAttribute("aria-busy", busy ? "true" : "false");
+  button.textContent = busy ? t("settings.providerSetupTesting") : t("settings.providerSetupTest");
+}
+
+function providerSetupSaveMessage(saved = {}) {
+  if (saved?.restart_required || saved?.apply_state === "restart_required") {
+    return t("settings.providerSetupSavedRestart");
+  }
+  return t("settings.providerSetupSaved");
+}
+
+function markProviderSetupSaved(form, saved = {}) {
+  form.classList.remove("warning");
+  form.classList.add("good");
+  form.dataset.providerSetupApiKeySet = "true";
+  form.dataset.providerSetupReusableKey = "true";
+  form.querySelector(".settings-provider-missing")?.remove();
+  const badge = form.querySelector(".settings-provider-setup-head .badge");
+  if (badge) {
+    badge.className = "badge good";
+    badge.textContent = t("settings.providerSetupReady");
+  }
+  const apiKey = form.querySelector("[data-provider-setup-api-key]");
+  if (apiKey) {
+    apiKey.value = "";
+    apiKey.placeholder = t("settings.providerSetupKeyKept");
+  }
+  if (saved?.id) {
+    const id = form.querySelector("[data-provider-setup-id]");
+    if (id) id.value = saved.id;
+  }
+}
+
+function renderDeveloperSetupChecks(runtime, diagnostics) {
+  const checks = renderEnvChecks(runtime);
+  return `<details class="settings-developer-checks">
+    <summary>
+      <span>${escapeHTML(t("settings.developerChecks"))}</span>
+      <small>${escapeHTML(t("settings.developerChecksHelp"))}</small>
+    </summary>
+    ${diagnostics?.restart_required ? `<p class="settings-developer-note">${escapeHTML(t("settings.developerRestartNote"))}</p>` : ""}
+    ${checks}
+  </details>`;
+}
+
+function renderAdvancedRuntimeDetails(runtime, diagnostics, diagnosticCapabilities) {
+  const paths = [
+    [t("settings.configPath"), diagnostics?.config_path],
+    [t("settings.runtimeHome"), diagnostics?.runtime_home || runtime?.runtime_home],
+    [t("settings.workspaceRoot"), diagnostics?.workspace_root || runtime?.workspace?.display]
+  ].filter(([, value]) => String(value || "").trim());
+  return `<details class="settings-advanced-runtime">
+    <summary>
+      <span>${escapeHTML(t("settings.advancedRuntimeTitle"))}</span>
+      <small>${escapeHTML(t("settings.advancedRuntimeHelp"))}</small>
+    </summary>
+    ${renderDiagnosticCapabilities(diagnosticCapabilities)}
+    ${paths.length ? `<div class="settings-path-stack">
+      ${paths.map(([label, value]) => `<div class="settings-path-row"><span>${escapeHTML(label)}</span><strong title="${escapeHTML(value)}">${escapeHTML(value)}</strong></div>`).join("")}
+    </div>` : ""}
+    <div class="settings-advanced-runtime-grid">
+      <section>
+        <div class="settings-section-label">
+          <strong>${escapeHTML(t("settings.configModules"))}</strong>
+          <span>${escapeHTML(t("settings.configModulesHelp"))}</span>
+        </div>
+        ${renderModules(diagnostics)}
+      </section>
+      <section>
+        ${renderDeveloperSetupChecks(runtime, diagnostics)}
+      </section>
+    </div>
+  </details>`;
+}
+
 function renderEnvChecks(runtime) {
   const env = Array.isArray(runtime?.setup?.env) ? runtime.setup.env : [];
-  const workspaceCard = renderWorkspaceReadiness(runtime);
   const envHTML = env.length
     ? env.map(item => `<article class="settings-check-item ${item.set ? "good" : item.required ? "warning" : "neutral"}">
         <div>
@@ -810,9 +1259,15 @@ function renderEnvChecks(runtime) {
         </div>
         <span class="badge ${item.set ? "good" : item.required ? "warn" : "neutral"}">${item.set ? t("common.set") : item.required ? t("common.required") : t("common.optional")}</span>
       </article>`).join("")
-    : `<div class="settings-empty">${t("settings.noEnvChecks")}</div>`;
+    : `<div class="settings-empty settings-empty-action">
+        <strong>${escapeHTML(t("settings.noEnvChecksTitle"))}</strong>
+        <span>${escapeHTML(t("settings.noEnvChecks"))}</span>
+        <div class="settings-empty-actions">
+          <button type="button" class="primary" data-settings-scroll="first-run">${escapeHTML(t("settings.priorityOpenProviderSetup"))}</button>
+          <button type="button" data-settings-target="catalog">${escapeHTML(t("settings.priorityOpenResources"))}</button>
+        </div>
+      </div>`;
   return `<div class="settings-check-list">
-    ${workspaceCard}
     ${envHTML}
   </div>`;
 }
@@ -948,6 +1403,30 @@ function renderUpdatePolicy(update) {
       ${notes.map(note => `<p>${escapeHTML(localizedText(note))}</p>`).join("")}
     </div>` : ""}
   </div>`;
+}
+
+function renderUpdateBasics(update) {
+  if (update?.__error) {
+    return `<article class="settings-update-basic warning">
+      <div>
+        <strong>${escapeHTML(t("settings.updateBasicTitle"))}</strong>
+        <p>${escapeHTML(t("settings.updateUnavailable", { message: update.__error }))}</p>
+      </div>
+    </article>`;
+  }
+  const checkEnabled = update?.check_enabled !== false;
+  const endpoint = update?.check_endpoint || "/api/update-policy/check";
+  return `<article class="settings-update-basic ${checkEnabled ? "neutral" : "disabled"}">
+    <div>
+      <strong>${escapeHTML(t("settings.updateBasicTitle"))}</strong>
+      <p>${escapeHTML(checkEnabled ? t("settings.updateBasicHelp") : updateCheckDisabledText(update))}</p>
+    </div>
+    <div class="settings-update-basic-actions">
+      <span class="badge ${checkEnabled ? "info" : "neutral"}">${escapeHTML(checkEnabled ? t("settings.updateBasicOptIn") : t("settings.updateCheckDisabledBadge"))}</span>
+      ${checkEnabled ? `<button type="button" data-settings-update-check data-settings-update-check-path="${escapeHTML(endpoint)}">${escapeHTML(t("settings.updateCheckButton"))}</button>` : ""}
+    </div>
+    <div class="settings-update-check-output" data-settings-update-output role="status" aria-live="polite"></div>
+  </article>`;
 }
 
 function updateCheckDisabledText(update = {}) {

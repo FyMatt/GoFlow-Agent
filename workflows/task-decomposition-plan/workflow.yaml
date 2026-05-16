@@ -8,8 +8,8 @@ stages:
       next:
         - decompose
       position:
-        x: 122
-        "y": 96
+        x: 180
+        "y": 779
     - name: decompose
       node_type: agent
       agent: planner
@@ -47,8 +47,8 @@ stages:
       next:
         - review-plan
       position:
-        x: 550
-        "y": 190
+        x: 732
+        "y": 761
     - name: review-plan
       node_type: skill
       agent: auditor
@@ -84,8 +84,8 @@ stages:
       next:
         - quality
       position:
-        x: 1004
-        "y": 207
+        x: 1344
+        "y": 761
     - name: quality
       node_type: quality_gate
       agent: ""
@@ -101,8 +101,8 @@ stages:
         pass: materialize-candidate
         warning: operator-review
       position:
-        x: 1458
-        "y": 301
+        x: 1956
+        "y": 761
     - name: operator-review
       node_type: checkpoint
       agent: ""
@@ -112,8 +112,8 @@ stages:
       next:
         - materialize-candidate
       position:
-        x: 96
-        "y": 631
+        x: 2568
+        "y": 623
     - name: materialize-candidate
       node_type: skill
       agent: planner
@@ -150,8 +150,8 @@ stages:
       next:
         - end
       position:
-        x: 550
-        "y": 412
+        x: 3180
+        "y": 761
     - name: clarify-scope
       node_type: input_gate
       agent: ""
@@ -167,12 +167,12 @@ stages:
       next:
         - decompose
       position:
-        x: 98
-        "y": 348
+        x: 2568
+        "y": 899
     - name: end
       node_type: end
       agent: ""
       skill: ""
       position:
-        x: 1030
-        "y": 429
+        x: 3792
+        "y": 779

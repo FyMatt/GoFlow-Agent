@@ -85,6 +85,19 @@ The Studio can:
 - save custom graphs back to `workflows/<name>/workflow.yaml`
 - run the selected workflow through the same HTTP workflow endpoint and display stage/token/approval stream events
 
+Workflow Studio has two authoring modes:
+
+- **Simple mode** is the default. It is for ordinary users and keeps the
+  authoring surface focused on the canvas, starter templates, task cards,
+  resource pickers, quick input/output presets, and visual flow controls.
+  Advanced inspector tabs, raw route maps, context contracts, execution-order
+  internals, and run/debug panels stay hidden.
+- **Expert mode** is persistent and intended for developers or advanced
+  operators. It restores the full node library, all inspector tabs, raw params,
+  route/case maps, context contracts, input/output maps, execution-order
+  preview, and run diagnostics. It does not change the workflow schema; it only
+  exposes more of the same graph model.
+
 For faster authoring in the right-side inspector:
 
 - Node metadata cards can apply a built-in default setup or a worked example to
@@ -95,6 +108,16 @@ For faster authoring in the right-side inspector:
   `acceptance_criteria`, so quality checks can be authored directly in Studio.
 - Results and evidence guide cards can add common report artifacts, evidence
   artifacts, contains checks, and exists checks without hand-writing YAML.
+
+The canvas distinguishes ordinary flow from control semantics:
+
+- control nodes show a compact "Control" summary on the node card
+- branch edges are labeled with outcomes such as `Pass`, `Fail`, `True`, or
+  `Default`
+- loop and for-each body links are drawn as auxiliary body edges, separate from
+  the normal "after the loop" path
+- selecting or hovering a control node draws a scope frame around the stages it
+  controls, so users can see the node's range without reading YAML
 
 Node positions are saved as optional stage metadata:
 
@@ -121,6 +144,9 @@ params:
 their own LLM stage, but they can choose the next executable path, fan out,
 wait for branch completion, repeat an executable body stage, call a nested
 workflow, publish input variables, pause for approval, or block the workflow.
+For repeat nodes, `params.stage` is the controlled body stage and `next` is the
+stage that runs after the repeat exits; these are intentionally different
+relationships in both the runtime and the Studio canvas.
 Executable body/stage nodes still need an `agent` and `skill`; `tool` and
 `params` are included in the stage prompt as metadata.
 
@@ -1606,7 +1632,8 @@ detail view shows editable fields, common outputs, hints, warnings, examples,
 and any custom metadata file path.
 
 `/api/workflow-templates` returns reusable graph blueprints such as
-`multi-domain-intake-router`, `task-decomposition-plan`, `plan-fix-audit`,
+`multi-domain-intake-router`, `complex-project-delivery`,
+`task-decomposition-plan`, `plan-fix-audit`,
 `software-quality-gate`, `web-research-risk`,
 `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`,
 `docs-review-publish`, `operations-runbook`, `customer-support-triage`,
@@ -1630,6 +1657,15 @@ analysis, documentation, operations, customer support, platform/framework
 extension work, and a general fallback. Use it to demonstrate how Agents,
 Skills, Tools, Teams, Workflow Templates, Policy Rules, and Kits are connected
 in a realistic graph.
+
+`complex-project-delivery` is the recommended template for broad implementation
+work that should continue until the accepted requirements are satisfied. It
+turns the user request into requirement analysis and a project plan, pauses for
+plan confirmation, then runs an implementation/verification/review/plan-update
+loop until the iteration output declares `PROJECT_COMPLETE`. After the loop it
+runs final validation and produces a completion report with delivered
+requirements, changed files, verification evidence, residual risks, and artifact
+references.
 
 `task-decomposition-plan` is the recommended pre-flight template for very
 complex tasks. It asks the planner to produce a workflow graph candidate with

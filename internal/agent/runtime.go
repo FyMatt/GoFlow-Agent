@@ -11,6 +11,7 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/policy"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
@@ -33,6 +34,7 @@ type Runtime struct {
 	skills                   interfaces.SkillManager
 	mcp                      interfaces.MCPClient
 	session                  *session.State
+	memory                   *memory.Store
 	audit                    *runtime.AuditLogger
 	runners                  map[string]*AgentRunner
 	clients                  map[string]interfaces.LLMClient
@@ -47,6 +49,31 @@ type Runtime struct {
 	ordinaryResumeResults    map[string]map[string]schema.ToolResult
 	workspaceConfirmed       bool
 	workspaceConfirmationSet bool
+}
+
+// SetMemoryStore attaches the workspace memory store used for prompt retrieval
+// and task summaries.
+func (r *Runtime) SetMemoryStore(store *memory.Store) {
+	if r == nil {
+		return
+	}
+	r.memory = store
+}
+
+// MemoryStore returns the workspace-scoped memory store, when configured.
+func (r *Runtime) MemoryStore() *memory.Store {
+	if r == nil {
+		return nil
+	}
+	return r.memory
+}
+
+func (r *Runtime) currentWorkflowRunID() string {
+	if r == nil || r.session == nil {
+		return ""
+	}
+	snapshot := r.session.Snapshot()
+	return strings.TrimSpace(snapshot.Workflow.RunID)
 }
 
 // AgentRunner encapsulates one configured agent profile and its provider client.
@@ -699,6 +726,22 @@ func (r *Runtime) AppendAgentRunEvent(runID string, event session.AgentRunEventS
 	r.session.AppendAgentRunEvent(runID, event)
 }
 
+// HydrateAgentRun restores ordinary run fields that may be stored by ref.
+func (r *Runtime) HydrateAgentRun(run session.AgentRunSnapshot) session.AgentRunSnapshot {
+	if r == nil || r.session == nil {
+		return run
+	}
+	return r.session.HydrateAgentRun(run)
+}
+
+// HydrateAgentRunEvents restores event content stored by ref.
+func (r *Runtime) HydrateAgentRunEvents(events []session.AgentRunEventSnapshot) []session.AgentRunEventSnapshot {
+	if r == nil || r.session == nil {
+		return events
+	}
+	return r.session.HydrateAgentRunEvents(events)
+}
+
 func (r *Runtime) cancelAgentRunApproval(run session.AgentRunSnapshot) {
 	if r == nil || r.session == nil {
 		return
@@ -806,6 +849,28 @@ func (r *Runtime) SessionArtifact(idOrRef string) (session.SessionArtifactSnapsh
 	return r.session.Artifact(idOrRef)
 }
 
+// ArtifactObject returns one content-addressed artifact object by hash/ref.
+func (r *Runtime) ArtifactObject(hashOrRef string) (session.ArtifactObject, bool, error) {
+	if r == nil || r.session == nil {
+		return session.ArtifactObject{}, false, nil
+	}
+	if store := r.session.ArtifactObjectStore(); store != nil {
+		return store.Get(hashOrRef)
+	}
+	return session.ArtifactObject{}, false, nil
+}
+
+// ArtifactObjects returns the content-addressed artifact metadata index.
+func (r *Runtime) ArtifactObjects() (session.ArtifactObjectIndex, error) {
+	if r == nil || r.session == nil {
+		return session.ArtifactObjectIndex{}, nil
+	}
+	if store := r.session.ArtifactObjectStore(); store != nil {
+		return store.Index()
+	}
+	return session.ArtifactObjectIndex{}, nil
+}
+
 // AddCollaborationMessage records a durable collaboration timeline message.
 func (r *Runtime) AddCollaborationMessage(message session.CollaborationMessageSnapshot) session.CollaborationMessageSnapshot {
 	if r == nil || r.session == nil {
@@ -884,6 +949,38 @@ func (r *Runtime) AppendWorkflowRunEvent(runID string, event session.WorkflowRun
 		return
 	}
 	r.session.AppendWorkflowRunEvent(runID, event)
+}
+
+// HydrateWorkflowRun restores workflow-run fields that may be stored by ref.
+func (r *Runtime) HydrateWorkflowRun(run session.WorkflowRunSnapshot) session.WorkflowRunSnapshot {
+	if r == nil || r.session == nil {
+		return run
+	}
+	return r.session.HydrateWorkflowRun(run)
+}
+
+// HydrateWorkflowRunStages restores stage typed values stored by ref.
+func (r *Runtime) HydrateWorkflowRunStages(stages []session.WorkflowRunStageSnapshot) []session.WorkflowRunStageSnapshot {
+	if r == nil || r.session == nil {
+		return stages
+	}
+	return r.session.HydrateWorkflowRunStages(stages)
+}
+
+// HydrateWorkflowRunEvents restores workflow event content stored by ref.
+func (r *Runtime) HydrateWorkflowRunEvents(events []session.WorkflowRunEventSnapshot) []session.WorkflowRunEventSnapshot {
+	if r == nil || r.session == nil {
+		return events
+	}
+	return r.session.HydrateWorkflowRunEvents(events)
+}
+
+// HydrateSnapshot restores explicit full-session fields stored by ref.
+func (r *Runtime) HydrateSnapshot(snapshot session.Snapshot) session.Snapshot {
+	if r == nil || r.session == nil {
+		return snapshot
+	}
+	return r.session.HydrateSnapshot(snapshot)
 }
 
 // CancelWorkflowRunAndApprovals cancels a paused workflow run and clears its pending approvals.
@@ -1214,10 +1311,14 @@ func (r *Runtime) queueApprovalForAgentRun(call schema.ToolCall, tool schema.Too
 	if r.approvals != nil {
 		r.approvals.Add(item)
 	}
-	if r != nil && r.session != nil && strings.TrimSpace(item.agentRunID) != "" {
-		r.session.AppendAgentRunPendingApproval(item.agentRunID, pendingApprovalSnapshot(item))
-	}
 	r.syncPendingApprovals()
+	if r != nil && r.session != nil && strings.TrimSpace(item.agentRunID) != "" {
+		approval := r.persistedPendingApprovalSummary(item.call.ID)
+		if strings.TrimSpace(approval.CallID) == "" {
+			approval = pendingApprovalSnapshot(item)
+		}
+		r.session.AppendAgentRunPendingApproval(item.agentRunID, approval)
+	}
 }
 
 func (r *Runtime) syncPendingApprovals() {
@@ -1268,6 +1369,18 @@ func (r *Runtime) PendingApprovalSummaries() []session.PendingApprovalSnapshot {
 		summaries = append(summaries, pendingApprovalSnapshot(item))
 	}
 	return summaries
+}
+
+func (r *Runtime) persistedPendingApprovalSummary(callID string) session.PendingApprovalSnapshot {
+	if r == nil || r.session == nil || strings.TrimSpace(callID) == "" {
+		return session.PendingApprovalSnapshot{}
+	}
+	for _, pending := range r.session.Snapshot().PendingApprovals {
+		if strings.EqualFold(strings.TrimSpace(pending.CallID), strings.TrimSpace(callID)) {
+			return pending
+		}
+	}
+	return session.PendingApprovalSnapshot{}
 }
 
 // PendingApprovals returns queued tool approvals.
@@ -1561,6 +1674,9 @@ func (r *Runtime) restorePendingApprovalSnapshot(pending session.PendingApproval
 	if r == nil || r.approvals == nil || strings.TrimSpace(pending.CallID) == "" || strings.TrimSpace(pending.AgentRunID) == "" {
 		return
 	}
+	if r.session != nil {
+		pending = r.session.HydratePendingApproval(pending)
+	}
 	callID := strings.TrimSpace(pending.CallID)
 	if _, ok := restored[callID]; ok {
 		return
@@ -1586,9 +1702,17 @@ func (r *Runtime) restorePendingApprovalSnapshot(pending session.PendingApproval
 
 func (r *Runtime) restoreOrdinaryResumeContext(run session.AgentRunSnapshot) {
 	if r == nil || run.ResumeContext == nil || len(run.ResumeContext.SuspendedCalls) == 0 {
-		return
+		if r == nil || run.ResumeContext == nil || r.session == nil {
+			return
+		}
 	}
 	context := *run.ResumeContext
+	if r.session != nil {
+		context = r.session.HydrateAgentRunResumeContext(context)
+	}
+	if len(context.SuspendedCalls) == 0 {
+		return
+	}
 	resumeID := strings.TrimSpace(context.SuspendedCalls[0].ID)
 	if resumeID == "" {
 		return
@@ -1890,10 +2014,14 @@ func (r *Runtime) requeuePendingApproval(pending pendingApproval) {
 		delete(r.approvedWorkflowResumes, pending.call.ID)
 	}
 	r.approvals.Add(pending)
-	if r.session != nil && strings.TrimSpace(pending.agentRunID) != "" {
-		r.session.AppendAgentRunPendingApproval(pending.agentRunID, pendingApprovalSnapshot(pending))
-	}
 	r.syncPendingApprovals()
+	if r.session != nil && strings.TrimSpace(pending.agentRunID) != "" {
+		approval := r.persistedPendingApprovalSummary(pending.call.ID)
+		if strings.TrimSpace(approval.CallID) == "" {
+			approval = pendingApprovalSnapshot(pending)
+		}
+		r.session.AppendAgentRunPendingApproval(pending.agentRunID, approval)
+	}
 }
 
 func (r *Runtime) EnableWorkflowAutoApprovalForTool(workflowName string, stage WorkflowStage, tool schema.Tool) error {
@@ -2060,6 +2188,301 @@ func workspaceRoot(r *Runtime) string {
 		return ""
 	}
 	return strings.TrimSpace(r.cfg.WorkspaceRoot)
+}
+
+func (r *Runtime) recordTaskMemory(input, agentID, mode string, result schema.AgentResult, runErr error) {
+	if r == nil || r.memory == nil {
+		return
+	}
+	summary := memory.TaskSummary{
+		UserGoal:      input,
+		AgentID:       agentID,
+		Mode:          mode,
+		ModifiedFiles: extractResultFiles(result),
+		TestResults:   extractVerificationSummaries(result.Verification),
+	}
+	if strings.TrimSpace(result.Output) != "" {
+		summary.KeyDecisions = []string{truncateSummary(result.Output)}
+	}
+	if len(result.Changes) > 0 {
+		for _, change := range result.Changes {
+			if strings.TrimSpace(change.Summary) != "" {
+				summary.KeyDecisions = append(summary.KeyDecisions, truncateSummary(change.Summary))
+			}
+			summary.ModifiedFiles = append(summary.ModifiedFiles, change.Files...)
+		}
+	}
+	if len(result.Findings) > 0 {
+		for _, finding := range result.Findings {
+			if strings.TrimSpace(finding.Summary) != "" {
+				summary.KeyDecisions = append(summary.KeyDecisions, truncateSummary(finding.Summary))
+			}
+			summary.ModifiedFiles = append(summary.ModifiedFiles, finding.Files...)
+		}
+	}
+	if runErr != nil {
+		summary.FailureReasons = []string{runErr.Error()}
+	} else {
+		summary.ReusableLessons = reusableLessonsForResult(result)
+	}
+	_, _ = r.memory.RecordTask(summary)
+}
+
+func (r *Runtime) BackfillWorkflowTaskMemory(limit int) {
+	if r == nil || r.memory == nil || r.session == nil {
+		return
+	}
+	runs := r.session.WorkflowRuns()
+	if limit > 0 && len(runs) > limit {
+		runs = append([]session.WorkflowRunSnapshot(nil), runs[:limit]...)
+	}
+	for _, run := range runs {
+		if !workflowTaskMemoryTerminalStatus(run.Status) {
+			continue
+		}
+		r.recordWorkflowTaskMemoryFromRun(r.session.HydrateWorkflowRun(run), nil)
+	}
+}
+
+func (r *Runtime) recordWorkflowTaskMemoryFromRun(run session.WorkflowRunSnapshot, runErr error) {
+	if r == nil || r.memory == nil || strings.TrimSpace(run.ID) == "" || !workflowTaskMemoryTerminalStatus(run.Status) {
+		return
+	}
+	stages := workflowStageResultsFromRunSnapshots(run.CompletedStages)
+	summary := memory.TaskSummary{
+		ID:            "workflow-" + strings.TrimSpace(run.ID),
+		UserGoal:      strings.TrimSpace(firstNonEmptyRuntimeString(run.Request, run.Name)),
+		AgentID:       strings.TrimSpace(firstNonEmptyRuntimeString(run.Name, "workflow")),
+		Mode:          "workflow",
+		KeyDecisions:  workflowTaskMemoryDecisions(run, stages),
+		ModifiedFiles: workflowTaskMemoryFiles(stages),
+		TestResults:   workflowTaskMemoryTests(stages),
+		NextTodos:     workflowTaskMemoryNextTodos(stages),
+	}
+	switch strings.ToLower(strings.TrimSpace(run.Status)) {
+	case "completed":
+		summary.ReusableLessons = workflowTaskMemoryLessons(run, stages)
+	case "failed", "denied", "cancelled", "blocked":
+		summary.FailureReasons = workflowTaskMemoryFailures(run, runErr, stages)
+	}
+	_, _ = r.memory.RecordTask(summary)
+}
+
+func firstNonEmptyRuntimeString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func extractResultFiles(result schema.AgentResult) []string {
+	files := make([]string, 0)
+	for _, change := range result.Changes {
+		files = append(files, change.Files...)
+	}
+	for _, finding := range result.Findings {
+		files = append(files, finding.Files...)
+	}
+	for _, section := range result.Structured {
+		files = append(files, extractMentionedFiles(section.Summary)...)
+		for _, item := range section.Items {
+			files = append(files, extractMentionedFiles(item)...)
+		}
+	}
+	return files
+}
+
+func extractVerificationSummaries(items []schema.Verification) []string {
+	out := make([]string, 0, len(items))
+	for _, item := range items {
+		parts := []string{}
+		if strings.TrimSpace(item.Kind) != "" {
+			parts = append(parts, item.Kind)
+		}
+		if strings.TrimSpace(item.Status) != "" {
+			parts = append(parts, item.Status)
+		}
+		if strings.TrimSpace(item.Detail) != "" {
+			parts = append(parts, truncateSummary(item.Detail))
+		}
+		if len(parts) > 0 {
+			out = append(out, strings.Join(parts, ": "))
+		}
+	}
+	return out
+}
+
+func reusableLessonsForResult(result schema.AgentResult) []string {
+	if len(result.ToolResults) == 0 && strings.TrimSpace(result.Output) == "" {
+		return nil
+	}
+	lessons := make([]string, 0, 2)
+	if len(result.ToolResults) > 0 {
+		lessons = append(lessons, fmt.Sprintf("Used %d tool results; keep future prompt context summary-first and load exact artifacts only when needed.", len(result.ToolResults)))
+	}
+	if strings.TrimSpace(result.Output) != "" {
+		lessons = append(lessons, "Final response captured as task memory summary for keyword retrieval.")
+	}
+	return lessons
+}
+
+func workflowTaskMemoryTerminalStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", "denied", "cancelled", "blocked":
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowTaskMemoryDecisions(run session.WorkflowRunSnapshot, stages []WorkflowStageResult) []string {
+	decisions := make([]string, 0, len(stages)*2+1)
+	if strings.TrimSpace(run.Summary) != "" {
+		decisions = append(decisions, truncateSummary(run.Summary))
+	}
+	for _, stage := range stages {
+		stageName := strings.TrimSpace(string(stage.Stage))
+		if strings.TrimSpace(stage.Output.Summary) != "" {
+			decisions = append(decisions, workflowTaskStageDetail(stageName, stage.Output.Summary))
+		} else if strings.TrimSpace(stage.Result.Output) != "" {
+			decisions = append(decisions, workflowTaskStageDetail(stageName, stage.Result.Output))
+		}
+		if strings.TrimSpace(stage.Output.Decision) != "" {
+			decisions = append(decisions, workflowTaskStageDetail(stageName+" 决策", stage.Output.Decision))
+		}
+		for _, change := range stage.Result.Changes {
+			if strings.TrimSpace(change.Summary) != "" {
+				decisions = append(decisions, workflowTaskStageDetail(stageName+" 变更", change.Summary))
+			}
+		}
+		for _, finding := range stage.Result.Findings {
+			if strings.TrimSpace(finding.Summary) != "" {
+				decisions = append(decisions, workflowTaskStageDetail(stageName+" 发现", finding.Summary))
+			}
+		}
+	}
+	return dedupeWorkflowTaskMemoryStrings(decisions)
+}
+
+func workflowTaskMemoryFiles(stages []WorkflowStageResult) []string {
+	files := make([]string, 0)
+	for _, stage := range stages {
+		files = append(files, extractResultFiles(stage.Result)...)
+		for _, artifact := range stage.Output.Artifacts {
+			files = append(files, extractMentionedFiles(artifact.Summary)...)
+			files = append(files, extractMentionedFiles(artifact.Content)...)
+		}
+	}
+	return dedupeWorkflowTaskMemoryStrings(files)
+}
+
+func workflowTaskMemoryTests(stages []WorkflowStageResult) []string {
+	tests := make([]string, 0)
+	for _, stage := range stages {
+		tests = append(tests, extractVerificationSummaries(stage.Result.Verification)...)
+		for _, item := range stage.Acceptance {
+			parts := make([]string, 0, 3)
+			if strings.TrimSpace(item.Name) != "" {
+				parts = append(parts, strings.TrimSpace(item.Name))
+			}
+			if strings.TrimSpace(item.Status) != "" {
+				parts = append(parts, strings.TrimSpace(item.Status))
+			}
+			if strings.TrimSpace(item.Reason) != "" {
+				parts = append(parts, truncateSummary(item.Reason))
+			} else if strings.TrimSpace(item.Actual) != "" {
+				parts = append(parts, truncateSummary(item.Actual))
+			}
+			if len(parts) > 0 {
+				tests = append(tests, strings.Join(parts, ": "))
+			}
+		}
+	}
+	return dedupeWorkflowTaskMemoryStrings(tests)
+}
+
+func workflowTaskMemoryNextTodos(stages []WorkflowStageResult) []string {
+	items := make([]string, 0)
+	for _, stage := range stages {
+		stageName := strings.TrimSpace(string(stage.Stage))
+		for _, action := range stage.Output.NextActions {
+			if strings.TrimSpace(action) == "" {
+				continue
+			}
+			items = append(items, workflowTaskStageDetail(stageName+" 后续", action))
+		}
+	}
+	return dedupeWorkflowTaskMemoryStrings(items)
+}
+
+func workflowTaskMemoryLessons(run session.WorkflowRunSnapshot, stages []WorkflowStageResult) []string {
+	lessons := make([]string, 0, len(stages)+2)
+	for _, stage := range stages {
+		lessons = append(lessons, reusableLessonsForResult(stage.Result)...)
+		if len(stage.Output.Artifacts) > 0 {
+			lessons = append(lessons, workflowTaskStageDetail(string(stage.Stage), fmt.Sprintf("产出了 %d 个 artifact，后续优先通过摘要和引用复用。", len(stage.Output.Artifacts))))
+		}
+	}
+	if strings.TrimSpace(run.Summary) != "" {
+		lessons = append(lessons, "最终摘要已经写入任务记忆，可通过关键词检索和摘要优先上下文复用。")
+	}
+	return dedupeWorkflowTaskMemoryStrings(lessons)
+}
+
+func workflowTaskMemoryFailures(run session.WorkflowRunSnapshot, runErr error, stages []WorkflowStageResult) []string {
+	failures := make([]string, 0, 3)
+	if runErr != nil && strings.TrimSpace(runErr.Error()) != "" {
+		failures = append(failures, runErr.Error())
+	}
+	if strings.TrimSpace(run.Summary) != "" {
+		failures = append(failures, run.Summary)
+	}
+	for i := len(stages) - 1; i >= 0; i-- {
+		stage := stages[i]
+		if strings.TrimSpace(stage.Result.Output) != "" {
+			failures = append(failures, workflowTaskStageDetail(string(stage.Stage), stage.Result.Output))
+			break
+		}
+	}
+	return dedupeWorkflowTaskMemoryStrings(failures)
+}
+
+func workflowTaskStageDetail(label, value string) string {
+	label = strings.TrimSpace(label)
+	value = truncateSummary(value)
+	switch {
+	case label == "" && value == "":
+		return ""
+	case label == "":
+		return value
+	case value == "":
+		return label
+	default:
+		return label + ": " + value
+	}
+}
+
+func dedupeWorkflowTaskMemoryStrings(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 type ordinaryChatIntent struct {
@@ -2247,6 +2670,8 @@ func (r *Runtime) RunStream(ctx context.Context, input string, handler func(even
 	}
 	result, err := runner.RunStream(ctx, input, r.skills, r.mcp, r.session, r.audit, r, handler)
 	if err != nil {
+		r.recordTaskMemory(input, runner.id, r.Mode(), schema.AgentResult{}, err)
+		_, _, _ = r.MaybeAutoCompactContext(ctx, "ordinary agent run failed")
 		return schema.AgentResult{}, err
 	}
 	result.AgentID = runner.id
@@ -2257,9 +2682,13 @@ func (r *Runtime) RunStream(ctx context.Context, input string, handler func(even
 		r.queueOrdinaryChatHandoff(input, result.Output, workflowAgentFixer, "fix")
 	}
 	if err := r.maybeRunVerifierPass(ctx, input, &result, handler); err != nil {
+		r.recordTaskMemory(input, runner.id, result.Mode, result, err)
+		_, _, _ = r.MaybeAutoCompactContext(ctx, "ordinary agent verifier failed")
 		return schema.AgentResult{}, err
 	}
 	result.AuditTrail = r.AuditTrail()
+	r.recordTaskMemory(input, runner.id, result.Mode, result, nil)
+	_, _, _ = r.MaybeAutoCompactContext(ctx, "ordinary agent run completed")
 	_ = r.restoreAgentAfterCompletedTurn(sourceAgent)
 	return result, nil
 }
@@ -2382,7 +2811,7 @@ func (r *Runtime) StatusLines(ctx context.Context) []string {
 		lines = append(lines, fmt.Sprintf("task: stage=%s agent=%s mode=%s detail=%s", snapshot.TaskStage.Stage, fallbackText(snapshot.TaskStage.AgentID, "-"), fallbackText(snapshot.TaskStage.Mode, "-"), fallbackText(truncateSummary(snapshot.TaskStage.Detail), "-")))
 	}
 	if snapshot.PromptBudget != nil && snapshot.PromptBudget.EstimatedPromptTokens > 0 {
-		lines = append(lines, fmt.Sprintf("prompt_budget: est_input=%d system=%d messages=%d tools=%d cacheable_prefix=%d exposed_tools=%d/%d filtered=%d prefix=%s", snapshot.PromptBudget.EstimatedPromptTokens, snapshot.PromptBudget.SystemTokens, snapshot.PromptBudget.MessageTokens, snapshot.PromptBudget.ToolSchemaTokens, snapshot.PromptBudget.CacheablePrefixTokens, snapshot.PromptBudget.ExposedToolCount, snapshot.PromptBudget.TotalToolCount, snapshot.PromptBudget.FilteredToolCount, snapshot.PromptBudget.PromptPrefixHash))
+		lines = append(lines, fmt.Sprintf("prompt_budget: est_input=%d system=%d messages=%d tools=%d memory_blocks=%d artifacts=%d omitted=%d cacheable_prefix=%d exposed_tools=%d/%d filtered=%d prefix=%s", snapshot.PromptBudget.EstimatedPromptTokens, snapshot.PromptBudget.SystemTokens, snapshot.PromptBudget.MessageTokens, snapshot.PromptBudget.ToolSchemaTokens, snapshot.PromptBudget.MemoryBlockCount, snapshot.PromptBudget.ArtifactRefCount, len(snapshot.PromptBudget.OmittedContext), snapshot.PromptBudget.CacheablePrefixTokens, snapshot.PromptBudget.ExposedToolCount, snapshot.PromptBudget.TotalToolCount, snapshot.PromptBudget.FilteredToolCount, snapshot.PromptBudget.PromptPrefixHash))
 	}
 	if route := r.VerifierRoute(); route.Enabled {
 		lines = append(lines, fmt.Sprintf("verifier: agent=%s provider=%s model=%s modes=%s max_tokens=%d", fallbackText(route.Agent, "-"), fallbackText(route.Provider, "-"), fallbackText(route.Model, "-"), fallbackText(strings.Join(route.Modes, ","), "-"), route.MaxTokens))

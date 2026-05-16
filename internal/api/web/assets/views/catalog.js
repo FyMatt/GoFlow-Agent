@@ -51,21 +51,17 @@ export async function renderCatalog(root, runtime) {
         </div>
         <div class="resource-hero-actions">
           <div class="hero-actions">
-            <button class="primary" data-new-resource="skill">${t("catalog.newSkill")}</button>
+            <button class="primary" data-scroll-resource="#resourceKitScaffolds">${t("catalog.starterCreateFull")}</button>
             <button data-new-resource="agent">${t("catalog.newAgent")}</button>
+            <button data-new-resource="skill">${t("catalog.newSkill")}</button>
             <button data-new-resource="tool">${t("catalog.newTool")}</button>
-            <button data-new-resource="team-template">${t("catalog.newTeamTemplate")}</button>
-            <button data-new-resource="kit">${t("catalog.newKit")}</button>
-            <button data-new-resource="workflow-template">${t("catalog.newWorkflowTemplate")}</button>
-            <button data-new-resource="workflow-schema">${t("catalog.newWorkflowSchema")}</button>
-            <button data-new-resource="node-metadata">${t("catalog.newNodeMetadata")}</button>
-            <button data-new-resource="expression-helper">${t("catalog.newExpressionHelper")}</button>
             <button data-new-resource="provider">${t("catalog.newProvider")}</button>
-            <button data-new-resource="policy-rule">${t("catalog.newPolicyRule")}</button>
+            <button data-open-view="workflows">${t("catalog.starterOpenWorkflowStudio")}</button>
           </div>
           <div class="resource-hero-note">
-            <strong>${t("catalog.openInPlayground")}</strong>
-            <span>${t("catalog.resourceBuilderHelp")}</span>
+            <strong>${t("catalog.advancedResourcesTitle")}</strong>
+            <span>${t("catalog.advancedResourcesHelp")}</span>
+            <button type="button" data-resource-advanced-toggle>${t("catalog.showAdvancedResources")}</button>
           </div>
         </div>
       </section>
@@ -83,10 +79,11 @@ export async function renderCatalog(root, runtime) {
         <label class="stack">
           <span>${t("catalog.resourceGroupFilter")}</span>
           <select id="resourceGroupFilter">
+            <option value="recommended" selected>${t("catalog.resourceGroupRecommended")}</option>
             <option value="all">${t("catalog.resourceGroupAll")}</option>
             <option value="essential">${t("catalog.resourceGroupEssential")}</option>
             <option value="workflow">${t("catalog.resourceGroupWorkflow")}</option>
-            <option value="studio">${t("catalog.resourceGroupStudio")}</option>
+            <option value="advanced">${t("catalog.resourceGroupAdvanced")}</option>
             <option value="runtime">${t("catalog.resourceGroupRuntime")}</option>
             <option value="policy">${t("catalog.resourceGroupPolicy")}</option>
           </select>
@@ -113,12 +110,12 @@ export async function renderCatalog(root, runtime) {
         <section class="panel span-4 resource-panel" data-resource-panel data-resource-group="essential" data-resource-panel-kind="agent" data-tour-id="catalog-agents">
           <div class="panel-head"><h2>${t("catalog.agents")}</h2><button data-new-resource="agent">${t("catalog.newAgent")}</button></div>
           <p class="resource-panel-copy muted">${t("tour.catalog.agents.body")}</p>
-          <div class="list">${(runtime.agents || []).map(renderAgent).join("") || empty(t("catalog.noAgents"))}</div>
+          <div class="list">${(runtime.agents || []).map(renderAgent).join("") || empty(t("catalog.noAgents"), { actionLabel: t("catalog.newAgent"), action: "agent" })}</div>
         </section>
         <section class="panel span-4 resource-panel" data-resource-panel data-resource-group="essential" data-resource-panel-kind="skill" data-tour-id="catalog-skills">
           <div class="panel-head"><h2>${t("catalog.skills")}</h2><button class="primary" data-new-resource="skill">${t("catalog.newSkill")}</button></div>
           <p class="resource-panel-copy muted">${t("tour.catalog.skills.body")}</p>
-          <div class="list">${(runtime.skills || []).map(renderSkill).join("") || empty(t("catalog.noSkills"))}</div>
+          <div class="list">${(runtime.skills || []).map(renderSkill).join("") || empty(t("catalog.noSkills"), { actionLabel: t("catalog.newSkill"), action: "skill" })}</div>
         </section>
         <section class="panel span-4 resource-panel" data-resource-panel data-resource-group="essential" data-resource-panel-kind="tool mcp mcp_server" data-tour-id="catalog-tools">
           <div class="panel-head"><h2>${t("catalog.tools")}</h2><button data-new-resource="tool">${t("catalog.newTool")}</button></div>
@@ -131,14 +128,14 @@ export async function renderCatalog(root, runtime) {
         <section class="panel span-12 resource-panel" data-resource-panel data-resource-group="workflow" data-resource-panel-kind="team-template team_template">
           <div class="panel-head"><h2>${t("catalog.teamTemplates")}</h2><div class="hero-actions"><button data-new-resource="team-template">${t("catalog.newTeamTemplate")}</button><span id="resourceTeamTemplatesCount" class="badge">${teamTemplates.length}</span></div></div>
           <p class="resource-panel-copy muted">${t("catalog.teamTemplatesHelp")}</p>
-          <div id="resourceTeamTemplatesList" class="list">${teamTemplates.map(renderTeamTemplate).join("") || empty(t("catalog.noTeamTemplates"))}</div>
+          <div id="resourceTeamTemplatesList" class="list">${teamTemplates.map(renderTeamTemplate).join("") || empty(t("catalog.noTeamTemplates"), { actionLabel: t("catalog.newTeamTemplate"), action: "team-template" })}</div>
         </section>
         <section class="panel span-12 resource-panel" data-resource-panel data-resource-group="workflow" data-resource-panel-kind="workflow-template workflow_template">
           <div class="panel-head"><h2>${t("catalog.workflowTemplates")}</h2><div class="hero-actions"><button data-new-resource="workflow-template">${t("catalog.newWorkflowTemplate")}</button><span id="resourceWorkflowTemplatesCount" class="badge">${workflowTemplates.length}</span></div></div>
           <p class="resource-panel-copy muted">${t("catalog.workflowTemplatesHelp")}</p>
-          <div id="resourceWorkflowTemplatesList" class="list">${workflowTemplates.map(renderWorkflowTemplate).join("") || empty(t("catalog.noWorkflowTemplates"))}</div>
+          <div id="resourceWorkflowTemplatesList" class="list">${workflowTemplates.map(renderWorkflowTemplate).join("") || empty(t("catalog.noWorkflowTemplates"), { actionLabel: t("catalog.newWorkflowTemplate"), action: "workflow-template" })}</div>
         </section>
-        <section class="panel span-12 resource-panel" data-resource-panel data-resource-group="studio" data-resource-panel-kind="workflow-schema workflow_schema">
+        <section class="panel span-12 resource-panel" data-resource-panel data-resource-group="advanced" data-resource-panel-kind="workflow-schema workflow_schema">
           <div class="panel-head">
             <h2>${t("catalog.workflowSchemas")}</h2>
             <div class="hero-actions">
@@ -157,7 +154,7 @@ export async function renderCatalog(root, runtime) {
                   <span>${t("catalog.observedWorkflowSchemasHelp")}</span>
                 </div>
               </div>
-              <div id="resourceObservedWorkflowSchemasList" class="list">${observedWorkflowSchemas.map(renderObservedWorkflowSchema).join("") || empty(t("catalog.noObservedWorkflowSchemas"))}</div>
+              <div id="resourceObservedWorkflowSchemasList" class="list">${observedWorkflowSchemas.map(renderObservedWorkflowSchema).join("") || empty(t("catalog.noObservedWorkflowSchemas"), { actionLabel: t("catalog.openRun"), view: "playground" })}</div>
             </section>
             <section class="kit-resource-section">
               <div class="kit-resource-section-head">
@@ -166,7 +163,7 @@ export async function renderCatalog(root, runtime) {
                   <span>${t("catalog.savedWorkflowSchemasHelp")}</span>
                 </div>
               </div>
-              <div id="resourceWorkflowSchemasList" class="list">${workflowSchemaResources.map(renderWorkflowSchemaResource).join("") || empty(t("catalog.noWorkflowSchemas"))}</div>
+              <div id="resourceWorkflowSchemasList" class="list">${workflowSchemaResources.map(renderWorkflowSchemaResource).join("") || empty(t("catalog.noWorkflowSchemas"), { actionLabel: t("catalog.newWorkflowSchema"), action: "workflow-schema" })}</div>
             </section>
           </div>
         </section>
@@ -177,20 +174,20 @@ export async function renderCatalog(root, runtime) {
             ${renderKitResourceSections(kits, kitScaffolds)}
           </div>
         </section>
-        <section class="panel span-6 resource-panel" data-resource-panel data-resource-group="studio" data-resource-panel-kind="node-metadata workflow_node_metadata">
+        <section class="panel span-6 resource-panel" data-resource-panel data-resource-group="advanced" data-resource-panel-kind="node-metadata workflow_node_metadata">
           <div class="panel-head"><h2>${t("catalog.nodeMetadata")}</h2><div class="hero-actions"><button data-new-resource="node-metadata">${t("catalog.newNodeMetadata")}</button><span id="resourceNodeMetadataCount" class="badge">${nodeMetadataItems.length}</span></div></div>
           <p class="resource-panel-copy muted">${t("catalog.nodeMetadataHelp")}</p>
-          <div id="resourceNodeMetadataList" class="list">${nodeMetadataItems.map(renderNodeMetadataResource).join("") || empty(t("catalog.noNodeMetadata"))}</div>
+          <div id="resourceNodeMetadataList" class="list">${nodeMetadataItems.map(renderNodeMetadataResource).join("") || empty(t("catalog.noNodeMetadata"), { actionLabel: t("catalog.newNodeMetadata"), action: "node-metadata" })}</div>
         </section>
-        <section class="panel span-6 resource-panel" data-resource-panel data-resource-group="studio" data-resource-panel-kind="expression-helper expression_helper">
+        <section class="panel span-6 resource-panel" data-resource-panel data-resource-group="advanced" data-resource-panel-kind="expression-helper expression_helper">
           <div class="panel-head"><h2>${t("catalog.expressionHelpers")}</h2><div class="hero-actions"><button data-new-resource="expression-helper">${t("catalog.newExpressionHelper")}</button><span id="resourceExpressionHelpersCount" class="badge">${expressionHelperItems.length}</span></div></div>
           <p class="resource-panel-copy muted">${t("catalog.expressionHelpersHelp")}</p>
-          <div id="resourceExpressionHelpersList" class="list">${expressionHelperItems.map(renderExpressionHelperResource).join("") || empty(t("catalog.noExpressionHelpers"))}</div>
+          <div id="resourceExpressionHelpersList" class="list">${expressionHelperItems.map(renderExpressionHelperResource).join("") || empty(t("catalog.noExpressionHelpers"), { actionLabel: t("catalog.newExpressionHelper"), action: "expression-helper" })}</div>
         </section>
         <section class="panel span-12 resource-panel" data-resource-panel data-resource-group="runtime" data-resource-panel-kind="provider">
           <div class="panel-head"><h2>${t("catalog.providers")}</h2><div class="hero-actions"><button data-new-resource="provider">${t("catalog.newProvider")}</button><span id="resourceProvidersCount" class="badge">${providerCount}</span></div></div>
           <p class="resource-panel-copy muted">${t("catalog.providersHelp")}</p>
-          <div id="resourceProvidersList" class="list">${providerOptions.map(renderProvider).join("") || empty(t("catalog.noProviders"))}</div>
+          <div id="resourceProvidersList" class="list">${providerOptions.map(renderProvider).join("") || empty(t("catalog.noProviders"), { actionLabel: t("catalog.newProvider"), action: "provider" })}</div>
         </section>
         <section class="panel span-12 resource-panel" data-resource-panel data-resource-group="policy" data-resource-panel-kind="policy-rule policy_rule">
           <div class="panel-head"><h2>${t("catalog.policyRules")}</h2><div class="hero-actions"><button data-new-resource="policy-rule">${t("catalog.newPolicyRule")}</button><span id="resourcePolicyRulesCount" class="badge">${policyRules.length}</span></div></div>
@@ -228,6 +225,7 @@ export async function renderCatalog(root, runtime) {
           </div>
           <nav id="resourceDesignerSections" class="designer-section-nav" aria-label="${escapeHTML(t("catalog.designerSections"))}">
             <button type="button" data-designer-section="identity">${t("catalog.designerSectionIdentity")}</button>
+            <button type="button" data-designer-section="brief">${t("catalog.designerSectionBrief")}</button>
             <button type="button" data-designer-section="module">${t("catalog.designerSectionModule", { type: t("catalog.resourceSkill") })}</button>
             <button type="button" data-designer-section="actions">${t("catalog.designerSectionActions")}</button>
             <button type="button" data-designer-section="result">${t("catalog.designerSectionResult")}</button>
@@ -239,6 +237,24 @@ export async function renderCatalog(root, runtime) {
               <label class="span-4 stack" data-resource-field="purpose"><span>${t("catalog.purpose")}</span><input id="resourcePurpose" placeholder="${escapeHTML(t("catalog.purpose"))}"></label>
               <label class="span-12 stack"><span>${t("catalog.description")}</span><input id="resourceDescription" placeholder="${escapeHTML(t("catalog.description"))}"></label>
               <div id="resourceCapabilitySummary" class="span-12 resource-capability-summary" aria-live="polite"></div>
+              <section id="resourceBriefPanel" class="span-12 resource-brief-panel" data-designer-brief>
+                <div class="resource-brief-head">
+                  <div>
+                    <span>${t("catalog.briefEyebrow")}</span>
+                    <strong>${t("catalog.briefTitle")}</strong>
+                    <p>${t("catalog.briefHelp")}</p>
+                  </div>
+                  <button id="resourceBriefApply" type="button">${t("catalog.briefApply")}</button>
+                </div>
+                <div class="resource-brief-grid">
+                  <label class="stack"><span>${t("catalog.briefGoal")}</span><textarea id="resourceBriefGoal" data-resource-brief-field="goal" class="compact-textarea" placeholder="${escapeHTML(t("catalog.briefGoalPlaceholder"))}"></textarea></label>
+                  <label class="stack"><span>${t("catalog.briefInputs")}</span><textarea id="resourceBriefInputs" data-resource-brief-field="inputs" class="compact-textarea" placeholder="${escapeHTML(t("catalog.briefInputsPlaceholder"))}"></textarea></label>
+                  <label class="stack"><span>${t("catalog.briefOutputs")}</span><textarea id="resourceBriefOutputs" data-resource-brief-field="outputs" class="compact-textarea" placeholder="${escapeHTML(t("catalog.briefOutputsPlaceholder"))}"></textarea></label>
+                  <label class="stack"><span>${t("catalog.briefExample")}</span><textarea id="resourceBriefExample" data-resource-brief-field="example" class="compact-textarea" placeholder="${escapeHTML(t("catalog.briefExamplePlaceholder"))}"></textarea></label>
+                  <label class="stack resource-brief-wide"><span>${t("catalog.briefDependencies")}</span><textarea id="resourceBriefDependencies" data-resource-brief-field="dependencies" class="compact-textarea" placeholder="${escapeHTML(t("catalog.briefDependenciesPlaceholder"))}"></textarea></label>
+                </div>
+                <div id="resourceBriefPreview" class="resource-brief-preview" aria-live="polite"></div>
+              </section>
 
               <div class="span-12 skill-only grid">
                 <label class="span-3 stack"><span>${t("catalog.version")}</span><input id="skillVersion" placeholder="${examplePlaceholder("1.0.0")}"></label>
@@ -464,10 +480,11 @@ tier=default`)}"></textarea></label>
                 <label class="span-4 stack"><span>${t("catalog.providerType")}</span><input id="providerType" placeholder="${examplePlaceholder("openai-compatible")}"></label>
                 <label class="span-4 stack"><span>${t("catalog.providerDefaultModel")}</span><input id="providerDefaultModel" placeholder="${examplePlaceholder("claude-opus-4-6")}"></label>
                 <label class="span-6 stack"><span>${t("catalog.providerBaseURL")}</span><input id="providerBaseURL" placeholder="${examplePlaceholder("https://api.example.com")}"></label>
-                <label class="span-6 stack"><span>${t("catalog.providerEnvKey")}</span><input id="providerEnvKey" placeholder="${examplePlaceholder("OPENAI_API_KEY")}"></label>
+                <label class="span-6 stack"><span>${t("catalog.providerAPIKey")}</span><input id="providerAPIKey" type="password" autocomplete="off" placeholder="${examplePlaceholder("sk-... or ${OPENAI_API_KEY}")}"></label>
                 <label class="span-6 stack"><span>${t("catalog.providerModels")}</span><input id="providerModels" placeholder="${examplePlaceholder("claude-opus-4-6, claude-sonnet-4-5")}"></label>
                 <label class="span-6 stack"><span>${t("catalog.metadata")}</span><textarea id="providerMetadata" class="compact-textarea" placeholder="${examplePlaceholder(`owner=platform
 tier=default`)}"></textarea></label>
+                <div class="span-12 item muted">${t("catalog.providerSetupHelp")}</div>
                 <label class="span-12 stack"><span>${t("catalog.description")}</span><textarea id="providerDescription" class="compact-textarea" placeholder="${escapeHTML(t("catalog.providersHelp"))}"></textarea></label>
               </div>
 
@@ -516,6 +533,7 @@ needle=critical`)}"></textarea></label>
   fillMetadataResourceSelects(root);
   fillToolScaffoldSelect(root);
   fillPolicyRuleScaffoldSelect(root);
+  enhanceResourceDesignerUX(root);
   bindResourceCatalog(root, runtime, providerOptions);
   await focusCatalogTarget(root, runtime, providerOptions);
 }
@@ -797,23 +815,23 @@ async function refreshCatalogResources(root) {
   toggleHidden(root, "#resourceToolScaffolds", !(catalogContext.toolScaffolds || []).length);
   setHTMLIfChanged(root, "#resourceToolsList", renderToolList(runtime));
   updateText(root, "#resourceTeamTemplatesCount", String(catalogContext.teamTemplates.length));
-  setHTMLIfChanged(root, "#resourceTeamTemplatesList", catalogContext.teamTemplates.map(renderTeamTemplate).join("") || empty(t("catalog.noTeamTemplates")));
+  setHTMLIfChanged(root, "#resourceTeamTemplatesList", catalogContext.teamTemplates.map(renderTeamTemplate).join("") || empty(t("catalog.noTeamTemplates"), { actionLabel: t("catalog.newTeamTemplate"), action: "team-template" }));
   updateText(root, "#resourceKitsCount", String(catalogContext.kits.length));
   setHTMLIfChanged(root, "#resourceKitScroll", renderKitResourceSections(catalogContext.kits, catalogContext.kitScaffolds));
   setHTMLIfChanged(root, "#resourcePolicyRuleScroll", renderPolicyRuleResourceSections(catalogContext.policyRules, catalogContext.policyRuleScaffolds));
   updateText(root, "#resourceWorkflowTemplatesCount", String(catalogContext.workflowTemplates.length));
-  setHTMLIfChanged(root, "#resourceWorkflowTemplatesList", catalogContext.workflowTemplates.map(renderWorkflowTemplate).join("") || empty(t("catalog.noWorkflowTemplates")));
+  setHTMLIfChanged(root, "#resourceWorkflowTemplatesList", catalogContext.workflowTemplates.map(renderWorkflowTemplate).join("") || empty(t("catalog.noWorkflowTemplates"), { actionLabel: t("catalog.newWorkflowTemplate"), action: "workflow-template" }));
   updateText(root, "#resourceWorkflowSchemasCount", String(catalogContext.workflowSchemaResources.length));
-  setHTMLIfChanged(root, "#resourceObservedWorkflowSchemasList", catalogContext.workflowSchemas.map(renderObservedWorkflowSchema).join("") || empty(t("catalog.noObservedWorkflowSchemas")));
-  setHTMLIfChanged(root, "#resourceWorkflowSchemasList", catalogContext.workflowSchemaResources.map(renderWorkflowSchemaResource).join("") || empty(t("catalog.noWorkflowSchemas")));
+  setHTMLIfChanged(root, "#resourceObservedWorkflowSchemasList", catalogContext.workflowSchemas.map(renderObservedWorkflowSchema).join("") || empty(t("catalog.noObservedWorkflowSchemas"), { actionLabel: t("catalog.openRun"), view: "playground" }));
+  setHTMLIfChanged(root, "#resourceWorkflowSchemasList", catalogContext.workflowSchemaResources.map(renderWorkflowSchemaResource).join("") || empty(t("catalog.noWorkflowSchemas"), { actionLabel: t("catalog.newWorkflowSchema"), action: "workflow-schema" }));
   const nodeMetadataItems = catalogNodeMetadataItems();
   const expressionHelperItems = catalogExpressionHelperItems();
   updateText(root, "#resourceNodeMetadataCount", String(nodeMetadataItems.length));
-  setHTMLIfChanged(root, "#resourceNodeMetadataList", nodeMetadataItems.map(renderNodeMetadataResource).join("") || empty(t("catalog.noNodeMetadata")));
+  setHTMLIfChanged(root, "#resourceNodeMetadataList", nodeMetadataItems.map(renderNodeMetadataResource).join("") || empty(t("catalog.noNodeMetadata"), { actionLabel: t("catalog.newNodeMetadata"), action: "node-metadata" }));
   updateText(root, "#resourceExpressionHelpersCount", String(expressionHelperItems.length));
-  setHTMLIfChanged(root, "#resourceExpressionHelpersList", expressionHelperItems.map(renderExpressionHelperResource).join("") || empty(t("catalog.noExpressionHelpers")));
+  setHTMLIfChanged(root, "#resourceExpressionHelpersList", expressionHelperItems.map(renderExpressionHelperResource).join("") || empty(t("catalog.noExpressionHelpers"), { actionLabel: t("catalog.newExpressionHelper"), action: "expression-helper" }));
   updateText(root, "#resourceProvidersCount", String(catalogContext.providerOptions.length));
-  setHTMLIfChanged(root, "#resourceProvidersList", catalogContext.providerOptions.map(renderProvider).join("") || empty(t("catalog.noProviders")));
+  setHTMLIfChanged(root, "#resourceProvidersList", catalogContext.providerOptions.map(renderProvider).join("") || empty(t("catalog.noProviders"), { actionLabel: t("catalog.newProvider"), action: "provider" }));
   updateText(root, "#resourcePolicyRulesCount", String(catalogContext.policyRules.length));
   fillWorkflowTemplateSelects(root);
   fillWorkflowSchemaSelect(root);
@@ -824,6 +842,7 @@ async function refreshCatalogResources(root) {
   applyResourceFilters(root);
   applyConfigDiagnosticsToDesigner(root);
   restoreCatalogViewState(root, viewState);
+  renderResourceDependencyPickers(root);
 }
 
 function publishCatalogConfigDiagnostics() {
@@ -1171,11 +1190,22 @@ function bindResourceCatalog(root, runtime, providerOptions) {
   if (clearFilters) {
     clearFilters.onclick = () => {
       if (search) search.value = "";
-      if (group) group.value = "all";
+      if (group) group.value = "recommended";
       applyResourceFilters(root);
       search?.focus();
     };
   }
+  root.querySelectorAll("[data-resource-advanced-toggle]").forEach(button => {
+    button.onclick = () => {
+      if (search) search.value = "";
+      if (group) group.value = "advanced";
+      applyResourceFilters(root);
+      root.querySelector("[data-resource-panel][data-resource-group='advanced']")?.scrollIntoView({
+        block: "start",
+        behavior: prefersReducedMotion() ? "auto" : "smooth"
+      });
+    };
+  });
   root.querySelectorAll("[data-new-resource]").forEach(button => {
     button.onclick = () => openDesigner(root, runtime, button.dataset.newResource, null, providerOptions);
   });
@@ -1258,7 +1288,13 @@ function bindResourceCatalog(root, runtime, providerOptions) {
     syncDesignerMode(root);
     applyConfigDiagnosticsToDesigner(root);
   };
+  root.querySelectorAll("[data-resource-brief-field]").forEach(input => {
+    input.addEventListener("input", () => updateResourceBriefPreview(root));
+    input.addEventListener("change", () => updateResourceBriefPreview(root));
+  });
+  root.querySelector("#resourceBriefApply").onclick = () => applyResourceBrief(root);
   bindSkillScriptEditor(root);
+  bindResourceDependencyPickers(root);
   bindResourceCapabilityRefresh(root);
   root.querySelector("#validateResource").onclick = () => validateResourceDraft(root, { manual: true });
   root.querySelector("#workflowTemplateSaveMode").onchange = () => handleWorkflowTemplateModeChange(root);
@@ -1284,6 +1320,595 @@ function bindResourceCatalog(root, runtime, providerOptions) {
     location.hash = "playground";
   };
   applyResourceFilters(root);
+}
+
+function enhanceResourceDesignerUX(root) {
+  const body = root.querySelector("#resourceDesigner .designer-body .grid");
+  if (!body || body.dataset.resourceUxEnhanced === "true") return;
+  body.dataset.resourceUxEnhanced = "true";
+  const firstLabel = root.querySelector("#resourceType")?.closest("label");
+  const descriptionLabel = root.querySelector("#resourceDescription")?.closest("label");
+  const capability = root.querySelector("#resourceCapabilitySummary");
+  const brief = root.querySelector("#resourceBriefPanel");
+  const resourceDetails = root.querySelector("#resourceDetails")?.closest("label");
+  if (firstLabel) {
+    const basics = document.createElement("section");
+    basics.className = "span-12 resource-designer-section resource-basics-section";
+    basics.dataset.designerSectionPanel = "identity";
+    basics.innerHTML = `<div class="resource-section-head">
+      <span>${escapeHTML(t("catalog.quickStartEyebrow"))}</span>
+      <strong>${escapeHTML(t("catalog.quickStartTitle"))}</strong>
+      <p>${escapeHTML(t("catalog.quickStartHelp"))}</p>
+    </div>
+    <div class="resource-basics-grid"></div>`;
+    body.insertBefore(basics, firstLabel);
+    const grid = basics.querySelector(".resource-basics-grid");
+    [
+      firstLabel,
+      root.querySelector("#resourceName")?.closest("label"),
+      root.querySelector("#resourcePurpose")?.closest("label"),
+      descriptionLabel
+    ].filter(Boolean).forEach(node => grid.append(node));
+  }
+  if (capability) capability.dataset.designerSectionPanel = "identity";
+  if (brief) brief.dataset.designerSectionPanel = "brief";
+  if (resourceDetails) resourceDetails.dataset.resourceAdvanced = "developer";
+  wrapDesignerTypeSection(root, ".skill-only", "skill");
+  wrapDesignerTypeSection(root, ".agent-only", "agent");
+  wrapDesignerTypeSection(root, ".tool-only", "tool");
+  wrapDesignerTypeSection(root, ".workflow-only", "workflow");
+  wrapDesignerTypeSection(root, ".workflow-template-only", "workflow-template");
+  wrapDesignerTypeSection(root, ".workflow-schema-only", "workflow-schema");
+  wrapDesignerTypeSection(root, ".node-metadata-only", "node-metadata");
+  wrapDesignerTypeSection(root, ".expression-helper-only", "expression-helper");
+  wrapDesignerTypeSection(root, ".team-template-only", "team-template");
+  wrapDesignerTypeSection(root, ".kit-only", "kit");
+  wrapDesignerTypeSection(root, ".provider-only", "provider");
+  wrapDesignerTypeSection(root, ".policy-rule-only", "policy-rule");
+  enhanceResourceDependencyPickers(root);
+  bindDesignerAdvancedToggles(root);
+}
+
+function wrapDesignerTypeSection(root, selector, type) {
+  const section = root.querySelector(selector);
+  if (!section || section.dataset.resourceSectionEnhanced === "true") return;
+  section.dataset.resourceSectionEnhanced = "true";
+  section.dataset.designerSectionPanel = "module";
+  const header = document.createElement("div");
+  header.className = "span-12 resource-type-section-head";
+  header.innerHTML = `<div>
+    <span>${escapeHTML(t("catalog.typeSectionEyebrow"))}</span>
+    <strong>${escapeHTML(resourceTypeLabel(type))}</strong>
+    <p>${escapeHTML(resourceDesignerTypeHelp(type))}</p>
+  </div>
+  <div class="resource-type-section-actions">
+    <button type="button" class="ghost-button" data-resource-apply-brief-shortcut>${escapeHTML(t("catalog.briefApplyShort"))}</button>
+  </div>`;
+  section.prepend(header);
+  markResourceDesignerAdvancedFields(section, type);
+  const advancedNodes = [...section.querySelectorAll("[data-resource-advanced]")].filter(node => node.parentElement === section);
+  if (!advancedNodes.length) return;
+  const details = document.createElement("details");
+  details.className = "span-12 resource-developer-details";
+  details.dataset.resourceDeveloperDetails = type;
+  details.innerHTML = `<summary>
+    <span>
+      <strong>${escapeHTML(t("catalog.developerDetailsTitle"))}</strong>
+      <small>${escapeHTML(resourceDesignerAdvancedHelp(type))}</small>
+    </span>
+    <i>${escapeHTML(t("catalog.showDeveloperDetails"))}</i>
+  </summary>
+  <div class="resource-developer-grid"></div>`;
+  section.append(details);
+  const grid = details.querySelector(".resource-developer-grid");
+  advancedNodes.forEach(node => grid.append(node));
+}
+
+function markResourceDesignerAdvancedFields(section, type) {
+  const byType = {
+    skill: ["#skillVersion", "#skillAuthor", "#skillPriority", "#skillMaxIterations", "#skillAllowedKinds", "#skillNext", "#skillKeywords", "#skillTools", ".resource-script-editor", "#skillParams", "#skillMetadata", "#skillEmbeddingDescription"],
+    agent: ["#agentTemperature", "#agentMaxTokens", "#agentMaxIterations", "#agentToolPolicy", "#agentAllowedKinds", "#agentAllowedTools"],
+    tool: ["#toolTimeout", "#toolWorkdir", "#toolIsolation", "#toolRestartLimit", "#toolCooldown", "#toolMaxRequestBytes", "#toolMaxResponseBytes", "#toolEnvAllowlist", "#toolAllowedCommands", "#toolAllowedCommandPaths", "#toolEnabled", "#toolNetworkDisabled", ".resource-isolation-options", "#toolCodeFile", "#toolCode"],
+    "workflow-template": ["#workflowTemplateGraph"],
+    "workflow-schema": ["#workflowSchemaJSON"],
+    "node-metadata": ["#nodeMetadataFields", "#nodeMetadataOutputs", "#nodeMetadataExamples", "#nodeMetadataDefaultStage"],
+    "expression-helper": ["#expressionHelperArgs", "#expressionHelperHints", "#expressionHelperWarnings"],
+    "team-template": ["#teamRoles", "#teamHandoffs", "#teamBlackboard", "#teamQuorumPresets"],
+    kit: ["#kitExamples", "#kitMetadata"],
+    provider: ["#providerMetadata"],
+    "policy-rule": ["#policyExpression", "#policyDefaults", "#policyParams"]
+  };
+  (byType[type] || []).forEach(selector => {
+    const node = section.querySelector(selector);
+    const holder = node?.closest("label") || node;
+    if (holder && !holder.classList.contains("resource-type-section-head")) holder.dataset.resourceAdvanced = "developer";
+  });
+}
+
+function bindDesignerAdvancedToggles(root) {
+  root.querySelectorAll("[data-resource-apply-brief-shortcut]").forEach(button => {
+    button.onclick = () => {
+      applyResourceBrief(root);
+      scrollDesignerSection(root, "module");
+    };
+  });
+}
+
+function enhanceResourceDependencyPickers(root) {
+  [
+    [".skill-only", "skill"],
+    [".agent-only", "agent"],
+    [".team-template-only", "team-template"],
+    [".kit-only", "kit"]
+  ].forEach(([selector, type]) => {
+    const section = root.querySelector(selector);
+    if (!section || section.querySelector(`[data-resource-dependency-picker="${type}"]`)) return;
+    const panel = document.createElement("section");
+    panel.className = "span-12 resource-dependency-picker";
+    panel.dataset.resourceDependencyPicker = type;
+    const header = section.querySelector(".resource-type-section-head");
+    if (header?.nextSibling) {
+      section.insertBefore(panel, header.nextSibling);
+    } else {
+      section.append(panel);
+    }
+  });
+  renderResourceDependencyPickers(root);
+}
+
+function bindResourceDependencyPickers(root) {
+  if (root.dataset.resourceDependencyPickersBound === "true") return;
+  root.dataset.resourceDependencyPickersBound = "true";
+  root.addEventListener("click", event => {
+    const button = event.target.closest("[data-resource-dependency-choice]");
+    if (!button || !root.contains(button)) return;
+    event.preventDefault();
+    applyResourceDependencyChoice(root, button);
+  });
+  root.addEventListener("input", event => {
+    if (event.target.matches?.(resourceDependencyFieldSelector())) renderResourceDependencyPickers(root);
+  });
+  root.addEventListener("change", event => {
+    if (event.target.matches?.(resourceDependencyFieldSelector())) renderResourceDependencyPickers(root);
+  });
+}
+
+function resourceDependencyFieldSelector() {
+  return [
+    "#skillAgent",
+    "#skillAllowedKinds",
+    "#skillNext",
+    "#skillTools",
+    "#agentProvider",
+    "#agentAllowedKinds",
+    "#agentAllowedTools",
+    "#teamRecommendedWorkflow",
+    "#teamEntryAgent",
+    "#kitAgents",
+    "#kitSkills",
+    "#kitTools",
+    "#kitProviders",
+    "#kitWorkflows",
+    "#kitWorkflowTemplates",
+    "#kitTeamTemplates",
+    "#kitPolicyRules"
+  ].join(", ");
+}
+
+function renderResourceDependencyPickers(root) {
+  root.querySelectorAll("[data-resource-dependency-picker]").forEach(panel => {
+    const type = panel.dataset.resourceDependencyPicker || "";
+    panel.innerHTML = resourceDependencyPickerHTML(root, type);
+  });
+}
+
+function resourceDependencyPickerHTML(root, type) {
+  const groups = resourceDependencyGroups(root, type).filter(group => group?.choices?.length || group?.showWhenEmpty);
+  if (!groups.length) return "";
+  return `<div class="resource-dependency-head">
+    <div>
+      <span>${escapeHTML(t("catalog.dependencyPickerTitle"))}</span>
+      <strong>${escapeHTML(resourceDependencyTitle(type))}</strong>
+      <p>${escapeHTML(t("catalog.dependencyPickerHelp"))}</p>
+    </div>
+  </div>
+  <div class="resource-dependency-groups">
+    ${groups.map(group => resourceDependencyGroupHTML(root, group)).join("")}
+  </div>`;
+}
+
+function resourceDependencyTitle(type) {
+  if (type === "skill") return t("catalog.dependencySkillTitle");
+  if (type === "agent") return t("catalog.dependencyAgentTitle");
+  if (type === "team-template") return t("catalog.dependencyTeamTitle");
+  if (type === "kit") return t("catalog.dependencyKitTitle");
+  return t("catalog.dependencyPickerTitle");
+}
+
+function resourceDependencyGroups(root, type) {
+  if (type === "skill") {
+    return [
+      {
+        title: t("catalog.preferredAgent"),
+        help: t("catalog.dependencyPreferredAgentHelp"),
+        choices: agentDependencyChoices("#skillAgent", "set"),
+        showWhenEmpty: true
+      },
+      {
+        title: t("catalog.allowedKinds"),
+        help: t("catalog.dependencyToolKindsHelp"),
+        choices: toolKindDependencyChoices("#skillAllowedKinds"),
+        compact: true
+      },
+      {
+        title: t("catalog.tools"),
+        help: t("catalog.dependencyToolsHelp"),
+        choices: toolDependencyChoices("#skillTools", "toggle-tool-line"),
+        showWhenEmpty: true
+      },
+      {
+        title: t("catalog.nextSkills"),
+        help: t("catalog.dependencyNextSkillsHelp"),
+        choices: skillDependencyChoices("#skillNext", "toggle-list", { excludeCurrent: true, root }),
+        compact: true
+      }
+    ];
+  }
+  if (type === "agent") {
+    return [
+      {
+        title: commonLabel("provider"),
+        help: t("catalog.dependencyProvidersHelp"),
+        choices: providerDependencyChoices("#agentProvider", "set-provider"),
+        showWhenEmpty: true
+      },
+      {
+        title: t("catalog.allowedKinds"),
+        help: t("catalog.dependencyToolKindsHelp"),
+        choices: toolKindDependencyChoices("#agentAllowedKinds"),
+        compact: true
+      },
+      {
+        title: t("catalog.allowedTools"),
+        help: t("catalog.dependencyAllowedToolsHelp"),
+        choices: toolDependencyChoices("#agentAllowedTools", "toggle-list"),
+        showWhenEmpty: true
+      }
+    ];
+  }
+  if (type === "team-template") {
+    return [
+      {
+        title: t("catalog.teamRecommendedWorkflow"),
+        help: t("catalog.dependencyRecommendedWorkflowHelp"),
+        choices: workflowDependencyChoices("#teamRecommendedWorkflow", "set"),
+        showWhenEmpty: true
+      },
+      {
+        title: t("catalog.teamEntryAgent"),
+        help: t("catalog.dependencyEntryAgentHelp"),
+        choices: agentDependencyChoices("#teamEntryAgent", "set"),
+        showWhenEmpty: true
+      }
+    ];
+  }
+  if (type === "kit") {
+    return [
+      {
+        title: t("catalog.kitProviders"),
+        help: t("catalog.dependencyKitHelp"),
+        choices: providerDependencyChoices("#kitProviders", "toggle-list"),
+        compact: true
+      },
+      {
+        title: t("catalog.kitAgents"),
+        help: t("catalog.dependencyKitHelp"),
+        choices: agentDependencyChoices("#kitAgents", "toggle-list"),
+        compact: true
+      },
+      {
+        title: t("catalog.kitSkills"),
+        help: t("catalog.dependencyKitHelp"),
+        choices: skillDependencyChoices("#kitSkills", "toggle-list"),
+        compact: true
+      },
+      {
+        title: t("catalog.kitTools"),
+        help: t("catalog.dependencyKitHelp"),
+        choices: toolDependencyChoices("#kitTools", "toggle-list"),
+        compact: true
+      },
+      {
+        title: t("catalog.kitWorkflows"),
+        help: t("catalog.dependencyKitHelp"),
+        choices: workflowDependencyChoices("#kitWorkflows", "toggle-list"),
+        compact: true
+      },
+      {
+        title: t("catalog.kitWorkflowTemplates"),
+        help: t("catalog.dependencyKitHelp"),
+        choices: workflowTemplateDependencyChoices("#kitWorkflowTemplates", "toggle-list"),
+        compact: true
+      },
+      {
+        title: t("catalog.kitTeamTemplates"),
+        help: t("catalog.dependencyKitHelp"),
+        choices: teamTemplateDependencyChoices("#kitTeamTemplates", "toggle-list"),
+        compact: true
+      },
+      {
+        title: t("catalog.kitPolicyRules"),
+        help: t("catalog.dependencyKitHelp"),
+        choices: policyRuleDependencyChoices("#kitPolicyRules", "toggle-list"),
+        compact: true
+      }
+    ];
+  }
+  return [];
+}
+
+function resourceDependencyGroupHTML(root, group) {
+  const limit = group.limit || (group.compact ? 12 : 8);
+  const choices = Array.isArray(group.choices) ? group.choices : [];
+  const visible = choices.slice(0, limit);
+  const hidden = Math.max(0, choices.length - visible.length);
+  const body = visible.length
+    ? visible.map(choice => resourceDependencyChoiceHTML(root, choice, group.compact)).join("")
+    : `<div class="resource-dependency-empty">${escapeHTML(t("catalog.dependencyEmpty"))}</div>`;
+  return `<section class="resource-dependency-group ${group.compact ? "compact" : ""}">
+    <div class="resource-dependency-group-head">
+      <div>
+        <strong>${escapeHTML(group.title || "")}</strong>
+        <span>${escapeHTML(group.help || t("catalog.dependencyPickToFill"))}</span>
+      </div>
+      <span class="badge neutral">${escapeHTML(String(choices.length))}</span>
+    </div>
+    <div class="resource-dependency-list">
+      ${body}
+      ${hidden ? `<span class="resource-dependency-more">${escapeHTML(t("catalog.dependencyMoreCount", { count: hidden }))}</span>` : ""}
+    </div>
+  </section>`;
+}
+
+function resourceDependencyChoiceHTML(root, choice, compact = false) {
+  const selected = resourceDependencyChoiceSelected(root, choice);
+  const meta = (choice.meta || []).filter(Boolean).slice(0, compact ? 2 : 4);
+  const action = selected ? t("catalog.dependencySelected") : (choice.mode || "").startsWith("set") ? t("catalog.dependencySet") : t("catalog.dependencyAdd");
+  const title = resourceDisplayValue(choice.title || choice.value);
+  const body = localizedText(choice.body || "");
+  return `<button type="button"
+      class="resource-dependency-card ${compact ? "compact" : ""} ${selected ? "selected" : ""}"
+      data-resource-dependency-choice
+      data-target="${escapeHTML(choice.target || "")}"
+      data-value="${escapeHTML(choice.value || "")}"
+      data-mode="${escapeHTML(choice.mode || "toggle-list")}"
+      data-default-model="${escapeHTML(choice.defaultModel || "")}"
+      aria-pressed="${selected ? "true" : "false"}">
+    <span class="resource-dependency-icon" aria-hidden="true">${escapeHTML(choice.icon || resourceDependencyIcon(choice.kind))}</span>
+    <span class="resource-dependency-copy">
+      <strong>${escapeHTML(title)}</strong>
+      ${body && !compact ? `<small>${escapeHTML(body)}</small>` : ""}
+      ${meta.length ? `<em>${meta.map(item => escapeHTML(resourceDisplayValue(item))).join(" · ")}</em>` : ""}
+    </span>
+    <span class="resource-dependency-action">${escapeHTML(action)}</span>
+  </button>`;
+}
+
+function resourceDependencyChoiceSelected(root, choice) {
+  const field = root.querySelector(choice.target || "");
+  if (!field) return false;
+  const value = String(choice.value || "").trim();
+  const mode = choice.mode || "toggle-list";
+  if (!value) return false;
+  if (mode === "set" || mode === "set-provider") return String(field.value || "").trim() === value;
+  if (mode === "toggle-tool-line") {
+    return parseTools(field.value).some(tool => String(tool.name || "").trim() === value);
+  }
+  return splitLines(field.value).includes(value);
+}
+
+function applyResourceDependencyChoice(root, button) {
+  const target = button.dataset.target || "";
+  const value = String(button.dataset.value || "").trim();
+  const mode = button.dataset.mode || "toggle-list";
+  const field = root.querySelector(target);
+  if (!field || !value) return;
+  if (mode === "set" || mode === "set-provider") {
+    ensureSelectOption(field, value, value);
+    field.value = value;
+    if (mode === "set-provider") {
+      const model = button.dataset.defaultModel || "";
+      const modelInput = root.querySelector("#agentModel");
+      if (modelInput && model && !modelInput.value.trim()) modelInput.value = model;
+    }
+  } else if (mode === "toggle-tool-line") {
+    toggleToolLineValue(field, value);
+  } else {
+    toggleListValue(field, value);
+  }
+  field.dispatchEvent(new Event("input", { bubbles: true }));
+  field.dispatchEvent(new Event("change", { bubbles: true }));
+  renderResourceDependencyPickers(root);
+}
+
+function ensureSelectOption(field, value, label) {
+  if (field?.tagName !== "SELECT") return;
+  if ([...field.options].some(option => option.value === value)) return;
+  const option = document.createElement("option");
+  option.value = value;
+  option.textContent = label || value;
+  field.appendChild(option);
+}
+
+function toggleListValue(field, value) {
+  const values = splitList(field.value);
+  const index = values.indexOf(value);
+  if (index >= 0) {
+    values.splice(index, 1);
+  } else {
+    values.push(value);
+  }
+  field.value = values.join(", ");
+}
+
+function toggleToolLineValue(field, value) {
+  const lines = String(field.value || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  const index = lines.findIndex(line => line.split("|")[0].trim() === value);
+  if (index >= 0) {
+    lines.splice(index, 1);
+  } else {
+    lines.push(value);
+  }
+  field.value = lines.join("\n");
+}
+
+function resourceDependencyIcon(kind) {
+  return {
+    agent: "A",
+    skill: "S",
+    tool: "T",
+    provider: "P",
+    workflow: "W",
+    "workflow-template": "WT",
+    team: "TM",
+    policy: "P",
+    kind: "K"
+  }[kind] || "+";
+}
+
+function agentDependencyChoices(target, mode) {
+  return (catalogContext.runtime?.agents || []).map(agent => ({
+    kind: "agent",
+    target,
+    mode,
+    value: agent.id || agent.name || "",
+    title: agent.id || agent.name || "",
+    body: agent.description || agent.name || "",
+    meta: [agent.provider ? `${commonLabel("provider")}: ${agent.provider}` : "", enumLabel("mode", agent.mode || "")]
+  })).filter(choice => choice.value);
+}
+
+function skillDependencyChoices(target, mode, options = {}) {
+  const current = options.excludeCurrent ? String(options.root?.querySelector("#resourceName")?.value || "").trim() : "";
+  return (catalogContext.runtime?.skills || []).map(skill => ({
+    kind: "skill",
+    target,
+    mode,
+    value: skill.name || "",
+    title: skill.name || "",
+    body: skill.description || "",
+    meta: [skill.preferred_agent ? `${commonLabel("agent")}: ${skill.preferred_agent}` : "", enumLabel("mode", skill.mode || "")]
+  })).filter(choice => choice.value && choice.value !== current);
+}
+
+function toolDependencyChoices(target, mode) {
+  const resources = Array.isArray(catalogContext.toolResources) && catalogContext.toolResources.length
+    ? catalogContext.toolResources
+    : (catalogContext.runtime?.tools || []).map(item => typeof item === "string" ? { name: item } : item || {});
+  return resources.map(tool => {
+    const name = tool?.risk?.qualified_name || tool?.qualified_name || tool?.name || "";
+    const riskLevel = tool?.risk?.risk_level || "";
+    return {
+      kind: "tool",
+      target,
+      mode,
+      value: name,
+      title: name,
+      body: tool?.description || tool?.risk?.security_boundary || "",
+      meta: [
+        tool?.language || "",
+        riskLevel ? toolRiskLabel(riskLevel) : "",
+        tool?.isolation ? enumLabel("isolation", tool.isolation) : ""
+      ]
+    };
+  }).filter(choice => choice.value);
+}
+
+function providerDependencyChoices(target, mode) {
+  const providers = catalogContext.providerOptions?.length
+    ? catalogContext.providerOptions
+    : normalizeProviderOptions(catalogContext.runtime?.providers || []);
+  return providers.map(provider => ({
+    kind: "provider",
+    target,
+    mode,
+    value: provider.id || "",
+    title: provider.label || provider.id || "",
+    body: provider.description || "",
+    defaultModel: provider.defaultModel || "",
+    meta: [provider.type || "", provider.defaultModel ? `${commonLabel("model")}: ${provider.defaultModel}` : ""]
+  })).filter(choice => choice.value);
+}
+
+function workflowDependencyChoices(target, mode) {
+  return (catalogContext.workflowGraphs || []).map(workflow => ({
+    kind: "workflow",
+    target,
+    mode,
+    value: workflow.name || "",
+    title: workflow.name || "",
+    body: workflow.description || "",
+    meta: [Array.isArray(workflow.stages) ? t("catalog.dependencyStageCount", { count: workflow.stages.length }) : ""]
+  })).filter(choice => choice.value);
+}
+
+function workflowTemplateDependencyChoices(target, mode) {
+  return (catalogContext.workflowTemplates || []).map(template => ({
+    kind: "workflow-template",
+    target,
+    mode,
+    value: template.name || "",
+    title: localizedText(template.title || template.name || ""),
+    body: template.description || "",
+    meta: [template.category || "", Array.isArray(template.tags) ? template.tags.slice(0, 3).join(", ") : ""]
+  })).filter(choice => choice.value);
+}
+
+function teamTemplateDependencyChoices(target, mode) {
+  return (catalogContext.teamTemplates || []).map(team => ({
+    kind: "team",
+    target,
+    mode,
+    value: team.name || "",
+    title: localizedText(team.title || team.name || ""),
+    body: team.description || "",
+    meta: [team.category || "", Array.isArray(team.tags) ? team.tags.slice(0, 3).join(", ") : ""]
+  })).filter(choice => choice.value);
+}
+
+function policyRuleDependencyChoices(target, mode) {
+  return (catalogContext.policyRules || []).map(rule => ({
+    kind: "policy",
+    target,
+    mode,
+    value: rule.name || "",
+    title: localizedText(rule.label || rule.name || ""),
+    body: rule.description || rule.reason || "",
+    meta: [enumLabel("policyOperator", rule.operator || "")]
+  })).filter(choice => choice.value);
+}
+
+function toolKindDependencyChoices(target) {
+  return ["read", "write", "exec", "network"].map(kind => ({
+    kind: "kind",
+    target,
+    mode: "toggle-list",
+    value: kind,
+    title: enumLabel("toolRiskKind", kind),
+    body: t(`catalog.dependencyKind.${kind}`)
+  }));
+}
+
+function resourceDesignerTypeHelp(type) {
+  const key = `catalog.typeHelp.${String(type || "").replaceAll("-", "_")}`;
+  const value = t(key);
+  return value === key ? t("catalog.typeHelp.default") : value;
+}
+
+function resourceDesignerAdvancedHelp(type) {
+  const key = `catalog.advancedHelp.${String(type || "").replaceAll("-", "_")}`;
+  const value = t(key);
+  return value === key ? t("catalog.advancedHelp.default") : value;
 }
 
 function bindResourceCapabilityActionDelegation(root) {
@@ -1409,8 +2034,8 @@ function resetCatalogTourFilters(root) {
     search.value = "";
     changed = true;
   }
-  if (group && group.value !== "all") {
-    group.value = "all";
+  if (group && group.value !== "recommended") {
+    group.value = "recommended";
     changed = true;
   }
   return changed;
@@ -1435,7 +2060,7 @@ function applyResourceFilters(root) {
     return;
   }
   panels.forEach(panel => {
-    const groupOk = group === "all" || panel.dataset.resourceGroup === group;
+    const groupOk = resourcePanelMatchesGroup(panel.dataset.resourceGroup || "", group);
     const items = [...panel.querySelectorAll(".resource-item, .kit-scaffold-card, .tool-scaffold-mini")];
     let visibleInPanel = 0;
     items.forEach(item => {
@@ -1450,6 +2075,13 @@ function applyResourceFilters(root) {
   });
   const count = root.querySelector("#resourceFilterCount");
   if (count) count.textContent = t("catalog.resourceFilterCount", { count: visibleItems, panels: visiblePanels });
+}
+
+function resourcePanelMatchesGroup(panelGroup, selectedGroup) {
+  const group = String(selectedGroup || "recommended");
+  if (group === "all") return true;
+  if (group === "recommended") return ["essential", "workflow", "runtime"].includes(panelGroup);
+  return panelGroup === group;
 }
 
 function resourceSearchText(item) {
@@ -1587,9 +2219,9 @@ function catalogFocusGroup(kind) {
     "policy-rule": "policy",
     "team-template": "workflow",
     "workflow-template": "workflow",
-    "workflow-schema": "studio",
-    "node-metadata": "studio",
-    "expression-helper": "studio"
+    "workflow-schema": "advanced",
+    "node-metadata": "advanced",
+    "expression-helper": "advanced"
   }[kind] || "all";
 }
 
@@ -1684,7 +2316,7 @@ function renderTool(tool) {
 function renderToolList(runtime = catalogContext.runtime || {}) {
   const resources = Array.isArray(catalogContext.toolResources) ? catalogContext.toolResources : [];
   if (resources.length) return resources.map(renderTool).join("");
-  return (runtime.tools || []).map(renderTool).join("") || empty(t("catalog.noTools"));
+  return (runtime.tools || []).map(renderTool).join("") || empty(t("catalog.noTools"), { actionLabel: t("catalog.newTool"), action: "tool" });
 }
 
 function renderToolScaffoldStrip(scaffolds = []) {
@@ -1987,7 +2619,7 @@ function renderKitResourceSections(kits = [], scaffolds = []) {
       </div>
       ${saved.length ? `<span class="badge">${escapeHTML(String(saved.length))}</span>` : ""}
     </div>
-    <div id="resourceKitsList" class="list kit-saved-list">${saved.length ? saved.map(renderKit).join("") : empty(t("catalog.noKits"))}</div>
+    <div id="resourceKitsList" class="list kit-saved-list">${saved.length ? saved.map(renderKit).join("") : empty(t("catalog.noKits"), { actionLabel: t("catalog.newKit"), action: "kit" })}</div>
   </section>` : "";
   return [
     presets.length ? `<section id="resourceKitScaffolds" class="kit-resource-section kit-scaffold-list">${renderKitScaffolds(presets)}</section>` : "",
@@ -2245,7 +2877,7 @@ function renderKitScaffold(scaffold) {
 
 function renderSavedKitList(kits = []) {
   const saved = Array.isArray(kits) ? kits : [];
-  return saved.length ? saved.map(renderKit).join("") : empty(t("catalog.noKits"));
+  return saved.length ? saved.map(renderKit).join("") : empty(t("catalog.noKits"), { actionLabel: t("catalog.newKit"), action: "kit" });
 }
 
 function renderPolicyRuleResourceSections(policyRules = [], scaffolds = []) {
@@ -2259,7 +2891,7 @@ function renderPolicyRuleResourceSections(policyRules = [], scaffolds = []) {
       </div>
       ${rules.length ? `<span class="badge">${escapeHTML(String(rules.length))}</span>` : ""}
     </div>
-    <div id="resourcePolicyRulesList" class="list kit-saved-list">${rules.length ? rules.map(renderPolicyRule).join("") : empty(t("catalog.noPolicyRules"))}</div>
+    <div id="resourcePolicyRulesList" class="list kit-saved-list">${rules.length ? rules.map(renderPolicyRule).join("") : empty(t("catalog.noPolicyRules"), { actionLabel: t("catalog.newPolicyRule"), action: "policy-rule" })}</div>
   </section>` : "";
   return [
     presets.length ? `<section id="resourcePolicyRuleScaffolds" class="kit-resource-section kit-scaffold-list policy-rule-scaffold-list">${renderPolicyRuleScaffolds(presets)}</section>` : "",
@@ -2471,7 +3103,7 @@ function renderPolicyRule(rule) {
 function policyRuleListHTML(policyRules = [], scaffolds = []) {
   const rules = Array.isArray(policyRules) ? policyRules : [];
   if (rules.length) return rules.map(renderPolicyRule).join("");
-  return empty(t("catalog.noPolicyRules"));
+  return empty(t("catalog.noPolicyRules"), { actionLabel: t("catalog.newPolicyRule"), action: "policy-rule" });
 }
 
 function resourceKicker(items) {
@@ -2648,8 +3280,16 @@ function policyRuleScaffoldDescription(scaffold = {}) {
   return translated === key ? localizedText(scaffold?.description || t("catalog.policyRuleScaffoldsHelp")) : translated;
 }
 
-function empty(text) {
-  return `<div class="resource-empty muted">${escapeHTML(text)}</div>`;
+function empty(text, options = {}) {
+  const action = options.action
+    ? `<button type="button" class="resource-empty-action" data-new-resource="${escapeHTML(options.action)}">${escapeHTML(options.actionLabel || t("catalog.createResource"))}</button>`
+    : options.view
+      ? `<button type="button" class="resource-empty-action" data-open-view="${escapeHTML(options.view)}">${escapeHTML(options.actionLabel || t("catalog.openRun"))}</button>`
+      : "";
+  return `<div class="resource-empty muted">
+    <span>${escapeHTML(text)}</span>
+    ${action}
+  </div>`;
 }
 
 function parityItem(title, body) {
@@ -2770,6 +3410,8 @@ function clearDesigner(root, runtime, providerOptions = []) {
   root.querySelector("#resourcePurpose").value = "";
   root.querySelector("#resourceDescription").value = defaultDescription;
   root.querySelector("#resourceDetails").value = "";
+  root.dataset.resourceDesignerClearing = "true";
+  clearResourceBrief(root);
   loadSkillForm(root, runtime, null);
   loadAgentForm(root, runtime, null, providerOptions);
   loadToolForm(root, type === "tool" ? "custom-tool" : "", null);
@@ -2782,9 +3424,12 @@ function clearDesigner(root, runtime, providerOptions = []) {
   loadProviderForm(root, null);
   loadWorkflowForm(root, null);
   if (type === "policy-rule") loadPolicyRuleForm(root, null);
+  delete root.dataset.resourceDesignerClearing;
   root.querySelector("#resourceName").value = defaultName;
   root.querySelector("#resourceDescription").value = defaultDescription;
   root.querySelector("#resourceOutput").textContent = "";
+  clearResourceBrief(root);
+  seedResourceBrief(root, { description: defaultDescription }, { preserve: false });
   syncDesignerMode(root);
 }
 
@@ -2827,6 +3472,8 @@ function syncDesignerMode(root) {
     fillToolScaffoldSelect(root);
   }
   updateToolIsolationNetworkHint(root);
+  updateResourceBriefPreview(root);
+  renderResourceDependencyPickers(root);
 }
 
 function scrollDesignerSection(root, section = "identity") {
@@ -2853,6 +3500,7 @@ function setDesignerSectionActive(root, section = "identity") {
 function designerSectionTarget(root, section) {
   if (section === "actions") return root.querySelector("#resourceDesigner .designer-actions");
   if (section === "result") return root.querySelector("#resourceOutput");
+  if (section === "brief") return root.querySelector("[data-designer-section-panel='brief']") || root.querySelector("#resourceBriefPanel");
   if (section === "module") {
     return [
       ".skill-only:not(.hidden)",
@@ -2869,7 +3517,260 @@ function designerSectionTarget(root, section) {
       ".policy-rule-only:not(.hidden)"
     ].map(selector => root.querySelector(selector)).find(Boolean) || root.querySelector("#resourceType");
   }
-  return root.querySelector("#resourceType");
+  return root.querySelector("[data-designer-section-panel='identity']") || root.querySelector("#resourceType");
+}
+
+function clearResourceBrief(root) {
+  root.querySelectorAll("[data-resource-brief-field]").forEach(input => {
+    input.value = "";
+  });
+  updateResourceBriefPreview(root);
+}
+
+function seedResourceBrief(root, source = {}, options = {}) {
+  if (root?.dataset?.resourceDesignerClearing === "true" && options.forceDuringClear !== true) return;
+  const preserve = options.preserve === true;
+  const setIfBlank = (selector, value) => {
+    const input = root.querySelector(selector);
+    if (!input || preserve && input.value.trim()) return;
+    input.value = String(value || "").trim();
+  };
+  setIfBlank("#resourceBriefGoal", source.goal || source.purpose || source.description || "");
+  setIfBlank("#resourceBriefInputs", formatBriefSeedList(source.inputs || source.params || source.fields));
+  setIfBlank("#resourceBriefOutputs", formatBriefSeedList(source.outputs || source.output_contract || source.outputKind || source.output_kind));
+  setIfBlank("#resourceBriefExample", formatBriefSeedList(source.examples || source.example || source.request));
+  setIfBlank("#resourceBriefDependencies", formatBriefSeedList(source.dependencies || source.tools || source.agents || source.skills || source.resources));
+  updateResourceBriefPreview(root);
+}
+
+function formatBriefSeedList(value) {
+  if (Array.isArray(value)) {
+    return value
+      .map(item => {
+        if (typeof item === "string") return item;
+        if (!item || typeof item !== "object") return "";
+        return item.name || item.label || item.title || item.request || item.description || JSON.stringify(item);
+      })
+      .filter(Boolean)
+      .join("\n");
+  }
+  if (value && typeof value === "object") {
+    return Object.entries(value)
+      .map(([key, item]) => {
+        if (typeof item === "string") return `${key}: ${item}`;
+        if (item && typeof item === "object") return `${key}: ${item.description || item.label || item.type || JSON.stringify(item)}`;
+        return key;
+      })
+      .join("\n");
+  }
+  return String(value || "");
+}
+
+function resourceBrief(root) {
+  return {
+    goal: root.querySelector("#resourceBriefGoal")?.value.trim() || "",
+    inputs: root.querySelector("#resourceBriefInputs")?.value.trim() || "",
+    outputs: root.querySelector("#resourceBriefOutputs")?.value.trim() || "",
+    example: root.querySelector("#resourceBriefExample")?.value.trim() || "",
+    dependencies: root.querySelector("#resourceBriefDependencies")?.value.trim() || ""
+  };
+}
+
+function updateResourceBriefPreview(root) {
+  const preview = root.querySelector("#resourceBriefPreview");
+  if (!preview) return;
+  const brief = resourceBrief(root);
+  const items = [
+    { label: t("catalog.briefGoal"), value: brief.goal },
+    { label: t("catalog.briefInputs"), value: brief.inputs },
+    { label: t("catalog.briefOutputs"), value: brief.outputs },
+    { label: t("catalog.briefExample"), value: brief.example },
+    { label: t("catalog.briefDependencies"), value: brief.dependencies }
+  ].filter(item => item.value);
+  if (!items.length) {
+    preview.innerHTML = `<span>${escapeHTML(t("catalog.briefPreviewEmpty"))}</span>`;
+    return;
+  }
+  preview.innerHTML = `
+    <strong>${escapeHTML(t("catalog.briefPreviewTitle"))}</strong>
+    <div>
+      ${items.map(item => `<span><small>${escapeHTML(item.label)}</small><b>${escapeHTML(trimPreviewText(item.value, 120))}</b></span>`).join("")}
+    </div>`;
+}
+
+function trimPreviewText(value, limit) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!limit || text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 1)).trim()}...`;
+}
+
+function applyResourceBrief(root) {
+  const type = root.querySelector("#resourceType")?.value || "skill";
+  const brief = resourceBrief(root);
+  const goal = brief.goal;
+  const inputs = splitBriefLines(brief.inputs);
+  const outputs = splitBriefLines(brief.outputs);
+  const examples = splitBriefLines(brief.example);
+  const dependencies = splitBriefLines(brief.dependencies);
+  if (goal) {
+    setValueIfBlank(root, "#resourceDescription", goal);
+    setValueIfBlank(root, "#resourcePurpose", goal);
+  }
+  if (type === "skill") {
+    applySkillBrief(root, brief, inputs, outputs, examples, dependencies);
+  } else if (type === "agent") {
+    applyAgentBrief(root, brief, inputs, outputs, examples, dependencies);
+  } else if (type === "tool") {
+    applyToolBrief(root, brief, inputs, outputs, examples, dependencies);
+  } else if (type === "workflow" || type === "workflow-template") {
+    applyWorkflowBrief(root, brief, inputs, outputs, examples, dependencies);
+  } else if (type === "team-template") {
+    applyTeamBrief(root, brief, inputs, outputs, examples, dependencies);
+  } else if (type === "kit") {
+    applyKitBrief(root, brief, inputs, outputs, examples, dependencies);
+  } else if (type === "policy-rule") {
+    applyPolicyBrief(root, brief, inputs, outputs, examples);
+  } else if (type === "node-metadata") {
+    setValueIfBlank(root, "#nodeMetadataDescription", goal);
+    if (outputs.length) setValueIfBlank(root, "#nodeMetadataOutputs", JSON.stringify(outputs.map(name => ({ name: normalizeName(name), description: name })), null, 2));
+  } else if (type === "expression-helper") {
+    setValueIfBlank(root, "#expressionHelperDescription", goal);
+    if (examples.length) setValueIfBlank(root, "#expressionHelperExamples", examples.join("\n"));
+  } else if (type === "provider") {
+    setValueIfBlank(root, "#providerDescription", goal);
+    if (outputs.length) setValueIfBlank(root, "#providerModels", outputs.join(", "));
+  }
+  updateResourceBriefPreview(root);
+  const output = root.querySelector("#resourceOutput");
+  if (output) output.textContent = t("catalog.briefApplied");
+}
+
+function splitBriefLines(value) {
+  return String(value || "")
+    .split(/\r?\n|,/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function setValueIfBlank(root, selector, value) {
+  const input = root.querySelector(selector);
+  if (!input || input.value.trim() || String(value || "").trim() === "") return;
+  input.value = String(value || "").trim();
+}
+
+function appendTextareaLines(root, selector, values) {
+  const input = root.querySelector(selector);
+  if (!input || !values.length) return;
+  const existing = splitBriefLines(input.value);
+  const next = [...existing];
+  const seen = new Set(existing.map(item => item.toLowerCase()));
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized.toLowerCase())) continue;
+    next.push(normalized);
+    seen.add(normalized.toLowerCase());
+  }
+  input.value = next.join("\n");
+}
+
+function applySkillBrief(root, brief, inputs, outputs, examples, dependencies) {
+  const params = inputs.map(item => `${normalizeName(item)}|string|${item}|false`);
+  appendTextareaLines(root, "#skillParams", params);
+  if (outputs.length) setValueIfBlank(root, "#skillOutputKind", normalizeName(outputs[0]) || "summary");
+  appendTextareaLines(root, "#skillTools", dependencies);
+  appendTextareaLines(root, "#skillKeywords", [brief.goal, ...outputs].filter(Boolean).map(item => item.split(/\s+/).slice(0, 4).join(" ")));
+  const instructions = resourceBriefInstructions(brief, inputs, outputs, examples, dependencies);
+  setValueIfBlank(root, "#skillInstructions", instructions);
+  setValueIfBlank(root, "#skillEmbeddingDescription", [brief.goal, ...outputs].filter(Boolean).join(" "));
+}
+
+function applyAgentBrief(root, brief, inputs, outputs, examples, dependencies) {
+  appendInputList(root, "#agentAllowedTools", dependencies.filter(item => item.includes("/")));
+  appendInputList(root, "#agentAllowedKinds", dependencies.filter(item => ["read", "write", "exec", "network"].includes(item.toLowerCase())));
+  setValueIfBlank(root, "#agentSystemPrompt", resourceBriefInstructions(brief, inputs, outputs, examples, dependencies));
+}
+
+function applyToolBrief(root, brief, inputs, outputs, examples, dependencies) {
+  if (dependencies.some(item => /web|http|api|network|url/i.test(item))) {
+    const network = root.querySelector("#toolNetworkDisabled");
+    if (network) network.checked = false;
+  }
+  if (inputs.length) {
+    const schema = {
+      type: "object",
+      properties: Object.fromEntries(inputs.map(item => [normalizeName(item), { type: "string", description: item }])),
+      additionalProperties: false
+    };
+    appendTextareaLines(root, "#toolCode", [
+      "",
+      `# ${t("catalog.briefGeneratedComment")}`,
+      `# inputs: ${inputs.join(", ")}`,
+      outputs.length ? `# outputs: ${outputs.join(", ")}` : ""
+    ].filter(Boolean));
+    root.querySelector("#toolCode")?.setAttribute("data-brief-schema", JSON.stringify(schema));
+  }
+}
+
+function applyWorkflowBrief(root, brief, inputs, outputs, examples, dependencies) {
+  if (examples.length) setValueIfBlank(root, "#resourceDetails", examples.join("\n"));
+  if (dependencies.some(item => /audit|review|check|verify/i.test(item))) {
+    const approval = root.querySelector("#workflowApproval");
+    if (approval && approval.value === "none") approval.value = "audit";
+  }
+  setValueIfBlank(root, "#workflowTemplateCategory", normalizeName(outputs[0] || brief.goal || "custom"));
+  appendInputList(root, "#workflowTemplateTags", [...outputs, ...dependencies].map(normalizeName).filter(Boolean));
+}
+
+function applyTeamBrief(root, brief, inputs, outputs, examples, dependencies) {
+  appendInputList(root, "#teamTags", dependencies.map(normalizeName).filter(Boolean));
+  appendTextareaLines(root, "#teamOutputContract", outputs.map(normalizeName).filter(Boolean));
+  if (examples.length) appendTextareaLines(root, "#teamBlackboard", examples.map(item => `note|${item}|open|custom`));
+}
+
+function applyKitBrief(root, brief, inputs, outputs, examples, dependencies) {
+  appendInputList(root, "#kitTags", outputs.map(normalizeName).filter(Boolean));
+  appendInputList(root, "#kitAgents", dependencies.filter(item => /agent|planner|fixer|auditor/i.test(item)).map(normalizeName).filter(Boolean));
+  appendInputList(root, "#kitSkills", dependencies.filter(item => /skill|plan|write|audit|review/i.test(item)).map(normalizeName).filter(Boolean));
+  appendInputList(root, "#kitTools", dependencies.filter(item => item.includes("/")));
+  if (examples.length) setValueIfBlank(root, "#kitExamples", JSON.stringify(examples.map(request => ({ title: request, request })), null, 2));
+}
+
+function applyPolicyBrief(root, brief, inputs, outputs, examples) {
+  setValueIfBlank(root, "#policyReason", brief.goal || examples[0] || t("catalog.policyReasonDefault"));
+  const ref = inputs[0] || "previous.raw_output";
+  const needle = outputs[0] || examples[0] || "approved";
+  setValueIfBlank(root, "#policyDefaults", formatMap({ ref, needle }));
+  setValueIfBlank(root, "#policyExpression", `contains({{ref}}, "{{needle}}")`);
+}
+
+function appendInputList(root, selector, values) {
+  const input = root.querySelector(selector);
+  if (!input || !values.length) return;
+  const existing = splitList(input.value);
+  const next = [...existing];
+  const seen = new Set(existing.map(item => item.toLowerCase()));
+  for (const value of values) {
+    const normalized = String(value || "").trim();
+    if (!normalized || seen.has(normalized.toLowerCase())) continue;
+    next.push(normalized);
+    seen.add(normalized.toLowerCase());
+  }
+  input.value = next.join(", ");
+}
+
+function resourceBriefInstructions(brief, inputs, outputs, examples, dependencies) {
+  return [
+    `## ${t("catalog.briefInstructionRole")}`,
+    brief.goal || "Describe what this resource should do.",
+    "",
+    inputs.length ? `## ${t("catalog.briefInstructionInputs")}\n` + inputs.map(item => `- ${item}`).join("\n") : "",
+    outputs.length ? `## ${t("catalog.briefInstructionOutputs")}\n` + outputs.map(item => `- ${item}`).join("\n") : "",
+    examples.length ? `## ${t("catalog.briefInstructionExamples")}\n` + examples.map(item => `- ${item}`).join("\n") : "",
+    dependencies.length ? `## ${t("catalog.briefInstructionDependencies")}\n` + dependencies.map(item => `- ${item}`).join("\n") : "",
+    `## ${t("catalog.briefInstructionConstraints")}`,
+    `- ${t("catalog.briefInstructionConstraintSummary")}`,
+    `- ${t("catalog.briefInstructionConstraintStructured")}`
+  ].filter(Boolean).join("\n\n");
 }
 
 function bindToolIsolationHints(root) {
@@ -3318,6 +4219,13 @@ function loadSkillForm(root, runtime, doc) {
   root.querySelector("#skillMetadata").value = formatMap(doc?.metadata);
   root.querySelector("#skillEmbeddingDescription").value = doc?.activation?.embedding_description || "";
   root.querySelector("#skillInstructions").value = doc?.instructions || t("catalog.defaultInstructions");
+  seedResourceBrief(root, {
+    description: doc?.description || root.querySelector("#resourceDescription").value,
+    inputs: doc?.params,
+    outputs: doc?.output_kind,
+    dependencies: doc?.tools,
+    example: doc?.instructions
+  });
 }
 
 function loadAgentForm(root, runtime, doc, providerOptions = []) {
@@ -3337,6 +4245,11 @@ function loadAgentForm(root, runtime, doc, providerOptions = []) {
   root.querySelector("#agentAllowedKinds").value = (doc?.allowed_tool_kinds || ["read"]).join(", ");
   root.querySelector("#agentAllowedTools").value = (doc?.allowed_tools || []).join(", ");
   root.querySelector("#agentSystemPrompt").value = doc?.system_prompt || "";
+  seedResourceBrief(root, {
+    description: doc?.description || doc?.name || root.querySelector("#resourceDescription").value,
+    dependencies: [...(doc?.allowed_tools || []), ...(doc?.allowed_tool_kinds || [])],
+    example: doc?.system_prompt
+  });
 }
 
 function loadToolForm(root, name, doc) {
@@ -3362,6 +4275,11 @@ function loadToolForm(root, name, doc) {
   fillToolIsolationOptions(root, doc?.isolation_options || {});
   updateToolIsolationProfileHint(root);
   root.querySelector("#toolCode").value = doc?.code || defaultToolCode(normalized);
+  seedResourceBrief(root, {
+    description: doc?.description || root.querySelector("#resourceDescription").value,
+    dependencies: [...(doc?.allowed_commands || []), ...(doc?.env_allowlist || [])],
+    example: doc?.code
+  });
 }
 
 async function loadToolByName(root, name) {
@@ -3442,6 +4360,12 @@ function loadTeamTemplateForm(root, doc) {
   root.querySelector("#teamBlackboard").value = formatTeamBlackboard(doc?.blackboard_templates || defaultTeamBlackboard());
   root.querySelector("#teamOutputContract").value = (doc?.output_contract || ["final_report", "changed_files", "residual_risks"]).join("\n");
   root.querySelector("#teamQuorumPresets").value = JSON.stringify(doc?.quorum_presets || [], null, 2);
+  seedResourceBrief(root, {
+    description: doc?.description || root.querySelector("#resourceDescription").value,
+    outputs: doc?.output_contract,
+    dependencies: doc?.role_templates,
+    example: doc?.handoffs
+  });
 }
 
 function loadKitForm(root, doc) {
@@ -3463,6 +4387,19 @@ function loadKitForm(root, doc) {
   root.querySelector("#kitExamples").value = JSON.stringify(doc?.examples || [], null, 2);
   root.querySelector("#kitMetadata").value = formatMap(doc?.metadata);
   renderKitValidation(root, doc?.validation || null);
+  seedResourceBrief(root, {
+    description: doc?.description || root.querySelector("#resourceDescription").value,
+    outputs: doc?.tags,
+    dependencies: [
+      ...(doc?.agents || []),
+      ...(doc?.skills || []),
+      ...(doc?.tools || []),
+      ...(doc?.workflow_templates || []),
+      ...(doc?.team_templates || []),
+      ...(doc?.policy_rules || [])
+    ],
+    examples: doc?.examples
+  });
 }
 
 function loadWorkflowTemplateResourceForm(root, doc) {
@@ -3478,6 +4415,11 @@ function loadWorkflowTemplateResourceForm(root, doc) {
   root.querySelector("#workflowTemplateCategory").value = doc?.category || "custom";
   root.querySelector("#workflowTemplateTags").value = (doc?.tags || (isCustom ? ["custom"] : ["fork"])).join(", ");
   root.querySelector("#workflowTemplateGraph").value = isCustom && doc?.graph ? JSON.stringify(doc.graph, null, 2) : "";
+  seedResourceBrief(root, {
+    description: doc?.description || root.querySelector("#resourceDescription").value,
+    outputs: doc?.tags,
+    example: doc?.graph
+  });
 }
 
 function loadWorkflowSchemaForm(root, doc) {
@@ -3504,6 +4446,10 @@ function loadWorkflowForm(root, doc) {
   root.querySelector("#workflowTemplate").value = doc?.template || firstWorkflowTemplateName() || "blank";
   root.querySelector("#workflowApproval").value = doc?.approval_stage || "implement";
   root.querySelector("#workflowOpenAfterSave").value = doc?.open_after_save || "yes";
+  seedResourceBrief(root, {
+    description: doc?.description || root.querySelector("#resourceDescription").value,
+    dependencies: doc?.template || root.querySelector("#workflowTemplate").value
+  });
 }
 
 function loadNodeMetadataForm(root, doc) {
@@ -3523,6 +4469,12 @@ function loadNodeMetadataForm(root, doc) {
   root.querySelector("#nodeMetadataOutputs").value = JSON.stringify(doc?.outputs || [], null, 2);
   root.querySelector("#nodeMetadataExamples").value = JSON.stringify(doc?.examples || [], null, 2);
   root.querySelector("#nodeMetadataDefaultStage").value = doc?.default_stage ? JSON.stringify(doc.default_stage, null, 2) : "";
+  seedResourceBrief(root, {
+    description: doc?.description || root.querySelector("#resourceDescription").value,
+    inputs: doc?.fields,
+    outputs: doc?.outputs,
+    examples: doc?.examples
+  });
 }
 
 function loadExpressionHelperForm(root, doc) {
@@ -3544,6 +4496,12 @@ function loadExpressionHelperForm(root, doc) {
   root.querySelector("#expressionHelperExamples").value = (doc?.examples || []).join("\n");
   root.querySelector("#expressionHelperHints").value = (doc?.hints || []).join("\n");
   root.querySelector("#expressionHelperWarnings").value = (doc?.warnings || []).join("\n");
+  seedResourceBrief(root, {
+    description: doc?.description || root.querySelector("#resourceDescription").value,
+    inputs: doc?.args,
+    outputs: doc?.return_type,
+    examples: doc?.examples
+  });
 }
 
 async function saveResource(root) {
@@ -4033,10 +4991,10 @@ function collectProviderForm(root) {
   const id = normalizeName(root.querySelector("#providerID").value.trim() || root.querySelector("#resourceName").value.trim() || "primary");
   return {
     id,
-    type: root.querySelector("#providerType").value.trim(),
-    default_model: root.querySelector("#providerDefaultModel").value.trim(),
+    provider: root.querySelector("#providerType").value.trim(),
+    model: root.querySelector("#providerDefaultModel").value.trim(),
     base_url: root.querySelector("#providerBaseURL").value.trim(),
-    env_key: root.querySelector("#providerEnvKey").value.trim(),
+    api_key: root.querySelector("#providerAPIKey").value.trim(),
     models: splitList(root.querySelector("#providerModels").value),
     metadata: parseMap(root.querySelector("#providerMetadata").value),
     description: root.querySelector("#providerDescription").value.trim()
@@ -4265,10 +5223,10 @@ function loadProviderForm(root, doc) {
   root.querySelector("#providerID").value = id;
   root.querySelector("#resourceDescription").value = doc?.description || "";
   root.querySelector("#providerDescription").value = doc?.description || "";
-  root.querySelector("#providerType").value = doc?.type || doc?.kind || doc?.driver || "";
+  root.querySelector("#providerType").value = doc?.provider || doc?.type || doc?.kind || doc?.driver || "";
   root.querySelector("#providerDefaultModel").value = doc?.default_model || doc?.model || doc?.defaultModel || "";
   root.querySelector("#providerBaseURL").value = doc?.base_url || doc?.baseURL || "";
-  root.querySelector("#providerEnvKey").value = doc?.env_key || doc?.api_key_env || doc?.envKey || "";
+  root.querySelector("#providerAPIKey").value = doc?.api_key || doc?.env_key || doc?.api_key_env || doc?.envKey || "";
   root.querySelector("#providerModels").value = (doc?.models || doc?.supported_models || []).join(", ");
   root.querySelector("#providerMetadata").value = formatMap(doc?.metadata);
 }
@@ -4401,6 +5359,12 @@ function loadPolicyRuleForm(root, doc) {
   root.querySelector("#policyExpression").value = doc?.expression || "contains({{ref}}, \"{{needle}}\")";
   root.querySelector("#policyDefaults").value = formatMap(doc?.defaults || { ref: "previous.raw_output", needle: "critical" });
   root.querySelector("#policyParams").value = formatPolicyParams(doc?.params || defaultPolicyParams());
+  seedResourceBrief(root, {
+    description: doc?.description || root.querySelector("#resourceDescription").value,
+    inputs: doc?.params,
+    outputs: doc?.reason,
+    example: doc?.expression
+  });
 }
 
 async function loadProviderOptions(runtime, capabilities = []) {
@@ -5381,11 +6345,11 @@ async function createKitFromScaffold(root, presetName, button = null) {
       body: JSON.stringify({ materialize })
     });
     const kit = result?.kit || {};
-    renderKitScaffoldOutcome(root, result, { preset, materialize });
     await refreshCatalogResources(root);
     if (kit.name) {
       await openDesigner(root, catalogContext.runtime || {}, "kit", kit.name, catalogContext.providerOptions || []);
     }
+    renderKitScaffoldOutcome(root, result, { preset, materialize });
   } catch (error) {
     if (output) output.textContent = `${t("catalog.createKitScaffoldFailed")}: ${localizedCatalogErrorMessage(error, t("catalog.createKitScaffoldFailed"))}`;
   } finally {
@@ -5438,10 +6402,14 @@ async function createToolFromScaffold(root) {
       body: JSON.stringify(body)
     });
     const tool = result?.tool || {};
+    await refreshCatalogResources(root);
+    if (tool.name) {
+      await openDesigner(root, catalogContext.runtime || {}, "tool", tool.name, catalogContext.providerOptions || []);
+    }
     renderBackendResourceSaveOutcome(root, "tool", result, {
-      tone: "warn",
+      tone: result?.restart_required ? "warn" : "good",
       title: result?.updated ? t("catalog.toolScaffoldUpdated") : t("catalog.toolScaffoldCreated"),
-      body: t("catalog.toolScaffoldSavedRefresh"),
+      body: result?.restart_required ? t("catalog.toolScaffoldSavedRestart") : t("catalog.toolScaffoldSavedRefresh"),
       facts: [
         { label: t("catalog.resourceType"), value: t("catalog.resourceTool") },
         { label: t("catalog.name"), value: tool.name || body.name },
@@ -5450,14 +6418,13 @@ async function createToolFromScaffold(root) {
       ],
       path: tool.path || tool.config_path,
       paths: [{ label: t("catalog.saveOutcomeConfigPath"), value: tool.config_path }],
-      sections: toolScaffoldOutcomeSections(result, preset),
-      includeSettingsAction: true,
-      actions: [{ action: "settings", label: t("catalog.saveOutcomeOpenSettings"), primary: true }]
+      sections: [
+        ...starterFlowSections("tool", result, { materialized: true }),
+        ...toolScaffoldOutcomeSections(result, preset)
+      ],
+      includeSettingsAction: result?.restart_required === true,
+      actions: scaffoldOutcomeActions(result, { workflowPrimary: false })
     });
-    await refreshCatalogResources(root);
-    if (tool.name) {
-      await openDesigner(root, catalogContext.runtime || {}, "tool", tool.name, catalogContext.providerOptions || []);
-    }
   } catch (error) {
     output.textContent = `${t("catalog.toolScaffoldFailed")}: ${localizedCatalogErrorMessage(error, t("catalog.toolScaffoldFailed"))}`;
   }
@@ -5682,6 +6649,7 @@ function renderKitScaffoldOutcome(root, result = {}, options = {}) {
   const nextSteps = Array.isArray(result?.next_steps) ? result.next_steps : [];
   const materialized = result.materialized === true || options.materialize === true;
   const sections = [
+    ...starterFlowSections("kit", result, { materialized }),
     resources.length ? {
       title: t("catalog.kitScaffoldResources"),
       badge: t("catalog.kitScaffoldResourcesCount", { count: resources.length }),
@@ -5717,11 +6685,48 @@ function renderKitScaffoldOutcome(root, result = {}, options = {}) {
       result.restart_required ? { label: t("catalog.saveOutcomeStatus"), value: t("catalog.restartRequired") } : null
     ].filter(Boolean),
     sections,
-    actions: [
-      result.restart_required ? { action: "settings", label: t("catalog.saveOutcomeOpenSettings") } : null,
-      { action: "workflows", label: t("catalog.saveOutcomeOpenWorkflowStudio"), primary: materialized }
-    ].filter(Boolean)
+    actions: scaffoldOutcomeActions(result, { workflowPrimary: materialized })
   });
+}
+
+function starterFlowSections(kind, result = {}, options = {}) {
+  const materialized = options.materialized === true;
+  const restartRequired = result?.restart_required === true;
+  const items = [
+    {
+      tone: "good",
+      title: t("catalog.starterFlowSavedTitle"),
+      body: materialized ? t("catalog.starterFlowSavedMaterialized") : t("catalog.starterFlowSavedManifest")
+    },
+    {
+      tone: restartRequired ? "warn" : "good",
+      title: restartRequired ? t("catalog.starterFlowRestartTitle") : t("catalog.starterFlowRefreshTitle"),
+      body: restartRequired ? t("catalog.starterFlowRestartBody") : t("catalog.starterFlowRefreshBody")
+    },
+    {
+      tone: "info",
+      title: t("catalog.starterFlowNextTitle"),
+      body: kind === "kit" ? t("catalog.starterFlowKitNextBody") : t("catalog.starterFlowToolNextBody")
+    }
+  ];
+  return [{
+    title: t("catalog.starterFlowTitle"),
+    body: t("catalog.starterFlowHelp"),
+    html: `<div class="resource-starter-flow">
+      ${items.map(item => `<span class="${escapeHTML(item.tone)}">
+        <strong>${escapeHTML(item.title)}</strong>
+        <em>${escapeHTML(item.body)}</em>
+      </span>`).join("")}
+    </div>`
+  }];
+}
+
+function scaffoldOutcomeActions(result = {}, options = {}) {
+  const restartRequired = result?.restart_required === true;
+  return [
+    restartRequired ? { action: "settings", label: t("catalog.saveOutcomeOpenSettings"), primary: true } : null,
+    { action: "workflows", label: t("catalog.saveOutcomeOpenWorkflowStudio"), primary: options.workflowPrimary === true && !restartRequired }
+  ].filter(Boolean);
 }
 
 function kitScaffoldResourcesHTML(resources = []) {
@@ -6416,13 +7421,13 @@ function resourceValidationFieldMap(type) {
       provider: "providerID",
       name: "providerID",
       id: "providerID",
-      api_key: "providerEnvKey",
+      api_key: "providerAPIKey",
       type: "providerType",
       default_model: "providerDefaultModel",
       model: "providerDefaultModel",
       fallback_provider: "providerID",
       base_url: "providerBaseURL",
-      env_key: "providerEnvKey",
+      env_key: "providerAPIKey",
       models: "providerModels",
       metadata: "providerMetadata"
     },
@@ -6578,8 +7583,8 @@ function resourceValidationFieldDisplay(field, type = "") {
     mode: t("catalog.mode"),
     provider: t("catalog.provider"),
     model: t("catalog.model"),
-    api_key: t("catalog.providerEnvKey"),
-    env_key: t("catalog.providerEnvKey"),
+    api_key: t("catalog.providerAPIKey"),
+    env_key: t("catalog.providerAPIKey"),
     fallback_provider: t("settings.field.fallbackProvider"),
     default_model: t("catalog.providerDefaultModel"),
     base_url: t("catalog.providerBaseURL"),
@@ -7017,23 +8022,30 @@ async function workflowGraphFromTemplate(doc) {
 }
 
 function collectResourceDraft(root) {
+  const brief = resourceBrief(root);
   return {
     type: root.querySelector("#resourceType").value,
     name: root.querySelector("#resourceName").value.trim(),
     purpose: root.querySelector("#resourcePurpose").value.trim(),
     description: root.querySelector("#resourceDescription").value.trim(),
     details: root.querySelector("#resourceDetails").value.trim(),
+    brief,
     provider: root.querySelector("#resourceType").value === "provider" ? root.querySelector("#providerID").value.trim() : "",
     workflowTemplate: root.querySelector("#resourceType").value === "workflow" ? root.querySelector("#workflowTemplate").value : ""
   };
 }
 
-function buildResourceRequest({ type, name, purpose, description, details, provider, workflowTemplate }) {
+function buildResourceRequest({ type, name, purpose, description, details, brief = {}, provider, workflowTemplate }) {
   const label = type === "tool" ? t("catalog.resourceTool") : type === "agent" ? t("catalog.resourceAgent") : type === "provider" ? t("catalog.resourceProvider") : type === "workflow" ? t("catalog.resourceWorkflow") : type === "policy-rule" ? t("catalog.resourcePolicyRule") : t("catalog.resourceSkill");
   return [
     `${t("catalog.resourceDraftPrefix")} ${label} ${t("catalog.resourceDraftNamed")} ${name || "<name>"} ${t("catalog.resourceDraftInProject")}`,
     description ? `${t("catalog.description")}: ${description}` : "",
     purpose ? `${t("catalog.resourceDraftPurpose")} ${purpose}` : "",
+    brief.goal ? `${t("catalog.briefGoal")}: ${brief.goal}` : "",
+    brief.inputs ? `${t("catalog.briefInputs")}:\n${brief.inputs}` : "",
+    brief.outputs ? `${t("catalog.briefOutputs")}:\n${brief.outputs}` : "",
+    brief.example ? `${t("catalog.briefExample")}:\n${brief.example}` : "",
+    brief.dependencies ? `${t("catalog.briefDependencies")}:\n${brief.dependencies}` : "",
     provider ? `${t("common.provider")}: ${provider}` : "",
     workflowTemplate ? `${t("catalog.workflowTemplate")}: ${workflowTemplate}` : "",
     details ? `${t("catalog.resourceDraftRequirements")}\n${details}` : "",

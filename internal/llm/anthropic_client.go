@@ -69,6 +69,9 @@ func NewAnthropicClient(cfg config.LLMConfig) *AnthropicClient {
 }
 
 func (c *AnthropicClient) Chat(ctx context.Context, req schema.ChatRequest) (schema.ChatResponse, error) {
+	if err := validateAnthropicSetup(c, req); err != nil {
+		return schema.ChatResponse{}, err
+	}
 	payload := anthropicRequest{
 		Model:     req.Model,
 		System:    req.System,
@@ -112,6 +115,26 @@ func (c *AnthropicClient) StreamChat(ctx context.Context, req schema.ChatRequest
 
 func (c *AnthropicClient) Capabilities() []string {
 	return []string{"chat", "stream"}
+}
+
+func validateAnthropicSetup(c *AnthropicClient, req schema.ChatRequest) error {
+	if c == nil {
+		return fmt.Errorf("model provider setup required: provider client is not configured")
+	}
+	missing := make([]string, 0, 3)
+	if strings.TrimSpace(c.baseURL) == "" {
+		missing = append(missing, "base_url")
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		missing = append(missing, "model")
+	}
+	if strings.TrimSpace(c.apiKey) == "" {
+		missing = append(missing, "api_key")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("model provider setup required: configure %s in Web Studio Settings/Resources or configs/providers/*.yaml", strings.Join(missing, ", "))
 }
 
 func toAnthropicMessages(messages []schema.Message) []anthropicMessage {

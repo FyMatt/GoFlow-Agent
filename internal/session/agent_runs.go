@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
 	"strings"
 	"time"
@@ -22,13 +23,31 @@ type AgentRunStartOptions struct {
 // AgentRunResumeContextSnapshot stores enough ordinary agent state to resume a
 // paused tool-approval turn after the HTTP request or process has gone away.
 type AgentRunResumeContextSnapshot struct {
-	AgentID          string              `json:"agent_id,omitempty"`
-	Mode             string              `json:"mode,omitempty"`
-	SystemPrompt     string              `json:"system_prompt,omitempty"`
-	MatchedSkill     *schema.Skill       `json:"matched_skill,omitempty"`
-	Messages         []schema.Message    `json:"messages,omitempty"`
-	SuspendedCalls   []schema.ToolCall   `json:"suspended_calls,omitempty"`
-	CollectedResults []schema.ToolResult `json:"collected_results,omitempty"`
+	AgentID                      string              `json:"agent_id,omitempty"`
+	Mode                         string              `json:"mode,omitempty"`
+	SystemPrompt                 string              `json:"system_prompt,omitempty"`
+	MatchedSkill                 *schema.Skill       `json:"matched_skill,omitempty"`
+	Messages                     []schema.Message    `json:"messages,omitempty"`
+	MessagesArtifactRef          string              `json:"messages_artifact_ref,omitempty"`
+	MessagesHash                 string              `json:"messages_hash,omitempty"`
+	MessagesCount                int                 `json:"messages_count,omitempty"`
+	MessagesBytes                int                 `json:"messages_bytes,omitempty"`
+	MessagesStoredBytes          int                 `json:"messages_stored_bytes,omitempty"`
+	MessagesExternalized         bool                `json:"messages_externalized,omitempty"`
+	SuspendedCalls               []schema.ToolCall   `json:"suspended_calls,omitempty"`
+	SuspendedCallsArtifactRef    string              `json:"suspended_calls_artifact_ref,omitempty"`
+	SuspendedCallsHash           string              `json:"suspended_calls_hash,omitempty"`
+	SuspendedCallCount           int                 `json:"suspended_calls_count,omitempty"`
+	SuspendedCallsBytes          int                 `json:"suspended_calls_bytes,omitempty"`
+	SuspendedCallsStoredBytes    int                 `json:"suspended_calls_stored_bytes,omitempty"`
+	SuspendedCallsExternalized   bool                `json:"suspended_calls_externalized,omitempty"`
+	CollectedResults             []schema.ToolResult `json:"collected_results,omitempty"`
+	CollectedResultsArtifactRef  string              `json:"collected_results_artifact_ref,omitempty"`
+	CollectedResultsHash         string              `json:"collected_results_hash,omitempty"`
+	CollectedResultCount         int                 `json:"collected_results_count,omitempty"`
+	CollectedResultsBytes        int                 `json:"collected_results_bytes,omitempty"`
+	CollectedResultsStoredBytes  int                 `json:"collected_results_stored_bytes,omitempty"`
+	CollectedResultsExternalized bool                `json:"collected_results_externalized,omitempty"`
 }
 
 // AgentRunSnapshot is a durable, replayable view of one ordinary agent turn.
@@ -53,28 +72,37 @@ type AgentRunSnapshot struct {
 	ResumeContext    *AgentRunResumeContextSnapshot `json:"resume_context,omitempty"`
 	Result           *schema.AgentResult            `json:"result,omitempty"`
 	Events           []AgentRunEventSnapshot        `json:"events,omitempty"`
+	Artifacts        []AgentRunArtifactSnapshot     `json:"artifacts,omitempty"`
+	EventsCount      int                            `json:"events_count,omitempty"`
+	ArtifactsCount   int                            `json:"artifacts_count,omitempty"`
+	DiffsCount       int                            `json:"diffs_count,omitempty"`
 }
 
 // AgentRunEventSnapshot captures a replayable ordinary agent stream/status event.
 type AgentRunEventSnapshot struct {
-	Seq              int                     `json:"seq,omitempty"`
-	At               string                  `json:"at,omitempty"`
-	Type             string                  `json:"type,omitempty"`
-	Content          string                  `json:"content,omitempty"`
-	ToolName         string                  `json:"tool_name,omitempty"`
-	ToolCallID       string                  `json:"tool_call_id,omitempty"`
-	ArgumentsSummary string                  `json:"arguments_summary,omitempty"`
-	AgentID          string                  `json:"agent_id,omitempty"`
-	Mode             string                  `json:"mode,omitempty"`
-	IsError          bool                    `json:"is_error,omitempty"`
-	NeedsAction      bool                    `json:"needs_action,omitempty"`
-	Suspended        bool                    `json:"suspended,omitempty"`
-	TaskStage        string                  `json:"task_stage,omitempty"`
-	PromptTokens     int                     `json:"prompt_tokens,omitempty"`
-	OutputTokens     int                     `json:"output_tokens,omitempty"`
-	CachedTokens     int                     `json:"cached_tokens,omitempty"`
-	PromptBudget     *schema.PromptBudget    `json:"prompt_budget,omitempty"`
-	Risk             *schema.ToolRiskProfile `json:"risk,omitempty"`
+	Seq                 int                     `json:"seq,omitempty"`
+	At                  string                  `json:"at,omitempty"`
+	Type                string                  `json:"type,omitempty"`
+	Content             string                  `json:"content,omitempty"`
+	ContentArtifactRef  string                  `json:"content_artifact_ref,omitempty"`
+	ContentHash         string                  `json:"content_hash,omitempty"`
+	ContentBytes        int                     `json:"content_bytes,omitempty"`
+	ContentStoredBytes  int                     `json:"content_stored_bytes,omitempty"`
+	ContentExternalized bool                    `json:"content_externalized,omitempty"`
+	ToolName            string                  `json:"tool_name,omitempty"`
+	ToolCallID          string                  `json:"tool_call_id,omitempty"`
+	ArgumentsSummary    string                  `json:"arguments_summary,omitempty"`
+	AgentID             string                  `json:"agent_id,omitempty"`
+	Mode                string                  `json:"mode,omitempty"`
+	IsError             bool                    `json:"is_error,omitempty"`
+	NeedsAction         bool                    `json:"needs_action,omitempty"`
+	Suspended           bool                    `json:"suspended,omitempty"`
+	TaskStage           string                  `json:"task_stage,omitempty"`
+	PromptTokens        int                     `json:"prompt_tokens,omitempty"`
+	OutputTokens        int                     `json:"output_tokens,omitempty"`
+	CachedTokens        int                     `json:"cached_tokens,omitempty"`
+	PromptBudget        *schema.PromptBudget    `json:"prompt_budget,omitempty"`
+	Risk                *schema.ToolRiskProfile `json:"risk,omitempty"`
 }
 
 // StartAgentRun creates a bounded, session-persisted ordinary agent run record.
@@ -116,6 +144,9 @@ func (s *State) StartAgentRunWithOptions(request string, opts AgentRunStartOptio
 			Content: agentRunStartContent(retryOf),
 		}},
 	}
+	for i := range run.Events {
+		run.Events[i] = s.normalizeAgentRunEventLocked(id, run.Events[i])
+	}
 	s.agentRuns = append([]AgentRunSnapshot{run}, s.agentRuns...)
 	if len(s.agentRuns) > maxAgentRuns {
 		s.agentRuns = append([]AgentRunSnapshot(nil), s.agentRuns[:maxAgentRuns]...)
@@ -140,13 +171,13 @@ func (s *State) RequestAgentRunCancel(runID, reason string) (AgentRunSnapshot, b
 		run.Status = "cancelling"
 	}
 	run.UpdatedAt = now
-	run.Events = appendAgentRunEventLocked(run.Events, AgentRunEventSnapshot{
+	run.Events = appendAgentRunEventLocked(run.Events, s.normalizeAgentRunEventLocked(run.ID, AgentRunEventSnapshot{
 		At:      now,
 		Type:    "agent_run_cancel_requested",
 		Content: trimAgentRunText(reason),
 		AgentID: run.AgentID,
 		Mode:    run.Mode,
-	})
+	}))
 	s.agentRuns[index] = run
 	return copyAgentRunSnapshot(run), true
 }
@@ -176,13 +207,13 @@ func (s *State) CancelAgentRun(runID, reason string) (AgentRunSnapshot, bool) {
 	if strings.TrimSpace(reason) != "" {
 		run.Output = trimAgentRunText(reason)
 	}
-	run.Events = appendAgentRunEventLocked(run.Events, AgentRunEventSnapshot{
+	run.Events = appendAgentRunEventLocked(run.Events, s.normalizeAgentRunEventLocked(run.ID, AgentRunEventSnapshot{
 		At:      now,
 		Type:    "agent_run_cancelled",
 		Content: trimAgentRunText(reason),
 		AgentID: run.AgentID,
 		Mode:    run.Mode,
-	})
+	}))
 	s.agentRuns[index] = run
 	return copyAgentRunSnapshot(run), true
 }
@@ -217,6 +248,7 @@ func (s *State) CompleteAgentRun(runID, status string, result schema.AgentResult
 	run.Mode = strings.TrimSpace(result.Mode)
 	copied := copyAgentResult(result)
 	run.Result = &copied
+	run.Artifacts = s.buildAgentRunArtifactsLocked(run, now)
 	if !strings.EqualFold(status, "awaiting_tool_approval") {
 		run.PendingCallID = ""
 		run.PendingTool = ""
@@ -228,13 +260,13 @@ func (s *State) CompleteAgentRun(runID, status string, result schema.AgentResult
 	if !isTerminalAgentRunStatus(status) {
 		eventType = "agent_run_paused"
 	}
-	run.Events = appendAgentRunEventLocked(run.Events, AgentRunEventSnapshot{
+	run.Events = appendAgentRunEventLocked(run.Events, s.normalizeAgentRunEventLocked(run.ID, AgentRunEventSnapshot{
 		At:      now,
 		Type:    eventType,
 		Content: trimAgentRunText(result.Output),
 		AgentID: run.AgentID,
 		Mode:    run.Mode,
-	})
+	}))
 	s.agentRuns[index] = run
 	return copyAgentRunSnapshot(run), true
 }
@@ -257,14 +289,15 @@ func (s *State) FailAgentRun(runID, message string) (AgentRunSnapshot, bool) {
 	run.UpdatedAt = now
 	run.CompletedAt = now
 	run.ResumeContext = nil
-	run.Events = appendAgentRunEventLocked(run.Events, AgentRunEventSnapshot{
+	run.Artifacts = s.buildAgentRunArtifactsLocked(run, now)
+	run.Events = appendAgentRunEventLocked(run.Events, s.normalizeAgentRunEventLocked(run.ID, AgentRunEventSnapshot{
 		At:      now,
 		Type:    string(schema.StreamEventError),
 		Content: trimAgentRunText(message),
 		AgentID: run.AgentID,
 		Mode:    run.Mode,
 		IsError: true,
-	})
+	}))
 	s.agentRuns[index] = run
 	return copyAgentRunSnapshot(run), true
 }
@@ -279,7 +312,6 @@ func (s *State) AppendAgentRunEvent(runID string, event AgentRunEventSnapshot) {
 		event.At = now
 	}
 	event.Type = strings.TrimSpace(event.Type)
-	event.Content = trimAgentRunText(event.Content)
 	event.ArgumentsSummary = trimAgentRunText(event.ArgumentsSummary)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -300,6 +332,7 @@ func (s *State) AppendAgentRunEvent(runID string, event AgentRunEventSnapshot) {
 		run.PendingTool = strings.TrimSpace(event.ToolName)
 		run.PendingAgentID = strings.TrimSpace(event.AgentID)
 	}
+	event = s.normalizeAgentRunEventLocked(runID, event)
 	run.Events = appendAgentRunEventLocked(run.Events, event)
 	run.UpdatedAt = now
 	s.agentRuns[index] = run
@@ -313,6 +346,7 @@ func (s *State) AppendAgentRunPendingApproval(runID string, approval PendingAppr
 	approval.AgentRunID = strings.TrimSpace(runID)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	approval = s.normalizePendingApprovalLocked(approval)
 	index := s.agentRunIndexLocked(runID)
 	if index < 0 {
 		return
@@ -350,7 +384,7 @@ func (s *State) SetAgentRunResumeContext(runID string, context AgentRunResumeCon
 		return AgentRunSnapshot{}, false
 	}
 	run := s.agentRuns[index]
-	copied := copyAgentRunResumeContext(context)
+	copied := s.normalizeAgentRunResumeContextLocked(runID, context)
 	run.ResumeContext = &copied
 	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
 	s.agentRuns[index] = run
@@ -407,12 +441,14 @@ func (s *State) AgentRun(id string) (AgentRunSnapshot, bool) {
 		return AgentRunSnapshot{}, false
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	for _, run := range s.agentRuns {
 		if run.ID == id {
-			return copyAgentRunSnapshot(run), true
+			copied := copyAgentRunSnapshot(run)
+			s.mu.RUnlock()
+			return s.HydrateAgentRun(copied), true
 		}
 	}
+	s.mu.RUnlock()
 	return AgentRunSnapshot{}, false
 }
 
@@ -488,6 +524,7 @@ func copyAgentRunSnapshot(run AgentRunSnapshot) AgentRunSnapshot {
 		copied := copyAgentResult(*run.Result)
 		run.Result = &copied
 	}
+	run.Artifacts = copyAgentRunArtifacts(run.Artifacts)
 	if len(run.Events) > 0 {
 		run.Events = append([]AgentRunEventSnapshot(nil), run.Events...)
 		for i := range run.Events {
@@ -506,6 +543,395 @@ func copyAgentRunSnapshot(run AgentRunSnapshot) AgentRunSnapshot {
 		run.ResumeContext = &copied
 	}
 	return run
+}
+
+func (s *State) buildAgentRunArtifactsLocked(run AgentRunSnapshot, now string) []AgentRunArtifactSnapshot {
+	artifacts := deriveAgentRunArtifacts(run, now)
+	if len(artifacts) == 0 {
+		return nil
+	}
+	out := make([]AgentRunArtifactSnapshot, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if strings.TrimSpace(artifact.Content) == "" && strings.TrimSpace(artifact.ArtifactRef) == "" && strings.TrimSpace(artifact.Hash) == "" {
+			continue
+		}
+		out = append(out, normalizeAgentRunArtifactLocked(s, artifact, now))
+	}
+	return out
+}
+
+func deriveAgentRunArtifacts(run AgentRunSnapshot, createdAt string) []AgentRunArtifactSnapshot {
+	items := make([]AgentRunArtifactSnapshot, 0)
+	runID := strings.TrimSpace(run.ID)
+	agentID := strings.TrimSpace(run.AgentID)
+	mode := strings.TrimSpace(run.Mode)
+	if run.Result != nil {
+		agentID = firstAgentRunArtifactValue(agentID, run.Result.AgentID)
+		mode = firstAgentRunArtifactValue(mode, run.Result.Mode)
+	}
+	if strings.TrimSpace(run.Output) != "" {
+		items = append(items, AgentRunArtifactSnapshot{
+			ID:        agentRunArtifactID("final-output"),
+			Kind:      "output",
+			Title:     "Final output",
+			Summary:   trimAgentRunText(run.Output),
+			Content:   run.Output,
+			Mime:      "text/markdown",
+			CreatedAt: createdAt,
+			AgentID:   agentID,
+			Mode:      mode,
+			Metadata:  agentRunArtifactMetadata(runID, "agent_output", nil),
+		})
+	}
+	if strings.TrimSpace(run.Error) != "" {
+		items = append(items, AgentRunArtifactSnapshot{
+			ID:        agentRunArtifactID("error"),
+			Kind:      "error",
+			Title:     "Run error",
+			Summary:   trimAgentRunText(run.Error),
+			Content:   run.Error,
+			Mime:      "text/plain",
+			CreatedAt: createdAt,
+			AgentID:   agentID,
+			Mode:      mode,
+			Metadata:  agentRunArtifactMetadata(runID, "agent_error", map[string]string{"is_error": "true"}),
+		})
+	}
+	if run.Result == nil {
+		return items
+	}
+	result := *run.Result
+	for i, toolResult := range result.ToolResults {
+		title := firstAgentRunArtifactValue(toolResult.ToolName, toolResult.CallID, "Tool result")
+		metadata := agentRunArtifactMetadata(runID, "tool_result", map[string]string{
+			"is_error":  boolString(toolResult.IsError),
+			"denied":    boolString(toolResult.Denied),
+			"suspended": boolString(toolResult.Suspended),
+		})
+		metadata = mergeAgentRunArtifactMetadata(metadata, agentRunDiffMetadata(toolResult.ToolName, toolResult.Content))
+		items = append(items, AgentRunArtifactSnapshot{
+			ID:         agentRunArtifactIndexedID("tool-result", i+1, toolResult.CallID, toolResult.ToolName),
+			Kind:       "tool_result",
+			Title:      title,
+			Summary:    trimAgentRunText(toolResult.Content),
+			Content:    toolResult.Content,
+			Mime:       "text/plain",
+			CreatedAt:  createdAt,
+			ToolName:   toolResult.ToolName,
+			ToolCallID: toolResult.CallID,
+			AgentID:    agentID,
+			Mode:       mode,
+			Metadata:   metadata,
+		})
+	}
+	for i, section := range result.Structured {
+		content := agentRunArtifactJSON(section)
+		summary := firstAgentRunArtifactValue(section.Summary, strings.Join(section.Items, "\n"), content)
+		items = append(items, AgentRunArtifactSnapshot{
+			ID:        agentRunArtifactIndexedID("structured", i+1, section.Title, section.Kind),
+			Kind:      firstAgentRunArtifactValue(section.Kind, "structured"),
+			Title:     firstAgentRunArtifactValue(section.Title, section.Kind, "Structured output"),
+			Summary:   trimAgentRunText(summary),
+			Content:   content,
+			Mime:      "application/json",
+			CreatedAt: createdAt,
+			AgentID:   agentID,
+			Mode:      mode,
+			Metadata:  agentRunArtifactMetadata(runID, "structured", nil),
+		})
+	}
+	for i, finding := range result.Findings {
+		items = append(items, AgentRunArtifactSnapshot{
+			ID:        agentRunArtifactIndexedID("finding", i+1, finding.Summary, finding.Severity),
+			Kind:      "finding",
+			Title:     firstAgentRunArtifactValue(finding.Severity, "Finding"),
+			Summary:   trimAgentRunText(finding.Summary),
+			Content:   agentRunArtifactJSON(finding),
+			Mime:      "application/json",
+			CreatedAt: createdAt,
+			AgentID:   agentID,
+			Mode:      mode,
+			Metadata: agentRunArtifactMetadata(runID, "finding", map[string]string{
+				"severity": finding.Severity,
+				"fixed":    boolString(finding.Fixed),
+				"files":    strings.Join(finding.Files, ", "),
+			}),
+		})
+	}
+	for i, change := range result.Changes {
+		items = append(items, AgentRunArtifactSnapshot{
+			ID:        agentRunArtifactIndexedID("change", i+1, change.Summary),
+			Kind:      "change",
+			Title:     "Change",
+			Summary:   trimAgentRunText(change.Summary),
+			Content:   agentRunArtifactJSON(change),
+			Mime:      "application/json",
+			CreatedAt: createdAt,
+			AgentID:   agentID,
+			Mode:      mode,
+			Metadata: agentRunArtifactMetadata(runID, "change", map[string]string{
+				"files": strings.Join(change.Files, ", "),
+			}),
+		})
+	}
+	for i, verification := range result.Verification {
+		failed := strings.EqualFold(verification.Status, "failed") || strings.EqualFold(verification.Status, "fail")
+		items = append(items, AgentRunArtifactSnapshot{
+			ID:        agentRunArtifactIndexedID("verification", i+1, verification.Kind, verification.Status),
+			Kind:      "verification",
+			Title:     firstAgentRunArtifactValue(verification.Kind, "Verification"),
+			Summary:   trimAgentRunText(firstAgentRunArtifactValue(verification.Detail, verification.Status)),
+			Content:   agentRunArtifactJSON(verification),
+			Mime:      "application/json",
+			CreatedAt: createdAt,
+			AgentID:   agentID,
+			Mode:      mode,
+			Metadata: agentRunArtifactMetadata(runID, "verification", map[string]string{
+				"status":   verification.Status,
+				"is_error": boolString(failed),
+			}),
+		})
+	}
+	for i, audit := range result.AuditTrail {
+		isError := strings.Contains(strings.ToLower(audit.Outcome), "error") || strings.Contains(strings.ToLower(audit.Outcome), "fail")
+		items = append(items, AgentRunArtifactSnapshot{
+			ID:        agentRunArtifactIndexedID("audit", i+1, audit.Type, audit.ToolName, audit.Outcome),
+			Kind:      "audit",
+			Title:     firstAgentRunArtifactValue(audit.Type, "Audit entry"),
+			Summary:   trimAgentRunText(firstAgentRunArtifactValue(audit.Detail, audit.Outcome)),
+			Content:   agentRunArtifactJSON(audit),
+			Mime:      "application/json",
+			CreatedAt: createdAt,
+			ToolName:  audit.ToolName,
+			AgentID:   firstAgentRunArtifactValue(audit.AgentID, agentID),
+			Mode:      mode,
+			Metadata: agentRunArtifactMetadata(runID, "audit", map[string]string{
+				"outcome":     audit.Outcome,
+				"skill_name":  audit.SkillName,
+				"duration_ms": workflowArtifactIntString(int(audit.DurationMs)),
+				"is_error":    boolString(isError),
+			}),
+		})
+	}
+	return items
+}
+
+func normalizeAgentRunArtifactLocked(state *State, artifact AgentRunArtifactSnapshot, createdAt string) AgentRunArtifactSnapshot {
+	artifact.ID = sanitizeSessionArtifactID(artifact.ID)
+	if artifact.ID == "" {
+		artifact.ID = sanitizeSessionArtifactID(strings.Join([]string{artifact.Kind, artifact.ToolName, artifact.ToolCallID}, "-"))
+	}
+	if artifact.ID == "" {
+		artifact.ID = "agent-artifact"
+	}
+	artifact.Ref = "goflow://session-artifacts/" + artifact.ID
+	if strings.TrimSpace(artifact.CreatedAt) == "" {
+		artifact.CreatedAt = createdAt
+	}
+	artifact.Kind = fallbackSessionArtifactValue(artifact.Kind, "artifact")
+	artifact.Title = fallbackSessionArtifactValue(artifact.Title, fallbackSessionArtifactValue(artifact.ToolName, "Artifact"))
+	artifact.Mime = fallbackSessionArtifactValue(artifact.Mime, agentRunArtifactMime(artifact.Kind))
+	artifact.ContentBytes = len([]byte(artifact.Content))
+	if strings.TrimSpace(artifact.Summary) == "" {
+		artifact.Summary = artifact.Content
+	}
+	artifact.Summary = trimSessionArtifactBytes(artifact.Summary, maxSessionArtifactSummaryBytes)
+	artifact.Metadata = copyStringMapForArtifact(artifact.Metadata)
+	if state != nil && state.artifactStore != nil && strings.TrimSpace(artifact.Content) != "" {
+		artifact = state.externalizeArtifactLocked(artifact)
+	} else {
+		artifact.StoredBytes = len([]byte(artifact.Content))
+	}
+	return normalizeAgentRunArtifactReferenceMetadata(artifact)
+}
+
+func normalizeAgentRunArtifactReferenceMetadata(artifact AgentRunArtifactSnapshot) AgentRunArtifactSnapshot {
+	if strings.TrimSpace(artifact.ArtifactRef) == "" {
+		artifact.ArtifactRef = firstAgentRunArtifactValue(artifact.Metadata["artifact_ref"], artifact.Metadata["ref"])
+	}
+	if strings.TrimSpace(artifact.Hash) == "" {
+		artifact.Hash = firstAgentRunArtifactValue(artifact.Metadata["hash"], workflowArtifactHashFromRef(artifact.ArtifactRef))
+	}
+	size := firstAgentRunArtifactInt(artifact.ContentBytes, len([]byte(artifact.Content)), len([]byte(artifact.Summary)))
+	artifact.Metadata = copyStringMapForArtifact(artifact.Metadata)
+	if artifact.Metadata == nil {
+		artifact.Metadata = map[string]string{}
+	}
+	workflowArtifactSetMetadata(artifact.Metadata, "artifact_ref", artifact.ArtifactRef)
+	workflowArtifactSetMetadata(artifact.Metadata, "hash", artifact.Hash)
+	workflowArtifactSetMetadata(artifact.Metadata, "mime", artifact.Mime)
+	workflowArtifactSetMetadata(artifact.Metadata, "size", workflowArtifactIntString(size))
+	workflowArtifactSetMetadata(artifact.Metadata, "content_bytes", workflowArtifactIntString(artifact.ContentBytes))
+	workflowArtifactSetMetadata(artifact.Metadata, "stored_bytes", workflowArtifactIntString(artifact.StoredBytes))
+	if strings.TrimSpace(artifact.ArtifactRef) != "" || strings.TrimSpace(artifact.Hash) != "" {
+		workflowArtifactSetMetadata(artifact.Metadata, "externalized", "true")
+	}
+	if len(artifact.Metadata) == 0 {
+		artifact.Metadata = nil
+	}
+	return artifact
+}
+
+func agentRunArtifactMetadata(runID, source string, extra map[string]string) map[string]string {
+	metadata := map[string]string{
+		"agent_run_id": strings.TrimSpace(runID),
+		"source":       strings.TrimSpace(source),
+	}
+	for key, value := range extra {
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		metadata[key] = value
+	}
+	return copyStringMapForArtifact(metadata)
+}
+
+func mergeAgentRunArtifactMetadata(base, extra map[string]string) map[string]string {
+	if len(base) == 0 && len(extra) == 0 {
+		return nil
+	}
+	out := copyStringMapForArtifact(base)
+	if out == nil {
+		out = map[string]string{}
+	}
+	for key, value := range extra {
+		if strings.TrimSpace(key) == "" || strings.TrimSpace(value) == "" {
+			continue
+		}
+		out[key] = value
+	}
+	return copyStringMapForArtifact(out)
+}
+
+func agentRunDiffMetadata(toolName, content string) map[string]string {
+	if !agentRunDiffToolName(toolName) || strings.TrimSpace(content) == "" {
+		return nil
+	}
+	var payload map[string]any
+	decoder := json.NewDecoder(strings.NewReader(content))
+	decoder.UseNumber()
+	if err := decoder.Decode(&payload); err != nil || len(payload) == 0 {
+		return nil
+	}
+	metadata := map[string]string{}
+	agentRunDiffSetMetadata(metadata, "path", firstAgentRunArtifactValue(agentRunDiffString(payload, "relative_path"), agentRunDiffString(payload, "path")))
+	agentRunDiffSetMetadata(metadata, "status", agentRunDiffString(payload, "status"))
+	agentRunDiffSetMetadata(metadata, "line_summary", firstAgentRunArtifactValue(agentRunDiffString(payload, "line_summary"), agentRunDiffString(payload, "summary")))
+	agentRunDiffSetMetadata(metadata, "old_range", agentRunDiffString(payload, "old_range"))
+	agentRunDiffSetMetadata(metadata, "new_range", agentRunDiffString(payload, "new_range"))
+	agentRunDiffSetMetadata(metadata, "added_lines", agentRunDiffIntString(payload, "added_lines"))
+	agentRunDiffSetMetadata(metadata, "deleted_lines", agentRunDiffIntString(payload, "deleted_lines"))
+	agentRunDiffSetMetadata(metadata, "bytes_written", agentRunDiffIntString(payload, "bytes_written"))
+	agentRunDiffSetMetadata(metadata, "old_line_count", agentRunDiffIntString(payload, "old_line_count"))
+	agentRunDiffSetMetadata(metadata, "new_line_count", agentRunDiffIntString(payload, "new_line_count"))
+	if len(metadata) == 0 {
+		return nil
+	}
+	return metadata
+}
+
+func agentRunDiffToolName(toolName string) bool {
+	name := strings.ToLower(strings.TrimSpace(toolName))
+	if index := strings.LastIndex(name, "/"); index >= 0 {
+		name = name[index+1:]
+	}
+	switch name {
+	case "write_file", "edit_file", "delete_file":
+		return true
+	default:
+		return false
+	}
+}
+
+func agentRunDiffString(payload map[string]any, key string) string {
+	value, _ := payload[key].(string)
+	return strings.TrimSpace(value)
+}
+
+func agentRunDiffIntString(payload map[string]any, key string) string {
+	switch value := payload[key].(type) {
+	case int:
+		if value != 0 {
+			return fmt.Sprintf("%d", value)
+		}
+	case float64:
+		if value != 0 {
+			return fmt.Sprintf("%d", int(value))
+		}
+	case json.Number:
+		if parsed, err := value.Int64(); err == nil && parsed != 0 {
+			return fmt.Sprintf("%d", parsed)
+		}
+	}
+	return ""
+}
+
+func agentRunDiffSetMetadata(metadata map[string]string, key, value string) {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return
+	}
+	metadata[key] = value
+}
+
+func agentRunArtifactID(kind string) string {
+	return "agent-" + sanitizeSessionArtifactID(kind)
+}
+
+func agentRunArtifactIndexedID(prefix string, index int, values ...string) string {
+	parts := []string{"agent", sanitizeSessionArtifactID(prefix)}
+	for _, value := range values {
+		value = sanitizeSessionArtifactID(value)
+		if value != "" {
+			parts = append(parts, value)
+			break
+		}
+	}
+	if index > 0 {
+		parts = append(parts, fmt.Sprintf("%d", index))
+	}
+	return strings.Trim(strings.Join(parts, "-"), "-")
+}
+
+func agentRunArtifactJSON(value any) string {
+	data, err := json.MarshalIndent(value, "", "  ")
+	if err != nil {
+		return ""
+	}
+	return string(data)
+}
+
+func agentRunArtifactMime(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "structured", "finding", "change", "verification", "audit":
+		return "application/json"
+	case "output", "report", "summary":
+		return "text/markdown"
+	default:
+		return "text/plain"
+	}
+}
+
+func firstAgentRunArtifactValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func firstAgentRunArtifactInt(values ...int) int {
+	for _, value := range values {
+		if value > 0 {
+			return value
+		}
+	}
+	return 0
+}
+
+func copyAgentRunArtifacts(artifacts []AgentRunArtifactSnapshot) []AgentRunArtifactSnapshot {
+	return copySessionArtifacts(artifacts)
 }
 
 func copyAgentRunResumeContext(context AgentRunResumeContextSnapshot) AgentRunResumeContextSnapshot {

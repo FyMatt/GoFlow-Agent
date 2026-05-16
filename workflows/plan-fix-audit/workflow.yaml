@@ -1,57 +1,293 @@
 name: plan-fix-audit
-description: Plan a requested change, implement approved work, verify the result, and produce an audit-ready output.
+description: Plan a requested change, implement approved work, verify the result, pass an evidence-backed quality gate, and produce an audit-ready output.
 stages:
-  - name: start
-    node_type: start
-    next: [intake]
-    position: {x: 80, y: 260}
-  - name: intake
-    node_type: agent
-    agent: planner
-    skill: execution-plan
-    next: [plan]
-    params:
-      output: "Clarify objective, affected files, constraints, and acceptance checks."
-      risk_scope: "Identify workspace, dependency, test, and approval risks before planning edits."
-    position: {x: 330, y: 230}
-  - name: plan
-    node_type: skill
-    agent: planner
-    skill: execution-plan
-    next: [implement]
-    params:
-      output: "Produce ordered implementation steps, target files, verification commands, and rollback notes."
-      handoff: "The next stage should be able to implement without rediscovering the task."
-    position: {x: 650, y: 230}
-  - name: implement
-    node_type: agent
-    agent: fixer
-    skill: code-writing
-    approval: true
-    next: [verify]
-    params:
-      output: "Apply the approved plan with focused code changes and keep unrelated files untouched."
-      edit_policy: "Preserve user edits and summarize changed files."
-    position: {x: 970, y: 230}
-  - name: verify
-    node_type: skill
-    agent: auditor
-    skill: code-audit
-    next: [audit]
-    params:
-      verification_command: "go test ./..."
-      output: "Run or recommend the narrowest meaningful verification, then record failures and residual risk."
-      evidence: "Include exact commands or checks performed."
-    position: {x: 1290, y: 230}
-  - name: audit
-    node_type: skill
-    agent: auditor
-    skill: code-audit
-    next: [output]
-    params:
-      output: "Review the implementation for regressions, missed requirements, unsafe behavior, and test gaps."
-      severity_order: "Prioritize concrete bugs and risks before summaries."
-    position: {x: 1610, y: 230}
-  - name: output
-    node_type: end
-    position: {x: 1930, y: 260}
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next:
+        - intake
+      position:
+        x: 180
+        "y": 779
+    - name: intake
+      node_type: agent
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Goal, Affected Files, Constraints, Acceptance Checks, Risks, and Open Questions.
+        purpose: Clarify the task before planning edits.
+        risk_scope: Identify workspace, dependency, test, approval, and rollback risks before planning edits.
+      outputs:
+        goal: result.summary
+        intake_report: result.output
+        risks: result.findings
+      artifacts:
+        - name: intake-report
+          kind: plan
+          title: Intake report
+          ref: result.output
+          summary: Clarified objective, affected files, constraints, acceptance checks, risks, and open questions.
+      acceptance_criteria:
+        - name: has-goal
+          ref: result.output
+          contains: Goal
+          expected: intake names the requested outcome
+        - name: has-acceptance-checks
+          ref: result.output
+          contains: Acceptance Checks
+          expected: intake defines how success will be checked
+        - name: has-risks
+          ref: result.output
+          contains: Risks
+          expected: intake records implementation and approval risks
+      next:
+        - plan
+      position:
+        x: 732
+        "y": 761
+    - name: plan
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Implementation Steps, Target Files, Verification Commands, Rollback Notes, and Handoff.
+        purpose: Produce an implementation plan that the fixer can execute without rediscovering the task.
+      input:
+        intake: stages.intake.outputs.intake_report
+        request: workflow.input
+      outputs:
+        plan: result.output
+        summary: result.summary
+      artifacts:
+        - name: implementation-plan
+          kind: plan
+          title: Implementation plan
+          ref: result.output
+          summary: Ordered steps, target files, verification commands, rollback notes, and handoff guidance.
+      acceptance_criteria:
+        - name: has-steps
+          ref: result.output
+          contains: Implementation Steps
+          expected: plan contains ordered implementation steps
+        - name: has-target-files
+          ref: result.output
+          contains: Target Files
+          expected: plan names likely files or areas
+        - name: has-verification
+          ref: result.output
+          contains: Verification Commands
+          expected: plan declares verification commands or checks
+      context:
+        include:
+            - memory.project
+            - previous.summary
+            - stages.intake.outputs.intake_report
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 3500
+        retrieval:
+            enabled: true
+            query: '{{input.goal}}'
+      next:
+        - implement
+      position:
+        x: 1344
+        "y": 761
+    - name: implement
+      node_type: agent
+      agent: fixer
+      skill: code-writing
+      params:
+        edit_policy: Apply the approved plan with focused code changes, preserve user edits, and keep unrelated files untouched.
+        output_contract: Emit sections named Change Summary, Files Changed, Verification Notes, and Residual Risk.
+      input:
+        intake: stages.intake.outputs.intake_report
+        plan: stages.plan.outputs.plan
+      outputs:
+        changes: result.changes
+        implementation_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: implementation-report
+          kind: change_report
+          title: Implementation report
+          ref: result.output
+          summary: Files changed, verification notes, and residual implementation risk.
+      acceptance_criteria:
+        - name: has-change-summary
+          ref: result.output
+          contains: Change Summary
+          expected: implementation reports what changed
+        - name: has-files-changed
+          ref: result.output
+          contains: Files Changed
+          expected: implementation lists changed files or explains none
+      retry:
+        max_attempts: 2
+      approval: true
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.implementation-plan
+            - stages.plan.outputs.plan
+            - files.changed
+        exclude:
+            - raw_tool_logs
+            - unrelated_session_history
+        max_tokens: 4200
+      next:
+        - verify
+      position:
+        x: 1956
+        "y": 761
+    - name: verify
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        evidence: Include exact commands or checks performed. If a command was not run, explain why.
+        output_contract: Emit sections named Verification Result, Commands Run, Failures, Coverage, and Residual Risk.
+        verification_command: go test ./...
+      input:
+        changes: stages.implement.outputs.implementation_report
+        plan: stages.plan.outputs.plan
+      outputs:
+        summary: result.summary
+        verification: result.output
+      artifacts:
+        - name: verification-report
+          kind: verification
+          title: Verification report
+          ref: result.output
+          summary: Commands, checks, failures, coverage, and residual risk.
+      acceptance_criteria:
+        - name: verification-result
+          ref: result.output
+          contains: Verification Result
+          expected: verification declares pass, fail, warning, or not-run
+        - name: commands-recorded
+          ref: result.output
+          contains: Commands Run
+          expected: verification lists exact commands or explains why none ran
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.implementation-report
+            - stages.implement.outputs.implementation_report
+        exclude:
+            - raw_tool_logs
+        max_tokens: 3600
+      next:
+        - audit
+      position:
+        x: 2568
+        "y": 761
+    - name: audit
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        output_contract: Emit sections named Findings, Severity Order, Missed Requirements, Test Gaps, Safety Notes, and Recommendation.
+        severity_order: Prioritize concrete bugs and risks before summaries.
+      input:
+        implementation: stages.implement.outputs.implementation_report
+        plan: stages.plan.outputs.plan
+        verification: stages.verify.outputs.verification
+      outputs:
+        audit: result.output
+        findings: result.findings
+        summary: result.summary
+      artifacts:
+        - name: audit-report
+          kind: audit
+          title: Audit report
+          ref: result.output
+          summary: Severity-ordered findings, missed requirements, safety notes, test gaps, and recommendation.
+      acceptance_criteria:
+        - name: has-findings
+          ref: result.output
+          contains: Findings
+          expected: audit includes findings or explicitly says none found
+        - name: has-recommendation
+          ref: result.output
+          contains: Recommendation
+          expected: audit gives a concrete recommendation
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.verification-report
+            - stages.implement.outputs.implementation_report
+            - stages.verify.outputs.verification
+        exclude:
+            - raw_tool_logs
+        max_tokens: 4000
+      next:
+        - quality
+      position:
+        x: 3180
+        "y": 761
+    - name: quality
+      node_type: quality_gate
+      agent: ""
+      skill: ""
+      params:
+        allow_unknown: "false"
+        min_score: "80"
+        reason: implementation, verification, or audit evidence is missing or below the release bar
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "true"
+        stage: audit
+      routes:
+        fail: revise
+        pass: output
+        warning: operator-review
+      position:
+        x: 3792
+        "y": 761
+    - name: operator-review
+      node_type: checkpoint
+      agent: ""
+      skill: ""
+      params:
+        prompt: The quality gate passed with warnings. Review the plan, implementation, verification, and audit artifacts before final handoff.
+      next:
+        - output
+      position:
+        x: 4404
+        "y": 623
+    - name: revise
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Revision Plan, Blocking Issues, Required Evidence, and Next Action.
+        purpose: Explain what must change before this workflow can be accepted.
+      input:
+        audit: stages.audit.outputs.audit
+        failures: stages.quality.outputs.failures
+        quality_status: stages.quality.outputs.quality_status
+        verification: stages.verify.outputs.verification
+      outputs:
+        revision_plan: result.output
+        summary: result.summary
+      artifacts:
+        - name: revision-plan
+          kind: plan
+          title: Revision plan
+          ref: result.output
+          summary: Blocking issues, missing evidence, and next action after a failed quality gate.
+      next:
+        - output
+      position:
+        x: 4404
+        "y": 899
+    - name: output
+      node_type: end
+      agent: ""
+      skill: ""
+      position:
+        x: 5016
+        "y": 779

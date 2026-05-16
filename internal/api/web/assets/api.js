@@ -202,16 +202,53 @@ export function fetchTeamState(filters = {}) {
   return request(`/api/team-state${buildQuery(filters)}`);
 }
 
+export function fetchMemoryDashboard(filters = {}) {
+  return request(`/api/memory${buildQuery(filters)}`);
+}
+
+export function fetchMemoryProject() {
+  return request("/api/memory/project");
+}
+
+export function updateMemoryProject(content) {
+  return request("/api/memory/project", {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ content: content || "" })
+  });
+}
+
+export function searchMemory(query, filters = {}) {
+  return request(`/api/memory/search${buildQuery({ ...filters, q: query })}`);
+}
+
+export function rebuildMemoryIndex() {
+  return postJSON("/api/memory/rebuild", {});
+}
+
+export function compactSessionContext(reason = "") {
+  return postJSON("/api/session/compact", { reason });
+}
+
+export function fetchArtifactObjects(filters = {}) {
+  return request(`/api/artifacts${buildQuery(filters)}`);
+}
+
+export function fetchArtifactObject(hashOrRef, options = {}) {
+  const ref = String(hashOrRef || "").replace(/^sha256:/, "").trim();
+  return request(`/api/artifacts/${encodeURIComponent(ref)}${buildQuery(options)}`);
+}
+
 export function fetchWorkflowRuns() {
-  return request("/api/workflow-runs");
+  return request("/api/workflow-runs?summary=1&limit=100");
 }
 
 export function fetchRuns(filters = {}) {
   return request(`/api/runs${buildQuery(filters)}`);
 }
 
-export function fetchWorkflowRun(runID) {
-  return request(`/api/workflow-runs/${encodeURIComponent(runID)}`);
+export function fetchWorkflowRun(runID, filters = {}) {
+  return request(`/api/workflow-runs/${encodeURIComponent(runID)}${buildQuery(filters)}`);
 }
 
 export function fetchWorkflowRunActions(run) {
@@ -232,20 +269,28 @@ export function fetchWorkflowRunTimeline(run, filters = {}) {
   return request(runEndpoint(run, ["timeline_url", "timelineURL", "timeline_path", "timelinePath"], id => `/api/workflow-runs/${encodeURIComponent(id)}/timeline`, filters));
 }
 
+export function fetchWorkflowRunContext(run) {
+  return request(runEndpoint(run, ["context_url", "contextURL", "context_path", "contextPath"], id => `/api/workflow-runs/${encodeURIComponent(id)}/context`));
+}
+
 export function fetchWorkflowRunDiffs(run, filters = {}) {
   return request(runEndpoint(run, ["diffs_url", "diffsURL", "diffs_path", "diffsPath"], id => `/api/workflow-runs/${encodeURIComponent(id)}/diffs`, filters));
 }
 
-export function fetchWorkflowRunArtifacts(run) {
-  return request(runEndpoint(run, ["artifacts_url", "artifactsURL", "artifacts_path", "artifactsPath"], id => `/api/workflow-runs/${encodeURIComponent(id)}/artifacts`));
+export function fetchWorkflowRunArtifacts(run, filters = {}) {
+  return request(runEndpoint(run, ["artifacts_url", "artifactsURL", "artifacts_path", "artifactsPath"], id => `/api/workflow-runs/${encodeURIComponent(id)}/artifacts`, filters));
+}
+
+export function fetchRunArtifacts(run, filters = {}) {
+  return request(runEndpoint(run, ["artifacts_url", "artifactsURL", "artifacts_path", "artifactsPath"], id => `/api/runs/${encodeURIComponent(id)}/artifacts`, filters));
 }
 
 export function fetchWorkflowRunEvidence(run, filters = {}) {
   return request(runEndpoint(run, ["evidence_url", "evidenceURL", "evidence_path", "evidencePath"], id => `/api/workflow-runs/${encodeURIComponent(id)}/evidence`, filters));
 }
 
-export function fetchWorkflowRunStages(run) {
-  return request(runEndpoint(run, ["stages_url", "stagesURL", "stages_path", "stagesPath"], id => `/api/workflow-runs/${encodeURIComponent(id)}/stages`));
+export function fetchWorkflowRunStages(run, filters = {}) {
+  return request(runEndpoint(run, ["stages_url", "stagesURL", "stages_path", "stagesPath"], id => `/api/workflow-runs/${encodeURIComponent(id)}/stages`, filters));
 }
 
 export function workflowRunEventsURL(run) {
@@ -257,11 +302,11 @@ export function workflowRunExportURL(run, filters = {}) {
 }
 
 export function fetchAgentRuns() {
-  return request("/api/agent-runs");
+  return request("/api/agent-runs?summary=1&limit=100");
 }
 
-export function fetchAgentRun(runID) {
-  return request(`/api/agent-runs/${encodeURIComponent(runID)}`);
+export function fetchAgentRun(runID, filters = {}) {
+  return request(`/api/agent-runs/${encodeURIComponent(runID)}${buildQuery(filters)}`);
 }
 
 export function fetchAgentRunReplay(run) {
@@ -270,6 +315,14 @@ export function fetchAgentRunReplay(run) {
 
 export function fetchAgentRunTimeline(run, filters = {}) {
   return request(runEndpoint(run, ["timeline_url", "timelineURL", "timeline_path", "timelinePath"], id => `/api/agent-runs/${encodeURIComponent(id)}/timeline`, filters));
+}
+
+export function fetchAgentRunContext(run) {
+  return request(runEndpoint(run, ["context_url", "contextURL", "context_path", "contextPath"], id => `/api/agent-runs/${encodeURIComponent(id)}/context`));
+}
+
+export function fetchAgentRunArtifacts(run, filters = {}) {
+  return request(runEndpoint(run, ["artifacts_url", "artifactsURL", "artifacts_path", "artifactsPath"], id => `/api/agent-runs/${encodeURIComponent(id)}/artifacts`, filters));
 }
 
 export function fetchAgentRunActions(run) {

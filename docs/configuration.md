@@ -244,6 +244,13 @@ A map of named provider configs. Each provider contains:
 
 Environment variables are expanded for LLM values such as `base_url`, `api_key`, and `model`.
 
+`base_url`, `api_key`, and `model` are required for actual model calls, but they
+are no longer hard startup requirements. GoFlow can load an incomplete Provider
+so Web Studio can open and show setup diagnostics. A run that tries to use that
+Provider returns a clear setup-required error until the fields are completed.
+Invalid `fallback_provider` references are still treated as configuration errors
+because they make routing ambiguous.
+
 Provider definitions can live in the main config file or in separate module files under `configs/providers/*.yaml`. Module files are merged at startup after the main file is parsed, and a module with the same provider name overrides the main-file entry. Both direct and wrapped forms are accepted:
 
 ```yaml
@@ -783,6 +790,18 @@ If `persist_path` is omitted, GoFlow defaults to:
 ```text
 <workspace>/.goflow/session.json
 ```
+
+`session.json` is a lightweight index used for fast startup status and Web
+Studio polling. Large run payloads, tool results, stage outputs, and session
+artifacts are preserved in a sibling compressed archive:
+
+```text
+<workspace>/.goflow/session.full.json.gz
+```
+
+On load, GoFlow prefers the compressed archive so run details stay complete.
+If an older large `session.json` is found, GoFlow migrates it by writing the
+full archive and rewriting `session.json` as the compact index.
 
 The persisted session snapshot now includes operator-facing workflow state as well:
 - current workflow name/status/next stage

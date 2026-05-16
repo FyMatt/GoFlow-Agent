@@ -14,10 +14,22 @@ const (
 	systemPromptRecentToolLimit   = 6
 	systemPromptPromptItemBytes   = 1200
 	systemPromptToolItemBytes     = 900
+	systemPromptSkillFullBytes    = 1800
+	systemPromptSkillSummaryBytes = 900
 )
 
 // BuildSystemPrompt assembles the runtime system prompt.
 func BuildSystemPrompt(profile config.AgentProfile, skill *schema.Skill, snapshot session.Snapshot) string {
+	_ = snapshot
+	return BuildSystemPromptWithMemory(profile, skill, session.Snapshot{}, "")
+}
+
+// BuildSystemPromptWithMemory assembles the stable runtime system prompt.
+// Dynamic memory and session history are injected as messages so provider-side
+// cacheable prefixes remain stable across turns.
+func BuildSystemPromptWithMemory(profile config.AgentProfile, skill *schema.Skill, snapshot session.Snapshot, memoryText string) string {
+	_ = snapshot
+	_ = memoryText
 	var builder strings.Builder
 	builder.WriteString("You are ")
 	builder.WriteString(profile.Name)
@@ -38,13 +50,7 @@ func BuildSystemPrompt(profile config.AgentProfile, skill *schema.Skill, snapsho
 	writeReasoningLoopContract(&builder)
 	writeModeContract(&builder, profile.Mode)
 	if skill != nil {
-		builder.WriteString("Matched skill: ")
-		builder.WriteString(skill.Name)
-		builder.WriteString("\nSkill description: ")
-		builder.WriteString(skill.Description)
-		builder.WriteString("\nSkill instructions:\n")
-		builder.WriteString(skill.Instructions)
-		builder.WriteString("\n")
+		writeSkillPromptBlock(&builder, skill)
 		if len(skill.Scripts) > 0 {
 			builder.WriteString("Skill declared scripts:\n")
 			for _, script := range skill.Scripts {
@@ -89,38 +95,152 @@ func BuildSystemPrompt(profile config.AgentProfile, skill *schema.Skill, snapsho
 			builder.WriteString("Use these resource paths as authoring context; do not assume they are workspace files unless the user copies or references them explicitly.\n")
 		}
 	}
-	if snapshot.ActiveAgent != "" || snapshot.Mode != "" || snapshot.LastSkill != "" || len(snapshot.RecentPrompts) > 0 || len(snapshot.RecentTools) > 0 {
-		builder.WriteString("Session context:\n")
-		if snapshot.ActiveAgent != "" {
-			builder.WriteString("- Active agent: ")
-			builder.WriteString(snapshot.ActiveAgent)
-			builder.WriteString("\n")
+	builder.WriteString("When using tools, choose only the tools necessary for the current request.")
+	return builder.String()
+}
+
+func sessionContextPromptText(snapshot session.Snapshot, currentInput string) string {
+	prompts := recentPromptsExcludingCurrent(snapshot.RecentPrompts, currentInput)
+	if snapshot.LastSkill == "" && len(prompts) == 0 && len(snapshot.RecentTools) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Session context:\n")
+	if snapshot.LastSkill != "" {
+		builder.WriteString("- Last matched skill: ")
+		builder.WriteString(snapshot.LastSkill)
+		builder.WriteString("\n")
+	}
+	if len(prompts) > 0 {
+		builder.WriteString("- Recent prompts:\n")
+		for _, prompt := range compactSessionHistoryForPrompt(prompts, systemPromptRecentPromptLimit, systemPromptPromptItemBytes, "prompts") {
+			builder.WriteString(fmt.Sprintf("  - %s\n", prompt))
 		}
-		if snapshot.Mode != "" {
-			builder.WriteString("- Session mode: ")
-			builder.WriteString(snapshot.Mode)
-			builder.WriteString("\n")
+	}
+	if len(snapshot.RecentTools) > 0 {
+		builder.WriteString("- Recent tool summaries:\n")
+		for _, summary := range compactSessionHistoryForPrompt(snapshot.RecentTools, systemPromptRecentToolLimit, systemPromptToolItemBytes, "tool summaries") {
+			builder.WriteString(fmt.Sprintf("  - %s\n", summary))
 		}
-		if snapshot.LastSkill != "" {
-			builder.WriteString("- Last matched skill: ")
-			builder.WriteString(snapshot.LastSkill)
-			builder.WriteString("\n")
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func recentPromptsExcludingCurrent(prompts []string, currentInput string) []string {
+	currentKey := normalizeHistoryDedupeKey(currentInput)
+	if currentKey == "" || len(prompts) == 0 {
+		return append([]string(nil), prompts...)
+	}
+	out := append([]string(nil), prompts...)
+	for i := len(out) - 1; i >= 0; i-- {
+		if normalizeHistoryDedupeKey(out[i]) == currentKey {
+			return append(out[:i], out[i+1:]...)
 		}
-		if len(snapshot.RecentPrompts) > 0 {
-			builder.WriteString("- Recent prompts:\n")
-			for _, prompt := range compactSessionHistoryForPrompt(snapshot.RecentPrompts, systemPromptRecentPromptLimit, systemPromptPromptItemBytes, "prompts") {
-				builder.WriteString(fmt.Sprintf("  - %s\n", prompt))
+	}
+	return out
+}
+
+func writeSkillPromptBlock(builder *strings.Builder, skill *schema.Skill) {
+	if builder == nil || skill == nil {
+		return
+	}
+	builder.WriteString("Matched skill: ")
+	builder.WriteString(skill.Name)
+	builder.WriteString("\nSkill description: ")
+	builder.WriteString(skill.Description)
+	builder.WriteString("\n")
+	instructions := strings.TrimSpace(skill.Instructions)
+	if instructions == "" {
+		builder.WriteString("Skill instructions: no additional instructions declared.\n")
+		return
+	}
+	mode, injected, omittedBytes := compactSkillInstructionsForPrompt(instructions)
+	if mode == "full" {
+		builder.WriteString("Skill instructions:\n")
+		builder.WriteString(injected)
+		builder.WriteString("\n")
+		return
+	}
+	builder.WriteString("Skill instructions summary:\n")
+	builder.WriteString(injected)
+	builder.WriteString("\n")
+	builder.WriteString(fmt.Sprintf("[Full skill instructions omitted from default prompt: %d bytes. Use the skill file ref if exact wording is needed.]\n", omittedBytes))
+}
+
+func compactSkillInstructionsForPrompt(instructions string) (mode, injected string, omittedBytes int) {
+	instructions = strings.TrimSpace(instructions)
+	if instructions == "" {
+		return "empty", "", 0
+	}
+	originalBytes := len([]byte(instructions))
+	if originalBytes <= systemPromptSkillFullBytes {
+		return "full", instructions, 0
+	}
+	summary := skillInstructionSummary(instructions, systemPromptSkillSummaryBytes)
+	omittedBytes = originalBytes - len([]byte(summary))
+	if omittedBytes < 0 {
+		omittedBytes = 0
+	}
+	return "summary", summary, omittedBytes
+}
+
+func skillInstructionSummary(instructions string, maxBytes int) string {
+	lines := strings.Split(strings.TrimSpace(instructions), "\n")
+	selected := make([]string, 0, 12)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if isSkillSummaryLine(line) {
+			selected = append(selected, line)
+		}
+		if len(selected) >= 10 {
+			break
+		}
+	}
+	if len(selected) == 0 {
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
 			}
-		}
-		if len(snapshot.RecentTools) > 0 {
-			builder.WriteString("- Recent tool summaries:\n")
-			for _, summary := range compactSessionHistoryForPrompt(snapshot.RecentTools, systemPromptRecentToolLimit, systemPromptToolItemBytes, "tool summaries") {
-				builder.WriteString(fmt.Sprintf("  - %s\n", summary))
+			selected = append(selected, line)
+			if len(selected) >= 8 {
+				break
 			}
 		}
 	}
-	builder.WriteString("When using tools, choose only the tools necessary for the current request.")
-	return builder.String()
+	if len(selected) == 0 {
+		selected = append(selected, instructions)
+	}
+	summary := strings.Join(selected, "\n")
+	if maxBytes > 0 && len([]byte(summary)) > maxBytes {
+		summary = strings.TrimSpace(trimStringToMaxBytes(summary, maxBytes))
+	}
+	return summary
+}
+
+func isSkillSummaryLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "#") {
+		return true
+	}
+	for _, prefix := range []string{"-", "*", "1.", "2.", "3.", "4.", "5."} {
+		if strings.HasPrefix(trimmed, prefix+" ") {
+			return true
+		}
+	}
+	lower := strings.ToLower(trimmed)
+	for _, marker := range []string{"role", "workflow", "input", "output", "constraint", "verify", "example", "purpose"} {
+		if strings.Contains(lower, marker+":") {
+			return true
+		}
+	}
+	return false
 }
 
 func compactSessionHistoryForPrompt(items []string, recentLimit, itemBytes int, label string) []string {

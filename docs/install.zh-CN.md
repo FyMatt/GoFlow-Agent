@@ -12,13 +12,19 @@
 
 ## 配置模型凭据
 
-GoFlow 使用 OpenAI-compatible 模型接口。复制环境变量模板并填写 Provider 信息：
+GoFlow 可以在模型 Provider 尚未完整配置时先启动。这是为了让新用户先打开 CLI 或
+Web Studio，再到资源或设置页面填写 Provider 信息。真正发起 Agent/模型调用时仍然
+需要 `base_url`、`api_key` 和 `model`；未配置完整时会返回明确的配置提示，而不是让
+启动失败。
+
+你可以在 Web Studio 中直接配置 Provider，也可以编辑 `configs/providers/*.yaml`，
+或继续使用环境变量。使用环境变量时，可以复制模板：
 
 ```bash
 cp .env.example .env
 ```
 
-必填值：
+模型调用所需值：
 
 ```env
 GOFLOW_BASE_URL=https://api.deepseek.com/v1
@@ -30,6 +36,7 @@ GOFLOW_BACKUP_MODEL=deepseek-chat
 ```
 
 如果使用本地模型服务，把 `GOFLOW_BASE_URL` 设置为该服务的 OpenAI-compatible `/v1` 地址。
+如果只是先打开 Web Studio 再配置，这些值启动时可以暂时留空。
 
 ## 使用 Release 压缩包
 
@@ -121,6 +128,9 @@ docker run --rm -it \
   goflow-agent:local
 ```
 
+如果还没有创建 `.env`，可以先去掉 `--env-file .env` 启动 Web Studio；模型调用会在
+Provider 未配置完整时提示你补全设置。
+
 使用发布镜像：
 
 ```bash
@@ -162,6 +172,10 @@ GoFlow 会把会话状态写入目标工作区：
 <workspace>/.goflow/session.json
 ```
 
+这个 JSON 文件是轻量索引。完整运行详情会保存在同目录的
+`session.full.json.gz` 压缩归档中，运行时会优先读取归档，因此 Web Studio 可以
+快速轮询状态，同时保留完整历史。
+
 Release 压缩包中的运行时文件位于解压目录；Docker 镜像中的运行时文件位于
 `/app`，目标项目文件位于 `/workspace`。
 
@@ -190,7 +204,11 @@ python scripts/validate_deployment_assets.py
 
 ### 提示 provider backup model is required
 
-需要同时设置主模型和备份模型环境变量：
+这通常来自旧配置或旧版本。当前 GoFlow 可以在 Provider 未完整配置时先启动，并在
+模型调用时提示补全配置。请优先到 Web Studio 的资源或设置页面检查 Provider。
+
+如果你仍在使用带 `fallback_provider` 的旧配置，需要同时设置主模型和备份模型，或
+移除尚未配置好的 `fallback_provider`：
 
 ```bash
 GOFLOW_MODEL=deepseek-chat

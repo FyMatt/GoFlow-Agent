@@ -61,6 +61,9 @@ func (s *State) StartWorkflowRunWithOptions(name, request string, opts WorkflowR
 			WorkflowStatus: "running",
 		}},
 	}
+	for i := range run.Events {
+		run.Events[i] = s.normalizeWorkflowRunEventLocked(id, run.Name, run.Events[i])
+	}
 	s.workflowRuns = append([]WorkflowRunSnapshot{run}, s.workflowRuns...)
 	if len(s.workflowRuns) > maxWorkflowRuns {
 		s.workflowRuns = append([]WorkflowRunSnapshot(nil), s.workflowRuns[:maxWorkflowRuns]...)
@@ -86,6 +89,7 @@ func (s *State) StartWorkflowRunFromSnapshot(snapshot WorkflowSnapshot) string {
 	timestamp := workflowRunTimestamp(now)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snapshot = s.normalizeWorkflowSnapshotLocked(snapshot)
 
 	id := uniqueWorkflowRunID(s.workflowRuns, snapshot.Name, now)
 	snapshot.RunID = id
@@ -107,10 +111,17 @@ func (s *State) StartWorkflowRunFromSnapshot(snapshot WorkflowSnapshot) string {
 		PendingToolName:          strings.TrimSpace(snapshot.PendingToolName),
 		PendingAgentID:           strings.TrimSpace(snapshot.PendingAgentID),
 		PendingArgs:              trimWorkflowRunText(snapshot.PendingArguments),
+		PendingArgsSummary:       trimWorkflowRunText(snapshot.PendingArgumentsSummary),
+		PendingArgsArtifactRef:   strings.TrimSpace(snapshot.PendingArgumentsArtifactRef),
+		PendingArgsHash:          strings.TrimSpace(snapshot.PendingArgumentsHash),
+		PendingArgsBytes:         snapshot.PendingArgumentsBytes,
+		PendingArgsStoredBytes:   snapshot.PendingArgumentsStoredBytes,
+		PendingArgsExternalized:  snapshot.PendingArgumentsExternalized,
 		PendingSubWorkflowName:   strings.TrimSpace(snapshot.PendingSubWorkflowName),
 		PendingSubWorkflowRunID:  strings.TrimSpace(snapshot.PendingSubWorkflowRunID),
 		PendingSubWorkflowStatus: strings.TrimSpace(snapshot.PendingSubWorkflowStatus),
 	}
+	run = normalizeWorkflowRunPendingArgumentsLocked(s.artifactStore, run)
 	s.workflowRuns = append([]WorkflowRunSnapshot{run}, s.workflowRuns...)
 	if len(s.workflowRuns) > maxWorkflowRuns {
 		s.workflowRuns = append([]WorkflowRunSnapshot(nil), s.workflowRuns[:maxWorkflowRuns]...)
@@ -136,14 +147,14 @@ func (s *State) RequestWorkflowRunCancel(runID, reason string) (WorkflowRunSnaps
 		run.Status = "cancelling"
 	}
 	run.UpdatedAt = now
-	run.Events = appendWorkflowRunEventLocked(run.Events, WorkflowRunEventSnapshot{
+	run.Events = appendWorkflowRunEventLocked(run.Events, s.normalizeWorkflowRunEventLocked(run.ID, run.Name, WorkflowRunEventSnapshot{
 		At:             now,
 		Type:           "workflow_cancel_requested",
 		Content:        trimWorkflowRunText(reason),
 		WorkflowName:   run.Name,
 		WorkflowStatus: run.Status,
 		NextStage:      run.NextStage,
-	})
+	}))
 	s.workflowRuns[index] = run
 	if s.workflow.RunID == run.ID {
 		s.workflow.Status = run.Status
@@ -173,6 +184,12 @@ func (s *State) CancelWorkflowRun(runID, reason string) (WorkflowRunSnapshot, bo
 	run.PendingToolName = ""
 	run.PendingAgentID = ""
 	run.PendingArgs = ""
+	run.PendingArgsSummary = ""
+	run.PendingArgsArtifactRef = ""
+	run.PendingArgsHash = ""
+	run.PendingArgsBytes = 0
+	run.PendingArgsStoredBytes = 0
+	run.PendingArgsExternalized = false
 	run.PendingSubWorkflowName = ""
 	run.PendingSubWorkflowRunID = ""
 	run.PendingSubWorkflowStatus = ""
@@ -181,14 +198,14 @@ func (s *State) CancelWorkflowRun(runID, reason string) (WorkflowRunSnapshot, bo
 	if strings.TrimSpace(reason) != "" {
 		run.Summary = trimWorkflowRunText(reason)
 	}
-	run.Events = appendWorkflowRunEventLocked(run.Events, WorkflowRunEventSnapshot{
+	run.Events = appendWorkflowRunEventLocked(run.Events, s.normalizeWorkflowRunEventLocked(run.ID, run.Name, WorkflowRunEventSnapshot{
 		At:             now,
 		Type:           "workflow_cancelled",
 		Content:        trimWorkflowRunText(reason),
 		WorkflowName:   run.Name,
 		WorkflowStatus: run.Status,
 		NextStage:      run.NextStage,
-	})
+	}))
 	s.workflowRuns[index] = run
 	if s.workflow.RunID == run.ID {
 		s.workflow.Status = run.Status
@@ -199,6 +216,12 @@ func (s *State) CancelWorkflowRun(runID, reason string) (WorkflowRunSnapshot, bo
 		s.workflow.PendingToolName = ""
 		s.workflow.PendingAgentID = ""
 		s.workflow.PendingArguments = ""
+		s.workflow.PendingArgumentsSummary = ""
+		s.workflow.PendingArgumentsArtifactRef = ""
+		s.workflow.PendingArgumentsHash = ""
+		s.workflow.PendingArgumentsBytes = 0
+		s.workflow.PendingArgumentsStoredBytes = 0
+		s.workflow.PendingArgumentsExternalized = false
 		s.workflow.PendingSubWorkflowName = ""
 		s.workflow.PendingSubWorkflowRunID = ""
 		s.workflow.PendingSubWorkflowStatus = ""
@@ -214,6 +237,7 @@ func (s *State) UpdateWorkflowRunState(snapshot WorkflowSnapshot) {
 	now := workflowRunTimestamp(time.Now().UTC())
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snapshot = s.normalizeWorkflowSnapshotLocked(snapshot)
 	index := s.workflowRunIndexLocked(snapshot.RunID)
 	if index < 0 {
 		s.workflowRuns = append([]WorkflowRunSnapshot{{
@@ -247,9 +271,16 @@ func (s *State) UpdateWorkflowRunState(snapshot WorkflowSnapshot) {
 	run.PendingToolName = strings.TrimSpace(snapshot.PendingToolName)
 	run.PendingAgentID = strings.TrimSpace(snapshot.PendingAgentID)
 	run.PendingArgs = trimWorkflowRunText(snapshot.PendingArguments)
+	run.PendingArgsSummary = trimWorkflowRunText(snapshot.PendingArgumentsSummary)
+	run.PendingArgsArtifactRef = strings.TrimSpace(snapshot.PendingArgumentsArtifactRef)
+	run.PendingArgsHash = strings.TrimSpace(snapshot.PendingArgumentsHash)
+	run.PendingArgsBytes = snapshot.PendingArgumentsBytes
+	run.PendingArgsStoredBytes = snapshot.PendingArgumentsStoredBytes
+	run.PendingArgsExternalized = snapshot.PendingArgumentsExternalized
 	run.PendingSubWorkflowName = strings.TrimSpace(snapshot.PendingSubWorkflowName)
 	run.PendingSubWorkflowRunID = strings.TrimSpace(snapshot.PendingSubWorkflowRunID)
 	run.PendingSubWorkflowStatus = strings.TrimSpace(snapshot.PendingSubWorkflowStatus)
+	run = normalizeWorkflowRunPendingArgumentsLocked(s.artifactStore, run)
 	if isTerminalWorkflowStatus(run.Status) && strings.TrimSpace(run.CompletedAt) == "" {
 		run.CompletedAt = now
 	}
@@ -292,6 +323,12 @@ func (s *State) CompleteWorkflowRun(runID, status, summary, nextStage, approvalP
 	} else {
 		run.PendingFields = nil
 	}
+	if !strings.EqualFold(run.Status, "awaiting_tool_approval") {
+		run.PendingCallID = ""
+		run.PendingToolName = ""
+		run.PendingAgentID = ""
+		run = clearWorkflowRunPendingArguments(run)
+	}
 	if !strings.EqualFold(run.Status, "awaiting_sub_workflow") {
 		run.PendingSubWorkflowName = ""
 		run.PendingSubWorkflowRunID = ""
@@ -299,6 +336,8 @@ func (s *State) CompleteWorkflowRun(runID, status, summary, nextStage, approvalP
 	}
 	if len(stages) > 0 {
 		run.CompletedStages = enrichWorkflowRunStages(run, stages, now)
+		run.CompletedStages = s.normalizeWorkflowRunStagePayloadsLocked(run.ID, run.Name, run.CompletedStages)
+		run.CompletedStages = s.externalizeWorkflowRunStageArtifactsLocked(run.CompletedStages, now)
 		run.Artifacts = workflowRunArtifacts(run.CompletedStages)
 	}
 	s.mergeWorkflowSchemaFromRunLocked(run)
@@ -315,7 +354,6 @@ func (s *State) AppendWorkflowRunEvent(runID string, event WorkflowRunEventSnaps
 		event.At = now
 	}
 	event.Stage = strings.TrimSpace(event.Stage)
-	event.Content = trimWorkflowRunText(event.Content)
 	event.ArgumentsSummary = trimWorkflowRunText(event.ArgumentsSummary)
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -324,6 +362,7 @@ func (s *State) AppendWorkflowRunEvent(runID string, event WorkflowRunEventSnaps
 		return
 	}
 	run := s.workflowRuns[index]
+	event = s.normalizeWorkflowRunEventLocked(runID, run.Name, event)
 	run.Events = appendWorkflowRunEventLocked(run.Events, event)
 	run.UpdatedAt = now
 	s.workflowRuns[index] = run
@@ -345,12 +384,14 @@ func (s *State) WorkflowRun(id string) (WorkflowRunSnapshot, bool) {
 		return WorkflowRunSnapshot{}, false
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
 	for _, run := range s.workflowRuns {
 		if run.ID == id {
-			return copyWorkflowRunSnapshot(run), true
+			copied := copyWorkflowRunSnapshot(run)
+			s.mu.RUnlock()
+			return s.HydrateWorkflowRun(copied), true
 		}
 	}
+	s.mu.RUnlock()
 	return WorkflowRunSnapshot{}, false
 }
 
@@ -654,6 +695,63 @@ func workflowRunArtifacts(stages []WorkflowRunStageSnapshot) []WorkflowRunArtifa
 	return artifacts
 }
 
+func (s *State) externalizeWorkflowRunStageArtifactsLocked(stages []WorkflowRunStageSnapshot, completedAt string) []WorkflowRunStageSnapshot {
+	if len(stages) == 0 || s == nil || s.artifactStore == nil {
+		return stages
+	}
+	for i := range stages {
+		if len(stages[i].Artifacts) == 0 {
+			continue
+		}
+		stages[i].Artifacts = s.externalizeWorkflowRunArtifactsLocked(stages[i].Artifacts, completedAt)
+	}
+	return stages
+}
+
+func (s *State) externalizeWorkflowRunArtifactsLocked(artifacts []WorkflowRunArtifact, createdAt string) []WorkflowRunArtifact {
+	if len(artifacts) == 0 || s == nil || s.artifactStore == nil {
+		return artifacts
+	}
+	out := make([]WorkflowRunArtifact, len(artifacts))
+	for i, artifact := range artifacts {
+		out[i] = s.externalizeWorkflowRunArtifactLocked(artifact, createdAt)
+	}
+	return out
+}
+
+func (s *State) externalizeWorkflowRunArtifactLocked(artifact WorkflowRunArtifact, createdAt string) WorkflowRunArtifact {
+	if s == nil || s.artifactStore == nil || strings.TrimSpace(artifact.Content) == "" {
+		return normalizeWorkflowRunArtifactReferenceMetadata(artifact)
+	}
+	mime := firstWorkflowArtifactValue(artifact.Mime, artifact.Metadata["mime"], workflowRunArtifactMime(artifact.Kind))
+	metadata := copyWorkflowRunStringMap(artifact.Metadata)
+	object, deduplicated, err := s.artifactStore.Put(ArtifactObject{
+		CreatedAt: createdAt,
+		Mime:      mime,
+		Summary:   artifact.Summary,
+		Content:   artifact.Content,
+		Kind:      artifact.Kind,
+		Title:     artifact.Title,
+		Metadata:  metadata,
+	})
+	if err != nil {
+		return normalizeWorkflowRunArtifactReferenceMetadata(artifact)
+	}
+	artifact.ArtifactRef = object.Ref
+	artifact.Hash = object.Hash
+	artifact.Mime = object.Mime
+	artifact.Size = object.Size
+	artifact.ContentBytes = object.Size
+	artifact.StoredBytes = int(object.StoredBytes)
+	artifact.Deduplicated = deduplicated
+	artifact.Externalized = true
+	artifact.Content = ""
+	if strings.TrimSpace(artifact.Summary) == "" {
+		artifact.Summary = object.Summary
+	}
+	return normalizeWorkflowRunArtifactReferenceMetadata(artifact)
+}
+
 func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRunArtifact {
 	stageName := strings.TrimSpace(stage.Stage)
 	artifacts := declaredWorkflowRunStageArtifacts(stageName, stage.Artifacts)
@@ -664,7 +762,7 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 			Kind:    "output",
 			Title:   "Stage output",
 			Summary: trimWorkflowRunText(stage.Result.Output),
-			Content: trimWorkflowRunText(stage.Result.Output),
+			Content: stage.Result.Output,
 		})
 	}
 	for _, result := range stage.Result.ToolResults {
@@ -678,7 +776,7 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 			Kind:       "tool_result",
 			Title:      title,
 			Summary:    trimWorkflowRunText(result.Content),
-			Content:    trimWorkflowRunText(result.Content),
+			Content:    result.Content,
 			ToolName:   result.ToolName,
 			ToolCallID: result.CallID,
 			IsError:    result.IsError || result.Denied,
@@ -706,7 +804,7 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 			Kind:    "structured",
 			Title:   title,
 			Summary: trimWorkflowRunText(content),
-			Content: trimWorkflowRunText(content),
+			Content: content,
 			Metadata: workflowArtifactMetadata(map[string]string{
 				"section_kind": section.Kind,
 			}),
@@ -726,7 +824,7 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 			Kind:    "finding",
 			Title:   fallbackWorkflowArtifactTitle(finding.Summary, "Finding"),
 			Summary: trimWorkflowRunText(finding.Summary),
-			Content: trimWorkflowRunText(content),
+			Content: content,
 			Metadata: workflowArtifactMetadata(map[string]string{
 				"severity": finding.Severity,
 				"files":    strings.Join(finding.Files, ","),
@@ -744,7 +842,7 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 			Kind:    "change",
 			Title:   "Change",
 			Summary: trimWorkflowRunText(change.Summary),
-			Content: trimWorkflowRunText(change.Summary),
+			Content: change.Summary,
 			Metadata: workflowArtifactMetadata(map[string]string{
 				"files": strings.Join(change.Files, ","),
 			}),
@@ -764,7 +862,7 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 			Kind:    "verification",
 			Title:   fallbackWorkflowArtifactTitle(verification.Kind, "Verification"),
 			Summary: trimWorkflowRunText(content),
-			Content: trimWorkflowRunText(content),
+			Content: content,
 			Metadata: workflowArtifactMetadata(map[string]string{
 				"status": verification.Status,
 			}),
@@ -784,7 +882,7 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 			Kind:    "acceptance",
 			Title:   fallbackWorkflowArtifactTitle(acceptance.Name, "Acceptance"),
 			Summary: trimWorkflowRunText(content),
-			Content: trimWorkflowRunText(content),
+			Content: content,
 			Metadata: workflowArtifactMetadata(map[string]string{
 				"description": acceptance.Description,
 				"ref":         acceptance.Ref,
@@ -821,7 +919,6 @@ func declaredWorkflowRunStageArtifacts(stageName string, artifacts []WorkflowRun
 			artifact.Metadata["declared"] = "true"
 		}
 		artifact.Summary = trimWorkflowRunText(artifact.Summary)
-		artifact.Content = trimWorkflowRunText(artifact.Content)
 		out = append(out, artifact)
 	}
 	return out
@@ -854,9 +951,76 @@ func enrichWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot, artifacts [
 		if len(artifact.Metadata) == 0 {
 			artifact.Metadata = nil
 		}
+		artifact = normalizeWorkflowRunArtifactReferenceMetadata(artifact)
 		out[i] = artifact
 	}
 	return out
+}
+
+func normalizeWorkflowRunArtifactReferenceMetadata(artifact WorkflowRunArtifact) WorkflowRunArtifact {
+	if strings.TrimSpace(artifact.Mime) == "" {
+		artifact.Mime = firstWorkflowArtifactValue(artifact.Metadata["mime"], workflowRunArtifactMime(artifact.Kind))
+	}
+	if strings.TrimSpace(artifact.ArtifactRef) == "" {
+		artifact.ArtifactRef = firstWorkflowArtifactValue(artifact.Metadata["artifact_ref"])
+	}
+	if strings.TrimSpace(artifact.Hash) == "" {
+		artifact.Hash = firstWorkflowArtifactValue(artifact.Metadata["hash"], workflowArtifactHashFromRef(artifact.ArtifactRef))
+	}
+	if artifact.ContentBytes == 0 && strings.TrimSpace(artifact.Content) != "" {
+		artifact.ContentBytes = len([]byte(artifact.Content))
+	}
+	if artifact.Size == 0 {
+		artifact.Size = artifact.ContentBytes
+	}
+	artifact.Externalized = artifact.Externalized || strings.TrimSpace(artifact.ArtifactRef) != "" || strings.TrimSpace(artifact.Hash) != ""
+	if strings.TrimSpace(artifact.ArtifactRef) == "" && strings.TrimSpace(artifact.Hash) == "" && strings.TrimSpace(artifact.Mime) == "" && artifact.Size == 0 && artifact.ContentBytes == 0 && artifact.StoredBytes == 0 && !artifact.Externalized {
+		return artifact
+	}
+	if artifact.Metadata == nil {
+		artifact.Metadata = map[string]string{}
+	} else {
+		artifact.Metadata = copyWorkflowRunStringMap(artifact.Metadata)
+	}
+	workflowArtifactSetMetadata(artifact.Metadata, "artifact_ref", artifact.ArtifactRef)
+	workflowArtifactSetMetadata(artifact.Metadata, "hash", artifact.Hash)
+	workflowArtifactSetMetadata(artifact.Metadata, "mime", artifact.Mime)
+	workflowArtifactSetMetadata(artifact.Metadata, "size", workflowArtifactIntString(artifact.Size))
+	workflowArtifactSetMetadata(artifact.Metadata, "content_bytes", workflowArtifactIntString(artifact.ContentBytes))
+	workflowArtifactSetMetadata(artifact.Metadata, "stored_bytes", workflowArtifactIntString(artifact.StoredBytes))
+	if artifact.Externalized {
+		workflowArtifactSetMetadata(artifact.Metadata, "externalized", "true")
+	}
+	if len(artifact.Metadata) == 0 {
+		artifact.Metadata = nil
+	}
+	return artifact
+}
+
+func workflowRunArtifactMime(kind string) string {
+	switch strings.ToLower(strings.TrimSpace(kind)) {
+	case "structured", "finding", "change", "verification", "acceptance", "audit":
+		return "application/json"
+	case "output", "report", "summary":
+		return "text/markdown"
+	default:
+		return "text/plain"
+	}
+}
+
+func workflowArtifactHashFromRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	if strings.HasPrefix(ref, "sha256:") {
+		return strings.TrimPrefix(ref, "sha256:")
+	}
+	return ""
+}
+
+func workflowArtifactIntString(value int) string {
+	if value <= 0 {
+		return ""
+	}
+	return fmt.Sprintf("%d", value)
 }
 
 func workflowArtifactSetMetadata(metadata map[string]string, key, value string) {

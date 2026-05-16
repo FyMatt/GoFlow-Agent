@@ -127,7 +127,7 @@ func handleNewProviderCommand(fields []string, skillManager *skillpkg.Manager) b
 		return true
 	}
 	fmt.Println(formatCommandSuccess("provider", fmt.Sprintf("created validated config snippet at %s", path)))
-	fmt.Println(styleMuted("  next: fill base_url/api_key/model, restart GoFlow so configs/providers/*.yaml is loaded, then assign agents to this provider"))
+	fmt.Println(styleMuted("  next: fill base_url/api_key/model in this file or Web Studio Resources; GoFlow can start before setup is complete, but model runs need these fields"))
 	return true
 }
 

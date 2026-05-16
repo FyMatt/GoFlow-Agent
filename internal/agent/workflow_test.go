@@ -859,6 +859,39 @@ func TestContinueAgentRunSummarizesWorkflowStageWhenFinalTurnStillCallsReadTool(
 	}
 }
 
+func TestLegacyWorkflowPromptsUseSummaryContextContracts(t *testing.T) {
+	longPlan := "PLAN_START " + strings.Repeat("plan detail ", 90) + "PLAN_SECRET_SHOULD_NOT_APPEAR"
+	longFix := "FIX_START " + strings.Repeat("fix detail ", 90) + "FIX_SECRET_SHOULD_NOT_APPEAR"
+
+	fixPrompt := buildPlanFixAuditFixPrompt("optimize auth", longPlan)
+	if !strings.Contains(fixPrompt, "Workflow context contract:") || !strings.Contains(fixPrompt, "Approved plan summary:") {
+		t.Fatalf("expected fix prompt context contract, got %s", fixPrompt)
+	}
+	if strings.Contains(fixPrompt, "PLAN_SECRET_SHOULD_NOT_APPEAR") {
+		t.Fatalf("expected fix prompt to omit long raw plan tail, got %s", fixPrompt)
+	}
+
+	auditPrompt := buildPlanFixAuditAuditPrompt("optimize auth", longPlan, longFix)
+	if !strings.Contains(auditPrompt, "Workflow context contract:") || !strings.Contains(auditPrompt, "Implementation summary:") {
+		t.Fatalf("expected audit prompt context contract, got %s", auditPrompt)
+	}
+	if strings.Contains(auditPrompt, "PLAN_SECRET_SHOULD_NOT_APPEAR") || strings.Contains(auditPrompt, "FIX_SECRET_SHOULD_NOT_APPEAR") {
+		t.Fatalf("expected audit prompt to omit long raw upstream tails, got %s", auditPrompt)
+	}
+
+	skillPrompt := buildSkillChainStagePrompt("ship feature", schema.Skill{Name: "audit"}, []WorkflowStageResult{{
+		Stage:  "plan",
+		Agent:  "planner",
+		Result: schema.AgentResult{Output: longPlan},
+	}})
+	if !strings.Contains(skillPrompt, "Workflow context contract:") || !strings.Contains(skillPrompt, "Selected prior skill summaries:") {
+		t.Fatalf("expected skill-chain prompt context contract, got %s", skillPrompt)
+	}
+	if strings.Contains(skillPrompt, "PLAN_SECRET_SHOULD_NOT_APPEAR") {
+		t.Fatalf("expected skill-chain prompt to omit long raw prior output tail, got %s", skillPrompt)
+	}
+}
+
 func TestWorkflowRunnerRunRejectsUnknownWorkflow(t *testing.T) {
 	runtimeRef := newWorkflowTestRuntimeWithCompletedStages()
 

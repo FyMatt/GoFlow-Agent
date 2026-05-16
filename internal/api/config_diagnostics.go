@@ -725,8 +725,14 @@ func patternMatchGroup(matches []string, index int) string {
 
 func (r *configDiagnosticsResponse) checkProviderDiagnostics(cfg *config.Config) {
 	for name, provider := range cfg.Providers {
+		if strings.TrimSpace(provider.BaseURL) == "" {
+			r.addDiagnosticFor("warning", "provider_base_url_required", "provider "+name+" has no base_url after environment expansion", "", "provider", name, "base_url", "set provider.base_url to the OpenAI-compatible API endpoint, for example https://api.openai.com/v1")
+		}
+		if strings.TrimSpace(provider.Model) == "" {
+			r.addDiagnosticFor("warning", "provider_model_required", "provider "+name+" has no model after environment expansion", "", "provider", name, "model", "set provider.model to the model id this provider should call")
+		}
 		if strings.TrimSpace(provider.APIKey) == "" {
-			r.addDiagnosticFor("warning", "provider_api_key_missing", "provider "+name+" has no api_key after environment expansion", "", "provider", name, "api_key", "set api_key to an environment variable reference such as ${OPENAI_API_KEY}, then restart if this provider is already active")
+			r.addDiagnosticFor("warning", "provider_api_key_missing", "provider "+name+" has no api_key after environment expansion", "", "provider", name, "api_key", "set api_key directly in Web Studio, or use an environment variable reference such as ${OPENAI_API_KEY}; restart if this provider is already active")
 		}
 		if strings.TrimSpace(provider.FallbackProvider) != "" {
 			if _, ok := cfg.Providers[provider.FallbackProvider]; !ok {

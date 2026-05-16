@@ -118,7 +118,11 @@ Release 压缩包使用 `configs/goflow.binary.yaml`。如果直接运行 `bin/g
 
 ```text
 /workspace/.goflow/session.json
+/workspace/.goflow/session.full.json.gz
 ```
+
+`session.json` 是轻量索引，`session.full.json.gz` 保存完整压缩运行详情，
+这样 HTTP 状态轮询不需要每次传输完整历史。
 
 runtime 文件保留在 `/app`，目标项目文件保留在 `/workspace`，这样工具边界更清楚。
 

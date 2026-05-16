@@ -182,6 +182,11 @@ Path: `configs/providers/*.yaml`
 
 Use this for model endpoints.
 
+`base_url`, `api_key`, and `model` are required before a Provider can serve
+Agent runs, but they can be blank during first startup so Web Studio can open
+and guide setup. `fallback_provider` must still point to an existing Provider
+when it is set.
+
 Typical fields:
 
 - `provider`

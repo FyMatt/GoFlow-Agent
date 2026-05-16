@@ -35,6 +35,7 @@ GoFlow Agent 把 **runtime home** 和 **workspace root** 分开：
 - CLI 品牌启动信息、状态查看、会话查看、工具审批、文件引用补全和工作区确认。
 - HTTP JSON API 和 SSE 流式输出，可支撑 Web Studio。
 - 普通 Agent run 和 Workflow run 支持后台 durable run、重连、取消、审批和事件回放。
+- Workflow Studio 画布会标注控制节点的分支、循环体和控制结束后的路径，并在悬浮或选中时显示控制范围框，方便普通用户理解流程。
 - OpenAI-compatible 模型 Provider，支持 fallback Provider。
 - stdio MCP 工具执行，内置 Go 和 Python MCP server，支持跨语言工具开发。
 - `SKILL.md` 动态加载，兼容 GoFlow 原生 Skill 和 Claude/Codex 风格 Skill。
@@ -75,10 +76,16 @@ GoFlow 内置了一组可以直接联动的领域资源：
 - Go 1.25+
 - 如需使用 Python MCP server，`PATH` 中需要可用的 Python 3
 - 如需推荐的强 MCP 沙箱，需要 Docker 或 Podman
-- 一个 OpenAI-compatible 模型接口
-- 模型 Provider 所需环境变量
+- 实际运行 Agent 时需要 OpenAI-compatible 模型接口
+- 模型 Provider 配置，可在 Web Studio、`configs/providers/*.yaml` 或环境变量中填写
 
-### 配置模型环境变量
+### 配置模型 Provider
+
+GoFlow 可以在模型 Provider 尚未完整配置时先启动。这样新用户可以先打开 Web Studio，
+在资源或设置页面中填写 Provider、model、base_url 和 API Key；只有真正发起 Agent
+模型调用时，才会返回明确的配置缺失提示。
+
+环境变量仍然支持：
 
 ```bash
 export GOFLOW_BASE_URL=http://localhost:11434/v1
@@ -89,7 +96,8 @@ export GOFLOW_BACKUP_API_KEY=$GOFLOW_API_KEY
 export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
 ```
 
-也可以复制 `.env.example`，填入自己的模型地址、密钥和模型名。
+也可以复制 `.env.example`，填入自己的模型地址、密钥和模型名，或在 Web Studio
+的 Provider 资源里直接填写 API Key。
 
 Windows 示例：
 
@@ -173,6 +181,12 @@ http://127.0.0.1:8080/console?lang=zh#workspace
 5. 从 `multi-domain-intake-router` 开始，先看模板卡片里的节点构成、引用资源和能力标签，再运行或 fork 这个工作流。
 
 Workflow Studio 会展示节点元数据、字段示例、输入输出引用、审批门禁、质量门禁和模板构成信息，用户不需要先猜 YAML 字段怎么填。
+
+Workflow Studio 默认使用 **简洁模式**，面向普通用户。简洁模式保留画布、
+模板、任务卡片、资源选择和可视化走向配置，隐藏原始映射、上下文契约、执行顺序
+细节和运行调试。需要完整开发者能力时，可以切到 **专家模式**；专家模式会显示
+全部节点类型、全部配置分区、原始参数、高级路由、上下文契约、输入输出映射和运行
+诊断。两种模式保存的是同一套 workflow schema。
 
 **Observability / 观测** 页面会展示运行健康、当前任务焦点、模型成本诊断和 MCP
 工具压力。MCP 工具压力面板可以用来判断工具调用是否正在执行、是否排队、某个
@@ -284,6 +298,8 @@ Release 工作流会构建 Windows/Linux 二进制压缩包、生成 SBOM、签�
 `/api/workflow-graphs` 用于列出和编辑图文件，
 `/api/workflow-options.workflow_executors` 用于列出所有可运行 workflow 入口。
 如果保存了同名且有效的图工作流，它会覆盖对应兼容执行器。
+
+复杂项目可以从 `complex-project-delivery` 工作流模板开始。它会先分析用户需求，产出功能需求和项目计划，等待用户确认后进入实现循环：每轮实现一个计划切片、验证、审查、更新计划，直到计划完成；最后执行整体验证并输出完成报告。
 
 内置 Kit preset 包括 `multi-domain-agent`、`software-engineering`、`agent-framework`、`web-security`、`security-research`、`binary-analysis`、`documentation`、`operations-runbook` 和 `customer-support`。其中 `agent-framework` 用于二开 GoFlow 本身：创建新的垂直 Agent、Skill、Tool、Workflow、Team、Policy 或 Kit。
 

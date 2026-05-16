@@ -81,6 +81,7 @@ func (e *Executor) RunToolCalls(ctx context.Context, execCtx ExecutionContext, c
 		}
 		result.CallID = call.ID
 		execCtx.annotateResult(&result, tool)
+		execCtx.recordFileReadResult(ctx, call, result)
 		status := "ok"
 		if result.IsError {
 			status = "tool_error"

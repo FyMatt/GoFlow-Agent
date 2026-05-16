@@ -6,6 +6,7 @@ export async function renderWorkspace(root, runtime, refreshRuntime) {
   const capabilities = runtime.workspace_capabilities || workspace.capabilities || {};
   const actions = workspaceActionsFromRuntime(runtime, workspace, capabilities);
   const confirmed = Boolean(workspace.confirmed);
+  const riskContext = workspaceRiskContext(runtime, confirmed);
   const confirmAvailable = workspaceActionAvailable(actions, "confirm", !confirmed && Boolean(workspace.root));
   const clearAvailable = workspaceActionAvailable(actions, "clear", confirmed && Boolean(workspace.root));
   root.innerHTML = `
@@ -20,6 +21,7 @@ export async function renderWorkspace(root, runtime, refreshRuntime) {
           <span>${t("workspace.root")}</span>
           <code>${escapeHTML(workspace.root || t("common.none"))}</code>
         </div>
+        ${renderWorkspaceGuide(confirmed, workspace, capabilities)}
         <div class="workspace-meta-grid">
           <div>
             <span>${t("workspace.status")}</span>
@@ -30,12 +32,12 @@ export async function renderWorkspace(root, runtime, refreshRuntime) {
             <strong>${escapeHTML(workspace.source || "-")}</strong>
           </div>
         </div>
-        ${renderWorkspaceCapabilitySummary(capabilities, actions)}
-        ${renderWorkspaceSafetySummary(confirmed)}
+        ${renderWorkspaceSafetySummary(confirmed, riskContext)}
         <div class="workspace-actions">
           <button id="confirm" class="primary" data-tour-id="workspace-confirm" data-workspace-action-name="confirm" data-workspace-available="${confirmAvailable ? "true" : "false"}" aria-disabled="${confirmAvailable ? "false" : "true"}"${confirmAvailable ? "" : " disabled"}>${workspaceActionLabel(workspaceActionForName(actions, "confirm") || "confirm")}</button>
           <button id="clear" data-workspace-action-name="clear" data-workspace-available="${clearAvailable ? "true" : "false"}" aria-disabled="${clearAvailable ? "false" : "true"}"${clearAvailable ? "" : " disabled"}>${workspaceActionLabel(workspaceActionForName(actions, "clear") || "clear")}</button>
         </div>
+        ${renderWorkspaceCapabilitySummary(capabilities, actions)}
       </section>
       <section class="panel span-5 workspace-switcher" data-tour-id="workspace-switcher">
         <div class="workspace-copy">
@@ -201,14 +203,108 @@ function badge(text, kind) {
   return `<span class="badge ${kind || ""}">${escapeHTML(text)}</span>`;
 }
 
-function renderWorkspaceSafetySummary(confirmed) {
+function renderWorkspaceGuide(confirmed, workspace = {}, capabilities = {}) {
+  const steps = [
+    {
+      key: "choose",
+      title: t("workspace.guideChooseTitle"),
+      body: workspace.root ? t("workspace.guideChooseReadyBody") : t("workspace.guideChooseBody"),
+      status: workspace.root ? "done" : "current",
+      action: "choose_folder"
+    },
+    {
+      key: "confirm",
+      title: t("workspace.guideConfirmTitle"),
+      body: confirmed ? t("workspace.guideConfirmReadyBody") : t("workspace.guideConfirmBody"),
+      status: confirmed ? "done" : workspace.root ? "current" : "pending",
+      action: "confirm"
+    },
+    {
+      key: "run",
+      title: t("workspace.guideRunTitle"),
+      body: confirmed ? t("workspace.guideRunReadyBody") : t("workspace.guideRunBody"),
+      status: confirmed ? "current" : "pending",
+      target: confirmed ? "playground" : ""
+    }
+  ];
+  return `<div class="workspace-guide" aria-label="${escapeHTML(t("workspace.guideTitle"))}">
+    <div class="workspace-guide-head">
+      <strong>${escapeHTML(t("workspace.guideTitle"))}</strong>
+      <span>${escapeHTML(t("workspace.guideHelp"))}</span>
+    </div>
+    <div class="workspace-guide-steps">
+      ${steps.map((step, index) => renderWorkspaceGuideStep(step, index + 1)).join("")}
+    </div>
+    ${renderWorkspacePermissionSummary(confirmed, capabilities)}
+  </div>`;
+}
+
+function renderWorkspaceGuideStep(step, index) {
+  const action = step.action
+    ? ` data-workspace-action-name="${escapeHTML(step.action)}"`
+    : step.target
+      ? ` data-workspace-target="${escapeHTML(step.target)}"`
+      : "";
+  const disabled = step.status === "pending";
+  return `<button type="button" class="workspace-guide-step ${escapeHTML(step.status)}" ${action} ${disabled ? "disabled aria-disabled=\"true\"" : "aria-disabled=\"false\""}>
+    <span class="workspace-guide-index">${escapeHTML(String(index))}</span>
+    <span class="workspace-guide-copy">
+      <strong>${escapeHTML(step.title)}</strong>
+      <small>${escapeHTML(step.body)}</small>
+    </span>
+  </button>`;
+}
+
+function renderWorkspacePermissionSummary(confirmed, capabilities = {}) {
+  const items = [
+    {
+      tone: capabilities.pure_chat_without_workspace ? "good" : "neutral",
+      title: t("workspace.permissionChatTitle"),
+      body: t("workspace.permissionChatBody")
+    },
+    {
+      tone: confirmed ? "good" : "warn",
+      title: t("workspace.permissionFilesTitle"),
+      body: confirmed ? t("workspace.permissionFilesReadyBody") : t("workspace.permissionFilesBlockedBody")
+    },
+    {
+      tone: confirmed ? "good" : "warn",
+      title: t("workspace.permissionCommandTitle"),
+      body: confirmed ? t("workspace.permissionCommandReadyBody") : t("workspace.permissionCommandBlockedBody")
+    }
+  ];
+  return `<div class="workspace-permission-summary">
+    <div class="workspace-permission-head">
+      <strong>${escapeHTML(t("workspace.permissionTitle"))}</strong>
+      <span>${escapeHTML(t("workspace.permissionHelp"))}</span>
+    </div>
+    <div class="workspace-permission-grid">
+      ${items.map(item => `<article class="workspace-permission-card ${escapeHTML(item.tone)}">
+        <strong>${escapeHTML(item.title)}</strong>
+        <p>${escapeHTML(item.body)}</p>
+      </article>`).join("")}
+    </div>
+  </div>`;
+}
+
+function renderWorkspaceSafetySummary(confirmed, riskContext = {}) {
   const nextTone = confirmed ? "good" : "warn";
+  const riskCards = workspaceRiskCards(riskContext);
   return `<div class="workspace-safety-panel">
     <div class="workspace-output-head">
       <strong>${t("workspace.safetyTitle")}</strong>
       <span>${t("workspace.safetyHelp")}</span>
     </div>
-    <div class="workspace-safety-list">
+    ${riskCards.length ? `<div class="workspace-risk-callout ${escapeHTML(riskContext.tone || "warn")}">
+      <div>
+        <strong>${escapeHTML(t(riskContext.blocked ? "workspace.riskCurrentActionBlockedTitle" : "workspace.riskCurrentActionTitle"))}</strong>
+        <p>${escapeHTML(t(riskContext.blocked ? "workspace.riskCurrentActionBlockedBody" : "workspace.riskCurrentActionBody"))}</p>
+      </div>
+      <span class="badge ${escapeHTML(riskContext.tone || "warn")}">${escapeHTML(t("workspace.riskCount", { count: riskCards.length }))}</span>
+    </div>
+    <div class="workspace-risk-list">
+      ${riskCards.map(renderWorkspaceRiskCard).join("")}
+    </div>` : `<div class="workspace-safety-list">
       <article class="workspace-safety-card">
         <strong>${t("workspace.safetyFilesTitle")}</strong>
         <p>${t("workspace.safetyFilesBody")}</p>
@@ -217,7 +313,7 @@ function renderWorkspaceSafetySummary(confirmed) {
         <strong>${t("workspace.safetyApprovalTitle")}</strong>
         <p>${t("workspace.safetyApprovalBody")}</p>
       </article>
-    </div>
+    </div>`}
     <div class="workspace-next-step ${nextTone}">
       <div>
         <strong>${t(confirmed ? "workspace.nextReadyTitle" : "workspace.nextBlockedTitle")}</strong>
@@ -231,19 +327,150 @@ function renderWorkspaceSafetySummary(confirmed) {
   </div>`;
 }
 
+function renderWorkspaceRiskCard(item) {
+  return `<article class="workspace-risk-card ${escapeHTML(item.tone || "warn")}">
+    <div>
+      <strong>${escapeHTML(item.title)}</strong>
+      <span class="badge ${escapeHTML(item.tone || "warn")}">${escapeHTML(item.badge)}</span>
+    </div>
+    <p>${escapeHTML(item.body)}</p>
+    ${item.action ? `<button type="button" data-workspace-target="${escapeHTML(item.action.target)}">${escapeHTML(item.action.label)}</button>` : ""}
+  </article>`;
+}
+
+function workspaceRiskCards(context = {}) {
+  const cards = [];
+  if (context.needsConfirmation) {
+    cards.push({
+      key: "workspace-confirmation",
+      tone: "warn",
+      title: t("workspace.riskConfirmTitle"),
+      badge: t("workspace.riskNeedsAction"),
+      body: t("workspace.riskConfirmBody"),
+      action: { target: "workspace", label: t("workspace.confirm") }
+    });
+  }
+  if (context.pendingApprovals > 0) {
+    cards.push({
+      key: "pending-approvals",
+      tone: "warn",
+      title: t("workspace.riskApprovalTitle"),
+      badge: t("workspace.riskPendingApprovals", { count: context.pendingApprovals }),
+      body: t("workspace.riskApprovalBody"),
+      action: { target: "approvals", label: t("workspace.openApprovals") }
+    });
+  }
+  if (context.activeWorkspaceRuns > 0) {
+    cards.push({
+      key: "active-workspace-runs",
+      tone: "info",
+      title: t("workspace.riskActiveRunTitle"),
+      badge: t("workspace.riskActiveRuns", { count: context.activeWorkspaceRuns }),
+      body: t("workspace.riskActiveRunBody"),
+      action: { target: "playground", label: t("workspace.openRun") }
+    });
+  }
+  if (context.writeDiagnostics > 0 || context.execDiagnostics > 0) {
+    cards.push({
+      key: "broad-permissions",
+      tone: context.writeDiagnostics + context.execDiagnostics > 1 ? "warn" : "info",
+      title: t("workspace.riskPermissionTitle"),
+      badge: t("workspace.riskPermissionBadge", { count: context.writeDiagnostics + context.execDiagnostics }),
+      body: t("workspace.riskPermissionBody"),
+      action: { target: "settings", label: t("workspace.openSettings") }
+    });
+  }
+  return cards;
+}
+
+function workspaceRiskContext(runtime = {}, confirmed = false) {
+  const session = runtime?.session || {};
+  const pendingApprovals = normalizeWorkspaceCollection(session.pending_approvals).length;
+  const activeWorkspaceRuns = [
+    ...normalizeWorkspaceCollection(session.workflow_runs).filter(isWorkspaceSensitiveWorkflowRun),
+    ...normalizeWorkspaceCollection(session.agent_runs).filter(isWorkspaceSensitiveAgentRun)
+  ].length;
+  const diagnostics = normalizeWorkspaceCollection(runtime?.config_diagnostics?.items || runtime?.diagnostics?.items);
+  const writeDiagnostics = diagnostics.filter(workspaceDiagnosticMentionsWrite).length;
+  const execDiagnostics = diagnostics.filter(workspaceDiagnosticMentionsExec).length;
+  const needsConfirmation = !confirmed && activeWorkspaceRuns > 0;
+  const blocked = needsConfirmation || pendingApprovals > 0;
+  return {
+    pendingApprovals,
+    activeWorkspaceRuns,
+    writeDiagnostics,
+    execDiagnostics,
+    needsConfirmation,
+    blocked,
+    tone: blocked ? "warn" : activeWorkspaceRuns || writeDiagnostics || execDiagnostics ? "info" : "neutral"
+  };
+}
+
+function isWorkspaceSensitiveWorkflowRun(run = {}) {
+  const status = String(run.status || "").toLowerCase();
+  if (!["running", "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow", "cancelling"].includes(status)) return false;
+  return true;
+}
+
+function isWorkspaceSensitiveAgentRun(run = {}) {
+  const status = String(run.status || "").toLowerCase();
+  if (!["running", "awaiting_tool_approval", "cancelling"].includes(status)) return false;
+  const text = [
+    run.pending_tool,
+    run.pending_tool_name,
+    run.pending_call_id,
+    run.mode,
+    run.summary,
+    run.request,
+    run.pending_arguments_summary
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+  return !text || /write|file|exec|command|shell|tool|workflow|patch|delete|remove/.test(text);
+}
+
+function workspaceDiagnosticMentionsWrite(item = {}) {
+  const text = workspaceDiagnosticText(item);
+  return /write|read\/write|filesystem|workspace_rw|mount_rw|broad_permissions|写入|读写/.test(text);
+}
+
+function workspaceDiagnosticMentionsExec(item = {}) {
+  const text = workspaceDiagnosticText(item);
+  return /exec|command|shell|process|broad_permissions|执行|命令/.test(text);
+}
+
+function workspaceDiagnosticText(item = {}) {
+  return [
+    item.code,
+    item.target_kind,
+    item.target_name,
+    item.field,
+    item.message,
+    item.recommendation
+  ].map(value => String(value || "").toLowerCase()).join(" ");
+}
+
+function normalizeWorkspaceCollection(value) {
+  if (Array.isArray(value)) return value;
+  if (Array.isArray(value?.items)) return value.items;
+  if (Array.isArray(value?.runs)) return value.runs;
+  if (Array.isArray(value?.agent_runs)) return value.agent_runs;
+  if (Array.isArray(value?.workflow_runs)) return value.workflow_runs;
+  if (Array.isArray(value?.pending_approvals)) return value.pending_approvals;
+  return [];
+}
+
 function renderWorkspaceCapabilitySummary(capabilities = {}, actions = []) {
   const facts = workspaceCapabilityFacts(capabilities);
-  return `<div class="workspace-capabilities-panel">
-    <div class="workspace-output-head">
+  return `<details class="workspace-capabilities-panel">
+    <summary>
       <strong>${t("workspace.capabilitiesTitle")}</strong>
       <span>${t("workspace.capabilitiesHelp")}</span>
-    </div>
+    </summary>
     <div class="workspace-capability-grid">
       ${facts.map(renderWorkspaceCapabilityFact).join("")}
     </div>
     ${actions.length ? `<div class="workspace-action-hints">${actions.map(renderWorkspaceActionHint).join("")}</div>` : ""}
     ${capabilities.reason ? `<p class="workspace-capability-reason">${escapeHTML(workspaceCapabilityReason(capabilities.reason))}</p>` : ""}
-  </div>`;
+  </details>`;
 }
 
 function workspaceCapabilityFacts(capabilities = {}) {

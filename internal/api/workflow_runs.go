@@ -55,27 +55,36 @@ func (s *Server) handleWorkflowRunItem(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case len(parts) == 1:
-		writeJSON(w, run)
+		if workflowRunQueryBool(firstWorkflowRunQueryValue(r.URL.Query().Get("summary"), r.URL.Query().Get("compact"))) {
+			writeJSON(w, summarizeWorkflowRunForAPI(run))
+			return
+		}
+		writeJSON(w, s.runtime.HydrateWorkflowRun(run))
 	case len(parts) == 2 && parts[1] == "events":
-		writeJSON(w, workflowRunEventsForQuery(run.Events, workflowRunQueryFromRequest(r)))
+		writeJSON(w, s.workflowRunEventsForQuery(run.Events, workflowRunQueryFromRequest(r)))
+	case len(parts) == 2 && parts[1] == "context":
+		writeJSON(w, workflowRunContext(run))
 	case len(parts) == 3 && parts[1] == "events" && parts[2] == "stream":
 		s.handleWorkflowRunEventsStream(w, r, run.ID)
 	case len(parts) == 2 && parts[1] == "artifacts":
-		writeJSON(w, workflowRunArtifactsForQuery(run.Artifacts, workflowRunArtifactQueryFromRequest(r)))
+		query := workflowRunArtifactQueryFromRequest(r)
+		writeJSON(w, s.workflowRunArtifactsForQuery(run.Artifacts, query))
 	case len(parts) == 2 && parts[1] == "stages":
-		writeJSON(w, workflowRunStagesForQuery(run.CompletedStages, workflowRunQueryFromRequest(r)))
+		query := workflowRunQueryFromRequest(r)
+		writeJSON(w, s.workflowRunStagesForQuery(run.CompletedStages, query))
 	case len(parts) == 2 && parts[1] == "replay":
-		writeJSON(w, s.workflowRunReplay(run, workflowRunQueryFromRequest(r)))
+		query := workflowRunQueryFromRequest(r)
+		writeJSON(w, s.workflowRunReplay(run, query))
 	case len(parts) == 2 && parts[1] == "evidence":
 		writeJSON(w, workflowRunEvidenceView(run, workflowRunQueryFromRequest(r)))
 	case len(parts) == 2 && parts[1] == "navigation":
-		writeJSON(w, workflowRunReplayNavigationFor(run, workflowRunQueryFromRequest(r), workflowRunDiffs(run, workflowRunQuery{})))
+		writeJSON(w, workflowRunReplayNavigationFor(run, workflowRunQueryFromRequest(r), s.workflowRunDiffs(run, workflowRunQuery{})))
 	case len(parts) == 2 && parts[1] == "diffs":
-		writeJSON(w, workflowRunDiffResponse(run, workflowRunQueryFromRequest(r)))
+		writeJSON(w, s.workflowRunDiffResponse(run, workflowRunQueryFromRequest(r)))
 	case len(parts) == 2 && parts[1] == "export":
 		s.handleWorkflowRunExport(w, r, run)
 	case len(parts) == 2 && parts[1] == "timeline":
-		writeJSON(w, workflowRunTimeline(run, workflowRunQueryFromRequest(r)))
+		writeJSON(w, s.workflowRunTimeline(run, workflowRunQueryFromRequest(r)))
 	case len(parts) == 2 && parts[1] == "actions":
 		actions := s.workflowRunActions(run)
 		if runActionsWantsEnvelope(r) {
@@ -84,16 +93,17 @@ func (s *Server) handleWorkflowRunItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, actions)
 	case len(parts) == 3 && parts[1] == "stages":
-		stageDetail, ok := workflowRunStageDetailFor(run, parts[2])
+		stageDetail, ok := s.workflowRunStageDetailFor(run, parts[2])
 		if !ok {
 			http.NotFound(w, r)
 			return
 		}
 		writeJSON(w, stageDetail)
 	case len(parts) == 4 && parts[1] == "stages" && parts[3] == "events":
-		writeJSON(w, workflowRunEventsForQuery(run.Events, workflowRunQueryFromRequest(r).withStage(parts[2])))
+		writeJSON(w, s.workflowRunEventsForQuery(run.Events, workflowRunQueryFromRequest(r).withStage(parts[2])))
 	case len(parts) == 4 && parts[1] == "stages" && parts[3] == "artifacts":
-		writeJSON(w, workflowRunArtifactsForQuery(run.Artifacts, workflowRunArtifactQueryFromRequest(r).withStage(parts[2])))
+		query := workflowRunArtifactQueryFromRequest(r).withStage(parts[2])
+		writeJSON(w, s.workflowRunArtifactsForQuery(run.Artifacts, query))
 	default:
 		http.NotFound(w, r)
 	}
@@ -220,6 +230,7 @@ type workflowRunCollectionQuery struct {
 	TerminalOnly    bool   `json:"terminal_only,omitempty"`
 	NeedsActionOnly bool   `json:"needs_action_only,omitempty"`
 	ErrorsOnly      bool   `json:"errors_only,omitempty"`
+	Summary         bool   `json:"summary,omitempty"`
 }
 
 type workflowRunCollectionRunCounts struct {
@@ -320,12 +331,15 @@ type workflowRunTimelineItem struct {
 }
 
 func (s *Server) workflowRunReplay(run session.WorkflowRunSnapshot, query workflowRunQuery) workflowRunReplay {
+	if query.IncludeContent {
+		run = s.runtime.HydrateWorkflowRun(run)
+	}
 	filter := session.CollaborationFilter{RunID: run.ID, Stage: query.Stage, Agent: query.AgentID, Limit: query.Limit}
-	stages := workflowRunStagesForQuery(run.CompletedStages, query)
-	events := workflowRunEventsForQuery(run.Events, query)
-	artifacts := workflowRunArtifactsForQuery(run.Artifacts, query)
-	timeline := workflowRunTimeline(run, query)
-	diffs := workflowRunDiffs(run, query)
+	stages := s.workflowRunStagesForQuery(run.CompletedStages, query)
+	events := s.workflowRunEventsForQuery(run.Events, query)
+	artifacts := s.workflowRunArtifactsForQuery(run.Artifacts, query)
+	timeline := s.workflowRunTimeline(run, query)
+	diffs := s.workflowRunDiffs(run, query)
 	collaboration := s.runtime.CollaborationMessages(filter)
 	blackboard := s.runtime.BlackboardEntries(filter)
 	return workflowRunReplay{
@@ -337,7 +351,7 @@ func (s *Server) workflowRunReplay(run session.WorkflowRunSnapshot, query workfl
 		Diffs:         diffs,
 		Actions:       s.workflowRunActions(run),
 		Filters:       query,
-		Navigation:    workflowRunReplayNavigationFor(run, query, workflowRunDiffs(run, workflowRunQuery{})),
+		Navigation:    workflowRunReplayNavigationFor(run, query, s.workflowRunDiffs(run, workflowRunQuery{})),
 		Counts:        s.workflowRunReplayCounts(run, query, stages, events, artifacts, timeline, diffs, collaboration, blackboard),
 		Quality:       workflowRunQualitySummaryFor(run),
 		Collaboration: collaboration,
@@ -352,21 +366,21 @@ func (s *Server) workflowRunReplayCounts(run session.WorkflowRunSnapshot, query 
 	totalBlackboard := s.runtime.BlackboardEntries(session.CollaborationFilter{RunID: run.ID})
 	return workflowRunReplayCounts{
 		Filtered:              workflowRunQueryHasFilters(query),
-		StagesTotal:           len(workflowRunStagesForQuery(run.CompletedStages, totalQuery)),
+		StagesTotal:           len(s.workflowRunStagesForQuery(run.CompletedStages, totalQuery)),
 		StagesFiltered:        len(stages),
 		EventsTotal:           len(workflowRunEventsForQuery(run.Events, totalQuery)),
 		EventsFiltered:        len(events),
-		ArtifactsTotal:        len(workflowRunArtifactsForQuery(run.Artifacts, totalQuery)),
+		ArtifactsTotal:        len(s.workflowRunArtifactsForQuery(run.Artifacts, totalQuery)),
 		ArtifactsFiltered:     len(artifacts),
-		TimelineTotal:         len(workflowRunTimeline(run, totalQuery)),
+		TimelineTotal:         len(s.workflowRunTimeline(run, totalQuery)),
 		TimelineFiltered:      len(timeline),
-		DiffsTotal:            len(workflowRunDiffs(run, totalQuery)),
+		DiffsTotal:            len(s.workflowRunDiffs(run, totalQuery)),
 		DiffsFiltered:         len(diffs),
 		CollaborationTotal:    len(totalCollaboration),
 		CollaborationFiltered: len(collaboration),
 		BlackboardTotal:       len(totalBlackboard),
 		BlackboardFiltered:    len(blackboard),
-		ErrorsTotal:           workflowRunErrorCount(run, workflowRunDiffs(run, totalQuery)),
+		ErrorsTotal:           workflowRunErrorCount(run, s.workflowRunDiffs(run, totalQuery)),
 		NeedsActionTotal:      workflowRunNeedsActionCount(run),
 	}
 }
@@ -397,6 +411,9 @@ func workflowRunCollectionResponseFor(runs []session.WorkflowRunSnapshot, query 
 		matched = append(matched, run)
 	}
 	counts.Returned = len(matched)
+	if query.Summary {
+		matched = summarizeWorkflowRunsForAPI(matched)
+	}
 	return workflowRunCollectionResponse{Runs: matched, Filters: query, Counts: counts}
 }
 
@@ -422,6 +439,7 @@ func workflowRunCollectionQueryFromRequest(r *http.Request) workflowRunCollectio
 		TerminalOnly:    workflowRunQueryBool(firstWorkflowRunQueryValue(values.Get("terminal"), values.Get("done"))),
 		NeedsActionOnly: workflowRunQueryBool(values.Get("needs_action")) || workflowRunQueryBool(values.Get("pending")),
 		ErrorsOnly:      workflowRunQueryBool(values.Get("errors_only")) || workflowRunQueryBool(values.Get("error")),
+		Summary:         workflowRunQueryBool(values.Get("summary")),
 	}
 }
 
@@ -433,6 +451,7 @@ func workflowRunCollectionWantsEnvelope(r *http.Request, query workflowRunCollec
 	if workflowRunQueryBool(firstWorkflowRunQueryValue(values.Get("envelope"), values.Get("summary"), values.Get("counts"))) {
 		return true
 	}
+	query.Summary = false
 	return query != (workflowRunCollectionQuery{})
 }
 
@@ -2430,6 +2449,20 @@ func workflowRunStageDetailFor(run session.WorkflowRunSnapshot, stage string) (w
 	return detail, len(events) > 0 || len(artifacts) > 0
 }
 
+func (s *Server) workflowRunStageDetailFor(run session.WorkflowRunSnapshot, stage string) (workflowRunStageDetail, bool) {
+	detail, ok := workflowRunStageDetailFor(run, stage)
+	if !ok || detail.Snapshot == nil {
+		return detail, ok
+	}
+	hydrated := s.runtime.HydrateWorkflowRunStages([]session.WorkflowRunStageSnapshot{*detail.Snapshot})
+	if len(hydrated) == 0 {
+		return detail, ok
+	}
+	stageSnapshot := hydrated[0]
+	detail.Snapshot = &stageSnapshot
+	return detail, ok
+}
+
 func workflowRunQueryFromRequest(r *http.Request) workflowRunQuery {
 	if r == nil || r.URL == nil {
 		return workflowRunQuery{}
@@ -2574,6 +2607,14 @@ func workflowRunEventsForQuery(events []session.WorkflowRunEventSnapshot, query 
 	return filtered
 }
 
+func (s *Server) workflowRunEventsForQuery(events []session.WorkflowRunEventSnapshot, query workflowRunQuery) []session.WorkflowRunEventSnapshot {
+	filtered := workflowRunEventsForQuery(events, query)
+	if len(filtered) == 0 || !query.IncludeContent {
+		return filtered
+	}
+	return s.runtime.HydrateWorkflowRunEvents(filtered)
+}
+
 func workflowRunArtifactsForQuery(artifacts []session.WorkflowRunArtifact, query workflowRunQuery) []session.WorkflowRunArtifact {
 	if query.ItemKind != "" && query.ItemKind != "artifact" && query.ItemKind != "artifacts" {
 		return nil
@@ -2583,12 +2624,93 @@ func workflowRunArtifactsForQuery(artifacts []session.WorkflowRunArtifact, query
 		if !workflowRunArtifactMatchesQuery(artifact, query) {
 			continue
 		}
+		if artifact.ArtifactRef == "" {
+			artifact.ArtifactRef = firstWorkflowRunQueryValue(artifact.Metadata["artifact_ref"], artifact.Metadata["ref"], artifact.Metadata["refs"])
+		}
+		if artifact.Hash == "" {
+			artifact.Hash = firstWorkflowRunQueryValue(artifact.Metadata["hash"], runArtifactHashFromRef(artifact.ArtifactRef))
+		}
+		if !query.IncludeContent {
+			artifact.Content = ""
+		}
 		filtered = append(filtered, artifact)
 		if query.Limit > 0 && len(filtered) >= query.Limit {
 			break
 		}
 	}
 	return filtered
+}
+
+func (s *Server) workflowRunArtifactsForQuery(artifacts []session.WorkflowRunArtifact, query workflowRunQuery) []session.WorkflowRunArtifact {
+	filtered := workflowRunArtifactsForQuery(artifacts, query)
+	if len(filtered) == 0 || !query.IncludeContent {
+		return filtered
+	}
+	out := make([]session.WorkflowRunArtifact, len(filtered))
+	for i, artifact := range filtered {
+		out[i] = s.hydrateWorkflowRunArtifact(artifact)
+	}
+	return out
+}
+
+func (s *Server) hydrateWorkflowRunArtifact(artifact session.WorkflowRunArtifact) session.WorkflowRunArtifact {
+	if strings.TrimSpace(artifact.Content) != "" {
+		if artifact.ContentBytes == 0 {
+			artifact.ContentBytes = len([]byte(artifact.Content))
+		}
+		if artifact.Size == 0 {
+			artifact.Size = artifact.ContentBytes
+		}
+		return artifact
+	}
+	if s == nil || s.runtime == nil {
+		return artifact
+	}
+	if artifact.ArtifactRef == "" {
+		artifact.ArtifactRef = firstWorkflowRunQueryValue(artifact.Metadata["artifact_ref"], artifact.Metadata["ref"], artifact.Metadata["refs"])
+	}
+	if artifact.Hash == "" {
+		artifact.Hash = firstWorkflowRunQueryValue(artifact.Metadata["hash"], runArtifactHashFromRef(artifact.ArtifactRef))
+	}
+	for _, ref := range []string{
+		artifact.ArtifactRef,
+		artifact.Hash,
+		artifact.Metadata["artifact_ref"],
+		artifact.Metadata["hash"],
+		artifact.Metadata["ref"],
+		artifact.Metadata["refs"],
+	} {
+		ref = strings.TrimSpace(ref)
+		if ref == "" {
+			continue
+		}
+		object, ok, err := s.runtime.ArtifactObject(ref)
+		if err != nil || !ok {
+			continue
+		}
+		artifact.Content = object.Content
+		artifact.ArtifactRef = firstWorkflowRunQueryValue(artifact.ArtifactRef, object.Ref)
+		artifact.Hash = firstWorkflowRunQueryValue(artifact.Hash, object.Hash)
+		artifact.Mime = firstWorkflowRunQueryValue(artifact.Mime, object.Mime)
+		artifact.Size = firstPositiveInt(artifact.Size, object.Size)
+		artifact.ContentBytes = firstPositiveInt(artifact.ContentBytes, object.Size, len([]byte(object.Content)))
+		artifact.StoredBytes = firstPositiveInt(artifact.StoredBytes, int(object.StoredBytes))
+		artifact.Externalized = true
+		if strings.TrimSpace(artifact.Summary) == "" {
+			artifact.Summary = object.Summary
+		}
+		artifact.Metadata = mergeRunArtifactMetadata(artifact.Metadata, map[string]string{
+			"artifact_ref":  artifact.ArtifactRef,
+			"hash":          artifact.Hash,
+			"mime":          artifact.Mime,
+			"size":          workflowRunIntString(artifact.Size),
+			"content_bytes": workflowRunIntString(artifact.ContentBytes),
+			"stored_bytes":  workflowRunIntString(artifact.StoredBytes),
+			"externalized":  "true",
+		})
+		return artifact
+	}
+	return artifact
 }
 
 func workflowRunStagesForQuery(stages []session.WorkflowRunStageSnapshot, query workflowRunQuery) []session.WorkflowRunStageSnapshot {
@@ -2600,6 +2722,11 @@ func workflowRunStagesForQuery(stages []session.WorkflowRunStageSnapshot, query 
 		if !workflowRunStageMatchesQuery(stage, query) {
 			continue
 		}
+		if !query.IncludeContent {
+			stage.Result.Output = ""
+			stage.Result.ToolResults = nil
+			stage.Artifacts = workflowRunArtifactsForQuery(stage.Artifacts, query)
+		}
 		filtered = append(filtered, stage)
 		if query.Limit > 0 && len(filtered) >= query.Limit {
 			break
@@ -2608,11 +2735,30 @@ func workflowRunStagesForQuery(stages []session.WorkflowRunStageSnapshot, query 
 	return filtered
 }
 
-func workflowRunTimeline(run session.WorkflowRunSnapshot, query workflowRunQuery) []workflowRunTimelineItem {
+func (s *Server) workflowRunStagesForQuery(stages []session.WorkflowRunStageSnapshot, query workflowRunQuery) []session.WorkflowRunStageSnapshot {
+	filtered := workflowRunStagesForQuery(stages, query)
+	if len(filtered) == 0 {
+		return filtered
+	}
+	if query.IncludeContent {
+		filtered = s.runtime.HydrateWorkflowRunStages(filtered)
+	}
+	if !query.IncludeContent {
+		return filtered
+	}
+	out := make([]session.WorkflowRunStageSnapshot, len(filtered))
+	for i, stage := range filtered {
+		stage.Artifacts = s.workflowRunArtifactsForQuery(stage.Artifacts, query)
+		out[i] = stage
+	}
+	return out
+}
+
+func (s *Server) workflowRunTimeline(run session.WorkflowRunSnapshot, query workflowRunQuery) []workflowRunTimelineItem {
 	withoutLimit := query
 	withoutLimit.Limit = 0
 	items := make([]workflowRunTimelineItem, 0, len(run.Events)+len(run.CompletedStages)+len(run.Artifacts))
-	for _, event := range workflowRunEventsForQuery(run.Events, withoutLimit) {
+	for _, event := range s.workflowRunEventsForQuery(run.Events, withoutLimit) {
 		items = append(items, workflowRunTimelineItem{
 			At:          event.At,
 			Kind:        "event",
@@ -2628,7 +2774,7 @@ func workflowRunTimeline(run session.WorkflowRunSnapshot, query workflowRunQuery
 			Suspended:   event.Suspended,
 		})
 	}
-	for _, stage := range workflowRunStagesForQuery(run.CompletedStages, withoutLimit) {
+	for _, stage := range s.workflowRunStagesForQuery(run.CompletedStages, withoutLimit) {
 		items = append(items, workflowRunTimelineItem{
 			At:       firstWorkflowRunQueryValue(stage.CompletedAt, stage.StartedAt),
 			Kind:     "stage",
@@ -2643,7 +2789,7 @@ func workflowRunTimeline(run session.WorkflowRunSnapshot, query workflowRunQuery
 			IsError:  workflowRunStageIsError(stage),
 		})
 	}
-	for _, artifact := range workflowRunArtifactsForQuery(run.Artifacts, withoutLimit) {
+	for _, artifact := range s.workflowRunArtifactsForQuery(run.Artifacts, withoutLimit) {
 		items = append(items, workflowRunTimelineItem{
 			Kind:       "artifact",
 			Type:       artifact.Kind,

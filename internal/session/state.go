@@ -33,6 +33,7 @@ type State struct {
 	messages         []CollaborationMessageSnapshot
 	blackboard       []BlackboardEntrySnapshot
 	artifacts        []SessionArtifactSnapshot
+	artifactStore    *ArtifactObjectStore
 	pendingApprovals []PendingApprovalSnapshot
 	pendingHandoff   PendingHandoffSnapshot
 	lastRouting      RoutingSnapshot
@@ -135,13 +136,14 @@ func (s *State) SetLastSkillMatch(skill *schema.Skill, diagnostic schema.SkillMa
 func (s *State) SetWorkflow(snapshot WorkflowSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	snapshot = s.normalizeWorkflowSnapshotLocked(snapshot)
 	s.workflow = copyWorkflowSnapshot(snapshot)
 }
 
 func (s *State) SetPendingApprovals(approvals []PendingApprovalSnapshot) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	s.pendingApprovals = copyPendingApprovalSnapshots(approvals)
+	s.pendingApprovals = s.normalizePendingApprovalsLocked(approvals)
 }
 
 func (s *State) SetPendingHandoff(handoff PendingHandoffSnapshot) {
@@ -168,6 +170,27 @@ func (s *State) SetPromptBudget(budget schema.PromptBudget) {
 	copied := budget
 	s.promptBudget = &copied
 	s.promptBudgets = appendPromptBudgetHistory(s.promptBudgets, budget)
+}
+
+// SetArtifactObjectStore attaches a content-addressed artifact store used to
+// keep large artifact bodies out of session.json.
+func (s *State) SetArtifactObjectStore(store *ArtifactObjectStore) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.artifactStore = store
+}
+
+// ArtifactObjectStore returns the attached content-addressed artifact store.
+func (s *State) ArtifactObjectStore() *ArtifactObjectStore {
+	if s == nil {
+		return nil
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.artifactStore
 }
 
 func (s *State) AddTokenUsage(sample schema.TokenUsageSample) {
@@ -360,7 +383,10 @@ func (s *State) Save(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err := writeFullSessionArchive(path, snapshot); err != nil {
+		return err
+	}
+	data, err := json.MarshalIndent(compactSnapshotForPersist(snapshot), "", "  ")
 	if err != nil {
 		return err
 	}
@@ -378,10 +404,19 @@ func (s *State) Load(path string) error {
 		}
 		return err
 	}
-	var snapshot Snapshot
-	if err := json.Unmarshal(data, &snapshot); err != nil {
-		return err
+	snapshot, fromArchive, archiveErr := loadFullSessionArchive(path)
+	if archiveErr != nil {
+		return archiveErr
 	}
+	if !fromArchive {
+		if err := json.Unmarshal(data, &snapshot); err != nil {
+			return err
+		}
+		if err := writeFullSessionArchive(path, snapshot); err != nil {
+			return err
+		}
+	}
+	_ = rewriteCompactedSessionFile(path, compactSnapshotForPersist(snapshot), len(data))
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.activeAgent = snapshot.ActiveAgent
@@ -472,23 +507,43 @@ func (s *State) Load(path string) error {
 	return nil
 }
 
+func rewriteCompactedSessionFile(path string, snapshot Snapshot, originalBytes int) error {
+	if path == "" || originalBytes <= 0 {
+		return nil
+	}
+	data, err := json.MarshalIndent(snapshot, "", "  ")
+	if err != nil {
+		return err
+	}
+	if len(data)+4096 >= originalBytes {
+		return nil
+	}
+	return os.WriteFile(path, data, 0o644)
+}
+
 // WorkflowSnapshot is a read-only view of current workflow state.
 type WorkflowSnapshot struct {
-	RunID                    string                  `json:"run_id,omitempty"`
-	Name                     string                  `json:"name,omitempty"`
-	Status                   string                  `json:"status,omitempty"`
-	NextStage                string                  `json:"next_stage,omitempty"`
-	Request                  string                  `json:"request,omitempty"`
-	Summary                  string                  `json:"summary,omitempty"`
-	LastApproval             string                  `json:"last_approval,omitempty"`
-	PendingCallID            string                  `json:"pending_call_id,omitempty"`
-	PendingToolName          string                  `json:"pending_tool_name,omitempty"`
-	PendingToolRisk          *schema.ToolRiskProfile `json:"pending_tool_risk,omitempty"`
-	PendingAgentID           string                  `json:"pending_agent_id,omitempty"`
-	PendingArguments         string                  `json:"pending_arguments,omitempty"`
-	PendingSubWorkflowName   string                  `json:"pending_sub_workflow_name,omitempty"`
-	PendingSubWorkflowRunID  string                  `json:"pending_sub_workflow_run_id,omitempty"`
-	PendingSubWorkflowStatus string                  `json:"pending_sub_workflow_status,omitempty"`
+	RunID                        string                  `json:"run_id,omitempty"`
+	Name                         string                  `json:"name,omitempty"`
+	Status                       string                  `json:"status,omitempty"`
+	NextStage                    string                  `json:"next_stage,omitempty"`
+	Request                      string                  `json:"request,omitempty"`
+	Summary                      string                  `json:"summary,omitempty"`
+	LastApproval                 string                  `json:"last_approval,omitempty"`
+	PendingCallID                string                  `json:"pending_call_id,omitempty"`
+	PendingToolName              string                  `json:"pending_tool_name,omitempty"`
+	PendingToolRisk              *schema.ToolRiskProfile `json:"pending_tool_risk,omitempty"`
+	PendingAgentID               string                  `json:"pending_agent_id,omitempty"`
+	PendingArguments             string                  `json:"pending_arguments,omitempty"`
+	PendingArgumentsSummary      string                  `json:"pending_arguments_summary,omitempty"`
+	PendingArgumentsArtifactRef  string                  `json:"pending_arguments_artifact_ref,omitempty"`
+	PendingArgumentsHash         string                  `json:"pending_arguments_hash,omitempty"`
+	PendingArgumentsBytes        int                     `json:"pending_arguments_bytes,omitempty"`
+	PendingArgumentsStoredBytes  int                     `json:"pending_arguments_stored_bytes,omitempty"`
+	PendingArgumentsExternalized bool                    `json:"pending_arguments_externalized,omitempty"`
+	PendingSubWorkflowName       string                  `json:"pending_sub_workflow_name,omitempty"`
+	PendingSubWorkflowRunID      string                  `json:"pending_sub_workflow_run_id,omitempty"`
+	PendingSubWorkflowStatus     string                  `json:"pending_sub_workflow_status,omitempty"`
 }
 
 // WorkflowRunSnapshot is a durable, replayable view of one workflow execution.
@@ -512,34 +567,56 @@ type WorkflowRunSnapshot struct {
 	PendingToolRisk          *schema.ToolRiskProfile     `json:"pending_tool_risk,omitempty"`
 	PendingAgentID           string                      `json:"pending_agent_id,omitempty"`
 	PendingArgs              string                      `json:"pending_arguments,omitempty"`
+	PendingArgsSummary       string                      `json:"pending_arguments_summary,omitempty"`
+	PendingArgsArtifactRef   string                      `json:"pending_arguments_artifact_ref,omitempty"`
+	PendingArgsHash          string                      `json:"pending_arguments_hash,omitempty"`
+	PendingArgsBytes         int                         `json:"pending_arguments_bytes,omitempty"`
+	PendingArgsStoredBytes   int                         `json:"pending_arguments_stored_bytes,omitempty"`
+	PendingArgsExternalized  bool                        `json:"pending_arguments_externalized,omitempty"`
 	PendingSubWorkflowName   string                      `json:"pending_sub_workflow_name,omitempty"`
 	PendingSubWorkflowRunID  string                      `json:"pending_sub_workflow_run_id,omitempty"`
 	PendingSubWorkflowStatus string                      `json:"pending_sub_workflow_status,omitempty"`
 	CompletedStages          []WorkflowRunStageSnapshot  `json:"completed_stages,omitempty"`
 	Artifacts                []WorkflowRunArtifact       `json:"artifacts,omitempty"`
 	Events                   []WorkflowRunEventSnapshot  `json:"events,omitempty"`
+	StagesCount              int                         `json:"stages_count,omitempty"`
+	ArtifactsCount           int                         `json:"artifacts_count,omitempty"`
+	EventsCount              int                         `json:"events_count,omitempty"`
+	DiffsCount               int                         `json:"diffs_count,omitempty"`
 }
 
 // WorkflowRunStageSnapshot captures the latest persisted output for a stage.
 type WorkflowRunStageSnapshot struct {
-	Stage        string                          `json:"stage"`
-	AgentID      string                          `json:"agent_id,omitempty"`
-	NodeType     string                          `json:"node_type,omitempty"`
-	Skill        string                          `json:"skill,omitempty"`
-	Tool         string                          `json:"tool,omitempty"`
-	Status       string                          `json:"status,omitempty"`
-	StartedAt    string                          `json:"started_at,omitempty"`
-	CompletedAt  string                          `json:"completed_at,omitempty"`
-	Attempts     int                             `json:"attempts,omitempty"`
-	Summary      string                          `json:"summary,omitempty"`
-	Inputs       map[string]string               `json:"inputs,omitempty"`
-	InputValues  map[string]any                  `json:"input_values,omitempty"`
-	Outputs      map[string]string               `json:"outputs,omitempty"`
-	OutputValues map[string]any                  `json:"output_values,omitempty"`
-	Result       schema.AgentResult              `json:"result"`
-	Artifacts    []WorkflowRunArtifact           `json:"artifacts,omitempty"`
-	Acceptance   []WorkflowRunAcceptanceSnapshot `json:"acceptance,omitempty"`
-	Metadata     map[string]string               `json:"metadata,omitempty"`
+	Stage                    string                          `json:"stage"`
+	AgentID                  string                          `json:"agent_id,omitempty"`
+	NodeType                 string                          `json:"node_type,omitempty"`
+	Skill                    string                          `json:"skill,omitempty"`
+	Tool                     string                          `json:"tool,omitempty"`
+	Status                   string                          `json:"status,omitempty"`
+	StartedAt                string                          `json:"started_at,omitempty"`
+	CompletedAt              string                          `json:"completed_at,omitempty"`
+	Attempts                 int                             `json:"attempts,omitempty"`
+	Summary                  string                          `json:"summary,omitempty"`
+	Inputs                   map[string]string               `json:"inputs,omitempty"`
+	InputValues              map[string]any                  `json:"input_values,omitempty"`
+	InputValuesArtifactRef   string                          `json:"input_values_artifact_ref,omitempty"`
+	InputValuesHash          string                          `json:"input_values_hash,omitempty"`
+	InputValueCount          int                             `json:"input_value_count,omitempty"`
+	InputValuesBytes         int                             `json:"input_values_bytes,omitempty"`
+	InputValuesStoredBytes   int                             `json:"input_values_stored_bytes,omitempty"`
+	InputValuesExternalized  bool                            `json:"input_values_externalized,omitempty"`
+	Outputs                  map[string]string               `json:"outputs,omitempty"`
+	OutputValues             map[string]any                  `json:"output_values,omitempty"`
+	OutputValuesArtifactRef  string                          `json:"output_values_artifact_ref,omitempty"`
+	OutputValuesHash         string                          `json:"output_values_hash,omitempty"`
+	OutputValueCount         int                             `json:"output_value_count,omitempty"`
+	OutputValuesBytes        int                             `json:"output_values_bytes,omitempty"`
+	OutputValuesStoredBytes  int                             `json:"output_values_stored_bytes,omitempty"`
+	OutputValuesExternalized bool                            `json:"output_values_externalized,omitempty"`
+	Result                   schema.AgentResult              `json:"result"`
+	Artifacts                []WorkflowRunArtifact           `json:"artifacts,omitempty"`
+	Acceptance               []WorkflowRunAcceptanceSnapshot `json:"acceptance,omitempty"`
+	Metadata                 map[string]string               `json:"metadata,omitempty"`
 }
 
 // WorkflowRunAcceptanceSnapshot captures pass/fail evidence for a stage criterion.
@@ -555,58 +632,80 @@ type WorkflowRunAcceptanceSnapshot struct {
 
 // WorkflowRunArtifact captures a replayable stage output or evidence item.
 type WorkflowRunArtifact struct {
-	ID         string            `json:"id"`
-	Stage      string            `json:"stage,omitempty"`
-	Kind       string            `json:"kind,omitempty"`
-	Title      string            `json:"title,omitempty"`
-	Summary    string            `json:"summary,omitempty"`
-	Content    string            `json:"content,omitempty"`
-	ToolName   string            `json:"tool_name,omitempty"`
-	ToolCallID string            `json:"tool_call_id,omitempty"`
-	IsError    bool              `json:"is_error,omitempty"`
-	Metadata   map[string]string `json:"metadata,omitempty"`
+	ID           string            `json:"id"`
+	Stage        string            `json:"stage,omitempty"`
+	Kind         string            `json:"kind,omitempty"`
+	Title        string            `json:"title,omitempty"`
+	Summary      string            `json:"summary,omitempty"`
+	Content      string            `json:"content,omitempty"`
+	ArtifactRef  string            `json:"artifact_ref,omitempty"`
+	Hash         string            `json:"hash,omitempty"`
+	Mime         string            `json:"mime,omitempty"`
+	Size         int               `json:"size,omitempty"`
+	ContentBytes int               `json:"content_bytes,omitempty"`
+	StoredBytes  int               `json:"stored_bytes,omitempty"`
+	Deduplicated bool              `json:"deduplicated,omitempty"`
+	Externalized bool              `json:"externalized,omitempty"`
+	ToolName     string            `json:"tool_name,omitempty"`
+	ToolCallID   string            `json:"tool_call_id,omitempty"`
+	IsError      bool              `json:"is_error,omitempty"`
+	Metadata     map[string]string `json:"metadata,omitempty"`
 }
+
+// AgentRunArtifactSnapshot stores a summary-first, optionally externalized
+// artifact produced by one ordinary agent run.
+type AgentRunArtifactSnapshot = SessionArtifactSnapshot
 
 // WorkflowRunEventSnapshot captures a replayable workflow stream/status event.
 type WorkflowRunEventSnapshot struct {
-	Seq              int                     `json:"seq,omitempty"`
-	At               string                  `json:"at,omitempty"`
-	Stage            string                  `json:"stage,omitempty"`
-	Type             string                  `json:"type,omitempty"`
-	Content          string                  `json:"content,omitempty"`
-	ToolName         string                  `json:"tool_name,omitempty"`
-	ToolCallID       string                  `json:"tool_call_id,omitempty"`
-	ArgumentsSummary string                  `json:"arguments_summary,omitempty"`
-	AgentID          string                  `json:"agent_id,omitempty"`
-	Mode             string                  `json:"mode,omitempty"`
-	IsError          bool                    `json:"is_error,omitempty"`
-	NeedsAction      bool                    `json:"needs_action,omitempty"`
-	Suspended        bool                    `json:"suspended,omitempty"`
-	TaskStage        string                  `json:"task_stage,omitempty"`
-	PromptTokens     int                     `json:"prompt_tokens,omitempty"`
-	OutputTokens     int                     `json:"output_tokens,omitempty"`
-	CachedTokens     int                     `json:"cached_tokens,omitempty"`
-	WorkflowName     string                  `json:"workflow_name,omitempty"`
-	WorkflowStatus   string                  `json:"workflow_status,omitempty"`
-	NextStage        string                  `json:"next_stage,omitempty"`
-	PendingApproval  bool                    `json:"pending_approval,omitempty"`
-	PromptBudget     *schema.PromptBudget    `json:"prompt_budget,omitempty"`
-	Risk             *schema.ToolRiskProfile `json:"risk,omitempty"`
+	Seq                 int                     `json:"seq,omitempty"`
+	At                  string                  `json:"at,omitempty"`
+	Stage               string                  `json:"stage,omitempty"`
+	Type                string                  `json:"type,omitempty"`
+	Content             string                  `json:"content,omitempty"`
+	ContentArtifactRef  string                  `json:"content_artifact_ref,omitempty"`
+	ContentHash         string                  `json:"content_hash,omitempty"`
+	ContentBytes        int                     `json:"content_bytes,omitempty"`
+	ContentStoredBytes  int                     `json:"content_stored_bytes,omitempty"`
+	ContentExternalized bool                    `json:"content_externalized,omitempty"`
+	ToolName            string                  `json:"tool_name,omitempty"`
+	ToolCallID          string                  `json:"tool_call_id,omitempty"`
+	ArgumentsSummary    string                  `json:"arguments_summary,omitempty"`
+	AgentID             string                  `json:"agent_id,omitempty"`
+	Mode                string                  `json:"mode,omitempty"`
+	IsError             bool                    `json:"is_error,omitempty"`
+	NeedsAction         bool                    `json:"needs_action,omitempty"`
+	Suspended           bool                    `json:"suspended,omitempty"`
+	TaskStage           string                  `json:"task_stage,omitempty"`
+	PromptTokens        int                     `json:"prompt_tokens,omitempty"`
+	OutputTokens        int                     `json:"output_tokens,omitempty"`
+	CachedTokens        int                     `json:"cached_tokens,omitempty"`
+	WorkflowName        string                  `json:"workflow_name,omitempty"`
+	WorkflowStatus      string                  `json:"workflow_status,omitempty"`
+	NextStage           string                  `json:"next_stage,omitempty"`
+	PendingApproval     bool                    `json:"pending_approval,omitempty"`
+	PromptBudget        *schema.PromptBudget    `json:"prompt_budget,omitempty"`
+	Risk                *schema.ToolRiskProfile `json:"risk,omitempty"`
 }
 
 // PendingApprovalSnapshot is a read-only view of pending tool approval state.
 type PendingApprovalSnapshot struct {
-	CallID           string                  `json:"call_id,omitempty"`
-	ToolName         string                  `json:"tool_name,omitempty"`
-	AgentID          string                  `json:"agent_id,omitempty"`
-	ArgumentsSummary string                  `json:"arguments_summary,omitempty"`
-	Arguments        string                  `json:"arguments,omitempty"`
-	WorkflowName     string                  `json:"workflow_name,omitempty"`
-	Stage            string                  `json:"stage,omitempty"`
-	Request          string                  `json:"request,omitempty"`
-	CompletedSummary string                  `json:"completed_summary,omitempty"`
-	AgentRunID       string                  `json:"agent_run_id,omitempty"`
-	Risk             *schema.ToolRiskProfile `json:"risk,omitempty"`
+	CallID                string                  `json:"call_id,omitempty"`
+	ToolName              string                  `json:"tool_name,omitempty"`
+	AgentID               string                  `json:"agent_id,omitempty"`
+	ArgumentsSummary      string                  `json:"arguments_summary,omitempty"`
+	Arguments             string                  `json:"arguments,omitempty"`
+	ArgumentsArtifactRef  string                  `json:"arguments_artifact_ref,omitempty"`
+	ArgumentsHash         string                  `json:"arguments_hash,omitempty"`
+	ArgumentsBytes        int                     `json:"arguments_bytes,omitempty"`
+	ArgumentsStoredBytes  int                     `json:"arguments_stored_bytes,omitempty"`
+	ArgumentsExternalized bool                    `json:"arguments_externalized,omitempty"`
+	WorkflowName          string                  `json:"workflow_name,omitempty"`
+	Stage                 string                  `json:"stage,omitempty"`
+	Request               string                  `json:"request,omitempty"`
+	CompletedSummary      string                  `json:"completed_summary,omitempty"`
+	AgentRunID            string                  `json:"agent_run_id,omitempty"`
+	Risk                  *schema.ToolRiskProfile `json:"risk,omitempty"`
 }
 
 // PendingHandoffSnapshot is a read-only view of an ordinary-chat plan->execution handoff.

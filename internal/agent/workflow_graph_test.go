@@ -12,6 +12,7 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
@@ -444,6 +445,367 @@ stages:
 	}
 	if got := runs[0].CompletedStages[1].Inputs["approved_plan"]; got != "Plan ready with exact steps." {
 		t.Fatalf("expected persisted mapped stage input, got %#v", runs[0].CompletedStages[1])
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphContextContractLimitsPriorContext(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "context-flow", `
+name: context-flow
+stages:
+  - name: collect
+    agent: planner
+    skill: execution-plan
+    outputs:
+      public_summary: result.summary
+      raw_blob: result.output
+    artifacts:
+      - name: report
+        kind: report
+        ref: result.output
+        summary: result.summary
+    next: [review]
+  - name: review
+    agent: auditor
+    skill: code-audit
+    input:
+      approved_summary: stages.collect.outputs.public_summary
+    context:
+      include:
+        - stages.collect.outputs.public_summary
+        - stages.collect.artifacts.report
+      exclude:
+        - raw_output
+        - raw_tool_logs
+      max_tokens: 80
+    outputs:
+      review: result.output
+`)
+	rawOutput := strings.Repeat("safe summary sentence. ", 8) + strings.Repeat("internal-blob ", 120)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: rawOutput}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "reviewed"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "context-flow", "review context", true, nil)
+	if err != nil {
+		t.Fatalf("Run context-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 2 {
+		t.Fatalf("expected context workflow to complete, got %#v", result)
+	}
+	if len(auditorLLM.requests) != 1 {
+		t.Fatalf("expected one auditor request, got %d", len(auditorLLM.requests))
+	}
+	reviewPrompt := auditorLLM.requests[0].Messages[len(auditorLLM.requests[0].Messages)-1].Content
+	if !strings.Contains(reviewPrompt, "Selected context") {
+		t.Fatalf("expected selected context block, got %q", reviewPrompt)
+	}
+	if !strings.Contains(reviewPrompt, "stages.collect.outputs.public_summary") || !strings.Contains(reviewPrompt, "stages.collect.artifacts.report") {
+		t.Fatalf("expected included summary and artifact refs, got %q", reviewPrompt)
+	}
+	if strings.Contains(reviewPrompt, "Completed prior stages") {
+		t.Fatalf("expected context contract to replace broad prior-stage context, got %q", reviewPrompt)
+	}
+	if strings.Contains(reviewPrompt, "stages.collect.outputs.raw_blob") || strings.Contains(reviewPrompt, "internal-blob internal-blob internal-blob internal-blob internal-blob internal-blob") {
+		t.Fatalf("expected raw output to be omitted or tightly truncated, got %q", reviewPrompt)
+	}
+	if !strings.Contains(reviewPrompt, "approved_summary") {
+		t.Fatalf("expected explicit mapped input to stay available, got %q", reviewPrompt)
+	}
+	review := result.CompletedStages[1]
+	if review.Metadata["context.include"] != "stages.collect.outputs.public_summary,stages.collect.artifacts.report" ||
+		review.Metadata["context.exclude"] != "raw_output,raw_tool_logs" ||
+		review.Metadata["context.max_tokens"] != "80" {
+		t.Fatalf("expected context contract metadata, got %#v", review.Metadata)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphContextContractUsesStructuredOutputs(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "structured-context-flow", `
+name: structured-context-flow
+stages:
+  - name: assess
+    agent: planner
+    skill: execution-plan
+    outputs:
+      decision: "'approve'"
+      next_actions: '["ship release","notify ops"]'
+      raw_blob: result.output
+    artifacts:
+      - name: review-report
+        kind: report
+        title: Review report
+        ref: result.summary
+    next: [route]
+  - name: route
+    node_type: condition
+    condition: stages.assess.outputs.decision == "approve"
+    routes:
+      "true": deliver
+      "false": stop
+  - name: deliver
+    agent: auditor
+    skill: code-audit
+    context:
+      include:
+        - previous.decision
+        - stages.assess.outputs.next_actions
+        - stages.assess.outputs.evidence
+      exclude:
+        - raw_blob
+      max_tokens: 120
+    outputs:
+      summary: result.summary
+  - name: stop
+    node_type: end
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: strings.Repeat("raw-secret ", 80)}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "delivered"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "structured-context-flow", "release decision", true, nil)
+	if err != nil {
+		t.Fatalf("Run structured-context-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 3 {
+		t.Fatalf("expected structured context workflow to complete, got %#v", result)
+	}
+	assess := result.CompletedStages[0]
+	if assess.Output.Decision != "approve" {
+		t.Fatalf("expected canonical decision, got %#v", assess.Output)
+	}
+	if len(assess.Output.NextActions) != 2 || assess.Output.NextActions[0] != "ship release" {
+		t.Fatalf("expected canonical next actions, got %#v", assess.Output.NextActions)
+	}
+	if len(assess.Output.Evidence) == 0 {
+		t.Fatalf("expected report artifact to be exposed as evidence, got %#v", assess.Output.Artifacts)
+	}
+	route := result.CompletedStages[1]
+	if route.Output.Variables["route"] != "true" || route.Output.Variables["target"] != "deliver" {
+		t.Fatalf("expected condition to route on canonical decision, got %#v", route.Output.Variables)
+	}
+	if len(auditorLLM.requests) != 1 {
+		t.Fatalf("expected one auditor request, got %d", len(auditorLLM.requests))
+	}
+	deliverPrompt := auditorLLM.requests[0].Messages[len(auditorLLM.requests[0].Messages)-1].Content
+	if !strings.Contains(deliverPrompt, "Selected context") ||
+		!strings.Contains(deliverPrompt, "previous.decision: true") ||
+		!strings.Contains(deliverPrompt, "stages.assess.outputs.next_actions") ||
+		!strings.Contains(deliverPrompt, "stages.assess.outputs.evidence") {
+		t.Fatalf("expected selected structured context, got %q", deliverPrompt)
+	}
+	if strings.Contains(deliverPrompt, "raw-secret raw-secret raw-secret") || strings.Contains(deliverPrompt, "raw_blob") {
+		t.Fatalf("expected raw blob to stay out of selected context, got %q", deliverPrompt)
+	}
+}
+
+func TestWorkflowRunnerWorkflowGraphContextContractInjectsMemoryAndFileSummaries(t *testing.T) {
+	runtimeHome := t.TempDir()
+	workspaceRoot := t.TempDir()
+	authPath := filepath.Join(workspaceRoot, "auth.go")
+	if err := os.WriteFile(authPath, []byte("package auth\n\nfunc LoginValidator() string { return \"secret-token\" }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile auth.go: %v", err)
+	}
+	store := memory.NewStore(workspaceRoot)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure memory store: %v", err)
+	}
+	if _, err := store.UpdateProject("# Project Memory\n\n## Project Goal\n- Ship auth context contracts without raw file leakage.\n"); err != nil {
+		t.Fatalf("UpdateProject: %v", err)
+	}
+	if _, err := store.RecordTask(memory.TaskSummary{
+		UserGoal:     "auth context retrieval",
+		KeyDecisions: []string{"reuse auth file summaries"},
+		ModifiedFiles: []string{
+			"auth.go",
+		},
+	}); err != nil {
+		t.Fatalf("RecordTask: %v", err)
+	}
+	if _, err := store.RebuildFiles(context.Background()); err != nil {
+		t.Fatalf("RebuildFiles: %v", err)
+	}
+	writeWorkflowGraph(t, runtimeHome, "memory-context-flow", `
+name: memory-context-flow
+stages:
+  - name: change
+    agent: fixer
+    skill: code-writing
+    artifacts:
+      - name: auth-change
+        kind: change
+        ref: result.summary
+        summary: result.summary
+        metadata:
+          path: auth.go
+    next: [review]
+  - name: review
+    agent: auditor
+    skill: code-audit
+    context:
+      include:
+        - memory.project
+        - files.changed
+      retrieval:
+        enabled: true
+        query: auth context
+      max_tokens: 300
+`)
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{
+			Content: "changed auth",
+		},
+	}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "reviewed memory context"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+	runtimeRef.SetMemoryStore(store)
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "memory-context-flow", "review auth context", true, nil)
+	if err != nil {
+		t.Fatalf("Run memory-context-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 2 {
+		t.Fatalf("expected memory context workflow to complete, got %#v", result)
+	}
+	if len(auditorLLM.requests) != 1 {
+		t.Fatalf("expected one auditor request, got %d", len(auditorLLM.requests))
+	}
+	reviewPrompt := auditorLLM.requests[0].Messages[len(auditorLLM.requests[0].Messages)-1].Content
+	if !strings.Contains(reviewPrompt, "memory.project") || !strings.Contains(reviewPrompt, "Ship auth context contracts") {
+		t.Fatalf("expected project memory summary in selected context, got %q", reviewPrompt)
+	}
+	if !strings.Contains(reviewPrompt, "files.changed.auth.go") || !strings.Contains(reviewPrompt, "content_mode=summary") || !strings.Contains(reviewPrompt, "hash=") {
+		t.Fatalf("expected changed file summary/hash context, got %q", reviewPrompt)
+	}
+	if !strings.Contains(reviewPrompt, "memory.search.") || !strings.Contains(reviewPrompt, "auth context retrieval") {
+		t.Fatalf("expected retrieval memory context, got %q", reviewPrompt)
+	}
+	if strings.Contains(reviewPrompt, "secret-token") {
+		t.Fatalf("expected workflow context to avoid raw file content, got %q", reviewPrompt)
+	}
+	review := result.CompletedStages[1]
+	if review.Metadata["context.retrieval.enabled"] != "true" || review.Metadata["context.retrieval.query"] != "auth context" {
+		t.Fatalf("expected retrieval metadata, got %#v", review.Metadata)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphCanonicalizesJSONStageOutput(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "json-output-flow", `
+name: json-output-flow
+stages:
+  - name: assess
+    agent: planner
+    skill: execution-plan
+    next: [route]
+  - name: route
+    node_type: condition
+    condition: stages.assess.outputs.decision == "approve"
+    routes:
+      "true": deliver
+      "false": stop
+  - name: deliver
+    agent: auditor
+    skill: code-audit
+    context:
+      include:
+        - stages.assess.outputs.summary
+        - stages.assess.outputs.next_actions
+      max_tokens: 100
+  - name: stop
+    node_type: end
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "```json\n{\"summary\":\"release looks ready\",\"decision\":\"approve\",\"next_actions\":[\"ship\",\"notify\"]}\n```"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "delivered"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "json-output-flow", "release json decision", true, nil)
+	if err != nil {
+		t.Fatalf("Run json-output-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 3 {
+		t.Fatalf("expected json output workflow to complete, got %#v", result)
+	}
+	assess := result.CompletedStages[0]
+	if assess.Output.Decision != "approve" || len(assess.Output.NextActions) != 2 || assess.Output.NextActions[0] != "ship" {
+		t.Fatalf("expected JSON output fields to be canonicalized, got %#v", assess.Output)
+	}
+	route := result.CompletedStages[1]
+	if route.Output.Variables["target"] != "deliver" {
+		t.Fatalf("expected condition to use canonical JSON decision, got %#v", route.Output.Variables)
+	}
+	deliverPrompt := auditorLLM.requests[0].Messages[len(auditorLLM.requests[0].Messages)-1].Content
+	if !strings.Contains(deliverPrompt, "release looks ready") || !strings.Contains(deliverPrompt, "stages.assess.outputs.next_actions") {
+		t.Fatalf("expected canonical JSON summary and next actions in context, got %q", deliverPrompt)
+	}
+}
+
+func TestWorkflowRunnerWorkflowGraphDocumentPersistsContextContract(t *testing.T) {
+	runtimeHome := t.TempDir()
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+	})
+	doc := WorkflowGraphDocument{
+		Name: "document-context-flow",
+		Stages: []WorkflowGraphStageDocument{
+			{Name: "plan", Agent: "planner", Skill: "execution-plan", Next: []string{"review"}, Outputs: map[string]string{"summary": "result.summary"}},
+			{
+				Name:  "review",
+				Agent: "auditor",
+				Skill: "code-audit",
+				Context: WorkflowGraphStageContextDocument{
+					Include:   []string{"stages.plan.outputs.summary", "memory.project"},
+					Exclude:   []string{"raw_tool_logs"},
+					MaxTokens: 900,
+					Retrieval: WorkflowGraphContextRetrievalDocument{Enabled: true, Query: "{{input.goal}}"},
+				},
+			},
+		},
+	}
+	if err := runtimeRef.WorkflowRunner().SaveWorkflowGraphDocument(doc.Name, doc); err != nil {
+		t.Fatalf("SaveWorkflowGraphDocument with context contract: %v", err)
+	}
+	loaded, err := runtimeRef.WorkflowRunner().LoadWorkflowGraphDocument(doc.Name)
+	if err != nil {
+		t.Fatalf("LoadWorkflowGraphDocument with context contract: %v", err)
+	}
+	if len(loaded.Stages) != 2 {
+		t.Fatalf("expected two loaded stages, got %#v", loaded)
+	}
+	context := loaded.Stages[1].Context
+	if context.MaxTokens != 900 || !context.Retrieval.Enabled || context.Retrieval.Query != "{{input.goal}}" ||
+		len(context.Include) != 2 || context.Include[0] != "stages.plan.outputs.summary" ||
+		len(context.Exclude) != 1 || context.Exclude[0] != "raw_tool_logs" {
+		t.Fatalf("expected context contract to round-trip, got %#v", context)
+	}
+	graph := loaded.toInternalGraph()
+	if graph.Stages[1].Context.MaxTokens != 900 || !graph.Stages[1].Context.Retrieval.Enabled ||
+		graph.Stages[1].Context.Include[1] != "memory.project" {
+		t.Fatalf("expected context contract to convert to runtime graph, got %#v", graph.Stages[1].Context)
 	}
 }
 
@@ -1934,6 +2296,62 @@ func TestWorkflowTemplateCatalogIncludesTaskDecompositionPlan(t *testing.T) {
 	for _, want := range []string{"Plan Graph Candidate", "quality_gate", "acceptance_criteria", "workflow-draft", "fields_json"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected rendered template to contain %q, got %q", want, rendered)
+		}
+	}
+}
+
+func TestWorkflowTemplateCatalogIncludesComplexProjectDelivery(t *testing.T) {
+	runtimeRef := newWorkflowGraphRuntime(t, t.TempDir(), workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
+	runner := runtimeRef.WorkflowRunner()
+	template, ok := runner.WorkflowTemplate("complex-project-delivery")
+	if !ok {
+		t.Fatal("expected complex-project-delivery template")
+	}
+	if template.Category != "software" || template.Graph.Name != "complex-project-delivery" || len(template.Graph.Stages) != 12 {
+		t.Fatalf("unexpected complex project delivery template: %#v", template)
+	}
+	validation := runner.ValidateWorkflowGraphDocument("complex-project-delivery", template.Graph)
+	if !validation.Valid {
+		t.Fatalf("expected valid complex project delivery graph, got %#v", validation)
+	}
+	requiredStages := []string{"intake", "plan", "confirm-plan", "delivery-loop", "iteration", "loop-quality", "final-validation", "final-report"}
+	for _, stageName := range requiredStages {
+		if !workflowGraphHasStage(template.Graph, stageName) {
+			t.Fatalf("expected complex project delivery template to include stage %q, got %#v", stageName, template.Graph.Stages)
+		}
+	}
+	foundConfirmation := false
+	foundLoop := false
+	foundIteration := false
+	foundFinalValidation := false
+	foundFinalReport := false
+	for _, stage := range template.Graph.Stages {
+		if stage.Name == "confirm-plan" && stage.NodeType == "checkpoint" && strings.Contains(stage.Params["prompt"], "Approve") {
+			foundConfirmation = true
+		}
+		if stage.Name == "delivery-loop" && stage.NodeType == "loop" && stage.Params["stage"] == "iteration" && strings.Contains(stage.Params["until"], "PROJECT_COMPLETE") {
+			foundLoop = true
+		}
+		if stage.Name == "iteration" && stage.Agent == "fixer" && stage.Approval && strings.Contains(stage.Params["output_contract"], "Plan Update") && len(stage.AcceptanceCriteria) >= 4 {
+			foundIteration = true
+		}
+		if stage.Name == "final-validation" && stage.Agent == "auditor" && len(stage.Artifacts) == 1 && len(stage.Context.Include) >= 6 {
+			foundFinalValidation = true
+		}
+		if stage.Name == "final-report" && stage.Outputs["final_report"] == "result.output" && len(stage.AcceptanceCriteria) >= 3 {
+			foundFinalReport = true
+		}
+	}
+	if !foundConfirmation || !foundLoop || !foundIteration || !foundFinalValidation || !foundFinalReport {
+		t.Fatalf("expected confirmation, loop, iteration, final validation, and final report stages, got %#v", template.Graph.Stages)
+	}
+	rendered, err := RenderWorkflowTemplateYAML("complex-delivery-copy", "complex-project-delivery")
+	if err != nil {
+		t.Fatalf("RenderWorkflowTemplateYAML: %v", err)
+	}
+	for _, want := range []string{"PROJECT_COMPLETE", "delivery-loop", "final-validation-report", "completion-report", "confirm-plan"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected rendered complex project delivery template to contain %q, got %q", want, rendered)
 		}
 	}
 }

@@ -8,8 +8,8 @@ stages:
       next:
         - route-request
       position:
-        x: 80
-        "y": 380
+        x: 180
+        "y": 779
     - name: route-request
       node_type: agent
       agent: planner
@@ -25,8 +25,8 @@ stages:
         - web-security-path
         - binary-analysis-path
       position:
-        x: 350
-        "y": 350
+        x: 732
+        "y": 761
     - name: implementation-path
       node_type: agent
       agent: fixer
@@ -38,8 +38,8 @@ stages:
       next:
         - consolidate
       position:
-        x: 668
-        "y": 27
+        x: 1344
+        "y": 209
     - name: audit-path
       node_type: skill
       agent: auditor
@@ -50,8 +50,8 @@ stages:
       next:
         - consolidate
       position:
-        x: 710
-        "y": 290
+        x: 1344
+        "y": 485
     - name: vulnerability-path
       node_type: skill
       agent: auditor
@@ -62,8 +62,8 @@ stages:
       next:
         - consolidate
       position:
-        x: 710
-        "y": 460
+        x: 1344
+        "y": 761
     - name: web-security-path
       node_type: tool
       agent: auditor
@@ -75,8 +75,8 @@ stages:
       next:
         - consolidate
       position:
-        x: 710
-        "y": 630
+        x: 1344
+        "y": 1037
     - name: binary-analysis-path
       node_type: skill
       agent: auditor
@@ -87,8 +87,8 @@ stages:
       next:
         - binary-risk-review
       position:
-        x: 710
-        "y": 800
+        x: 1344
+        "y": 1313
     - name: binary-risk-review
       node_type: skill
       agent: auditor
@@ -99,8 +99,8 @@ stages:
       next:
         - consolidate
       position:
-        x: 1050
-        "y": 800
+        x: 1956
+        "y": 761
     - name: consolidate
       node_type: skill
       agent: auditor
@@ -111,12 +111,12 @@ stages:
       next:
         - output
       position:
-        x: 1390
-        "y": 380
+        x: 2568
+        "y": 761
     - name: output
       node_type: end
       agent: ""
       skill: ""
       position:
-        x: 1710
-        "y": 409
+        x: 3180
+        "y": 779

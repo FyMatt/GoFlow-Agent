@@ -46,6 +46,9 @@ func NewClient(cfg config.LLMConfig) *Client {
 
 // Chat sends a provider-neutral request to an OpenAI-compatible backend.
 func (c *Client) Chat(ctx context.Context, req schema.ChatRequest) (schema.ChatResponse, error) {
+	if err := validateOpenAICompatibleSetup(c, req); err != nil {
+		return schema.ChatResponse{}, err
+	}
 	payload := newOpenAIRequest(req)
 	body, err := json.Marshal(payload)
 	if err != nil {
@@ -71,6 +74,9 @@ func (c *Client) Chat(ctx context.Context, req schema.ChatRequest) (schema.ChatR
 
 // StreamChat streams a provider response when supported and returns the assembled final response.
 func (c *Client) StreamChat(ctx context.Context, req schema.ChatRequest, handler interfaces.StreamHandler) (schema.ChatResponse, error) {
+	if err := validateOpenAICompatibleSetup(c, req); err != nil {
+		return schema.ChatResponse{}, err
+	}
 	payload := newOpenAIRequest(req)
 	payload.Stream = true
 	payload.StreamOptions = &openAIStreamOptions{IncludeUsage: true}
@@ -109,6 +115,26 @@ func (c *Client) StreamChat(ctx context.Context, req schema.ChatRequest, handler
 
 func (c *Client) Capabilities() []string {
 	return []string{"chat", "stream"}
+}
+
+func validateOpenAICompatibleSetup(c *Client, req schema.ChatRequest) error {
+	if c == nil {
+		return fmt.Errorf("model provider setup required: provider client is not configured")
+	}
+	missing := make([]string, 0, 3)
+	if strings.TrimSpace(c.baseURL) == "" {
+		missing = append(missing, "base_url")
+	}
+	if strings.TrimSpace(req.Model) == "" {
+		missing = append(missing, "model")
+	}
+	if strings.TrimSpace(c.apiKey) == "" {
+		missing = append(missing, "api_key")
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("model provider setup required: configure %s in Web Studio Settings/Resources or configs/providers/*.yaml", strings.Join(missing, ", "))
 }
 
 func (c *Client) doJSON(ctx context.Context, body []byte, stream bool) (schema.ChatResponse, error) {

@@ -68,9 +68,17 @@ func NewServerWithWorkspaceRebinder(runtime *agent.Runtime, workspaceState *work
 	s.mux.HandleFunc("/api/run", s.handleRun)
 	s.mux.HandleFunc("/api/run/stream", s.handleRunStream)
 	s.mux.HandleFunc("/api/runs", s.handleRunCollection)
+	s.mux.HandleFunc("/api/runs/", s.handleRunItem)
 	s.mux.HandleFunc("/api/agent-runs", s.handleAgentRunCollection)
 	s.mux.HandleFunc("/api/agent-runs/", s.handleAgentRunItem)
 	s.mux.HandleFunc("/api/session", s.handleSession)
+	s.mux.HandleFunc("/api/session/compact", s.handleSessionCompact)
+	s.mux.HandleFunc("/api/memory/project", s.handleMemoryProject)
+	s.mux.HandleFunc("/api/memory/search", s.handleMemorySearch)
+	s.mux.HandleFunc("/api/memory/rebuild", s.handleMemoryRebuild)
+	s.mux.HandleFunc("/api/memory", s.handleMemoryDashboard)
+	s.mux.HandleFunc("/api/artifacts", s.handleArtifactObjectCollection)
+	s.mux.HandleFunc("/api/artifacts/", s.handleArtifactObjectItem)
 	s.mux.HandleFunc("/api/session-artifacts", s.handleSessionArtifactCollection)
 	s.mux.HandleFunc("/api/session-artifacts/", s.handleSessionArtifactItem)
 	s.mux.HandleFunc("/api/workflow-graphs", s.handleWorkflowGraphCollection)
@@ -188,8 +196,39 @@ func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	}
 	w.Header().Set("Content-Type", "application/json")
 	snapshot := s.sessionSnapshotWithApprovalRisk()
-	stripSessionArtifactContent(&snapshot)
-	_ = json.NewEncoder(w).Encode(snapshot)
+	if requestWantsFullSession(r) {
+		snapshot = s.runtime.HydrateSnapshot(snapshot)
+	}
+	_ = json.NewEncoder(w).Encode(sessionSnapshotForAPI(snapshot, requestWantsFullSession(r)))
+}
+
+type sessionCompactRequest struct {
+	Reason string `json:"reason,omitempty"`
+}
+
+func (s *Server) handleSessionCompact(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s.runtime == nil {
+		http.Error(w, "runtime not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var req sessionCompactRequest
+	if r.Body != nil {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&req); err != nil && err.Error() != "EOF" {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+	}
+	summary, err := s.runtime.CompactContext(r.Context(), req.Reason)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, summary)
 }
 
 func (s *Server) handleWorkflow(w http.ResponseWriter, r *http.Request) {

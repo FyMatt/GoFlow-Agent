@@ -4,20 +4,48 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"math"
 	"sort"
 	"strings"
 
+	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
+	"github.com/FyMatt/GoFlow-Agent/internal/policy"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
-func emitPromptBudget(handler func(event schema.StreamEvent) error, state *session.State, agentID, mode string, request schema.ChatRequest, skill *schema.Skill, totalTools int) {
+const promptBudgetToolDiagnosticLimit = 12
+
+type promptBudgetContext struct {
+	Memory     *memory.PromptContext
+	ToolPolicy *promptToolPolicyContext
+}
+
+type promptToolPolicyContext struct {
+	Profile config.AgentProfile
+	Tools   []schema.Tool
+}
+
+func promptBudgetContextWithTools(context promptBudgetContext, profile config.AgentProfile, tools []schema.Tool) promptBudgetContext {
+	context.ToolPolicy = &promptToolPolicyContext{
+		Profile: profile,
+		Tools:   append([]schema.Tool(nil), tools...),
+	}
+	return context
+}
+
+func emitPromptBudget(handler func(event schema.StreamEvent) error, state *session.State, agentID, mode string, request schema.ChatRequest, skill *schema.Skill, totalTools int, contexts ...promptBudgetContext) {
 	var snapshot session.Snapshot
 	if state != nil {
 		snapshot = state.Snapshot()
 	}
-	budget := estimatePromptBudget(agentID, mode, request, skill, totalTools, snapshot)
+	context := promptBudgetContext{}
+	if len(contexts) > 0 {
+		context = contexts[0]
+	}
+	budget := estimatePromptBudgetWithContext(agentID, mode, request, skill, totalTools, snapshot, context)
 	if state != nil {
 		budget.TaskStage = snapshot.TaskStage.Stage
 		budget.WorkflowName = snapshot.Workflow.Name
@@ -38,6 +66,10 @@ func emitPromptBudget(handler func(event schema.StreamEvent) error, state *sessi
 }
 
 func estimatePromptBudget(agentID, mode string, request schema.ChatRequest, skill *schema.Skill, totalTools int, snapshot session.Snapshot) schema.PromptBudget {
+	return estimatePromptBudgetWithContext(agentID, mode, request, skill, totalTools, snapshot, promptBudgetContext{})
+}
+
+func estimatePromptBudgetWithContext(agentID, mode string, request schema.ChatRequest, skill *schema.Skill, totalTools int, snapshot session.Snapshot, context promptBudgetContext) schema.PromptBudget {
 	systemBytes := len([]byte(request.System))
 	messageBytes := 0
 	for _, message := range request.Messages {
@@ -59,37 +91,80 @@ func estimatePromptBudget(agentID, mode string, request schema.ChatRequest, skil
 		toolBytes += len([]byte(tool.Kind))
 		toolBytes += len(tool.InputSchema)
 	}
-	skillTokens := 0
+	skillInjectedTokens := 0
+	skillSourceTokens := 0
+	skillOmittedTokens := 0
+	skillInjectedBytes := 0
+	skillSourceBytes := 0
+	skillOmittedBytes := 0
 	skillName := ""
-	skillBudgetText := ""
+	skillInstructionMode := ""
+	skillInjectedBudgetText := ""
+	skillSourceBudgetText := ""
 	if skill != nil {
 		skillName = skill.Name
-		skillBudgetText = skill.Name + "\n" + skill.Description + "\n" + skill.Instructions + "\n" + skillResourcesBudgetText(skill.Resources)
-		skillTokens = estimateTextTokens(skillBudgetText)
+		skillInjectedBudgetText, skillInstructionMode = skillPromptInjectedBudgetText(skill)
+		skillSourceBudgetText = skillPromptSourceBudgetText(skill)
+		skillInjectedBytes = len([]byte(skillInjectedBudgetText))
+		skillSourceBytes = len([]byte(skillSourceBudgetText))
+		skillInjectedTokens = estimateTextTokens(skillInjectedBudgetText)
+		skillSourceTokens = estimateTextTokens(skillSourceBudgetText)
+		skillOmittedBytes = maxInt(skillSourceBytes-skillInjectedBytes, 0)
+		skillOmittedTokens = maxInt(skillSourceTokens-skillInjectedTokens, 0)
 	}
 	systemTokens := estimateByteTokens(systemBytes)
 	messageTokens := estimateByteTokens(messageBytes)
 	toolTokens := estimateByteTokens(toolBytes)
+	memoryBlocks, memoryOmitted, memoryTokens, memorySavedTokens := promptBudgetMemoryDiagnostics(context.Memory)
+	artifactRefs, compactedToolResults, artifactOmittedTokens, artifactOmitted := promptBudgetArtifactDiagnostics(request.Messages)
+	injectedToolSchemas, filteredToolSchemas, omittedToolDiagnostics, toolSelection := promptBudgetToolSchemaDiagnostics(request.Tools, context.ToolPolicy)
 	systemHash := stablePromptHash(request.System)
 	toolSchemaHash := stableToolSchemaHash(request.Tools)
-	skillHash := stablePromptHash(skillBudgetText)
+	skillHash := stablePromptHash(skillInjectedBudgetText)
+	skillSourceHash := stablePromptHash(skillSourceBudgetText)
 	prefixHash := stablePromptHash(strings.Join([]string{request.Model, systemHash, toolSchemaHash, skillHash}, "\x00"))
 	historyPromptStats := sessionHistoryCompactionStats(snapshot.RecentPrompts, systemPromptRecentPromptLimit)
 	historyToolStats := sessionHistoryCompactionStats(snapshot.RecentTools, systemPromptRecentToolLimit)
+	omittedContext := make([]string, 0, len(memoryOmitted)+len(artifactOmitted)+1)
+	omittedContext = append(omittedContext, memoryOmitted...)
+	if skillOmittedTokens > 0 {
+		detail := fmt.Sprintf("skill %s full instructions omitted from prompt summary; estimated_saved_tokens=%d", fallbackPromptBudgetName(skillName, "skill"), skillOmittedTokens)
+		if ref := skillRefForBudget(skill); ref != "" {
+			detail += " ref=" + ref
+		}
+		omittedContext = append(omittedContext, detail)
+	}
+	omittedContext = append(omittedContext, artifactOmitted...)
 	return schema.PromptBudget{
 		EstimatedPromptTokens:            systemTokens + messageTokens + toolTokens,
 		SystemTokens:                     systemTokens,
 		MessageTokens:                    messageTokens,
 		ToolSchemaTokens:                 toolTokens,
-		SkillTokens:                      skillTokens,
+		SkillTokens:                      skillInjectedTokens,
+		SkillSourceTokens:                skillSourceTokens,
+		SkillInjectedTokens:              skillInjectedTokens,
+		SkillOmittedTokens:               skillOmittedTokens,
+		MemoryTokens:                     memoryTokens,
+		DynamicContextTokens:             messageTokens + memoryTokens,
 		CacheablePrefixTokens:            systemTokens + toolTokens,
 		SystemBytes:                      systemBytes,
 		MessageBytes:                     messageBytes,
 		ToolSchemaBytes:                  toolBytes,
+		SkillSourceBytes:                 skillSourceBytes,
+		SkillInjectedBytes:               skillInjectedBytes,
+		SkillOmittedBytes:                skillOmittedBytes,
 		MessageCount:                     len(request.Messages),
 		ExposedToolCount:                 len(request.Tools),
 		TotalToolCount:                   totalTools,
 		FilteredToolCount:                maxInt(totalTools-len(request.Tools), 0),
+		ToolSchemaDiagnosticCount:        len(injectedToolSchemas) + len(filteredToolSchemas),
+		ToolSchemaDiagnosticOmitted:      omittedToolDiagnostics,
+		MemoryBlockCount:                 len(memoryBlocks),
+		MemoryOmittedCount:               len(memoryOmitted),
+		MemoryEstimatedSavedTokens:       memorySavedTokens,
+		ArtifactRefCount:                 len(artifactRefs),
+		CompactedToolResultCount:         compactedToolResults,
+		ArtifactOmittedTokens:            artifactOmittedTokens,
 		HistoryPromptItems:               historyPromptStats.OriginalItems,
 		HistoryPromptRetainedItems:       len(historyPromptStats.RetainedItems),
 		HistoryPromptDeduplicatedItems:   historyPromptStats.Deduplicated,
@@ -102,10 +177,18 @@ func estimatePromptBudget(agentID, mode string, request schema.ChatRequest, skil
 		AgentID:                          agentID,
 		Mode:                             mode,
 		SkillName:                        skillName,
+		SkillInstructionMode:             skillInstructionMode,
+		ToolSchemaSelection:              toolSelection,
 		SystemHash:                       systemHash,
 		ToolSchemaHash:                   toolSchemaHash,
 		SkillHash:                        skillHash,
+		SkillSourceHash:                  skillSourceHash,
 		PromptPrefixHash:                 prefixHash,
+		MemoryBlocks:                     memoryBlocks,
+		OmittedContext:                   limitStrings(omittedContext, 12),
+		ArtifactRefs:                     limitStrings(artifactRefs, 12),
+		InjectedToolSchemas:              injectedToolSchemas,
+		FilteredToolSchemas:              filteredToolSchemas,
 	}
 }
 
@@ -133,6 +216,300 @@ func skillResourcesBudgetText(resources []schema.SkillResource) string {
 		return strings.Join(parts, "\n")
 	}
 	return string(data)
+}
+
+func skillScriptsBudgetText(scripts []schema.SkillScript) string {
+	if len(scripts) == 0 {
+		return ""
+	}
+	data, err := json.Marshal(scripts)
+	if err != nil {
+		parts := make([]string, 0, len(scripts))
+		for _, script := range scripts {
+			parts = append(parts, script.Name+" "+script.Path)
+		}
+		return strings.Join(parts, "\n")
+	}
+	return string(data)
+}
+
+func skillPromptInjectedBudgetText(skill *schema.Skill) (string, string) {
+	if skill == nil {
+		return "", ""
+	}
+	var builder strings.Builder
+	writeSkillPromptBlock(&builder, skill)
+	mode, _, _ := compactSkillInstructionsForPrompt(skill.Instructions)
+	return builder.String(), mode
+}
+
+func skillPromptSourceBudgetText(skill *schema.Skill) string {
+	if skill == nil {
+		return ""
+	}
+	return strings.Join([]string{
+		skill.Name,
+		skill.Description,
+		skill.Instructions,
+		skillScriptsBudgetText(skill.Scripts),
+		skillResourcesBudgetText(skill.Resources),
+	}, "\n")
+}
+
+func skillRefForBudget(skill *schema.Skill) string {
+	if skill == nil {
+		return ""
+	}
+	if strings.TrimSpace(skill.Path) != "" {
+		return strings.TrimSpace(skill.Path)
+	}
+	if strings.TrimSpace(skill.Name) != "" {
+		return "skill:" + strings.TrimSpace(skill.Name)
+	}
+	return ""
+}
+
+func promptBudgetMemoryDiagnostics(ctx *memory.PromptContext) ([]schema.PromptContextBlock, []string, int, int) {
+	if ctx == nil {
+		return nil, nil, 0, 0
+	}
+	blocks := make([]schema.PromptContextBlock, 0, len(ctx.Blocks))
+	tokens := 0
+	for _, block := range ctx.Blocks {
+		summaryTokens := estimateTextTokens(block.Summary)
+		tokens += summaryTokens
+		blocks = append(blocks, schema.PromptContextBlock{
+			Kind:                 block.Kind,
+			Title:                block.Title,
+			Ref:                  block.Ref,
+			Tokens:               summaryTokens,
+			Score:                block.Score,
+			Hash:                 block.Hash,
+			Language:             block.Language,
+			Size:                 block.Size,
+			MTime:                block.MTime,
+			ContentMode:          block.ContentMode,
+			EstimatedSavedTokens: block.EstimatedSavedTokens,
+		})
+	}
+	omitted := make([]string, 0, len(ctx.Omitted))
+	for _, item := range ctx.Omitted {
+		item = strings.TrimSpace(item)
+		if item != "" {
+			omitted = append(omitted, "memory: "+item)
+		}
+	}
+	return blocks, omitted, tokens, ctx.EstimatedSavedTokens
+}
+
+func promptBudgetArtifactDiagnostics(messages []schema.Message) ([]string, int, int, []string) {
+	refs := make([]string, 0)
+	seenRefs := make(map[string]struct{})
+	compacted := 0
+	omittedTokens := 0
+	omitted := make([]string, 0)
+	for _, message := range messages {
+		content := message.Content
+		for _, ref := range artifactRefsInText(content) {
+			if _, ok := seenRefs[ref]; ok {
+				continue
+			}
+			seenRefs[ref] = struct{}{}
+			refs = append(refs, ref)
+		}
+		if !toolResultPromptWasCompacted(content) {
+			continue
+		}
+		compacted++
+		omittedBytes := markerIntValue(content, "omitted_bytes")
+		tokens := estimateByteTokens(omittedBytes)
+		omittedTokens += tokens
+		detail := fmt.Sprintf("tool result %s compacted; estimated_omitted_tokens=%d", fallbackPromptBudgetName(message.Name, "tool"), tokens)
+		if ref := firstArtifactRefInText(content); ref != "" {
+			detail += " ref=" + ref
+		}
+		omitted = append(omitted, detail)
+	}
+	return refs, compacted, omittedTokens, omitted
+}
+
+func promptBudgetToolSchemaDiagnostics(promptTools []schema.Tool, context *promptToolPolicyContext) ([]schema.PromptToolSchema, []schema.PromptToolSchema, int, string) {
+	injected := make([]schema.PromptToolSchema, 0, len(promptTools))
+	for _, tool := range promptTools {
+		injected = append(injected, promptToolSchemaDiagnostic(tool, "injected", "visible to model"))
+	}
+	filtered := make([]schema.PromptToolSchema, 0)
+	if context != nil && len(context.Tools) > 0 {
+		promptKeys := make(map[string]struct{}, len(promptTools)*2)
+		for _, tool := range promptTools {
+			for _, key := range promptToolSchemaKeys(tool) {
+				promptKeys[key] = struct{}{}
+			}
+		}
+		for _, tool := range context.Tools {
+			visible := false
+			for _, key := range promptToolSchemaKeys(tool) {
+				if _, ok := promptKeys[key]; ok {
+					visible = true
+					break
+				}
+			}
+			if visible {
+				continue
+			}
+			reason := "hidden by active agent or skill policy"
+			if err := policy.EnforceToolPolicy(context.Profile, tool); err != nil {
+				reason = err.Error()
+			}
+			filtered = append(filtered, promptToolSchemaDiagnostic(tool, "filtered", reason))
+		}
+	}
+	selection := "none"
+	if len(promptTools) > 0 && context != nil && len(context.Tools) > 0 {
+		switch {
+		case len(filtered) > 0:
+			selection = "policy_filtered"
+		case len(promptTools) == len(context.Tools):
+			selection = "all_visible"
+		default:
+			selection = "partial_visible"
+		}
+	} else if len(promptTools) > 0 {
+		selection = "visible"
+	}
+	omitted := 0
+	if len(injected) > promptBudgetToolDiagnosticLimit {
+		omitted += len(injected) - promptBudgetToolDiagnosticLimit
+		injected = append([]schema.PromptToolSchema(nil), injected[:promptBudgetToolDiagnosticLimit]...)
+	}
+	if len(filtered) > promptBudgetToolDiagnosticLimit {
+		omitted += len(filtered) - promptBudgetToolDiagnosticLimit
+		filtered = append([]schema.PromptToolSchema(nil), filtered[:promptBudgetToolDiagnosticLimit]...)
+	}
+	return injected, filtered, omitted, selection
+}
+
+func promptToolSchemaDiagnostic(tool schema.Tool, status, reason string) schema.PromptToolSchema {
+	name := strings.TrimSpace(tool.Name)
+	server := strings.TrimSpace(tool.Server)
+	qualified := name
+	if server != "" && name != "" {
+		qualified = server + "/" + name
+	}
+	bytes := len([]byte(tool.Name)) + len([]byte(tool.Description)) + len([]byte(tool.Server)) + len([]byte(tool.Kind)) + len(tool.InputSchema)
+	return schema.PromptToolSchema{
+		Name:          name,
+		QualifiedName: qualified,
+		Server:        server,
+		Kind:          string(policy.KindForTool(tool)),
+		Status:        status,
+		Reason:        strings.TrimSpace(reason),
+		Tokens:        estimateByteTokens(bytes),
+		Bytes:         bytes,
+		SchemaHash:    stableToolSchemaHash([]schema.Tool{tool}),
+	}
+}
+
+func promptToolSchemaKeys(tool schema.Tool) []string {
+	keys := []string{promptToolSchemaCanonicalKey(tool)}
+	name := strings.ToLower(strings.TrimSpace(tool.Name))
+	if name != "" {
+		keys = append(keys, name)
+	}
+	return keys
+}
+
+func promptToolSchemaCanonicalKey(tool schema.Tool) string {
+	name := strings.ToLower(strings.TrimSpace(tool.Name))
+	server := strings.ToLower(strings.TrimSpace(tool.Server))
+	if server == "" {
+		return name
+	}
+	return server + "/" + name
+}
+
+func artifactRefsInText(content string) []string {
+	if strings.TrimSpace(content) == "" {
+		return nil
+	}
+	refs := make([]string, 0)
+	for _, field := range strings.Fields(content) {
+		field = strings.TrimSpace(field)
+		switch {
+		case strings.HasPrefix(field, "artifact_ref="):
+			refs = append(refs, normalizePromptBudgetRef(strings.TrimPrefix(field, "artifact_ref=")))
+		case strings.HasPrefix(field, "sha256:"):
+			refs = append(refs, normalizePromptBudgetRef(field))
+		case strings.HasPrefix(field, "goflow://session-artifacts/"):
+			refs = append(refs, normalizePromptBudgetRef(field))
+		}
+	}
+	out := refs[:0]
+	for _, ref := range refs {
+		if ref != "" {
+			out = append(out, ref)
+		}
+	}
+	return out
+}
+
+func firstArtifactRefInText(content string) string {
+	refs := artifactRefsInText(content)
+	if len(refs) == 0 {
+		return ""
+	}
+	return refs[0]
+}
+
+func normalizePromptBudgetRef(ref string) string {
+	ref = strings.TrimSpace(ref)
+	ref = strings.Trim(ref, "[](){}.,;\"'")
+	ref = strings.TrimSuffix(ref, "]")
+	return strings.TrimSpace(ref)
+}
+
+func markerIntValue(content, key string) int {
+	key = strings.TrimSpace(key)
+	if key == "" {
+		return 0
+	}
+	prefix := key + "="
+	for _, field := range strings.Fields(content) {
+		if !strings.HasPrefix(field, prefix) {
+			continue
+		}
+		value := strings.Trim(strings.TrimPrefix(field, prefix), "[](){}.,;\"'")
+		var parsed int
+		if _, err := fmt.Sscanf(value, "%d", &parsed); err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+func fallbackPromptBudgetName(value, fallback string) string {
+	value = strings.TrimSpace(value)
+	if value != "" {
+		return value
+	}
+	return fallback
+}
+
+func limitStrings(values []string, max int) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	cleaned := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			cleaned = append(cleaned, value)
+		}
+	}
+	if max > 0 && len(cleaned) > max {
+		return append([]string(nil), cleaned[:max]...)
+	}
+	return append([]string(nil), cleaned...)
 }
 
 func maxInt(left, right int) int {

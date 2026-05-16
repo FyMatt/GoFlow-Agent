@@ -3,7 +3,7 @@ import { currentLanguage, localizedText, t } from "../i18n.js";
 import { loadResourceCapabilities, resourceAction, resourceActionLabel, resourceActionMethod, resourceActionPath, resourceCapability } from "../resource_actions.js";
 
 const executableTypes = new Set(["agent", "skill", "tool", "team", "custom"]);
-const controlTypes = new Set(["condition", "switch", "router", "policy_guard", "guard", "quality_gate", "quality_guard", "parallel", "join", "input_gate", "checkpoint", "for_each", "loop", "sub_workflow"]);
+const controlTypes = new Set(["condition", "switch", "router", "policy_guard", "guard", "quality_gate", "quality_guard", "quality-guard", "parallel", "join", "input_gate", "checkpoint", "for_each", "loop", "sub_workflow"]);
 const visualTypes = new Set(["start", "end"]);
 const expressionAssistFields = {
   condition: { inputID: "stageCondition", mode: "condition", field: "condition", labelKey: "workflow.condition", requestKey: "expression" },
@@ -13,15 +13,25 @@ const expressionAssistFields = {
 const expressionAssistFieldOrder = ["condition", "policy", "switch_on"];
 const workflowStudioRunKey = "goflow.workflowStudio.activeRun";
 const defaultWorkflowStudioEventReconnectMS = 2200;
+const workflowInspectorWidthStorageKey = "goflow.workflow.inspectorWidth";
+const workflowInspectorWidthBounds = { min: 340, max: 720, defaultValue: 440 };
+const workflowLeftRailCollapsedStorageKey = "goflow.workflow.leftRailCollapsed";
+const workflowArtifactDraftStorageKey = "goflow.workflow.artifactDraft";
+const workflowExpertModeStorageKey = "goflow.workflow.expertMode";
+const workflowSimpleNodeTypes = new Set(["start", "agent", "skill", "tool", "condition", "checkpoint", "loop", "end"]);
 const workflowNodeMetrics = {
   regularWidth: 392,
   regularHeight: 158,
   compactWidth: 332,
   compactHeight: 122,
-  minCanvasWidth: 960,
-  minCanvasHeight: 640,
-  leftPadding: 112,
-  topPadding: 108
+  minCanvasWidth: 1560,
+  minCanvasHeight: 980,
+  leftPadding: 180,
+  topPadding: 150,
+  edgeAnchorGap: 6,
+  edgeRouteRun: 54,
+  edgeObstacleGap: 30,
+  edgeLaneGap: 58
 };
 const runtimeStatusTone = {
   idle: "",
@@ -48,6 +58,10 @@ const state = {
   teamTemplateRequests: {},
   workflowTemplateFilter: { query: "", category: "" },
   nodePaletteFilter: "",
+  inspectorTab: "overview",
+  expertMode: workflowExpertModeEnabled(),
+  stageRecommendationNotice: null,
+  hoveredControlStage: "",
   resourceCapabilities: [],
   activeRoot: null,
   shortcutsBound: false,
@@ -67,8 +81,6 @@ let workflowZoomEndTimer = 0;
 let expressionAssistTimer = 0;
 let expressionAssistRequestSeq = 0;
 const examplePlaceholder = value => escapeHTML(t("common.exampleValue", { value }));
-const workflowInspectorWidthStorageKey = "goflow.workflow.inspectorWidth";
-const workflowInspectorWidthBounds = { min: 340, max: 720, defaultValue: 440 };
 
 function clampWorkflowInspectorWidth(width) {
   const parsed = Number.parseInt(width, 10);
@@ -105,6 +117,90 @@ function setWorkflowInspectorWidth(root, width) {
     // Persisting the preference is nice to have; layout still updates without it.
   }
   return nextWidth;
+}
+
+function workflowLeftRailCollapsed() {
+  try {
+    return localStorage.getItem(workflowLeftRailCollapsedStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setWorkflowLeftRailCollapsed(root, collapsed) {
+  const next = !!collapsed;
+  const studio = root.querySelector(".studio");
+  studio?.classList.toggle("left-rail-collapsed", next);
+  const button = root.querySelector("#toggleWorkflowLeftRail");
+  if (button) {
+    const label = next ? t("workflow.expandLeftRail") : t("workflow.collapseLeftRail");
+    button.setAttribute("aria-label", label);
+    button.setAttribute("title", label);
+    button.setAttribute("aria-pressed", next ? "true" : "false");
+    button.innerHTML = leftRailToggleIcon(next);
+  }
+  try {
+    localStorage.setItem(workflowLeftRailCollapsedStorageKey, next ? "1" : "0");
+  } catch {
+    // Layout preference is optional.
+  }
+}
+
+function workflowExpertModeEnabled() {
+  try {
+    return localStorage.getItem(workflowExpertModeStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function workflowSimpleInspectorTabIDs() {
+  return ["overview", "flow"];
+}
+
+function setWorkflowExpertMode(root, enabled, options = {}) {
+  state.expertMode = !!enabled;
+  try {
+    localStorage.setItem(workflowExpertModeStorageKey, state.expertMode ? "1" : "0");
+  } catch {
+    // UI mode persistence is optional.
+  }
+  if (!state.expertMode && !workflowSimpleInspectorTabIDs().includes(state.inspectorTab)) {
+    state.inspectorTab = "overview";
+  }
+  renderWorkflowInspectorTabs(root);
+  applyWorkflowExperienceMode(root);
+  refreshNodePalette(root);
+  renderStageForm(root);
+  renderExecutionOrder(root);
+  renderRuntime(root);
+  if (options.repaint !== false) scheduleWorkflowRepaint(root);
+}
+
+function applyWorkflowExperienceMode(root) {
+  const studio = root.querySelector(".studio");
+  studio?.classList.toggle("expert-mode", !!state.expertMode);
+  studio?.classList.toggle("simple-mode", !state.expertMode);
+  const toggle = root.querySelector("#workflowExpertMode");
+  if (toggle) {
+    toggle.checked = !!state.expertMode;
+    toggle.setAttribute("aria-checked", state.expertMode ? "true" : "false");
+  }
+  const badge = root.querySelector("#workflowModeBadge");
+  if (badge) {
+    badge.textContent = state.expertMode ? t("workflow.modeExpertBadge") : t("workflow.modeSimpleBadge");
+    badge.className = `badge ${state.expertMode ? "info" : "good"}`;
+  }
+  const label = root.querySelector("#workflowModeLabel");
+  if (label) label.textContent = state.expertMode ? t("workflow.modeExpert") : t("workflow.modeSimple");
+  const help = root.querySelector("#workflowModeHelp");
+  if (help) help.textContent = state.expertMode ? t("workflow.modeExpertHelp") : t("workflow.modeSimpleHelp");
+}
+
+function leftRailToggleIcon(collapsed) {
+  return collapsed
+    ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h10v14H8V5Zm2 2v10h6V7h-6ZM5 7h2v10H5V7Zm7 5 3-3v6l-3-3Z"/></svg>`
+    : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h10v14H6V5Zm2 2v10h6V7H8Zm9 0h2v10h-2V7Zm-5 5-3 3V9l3 3Z"/></svg>`;
 }
 
 function bindWorkflowInspectorResizer(root) {
@@ -166,8 +262,26 @@ export async function renderWorkflows(root) {
   state.resourceCapabilities = resourceCapabilities;
   state.workflowTemplates = normalizeWorkflowTemplateSummaries(state.options.templates);
   root.innerHTML = `
-    <div class="studio">
+    <div class="studio ${state.expertMode ? "expert-mode" : "simple-mode"}">
       <aside class="studio-left" aria-label="${escapeHTML(t("workflow.leftRail"))}">
+        <div class="workflow-left-rail-head">
+          <div>
+            <strong>${escapeHTML(t("workflow.leftRailTitle"))}</strong>
+            <span>${escapeHTML(t("workflow.leftRailHelp"))}</span>
+          </div>
+          <button id="toggleWorkflowLeftRail" type="button" class="icon-button" title="${escapeHTML(t("workflow.collapseLeftRail"))}" aria-label="${escapeHTML(t("workflow.collapseLeftRail"))}">
+            ${leftRailToggleIcon(false)}
+          </button>
+        </div>
+        <div class="workflow-left-quickbar" aria-label="${escapeHTML(t("workflow.quickAddNodes"))}">
+          ${quickNodeTypes().map(type => {
+            const option = nodeTypeOption(type);
+            const label = nodeTypeLabel(option);
+            const shortLabel = quickNodeShortLabel(type, label);
+            const help = nodeTypeHelp(option);
+            return `<button type="button" data-quick-node="${escapeHTML(type)}" title="${escapeHTML(`${label} - ${help}`)}" aria-label="${escapeHTML(`${label}: ${help}`)}">${nodeIcon(type)}<span>${escapeHTML(shortLabel)}</span></button>`;
+          }).join("")}
+        </div>
         <div class="panel flat workflow-list-panel" data-tour-id="workflow-library-list">
           <div class="panel-head">
             <h2>${t("workflow.workflows")}</h2>
@@ -265,36 +379,104 @@ export async function renderWorkflows(root) {
       <aside class="studio-right" aria-label="${escapeHTML(t("workflow.inspectorRail"))}">
         <div class="panel flat workflow-inspector-panel" data-tour-id="workflow-inspector">
           <div class="workflow-inspector-head">
-            <h2>${t("workflow.settings")}</h2>
-            <span id="stageSelectionBadge" class="badge neutral">${t("workflow.noSelection")}</span>
+            <div class="workflow-inspector-title">
+              <h2>${t("workflow.settings")}</h2>
+              <span id="stageSelectionBadge" class="badge neutral">${t("workflow.noSelection")}</span>
+            </div>
+            <label class="workflow-mode-toggle" title="${escapeHTML(t("workflow.modeToggle"))}">
+              <input id="workflowExpertMode" type="checkbox" ${state.expertMode ? "checked" : ""} role="switch" aria-label="${escapeHTML(t("workflow.modeToggle"))}" aria-describedby="workflowModeHelp">
+              <span aria-hidden="true"></span>
+              <em id="workflowModeLabel">${escapeHTML(state.expertMode ? t("workflow.modeExpert") : t("workflow.modeSimple"))}</em>
+            </label>
           </div>
-          <div id="stageEmpty" class="muted">${t("workflow.empty")}</div>
+          <div class="workflow-mode-note">
+            <span id="workflowModeBadge" class="badge ${state.expertMode ? "info" : "good"}">${escapeHTML(state.expertMode ? t("workflow.modeExpertBadge") : t("workflow.modeSimpleBadge"))}</span>
+            <small id="workflowModeHelp">${escapeHTML(state.expertMode ? t("workflow.modeExpertHelp") : t("workflow.modeSimpleHelp"))}</small>
+          </div>
+          <div id="workflowInspectorTabs" class="workflow-inspector-tabs" role="tablist" aria-label="${escapeHTML(t("workflow.inspectorTabs"))}">
+            ${workflowInspectorTabs().map(tab => `<button id="workflowInspectorTab-${escapeHTML(tab.id)}" type="button" role="tab" data-workflow-inspector-tab="${escapeHTML(tab.id)}" aria-controls="workflowInspectorPanel-${escapeHTML(tab.id)}">${escapeHTML(tab.label)}</button>`).join("")}
+          </div>
+          <div id="stageEmpty" class="workflow-stage-empty">
+            <strong>${escapeHTML(t("workflow.emptyTitle"))}</strong>
+            <span>${escapeHTML(t("workflow.empty"))}</span>
+            <div class="workflow-stage-empty-actions">
+              <button type="button" class="primary" data-empty-quick-node="agent">${escapeHTML(t("workflow.emptyAddAgent"))}</button>
+              <button type="button" data-empty-quick-node="condition">${escapeHTML(t("workflow.emptyAddCondition"))}</button>
+              <button type="button" data-empty-open-templates>${escapeHTML(t("workflow.emptyOpenTemplates"))}</button>
+            </div>
+          </div>
           <div id="stageForm" class="stack hidden">
+            <div id="workflowInspectorPanel-overview" class="workflow-inspector-tab-panel" role="tabpanel" aria-labelledby="workflowInspectorTab-overview">
             <div id="stagePlainSummary" class="workflow-stage-summary"></div>
+            <div id="stageSetupSteps" class="workflow-stage-setup"></div>
             <div id="stageRoutePreview" class="workflow-route-preview hidden"></div>
-            <div class="workflow-form-section" data-workflow-form-section="basic">
-              <div class="workflow-form-section-head">
-                <strong>${t("workflow.basicConfig")}</strong>
-                <span>${t("workflow.basicConfigHelp")}</span>
-              </div>
+            <div id="stageTaskEditor" class="workflow-task-editor"></div>
+            <details class="workflow-form-section workflow-raw-fields" data-workflow-form-section="basic">
+              <summary>
+                <span>
+                  <strong>${t("workflow.basicConfig")}</strong>
+                  <small>${t("workflow.basicConfigHelp")}</small>
+                </span>
+                <i>${t("workflow.taskRawFieldsBadge")}</i>
+              </summary>
+              <div class="workflow-raw-fields-body">
               <label data-stage-field="node_type"><span>${t("workflow.nodeType")}</span><select id="stageNodeType">
                 ${nodeTypeOptions().map(option => `<option value="${escapeHTML(option.type)}">${escapeHTML(nodeTypeLabel(option))}</option>`).join("")}
               </select></label>
               <div id="stageNodeTypeMeta" data-stage-field="node_type" class="workflow-node-type-meta hidden"></div>
               <label data-stage-field="name"><span>${t("workflow.stageName")}</span><input id="stageName"></label>
               <label data-stage-field="agent"><span>${t("workflow.agent")}</span><select id="stageAgent"></select></label>
+              <div id="stageAgentPicker" data-stage-field="agent" class="workflow-resource-picker hidden"></div>
               <label data-stage-field="skill"><span>${t("workflow.skill")}</span><select id="stageSkill"></select></label>
+              <div id="stageSkillPicker" data-stage-field="skill" class="workflow-resource-picker hidden"></div>
               <label data-stage-field="tool"><span>${t("workflow.toolMetadata")}</span><select id="stageTool"></select></label>
+              <div id="stageToolPicker" data-stage-field="tool" class="workflow-resource-picker hidden"></div>
               <label data-stage-field="team_template"><span>${t("workflow.teamTemplate")}</span><select id="stageParamTeam"></select></label>
+              <div id="stageTeamTemplatePicker" data-stage-field="team_template" class="workflow-resource-picker hidden"></div>
               <div id="stageTeamTemplatePreview" data-stage-field="team_template" class="workflow-team-template-preview hidden"></div>
               <label data-stage-field="team_quorum_preset"><span>${t("workflow.teamQuorumPreset")}</span><select id="stageTeamQuorumPreset"></select></label>
               <label class="check" data-stage-field="team_execute"><input id="stageTeamExecute" type="checkbox"> ${t("workflow.teamExecuteRoles")}</label>
-              <label data-stage-field="next"><span>${t("workflow.nextStages")}</span><input id="stageNext" placeholder="${escapeHTML(t("workflow.nextPlaceholder"))}"></label>
+              <label data-stage-field="next"><span>${t("workflow.nextStages")}</span><input id="stageNext" placeholder="${escapeHTML(t("workflow.nextPlaceholder"))}"><small class="workflow-field-hint">${t("workflow.nextStagesHelp")}</small></label>
               <label class="check" data-stage-field="approval"><input id="stageApproval" type="checkbox"> ${t("workflow.requireApproval")}</label>
-            </div>
+              </div>
+            </details>
             <div id="stageGuidance" class="workflow-stage-guidance"></div>
             <div id="stageDataFlow" class="workflow-stage-data-flow hidden"></div>
-            <details id="stageAdvancedPanel" class="workflow-advanced-panel">
+            </div>
+            <div id="workflowInspectorPanel-inputs" class="workflow-inspector-tab-panel" role="tabpanel" aria-labelledby="workflowInspectorTab-inputs">
+              <div class="workflow-tab-intro">
+                <strong>${t("workflow.inspectorInputsTitle")}</strong>
+                <span>${t("workflow.inspectorInputsHelp")}</span>
+              </div>
+              <div id="stageInputBuilderSlot" class="workflow-inspector-slot"></div>
+              <div id="stageInputEmpty" class="workflow-inspector-empty hidden">
+                <strong>${t("workflow.inspectorInputsEmptyTitle")}</strong>
+                <span>${t("workflow.inspectorInputsEmptyHelp")}</span>
+              </div>
+            </div>
+            <div id="workflowInspectorPanel-outputs" class="workflow-inspector-tab-panel" role="tabpanel" aria-labelledby="workflowInspectorTab-outputs">
+              <div class="workflow-tab-intro">
+                <strong>${t("workflow.inspectorOutputsTitle")}</strong>
+                <span>${t("workflow.inspectorOutputsHelp")}</span>
+              </div>
+              <div id="stageOutputBuilderSlot" class="workflow-inspector-slot"></div>
+              <div id="stageOutputEmpty" class="workflow-inspector-empty hidden">
+                <strong>${t("workflow.inspectorOutputsEmptyTitle")}</strong>
+                <span>${t("workflow.inspectorOutputsEmptyHelp")}</span>
+              </div>
+            </div>
+            <div id="workflowInspectorPanel-flow" class="workflow-inspector-tab-panel" role="tabpanel" aria-labelledby="workflowInspectorTab-flow">
+              <div class="workflow-tab-intro">
+                <strong>${t("workflow.inspectorFlowTitle")}</strong>
+                <span>${t("workflow.inspectorFlowHelp")}</span>
+              </div>
+              <div id="stageFlowBuilderSlot" class="workflow-inspector-slot"></div>
+              <div id="stageFlowEmpty" class="workflow-inspector-empty hidden">
+                <strong>${t("workflow.inspectorFlowEmptyTitle")}</strong>
+                <span>${t("workflow.inspectorFlowEmptyHelp")}</span>
+              </div>
+            </div>
+            <details id="stageAdvancedPanel" class="workflow-advanced-panel workflow-inspector-tab-panel" role="tabpanel" aria-labelledby="workflowInspectorTab-advanced">
               <summary>
                 <span>
                   <strong>${t("workflow.advancedConfig")}</strong>
@@ -302,8 +484,17 @@ export async function renderWorkflows(root) {
                 </span>
                 <i id="stageAdvancedCount">${t("workflow.optional")}</i>
               </summary>
-              <div class="workflow-advanced-body">
+                <div class="workflow-advanced-body">
                 <div id="stageAdvancedGuide" class="workflow-advanced-guide"></div>
+                <div id="stageAdvancedEmpty" class="workflow-inspector-empty workflow-inspector-empty-action hidden">
+                  <strong>${t("workflow.advancedEmptyTitle")}</strong>
+                  <span>${t("workflow.advancedEmptyHelp")}</span>
+                  <div class="workflow-inspector-empty-actions">
+                    <button type="button" class="primary" data-stage-empty-tab="overview">${t("workflow.advancedEmptyOverview")}</button>
+                    <button type="button" data-stage-empty-tab="flow">${t("workflow.advancedEmptyFlow")}</button>
+                  </div>
+                </div>
+                <div id="stageVisualBuilder" class="workflow-visual-builder hidden"></div>
                 <label data-stage-field="next_strategy"><span>${t("workflow.branchStrategy")}</span><input id="stageNextStrategy" placeholder="${escapeHTML(t("workflow.branchPlaceholder"))}"><small class="workflow-field-hint">${t("workflow.branchStrategyHelp")}</small></label>
                 <div id="stageAdvancedFields" class="workflow-advanced-fields">
                   <strong>${t("workflow.advancedFields")}</strong>
@@ -327,8 +518,40 @@ export async function renderWorkflows(root) {
                   <label data-field="param_wait_for"><span>${t("workflow.joinWaitFor")}</span><input id="stageParamWaitFor" placeholder="${escapeHTML(t("workflow.joinWaitForPlaceholder"))}"></label>
                   <label data-field="param_prompt"><span>${t("workflow.checkpointPrompt")}</span><input id="stageParamPrompt" placeholder="${escapeHTML(t("workflow.checkpointPromptPlaceholder"))}"></label>
                   <label data-field="input"><span>${t("workflow.inputMap")}</span><textarea id="stageInputMap" class="compact-textarea" placeholder="${escapeHTML(t("workflow.inputMapPlaceholder"))}"></textarea><small class="workflow-field-hint">${t("workflow.inputMapHelp")}</small></label>
+                  <div data-field="input" id="stageInputMapBuilder" class="workflow-map-builder"></div>
                   <label data-field="outputs"><span>${t("workflow.outputsMap")}</span><textarea id="stageOutputsMap" class="compact-textarea" placeholder="${escapeHTML(t("workflow.outputsMapPlaceholder"))}"></textarea><small class="workflow-field-hint">${t("workflow.outputsMapHelp")}</small></label>
+                  <div data-field="outputs" id="stageOutputsMapBuilder" class="workflow-map-builder"></div>
                 </div>
+                  <div id="stageContextContract" class="workflow-context-contract">
+                  <div class="workflow-context-contract-head">
+                    <div>
+                      <strong>${t("workflow.contextContractTitle")}</strong>
+                      <span>${t("workflow.contextContractHelp")}</span>
+                    </div>
+                    <span id="stageContextContractBadge">${t("workflow.contextContractDefault")}</span>
+                  </div>
+                  <div id="stageContextPresetBuilder" class="workflow-context-presets"></div>
+                  <div id="stageContextRefPicker" class="workflow-reference-picker"></div>
+                  <div class="workflow-context-grid">
+                    <label><span>${t("workflow.contextInclude")}</span><textarea id="stageContextInclude" class="compact-textarea" placeholder="${escapeHTML(t("workflow.contextIncludePlaceholder"))}"></textarea><small class="workflow-field-hint">${t("workflow.contextIncludeHelp")}</small></label>
+                    <label><span>${t("workflow.contextExclude")}</span><textarea id="stageContextExclude" class="compact-textarea" placeholder="${escapeHTML(t("workflow.contextExcludePlaceholder"))}"></textarea><small class="workflow-field-hint">${t("workflow.contextExcludeHelp")}</small></label>
+                  </div>
+                  <div class="workflow-context-controls">
+                    <label><span>${t("workflow.contextMaxTokens")}</span><input id="stageContextMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("4000")}"><small class="workflow-field-hint">${t("workflow.contextMaxTokensHelp")}</small></label>
+                    <label class="check workflow-context-retrieval"><input id="stageContextRetrievalEnabled" type="checkbox"> ${t("workflow.contextRetrievalEnabled")}</label>
+                  </div>
+                  <label><span>${t("workflow.contextRetrievalQuery")}</span><input id="stageContextRetrievalQuery" placeholder="${escapeHTML(t("workflow.contextRetrievalQueryPlaceholder"))}"><small class="workflow-field-hint">${t("workflow.contextRetrievalQueryHelp")}</small></label>
+                </div>
+                <details id="stageAdvancedRawPanel" class="workflow-developer-subpanel">
+                  <summary>
+                    <span>
+                      <strong>${t("workflow.developerRawFields")}</strong>
+                      <small>${t("workflow.developerRawFieldsHelp")}</small>
+                    </span>
+                    <i id="stageAdvancedRawCount">${t("workflow.optional")}</i>
+                  </summary>
+                  <div id="stageAdvancedRawSlot" class="workflow-developer-raw-slot"></div>
+                </details>
                 <label data-stage-field="params"><span>${t("workflow.parameters")}</span><textarea id="stageParams" class="compact-textarea" placeholder="${escapeHTML(t("workflow.paramsPlaceholder"))}"></textarea><small class="workflow-field-hint">${t("workflow.paramsHelp")}</small></label>
               </div>
             </details>
@@ -363,13 +586,6 @@ export async function renderWorkflows(root) {
                 </div>
               </div>
             </details>
-            <div class="toolbar">
-              <button id="connectStage" type="button">${t("workflow.connect")}</button>
-              <button id="removeStage" type="button" class="danger">${t("workflow.remove")}</button>
-            </div>
-            <div id="connectHint" class="muted"></div>
-            <div id="stageRuntime" class="workflow-stage-runtime hidden"></div>
-            <div class="muted">${t("workflow.edgeHint")}</div>
           </div>
         </div>
         <div class="panel flat workflow-order-card">
@@ -391,15 +607,19 @@ export async function renderWorkflows(root) {
           <textarea id="runInput" aria-label="${escapeHTML(t("workflow.runInputLabel"))}" placeholder="${escapeHTML(t("workflow.runInputPlaceholder"))}"></textarea>
           <button id="runGraph" type="button" class="primary workflow-run-button">${t("workflow.run")}</button>
           <div id="workflowRuntimeSummary" class="workflow-runtime-summary hidden"></div>
+          <div id="stageRuntime" class="workflow-stage-runtime hidden"></div>
           <pre id="runOutput" class="mini-log"></pre>
         </div>
       </aside>
     </div>`;
 
+  hydrateWorkflowInspectorV2(root);
   applyWorkflowInspectorWidth(root);
+  setWorkflowLeftRailCollapsed(root, workflowLeftRailCollapsed());
   await loadWorkflowList();
   await loadWorkflowTemplates();
   await openRequestedWorkflow();
+  openArtifactDraftForWorkflow();
   if (!state.graph.stages.length) createPresetGraph();
   bind(root);
   bindWorkflowShortcuts();
@@ -447,6 +667,160 @@ function createExpressionAssistState() {
     signature: "",
     pendingSignature: ""
   };
+}
+
+function quickNodeTypes() {
+  return ["agent", "skill", "tool", "condition", "checkpoint", "end"];
+}
+
+function quickNodeShortLabel(type, fallback = "") {
+  const key = `workflow.quickNode.${type}`;
+  const label = t(key);
+  return label === key ? fallback : label;
+}
+
+function workflowInspectorTabs() {
+  const tabs = [
+    { id: "overview", label: t("workflow.inspectorTab.overview") },
+    { id: "inputs", label: t("workflow.inspectorTab.inputs") },
+    { id: "outputs", label: t("workflow.inspectorTab.outputs") },
+    { id: "flow", label: t("workflow.inspectorTab.flow") },
+    { id: "advanced", label: t("workflow.inspectorTab.advanced") }
+  ];
+  if (state.expertMode) return tabs;
+  const simple = new Set(workflowSimpleInspectorTabIDs());
+  return tabs.filter(tab => simple.has(tab.id));
+}
+
+function renderWorkflowInspectorTabs(root) {
+  const container = root.querySelector("#workflowInspectorTabs");
+  if (!container) return;
+  container.innerHTML = workflowInspectorTabs().map(tab => (
+    `<button id="workflowInspectorTab-${escapeHTML(tab.id)}" type="button" role="tab" data-workflow-inspector-tab="${escapeHTML(tab.id)}" aria-controls="workflowInspectorPanel-${escapeHTML(tab.id)}">${escapeHTML(tab.label)}</button>`
+  )).join("");
+}
+
+function hydrateWorkflowInspectorV2(root) {
+  const moves = [
+    ["#stageInputBuilderSlot", "#stageInputFieldsBuilder"],
+    ["#stageInputBuilderSlot", "#stageInputFieldsJson"],
+    ["#stageInputBuilderSlot", "#stageInputMap"],
+    ["#stageInputBuilderSlot", "#stageInputMapBuilder"],
+    ["#stageOutputBuilderSlot", "#stageOutputsMap"],
+    ["#stageOutputBuilderSlot", "#stageOutputsMapBuilder"],
+    ["#workflowInspectorPanel-outputs", "#stageArtifactsPanel"],
+    ["#stageFlowBuilderSlot", "#stageNext"],
+    ["#stageFlowBuilderSlot", "#stageVisualBuilder"],
+    ["#stageFlowBuilderSlot", "#stageControlHelp"],
+    ["#stageFlowBuilderSlot", "#stageCondition"],
+    ["#stageFlowBuilderSlot", "#stagePolicyRule"],
+    ["#stageFlowBuilderSlot", "#stagePolicyRuleHelp"],
+    ["#stageFlowBuilderSlot", "#stagePolicy"],
+    ["#stageFlowBuilderSlot", "#stageSwitchOn"],
+    ["#stageFlowBuilderSlot", "#stageExpressionAssist"],
+    ["#stageFlowBuilderSlot", "#stageRoutes"],
+    ["#stageFlowBuilderSlot", "#stageCases"],
+    ["#stageFlowBuilderSlot", "#stageParamWorkflow"],
+    ["#stageFlowBuilderSlot", "#stageParamRequest"],
+    ["#stageFlowBuilderSlot", "#stageParamItems"],
+    ["#stageFlowBuilderSlot", "#stageParamStage"],
+    ["#stageFlowBuilderSlot", "#stageParamUntil"],
+    ["#stageFlowBuilderSlot", "#stageParamMaxIterations"],
+    ["#stageFlowBuilderSlot", "#stageParamWaitFor"],
+    ["#stageFlowBuilderSlot", "#stageParamPrompt"],
+    ["#stageAdvancedRawSlot", "#stageInputMap"],
+    ["#stageAdvancedRawSlot", "#stageOutputsMap"],
+    ["#stageAdvancedRawSlot", "#stageRoutes"],
+    ["#stageAdvancedRawSlot", "#stageCases"],
+    ["#stageAdvancedRawSlot", "#stageParams"]
+  ];
+  for (const [slotSelector, nodeSelector] of moves) {
+    const slot = root.querySelector(slotSelector);
+    const node = root.querySelector(nodeSelector);
+    const wrapper = workflowInspectorMovableNode(node);
+    if (slot && wrapper && wrapper.parentElement !== slot) slot.appendChild(wrapper);
+  }
+  setWorkflowInspectorTab(root, state.inspectorTab || "overview", { render: false });
+}
+
+function workflowInspectorMovableNode(node) {
+  if (!node) return null;
+  if (node.id === "stageControlHelp" || node.id === "stagePolicyRuleHelp" || node.id === "stageExpressionAssist" || node.id === "stageVisualBuilder" || node.id === "stageInputFieldsBuilder" || node.id === "stageInputMapBuilder" || node.id === "stageOutputsMapBuilder") return node;
+  return node.closest("label") || node;
+}
+
+function setWorkflowInspectorTab(root, tab, options = {}) {
+  const valid = new Set(workflowInspectorTabs().map(item => item.id));
+  const next = valid.has(tab) ? tab : "overview";
+  state.inspectorTab = next;
+  root.querySelectorAll("[data-workflow-inspector-tab]").forEach(button => {
+    const active = button.dataset.workflowInspectorTab === next;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-selected", active ? "true" : "false");
+    button.tabIndex = active ? 0 : -1;
+  });
+  root.querySelectorAll(".workflow-inspector-tab-panel").forEach(panel => {
+    panel.classList.toggle("active", workflowInspectorPanelMatchesTab(panel, next));
+  });
+  if (next === "advanced") {
+    root.querySelector("#stageAdvancedPanel")?.setAttribute("open", "");
+  }
+  if (next === "outputs") {
+    const artifacts = root.querySelector("#stageArtifactsPanel");
+    if (artifacts && !artifacts.classList.contains("hidden")) artifacts.setAttribute("open", "");
+  }
+  if (options.render !== false) {
+    refreshActiveWorkflowInspectorPanel(root);
+    scheduleExpressionValidation(root, { immediate: true });
+    scheduleWorkflowRepaint(root);
+  }
+}
+
+function activeWorkflowInspectorTab() {
+  const valid = new Set(workflowInspectorTabs().map(item => item.id));
+  return valid.has(state.inspectorTab) ? state.inspectorTab : "overview";
+}
+
+function workflowInspectorTabIs(...tabs) {
+  return tabs.includes(activeWorkflowInspectorTab());
+}
+
+function refreshActiveWorkflowInspectorPanel(root) {
+  const stage = selectedStage();
+  if (!stage) return;
+  const nodeType = normalizedNodeType(stage);
+  const tab = activeWorkflowInspectorTab();
+  if (tab === "inputs") {
+    renderInputFieldsBuilder(root, stage);
+    updateStageInputOutputBuilders(root, stage, nodeType);
+  }
+  if (tab === "outputs") {
+    renderArtifactsEditor(root, stage);
+    updateStageArtifactsGuide(root, stage, nodeType);
+    renderAcceptanceEditor(root, stage);
+    updateStageAcceptanceGuide(root, stage, nodeType);
+    updateStageInputOutputBuilders(root, stage, nodeType);
+  }
+  if (tab === "flow") {
+    updateControlHelp(root, nodeType);
+    updateStageVisualBuilder(root, stage, nodeType);
+    updatePolicyRuleHelp(root);
+  }
+  if (tab === "advanced") {
+    updateStageAdvancedGuide(root, stage, nodeType);
+    updateStageContextPresetBuilder(root, stage, nodeType);
+    updateStageContextReferencePicker(root, stage, nodeType);
+    scheduleExpressionValidation(root, { immediate: true });
+  }
+  updateWorkflowInspectorEmptyPanels(root);
+}
+
+function workflowInspectorPanelMatchesTab(panel, tab) {
+  if (!panel?.id) return false;
+  if (panel.id === `workflowInspectorPanel-${tab}`) return true;
+  if (tab === "advanced" && panel.id === "stageAdvancedPanel") return true;
+  if (state.expertMode && tab === "outputs" && panel.id === "stageArtifactsPanel") return true;
+  return false;
 }
 
 function resetRuntimeState(input = "") {
@@ -1000,8 +1374,10 @@ function paletteButton(option) {
     hints ? t("workflow.nodePaletteHints", { count: hints }) : "",
     warnings ? t("workflow.nodePaletteWarnings", { count: warnings }) : ""
   ].filter(Boolean);
-  return `<button type="button" class="palette-${escapeHTML(template)} palette-${escapeHTML(group)}" draggable="true" data-template="${escapeHTML(template)}" data-node-type="${escapeHTML(template)}">
-    <i></i><strong>${escapeHTML(nodeTypeLabel(option))}</strong><span>${escapeHTML(nodeTypeHelp(option))}</span>
+  const label = nodeTypeLabel(option);
+  const help = nodeTypeHelp(option);
+  return `<button type="button" class="palette-${escapeHTML(template)} palette-${escapeHTML(group)}" draggable="true" data-template="${escapeHTML(template)}" data-node-type="${escapeHTML(template)}" title="${escapeHTML(`${label} - ${help}`)}" aria-label="${escapeHTML(`${label}: ${help}`)}">
+    <i aria-hidden="true">${nodeIcon(template)}</i><strong>${escapeHTML(label)}</strong><span>${escapeHTML(help)}</span>
     ${tags}
     ${chips.length ? `<div class="palette-meta">${chips.slice(0, 3).map(chip => `<em>${escapeHTML(chip)}</em>`).join("")}</div>` : ""}
   </button>`;
@@ -1057,7 +1433,9 @@ function nodeLibraryGroups() {
 
 function filteredNodeTypeOptions() {
   const filter = normalizeNodePaletteSearch(state.nodePaletteFilter);
-  const options = nodeTypeOptions();
+  const options = state.expertMode
+    ? nodeTypeOptions()
+    : nodeTypeOptions().filter(option => workflowSimpleNodeTypes.has(option.type));
   if (!filter) return options;
   return options.filter(option => normalizeNodePaletteSearch(nodePaletteSearchText(option)).includes(filter));
 }
@@ -1278,6 +1656,75 @@ function bind(root) {
   root.querySelector("#zoomFit").onclick = () => fitCanvas(root);
   root.querySelector("#autoLayoutGraph").onclick = () => autoLayoutGraph(root);
   root.querySelector("#focusCanvas").onclick = () => toggleWorkflowFocusMode(root);
+  root.querySelector("#workflowExpertMode")?.addEventListener("change", event => {
+    setWorkflowExpertMode(root, !!event.target.checked);
+  });
+  root.querySelector("#toggleWorkflowLeftRail").onclick = () => {
+    const studio = root.querySelector(".studio");
+    setWorkflowLeftRailCollapsed(root, !studio?.classList.contains("left-rail-collapsed"));
+    window.setTimeout(() => {
+      applyCanvasGeometry(root);
+      centerGraphInViewport(root);
+    }, 50);
+  };
+  root.querySelector("#workflowInspectorTabs").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-workflow-inspector-tab]") : null;
+    if (!button) return;
+    setWorkflowInspectorTab(root, button.dataset.workflowInspectorTab || "overview");
+  });
+  root.querySelector("#stageSetupSteps").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-stage-setup-target]") : null;
+    if (!button) return;
+    jumpToStageSetupTarget(root, button.dataset.stageSetupTab || "overview", button.dataset.stageSetupTarget || "");
+  });
+  const stageTaskEditor = root.querySelector("#stageTaskEditor");
+  stageTaskEditor.addEventListener("input", event => {
+    const input = event.target instanceof Element ? event.target.closest("[data-stage-task-field], [data-stage-task-route-key], [data-stage-task-case-key]") : null;
+    if (!input) return;
+    applyStageTaskEditorField(root, input);
+  });
+  stageTaskEditor.addEventListener("change", event => {
+    const input = event.target instanceof Element ? event.target.closest("[data-stage-task-field], [data-stage-task-route-key], [data-stage-task-case-key]") : null;
+    if (!input) return;
+    applyStageTaskEditorField(root, input);
+  });
+  stageTaskEditor.addEventListener("click", event => {
+    const refButton = event.target instanceof Element ? event.target.closest("[data-reference-target]") : null;
+    if (refButton && handleWorkflowReferenceSelection(root, refButton)) return;
+    const button = event.target instanceof Element ? event.target.closest("[data-stage-recommendation], [data-stage-task-input-ref], [data-stage-task-output-preset], [data-stage-task-context-preset], [data-stage-task-artifact], [data-stage-task-acceptance], [data-stage-task-open-tab], [data-stage-task-open-developer]") : null;
+    if (!button) return;
+    handleStageTaskEditorAction(root, button);
+  });
+  root.querySelector(".workflow-left-quickbar").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-quick-node]") : null;
+    if (!button) return;
+    const point = visibleCanvasStagePosition(root, button.dataset.quickNode || "agent");
+    addStageFromTemplate(button.dataset.quickNode || "agent", point.x, point.y);
+    clearWorkflowValidation(root);
+    clearWorkflowTransfer(root);
+    renderAll(root);
+  });
+  root.querySelector("#stageEmpty").addEventListener("click", event => {
+    const quickButton = event.target instanceof Element ? event.target.closest("[data-empty-quick-node]") : null;
+    if (quickButton) {
+      const point = visibleCanvasStagePosition(root, quickButton.dataset.emptyQuickNode || "agent");
+      addStageFromTemplate(quickButton.dataset.emptyQuickNode || "agent", point.x, point.y);
+      clearWorkflowValidation(root);
+      clearWorkflowTransfer(root);
+      renderAll(root);
+      return;
+    }
+    const templateButton = event.target instanceof Element ? event.target.closest("[data-empty-open-templates]") : null;
+    if (templateButton) {
+      const studio = root.querySelector(".studio");
+      if (studio?.classList.contains("left-rail-collapsed")) setWorkflowLeftRailCollapsed(root, false);
+      root.querySelector("#workflowTemplateSearch")?.focus();
+      root.querySelector("#workflowTemplatePanel")?.scrollIntoView({
+        block: "nearest",
+        behavior: prefersReducedMotion() ? "auto" : "smooth"
+      });
+    }
+  });
   root.querySelector("#graphName").oninput = () => { state.graph.name = slug(root.querySelector("#graphName").value); clearWorkflowValidation(root); clearWorkflowTransfer(root); renderWorkflowList(root); };
   root.querySelector("#graphDescription").oninput = () => { state.graph.description = root.querySelector("#graphDescription").value; clearWorkflowTransfer(root); };
   root.querySelector("#workflowTemplateSearch").oninput = event => {
@@ -1300,7 +1747,8 @@ function bind(root) {
   palette.onclick = event => {
     const button = event.target.closest("button[data-template]");
     if (!button) return;
-    addStageFromTemplate(button.dataset.template);
+    const point = visibleCanvasStagePosition(root, button.dataset.template);
+    addStageFromTemplate(button.dataset.template, point.x, point.y);
     clearWorkflowValidation(root);
     clearWorkflowTransfer(root);
     renderAll(root);
@@ -1370,6 +1818,11 @@ function bind(root) {
     "stageParamPrompt",
     "stageInputMap",
     "stageOutputsMap",
+    "stageContextInclude",
+    "stageContextExclude",
+    "stageContextMaxTokens",
+    "stageContextRetrievalEnabled",
+    "stageContextRetrievalQuery",
     "stageParams",
     "stageTeamExecute",
     "stageApproval"
@@ -1425,6 +1878,26 @@ function bind(root) {
     if (!button) return;
     addDataFlowReferenceToStageInput(root, button.dataset.copyStageRef || "");
   });
+  root.querySelector("#stageInputMapBuilder").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-input-map-ref]") : null;
+    if (!button) return;
+    addDataFlowReferenceToStageInput(root, button.dataset.inputMapRef || "");
+  });
+  root.querySelector("#stageForm").addEventListener("click", event => {
+    const emptyAction = event.target instanceof Element ? event.target.closest("[data-stage-empty-tab]") : null;
+    if (emptyAction) {
+      setWorkflowInspectorTab(root, emptyAction.dataset.stageEmptyTab || "overview");
+      return;
+    }
+    const button = event.target instanceof Element ? event.target.closest("[data-stage-resource-choice]") : null;
+    if (!button) return;
+    selectStageResource(root, button.dataset.stageResourceChoice || "", button.dataset.stageResourceValue || "");
+  });
+  root.querySelector("#stageOutputsMapBuilder").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-output-map-preset]") : null;
+    if (!button) return;
+    addOutputMapPreset(root, button.dataset.outputMapPreset || "");
+  });
   root.querySelector("#stageNodeTypeMeta").addEventListener("click", event => {
     const button = event.target instanceof Element ? event.target.closest("[data-node-type-action]") : null;
     if (!button) return;
@@ -1443,6 +1916,34 @@ function bind(root) {
     const button = event.target instanceof Element ? event.target.closest("[data-advanced-guide-example]") : null;
     if (!button) return;
     applyAdvancedGuideExample(root, button.dataset.advancedGuideExample || "");
+  });
+  root.querySelector("#stageVisualBuilder").addEventListener("input", event => {
+    if (!(event.target instanceof Element)) return;
+    applyVisualBuilder(root, false);
+  });
+  root.querySelector("#stageVisualBuilder").addEventListener("change", event => {
+    if (!(event.target instanceof Element)) return;
+    applyVisualBuilder(root, false);
+  });
+  root.querySelector("#stageVisualBuilder").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-reference-target]") : null;
+    if (!button) return;
+    handleWorkflowReferenceSelection(root, button);
+  });
+  root.querySelector("#stageContextPresetBuilder").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-context-preset]") : null;
+    if (!button) return;
+    applyContextPreset(root, button.dataset.contextPreset || "");
+  });
+  root.querySelector("#stageContextRefPicker").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-context-include-ref]") : null;
+    if (!button) return;
+    addContextIncludeRef(root, button.dataset.contextIncludeRef || "");
+  });
+  root.querySelector("#workflowTransferPanel").addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-workflow-transfer-action]") : null;
+    if (!button) return;
+    handleWorkflowTransferAction(root, button.dataset.workflowTransferAction || "");
   });
   root.querySelector("#stageArtifactsGuide").addEventListener("click", event => {
     const button = event.target instanceof Element ? event.target.closest("[data-artifact-guide-action]") : null;
@@ -1530,17 +2031,6 @@ function bind(root) {
     updateStagePlainSummary(root, stage, normalizedNodeType(stage));
     renderCanvas(root);
   });
-  root.querySelector("#connectStage").onclick = () => {
-    const stage = selectedStage();
-    if (!stage) return;
-    state.connectSource = state.connectSource === stage.name ? "" : stage.name;
-    renderStageForm(root);
-    renderCanvas(root);
-  };
-  root.querySelector("#removeStage").onclick = () => {
-    removeSelectedStage();
-    renderAll(root);
-  };
   window.onmousemove = event => {
     if (state.connecting) {
       updateConnectionDraft(root, event);
@@ -1570,6 +2060,7 @@ function bind(root) {
     const wasDragging = !!state.dragging;
     state.panning = null;
     canvas.classList.remove("panning");
+    canvas.classList.remove("dragging-node");
     state.dragging = null;
     if (wasDragging) scheduleWorkflowRepaint(root);
   };
@@ -1595,7 +2086,7 @@ function cancelWorkflowCanvasInteraction(root) {
   state.connecting = null;
   state.dragging = null;
   state.panning = null;
-  root.querySelector("#canvas")?.classList.remove("panning");
+  root.querySelector("#canvas")?.classList.remove("panning", "dragging-node");
   if (!hadInteraction) return false;
   renderStageForm(root);
   renderCanvas(root);
@@ -1623,16 +2114,17 @@ function createPresetGraph() {
 function addStageFromTemplate(template, x, y) {
   state.graphValidation = null;
   const index = state.graph.stages.length + 1;
-  const firstAgent = state.options.agents?.[0]?.name || "planner";
-  const firstSkill = state.options.skills?.[0]?.name || "execution-plan";
-  const firstTool = state.options.tools?.[0] || "";
+  const firstAgent = workflowResourceOptions("agent")[0]?.name || "planner";
+  const firstSkill = workflowResourceOptions("skill")[0]?.name || "execution-plan";
+  const firstTool = workflowResourceOptions("tool")[0]?.name || "";
+  const firstTeamTemplate = workflowResourceOptions("team_template")[0]?.name || "software-task-team";
   const remoteDefault = defaultStageForType(template);
   const presets = {
     start: { name: uniqueStageName("start"), node_type: "start" },
     agent: { name: uniqueStageName("agent"), node_type: "agent", agent: firstAgent, skill: firstSkill },
     skill: { name: uniqueStageName("skill"), node_type: "skill", agent: "planner", skill: firstSkill },
     tool: { name: uniqueStageName("tool"), node_type: "tool", agent: "fixer", skill: "code-writing", tool: firstTool, approval: true },
-    team: { name: uniqueStageName("team"), node_type: "team", agent: firstAgent, params: { team: state.options.team_templates?.[0]?.name || "software-task-team" } },
+    team: { name: uniqueStageName("team"), node_type: "team", agent: firstAgent, params: { team: firstTeamTemplate } },
     condition: { name: uniqueStageName("condition"), node_type: "condition", condition: `contains(previous.raw_output, "risk")`, routes: { true: "yes", false: "no" } },
     switch: { name: uniqueStageName("switch"), node_type: "switch", switch_on: "previous.summary", cases: { default: "next" } },
     policy_guard: { name: uniqueStageName("guard"), node_type: "policy_guard", policy: `contains(previous.raw_output, "approved")`, routes: { allow: "next", deny: "blocked" } },
@@ -1696,6 +2188,7 @@ function normalizeStagePresetForApply(source, fallbackNodeType) {
     cases: preset.cases && typeof preset.cases === "object" && !Array.isArray(preset.cases) ? preset.cases : {},
     input: preset.input && typeof preset.input === "object" && !Array.isArray(preset.input) ? preset.input : {},
     outputs: preset.outputs && typeof preset.outputs === "object" && !Array.isArray(preset.outputs) ? preset.outputs : {},
+    context: hasStageContextContract(preset.context) ? normalizeStageContext(preset.context) : undefined,
     params: preset.params && typeof preset.params === "object" && !Array.isArray(preset.params) ? preset.params : {},
     artifacts: normalizeArtifacts(preset.artifacts),
     acceptance_criteria: normalizeAcceptanceCriteria(preset.acceptance_criteria || preset.acceptance),
@@ -1723,6 +2216,13 @@ function applyStagePresetToSelection(root, source, nodeType) {
   renderCanvas(root);
 }
 
+function workflowNodeTypeChoices() {
+  const options = nodeTypeOptions();
+  if (state.expertMode) return options;
+  const selected = normalizedNodeType(selectedStage());
+  return options.filter(option => workflowSimpleNodeTypes.has(option.type) || option.type === selected);
+}
+
 function applyNodeTypeDefaultStage(root, nodeType) {
   const preset = defaultStageForType(nodeType);
   if (!preset) return;
@@ -1740,14 +2240,15 @@ function renderAll(root) {
   applyWorkflowFocusMode(root);
   root.querySelector("#graphName").value = state.graph.name || "";
   root.querySelector("#graphDescription").value = state.graph.description || "";
+  applyWorkflowExperienceMode(root);
   updateWorkflowToolbarStatus(root);
   updateZoomLabel(root);
   renderWorkflowList(root);
   renderWorkflowTemplateList(root);
   refreshNodePalette(root);
-  fillSelect(root.querySelector("#stageAgent"), (state.options.agents || []).map(item => item.name));
-  fillSelect(root.querySelector("#stageSkill"), (state.options.skills || []).map(item => item.name));
-  fillSelect(root.querySelector("#stageTool"), state.options.tools || []);
+  fillSelect(root.querySelector("#stageAgent"), workflowResourceOptions("agent").map(item => item.name));
+  fillSelect(root.querySelector("#stageSkill"), workflowResourceOptions("skill").map(item => item.name));
+  fillSelect(root.querySelector("#stageTool"), workflowResourceOptions("tool").map(item => item.name));
   fillTeamTemplateSelect(root.querySelector("#stageParamTeam"));
   renderCanvas(root);
   renderStageForm(root);
@@ -1790,6 +2291,7 @@ function scheduleWorkflowEdgeRepaint(root) {
   if (workflowEdgeRepaintFrame) return;
   workflowEdgeRepaintFrame = window.requestAnimationFrame(() => {
     workflowEdgeRepaintFrame = 0;
+    drawControlScopes(root);
     drawEdges(root);
   });
 }
@@ -2006,12 +2508,13 @@ function workflowTemplateRank(template) {
   const name = workflowTemplateName(template);
   const priority = {
     "multi-domain-intake-router": 0,
-    "agent-framework-extension": 1,
-    "task-decomposition-plan": 2,
-    "plan-fix-audit": 3,
-    "operations-runbook": 4,
-    "customer-support-triage": 5,
-    "software-team-review-gate": 6
+    "complex-project-delivery": 1,
+    "agent-framework-extension": 2,
+    "task-decomposition-plan": 3,
+    "plan-fix-audit": 4,
+    "operations-runbook": 5,
+    "customer-support-triage": 6,
+    "software-team-review-gate": 7
   };
   if (Object.prototype.hasOwnProperty.call(priority, name)) return priority[name];
   const category = String(template?.category || template?.source || "").toLowerCase();
@@ -2024,6 +2527,7 @@ function workflowTemplateRank(template) {
 function workflowTemplateBadge(template) {
   const name = workflowTemplateName(template);
   if (name === "multi-domain-intake-router") return { tone: "primary", label: t("workflow.templateDefaultStarter") };
+  if (name === "complex-project-delivery") return { tone: "builder", label: t("workflow.templateComplexDelivery") };
   if (name === "agent-framework-extension") return { tone: "builder", label: t("workflow.templateBuilderStarter") };
   if (name === "operations-runbook" || name === "customer-support-triage") return { tone: "domain", label: t("workflow.templateDomainStarter") };
   const category = String(template?.category || "").toLowerCase();
@@ -2091,8 +2595,10 @@ function renderCanvas(root) {
   const surface = root.querySelector("#canvasSurface");
   canvas.classList.toggle("connecting", !!state.connecting);
   canvas.classList.toggle("panning", !!state.panning);
+  canvas.classList.toggle("dragging-node", !!state.dragging);
   state.graph.stages.forEach((stage, index) => ensurePosition(stage, index));
   keepGraphInsideCanvas();
+  surface.querySelectorAll(".control-scope, .control-scope-label").forEach(item => item.remove());
   surface.querySelectorAll(".flow-node").forEach(node => node.remove());
   const tourNodeIndex = Math.max(0, state.graph.stages.findIndex(stage => executableTypes.has(normalizedNodeType(stage))));
   for (const [index, stage] of state.graph.stages.entries()) {
@@ -2113,6 +2619,7 @@ function renderCanvas(root) {
     node.setAttribute("role", "button");
     node.setAttribute("aria-keyshortcuts", "Escape Delete Backspace");
     node.setAttribute("aria-label", `${nodeDisplayType(nodeType)} ${stage.name || t("workflow.noStage")} ${setupStatus.label}`);
+    node.title = workflowNodeCanvasTitle(stage, nodeType);
     node.className = `flow-node ${nodeType} ${category}` +
       (index === state.selected ? " selected" : "") +
       (stage.approval ? " needs-approval" : "") +
@@ -2144,6 +2651,7 @@ function renderCanvas(root) {
       <div class="node-meta">
         ${nodeMetaLines(stage, nodeType).map(line => `<span>${escapeHTML(line)}</span>`).join("")}
       </div>
+      ${nodeControlSummary(stage, nodeType)}
       ${nodeSetupBadge(setupStatus)}
       ${runtimeState ? nodeRuntimeBadge(runtimeState) : ""}
       ${evidenceChips}
@@ -2186,6 +2694,16 @@ function renderCanvas(root) {
       renderStageForm(root);
       renderCanvas(root);
     };
+    node.onmouseenter = () => {
+      if (!workflowControlScopeGroups(stage).length) return;
+      state.hoveredControlStage = stage.name || "";
+      drawControlScopes(root);
+    };
+    node.onmouseleave = () => {
+      if (state.hoveredControlStage !== stage.name) return;
+      state.hoveredControlStage = "";
+      drawControlScopes(root);
+    };
     node.querySelector(".node-delete").onclick = event => {
       event.preventDefault();
       event.stopPropagation();
@@ -2211,6 +2729,7 @@ function renderCanvas(root) {
     surface.appendChild(node);
   }
   applyCanvasGeometry(root);
+  drawControlScopes(root);
   cancelScheduledWorkflowEdgeRepaint();
   drawEdges(root);
 }
@@ -2245,11 +2764,12 @@ function drawEdges(root) {
   svg.querySelectorAll("path.edge").forEach(edge => edge.remove());
   surface.querySelectorAll(".edge-action").forEach(button => button.remove());
   surface.querySelectorAll(".edge-runtime-label").forEach(label => label.remove());
+  surface.querySelectorAll(".edge-semantic-label").forEach(label => label.remove());
   const rects = nodeRects(root);
   const byName = new Map(state.graph.stages.map(stage => [stage.name, stage]));
   const edges = [];
   for (const stage of state.graph.stages) {
-    for (const link of workflowOutgoingLinks(stage)) {
+    for (const link of workflowOutgoingLinks(stage, { includeControlBody: true })) {
       const target = byName.get(link.target);
       if (!target) continue;
       const sourceRect = rects.get(stage.name);
@@ -2260,14 +2780,20 @@ function drawEdges(root) {
   }
   const slots = workflowEdgeSlots(edges);
   for (const edge of edges) {
-    const anchors = edgeAnchors(edge.sourceRect, edge.targetRect, slots.get(workflowEdgeKey(edge)));
+    const geometry = edgeGeometry(edge, slots.get(workflowEdgeKey(edge)), rects);
     const runtimeRouteEdge = isRuntimeRouteEdge(edge.stage, edge.targetName);
-    const midpoint = edgeMidpoint(anchors);
+    const midpoint = edgeMidpoint(geometry);
     const routeClass = workflowLinkHasBranch(edge.link) ? " route-link" : "";
-    svg.appendChild(edgePath(edgeD(anchors), `edge edge-underlay${runtimeRouteEdge ? " route-hit" : ""}${routeClass}`));
-    svg.appendChild(edgePath(edgeD(anchors), `edge${runtimeRouteEdge ? " route-hit" : ""}${routeClass}`));
-    if (runtimeRouteEdge) surface.appendChild(edgeRuntimeLabel(edge.stage, edge.targetName, midpoint));
-    surface.appendChild(edgeDeleteButton(root, edge.sourceName, edge.targetName, midpoint, edge.link));
+    const bodyClass = workflowLinkIsControlBody(edge.link) ? " body-link" : "";
+    const pathD = edgeD(geometry);
+    svg.appendChild(edgePath(pathD, `edge edge-underlay${runtimeRouteEdge ? " route-hit" : ""}${routeClass}${bodyClass}`));
+    svg.appendChild(edgePath(pathD, `edge${runtimeRouteEdge ? " route-hit" : ""}${routeClass}${bodyClass}`));
+    const semantic = workflowEdgeSemanticLabel(edge);
+    if (semantic) surface.appendChild(edgeSemanticLabel(semantic, workflowEdgeAnnotationPoint(midpoint, "label"), edge.link));
+    if (runtimeRouteEdge) surface.appendChild(edgeRuntimeLabel(edge.stage, edge.targetName, semantic ? workflowEdgeAnnotationPoint(midpoint, "runtime") : midpoint));
+    if (!workflowLinkIsOnlyControlBody(edge.link)) {
+      surface.appendChild(edgeDeleteButton(root, edge.sourceName, edge.targetName, semantic ? workflowEdgeAnnotationPoint(midpoint, "delete") : midpoint, edge.link));
+    }
   }
   if (state.connecting) {
     const sourceRect = rects.get(state.connecting.sourceName);
@@ -2320,6 +2846,185 @@ function workflowEdgeSourceRank(edge) {
 
 function workflowLinkHasBranch(link = {}) {
   return (link.entries || []).some(entry => entry.kind === "routes" || entry.kind === "cases");
+}
+
+function workflowLinkIsControlBody(link = {}) {
+  return (link.entries || []).some(entry => entry.kind === "body");
+}
+
+function workflowLinkIsOnlyControlBody(link = {}) {
+  const entries = link.entries || [];
+  return entries.length > 0 && entries.every(entry => entry.kind === "body");
+}
+
+function workflowEdgeSemanticLabel(edge = {}) {
+  const stageType = normalizedNodeType(edge.stage);
+  const entries = edge.link?.entries || [];
+  if (entries.some(entry => entry.kind === "body")) return t("workflow.controlScope.bodyShort");
+  const routeEntry = entries.find(entry => entry.kind === "routes" || entry.kind === "cases");
+  if (routeEntry) return workflowRouteLabel(routeEntry.key);
+  if (controlTypes.has(stageType) && entries.some(entry => entry.kind === "next")) {
+    if (workflowNodeHasBodyStage(stageType)) return t("workflow.controlScope.afterShort");
+    if (stageType === "checkpoint" || stageType === "input_gate") return t("workflow.controlScope.continueShort");
+    if (stageType === "parallel") return t("workflow.controlScope.branchShort");
+  }
+  return "";
+}
+
+function edgeSemanticLabel(text, point, link = {}) {
+  const label = document.createElement("div");
+  label.className = `edge-semantic-label${workflowLinkIsControlBody(link) ? " body" : workflowLinkHasBranch(link) ? " route" : ""}`;
+  label.textContent = text;
+  label.title = text;
+  label.style.left = `${point.x}px`;
+  label.style.top = `${point.y}px`;
+  return label;
+}
+
+function workflowEdgeAnnotationPoint(point, role = "label") {
+  const offset = role === "delete" ? 24 : role === "runtime" ? -42 : -22;
+  return { x: point.x, y: point.y + offset };
+}
+
+function workflowRouteLabel(value) {
+  const raw = String(value || "").trim();
+  if (!raw) return "";
+  const normalized = raw.toLowerCase();
+  const key = `workflow.routeLabel.${normalized}`;
+  const translated = t(key);
+  if (translated !== key) return translated;
+  return workflowDisplayValue(raw);
+}
+
+function drawControlScopes(root) {
+  const surface = root.querySelector("#canvasSurface");
+  if (!surface) return;
+  surface.querySelectorAll(".control-scope, .control-scope-label").forEach(item => item.remove());
+  surface.querySelectorAll(".flow-node.control-scope-source, .flow-node.control-scope-target").forEach(node => {
+    node.classList.remove("control-scope-source", "control-scope-target");
+  });
+  if (state.dragging) return;
+  const source = activeControlScopeStage();
+  if (!source) return;
+  const groups = workflowControlScopeGroups(source);
+  if (!groups.length) return;
+  const rects = nodeRects(root);
+  const sourceNode = workflowCanvasNodeElement(surface, source.name);
+  sourceNode?.classList.add("control-scope-source");
+  groups.slice(0, 8).forEach(group => {
+    const targetRects = group.targets.map(name => rects.get(name)).filter(Boolean);
+    if (!targetRects.length) return;
+    group.targets.forEach(name => workflowCanvasNodeElement(surface, name)?.classList.add("control-scope-target"));
+    const bounds = unionRects(targetRects);
+    const pad = workflowControlScopePadding(group.kind);
+    const labelReserve = workflowControlScopeLabelReserve(group.kind);
+    const scopeLeft = Math.max(8, bounds.left - pad);
+    const scopeTop = Math.max(8, bounds.top - pad - labelReserve);
+    const scopeBottom = bounds.top + bounds.height + pad;
+    const scopeWidth = bounds.width + pad * 2;
+    const scope = document.createElement("div");
+    scope.className = `control-scope ${group.kind}`;
+    scope.style.left = `${scopeLeft}px`;
+    scope.style.top = `${scopeTop}px`;
+    scope.style.width = `${scopeWidth}px`;
+    scope.style.height = `${Math.max(48, scopeBottom - scopeTop)}px`;
+    scope.title = `${source.name}: ${group.label} -> ${workflowDisplayList(group.targets)}`;
+    surface.appendChild(scope);
+    surface.appendChild(workflowControlScopeLabel(source, group, {
+      left: scopeLeft + 12,
+      top: workflowControlScopeLabelTop(bounds, scopeTop),
+      width: Math.max(180, scopeWidth - 24)
+    }));
+  });
+}
+
+function workflowControlScopeLabel(source, group, rect) {
+  const label = document.createElement("div");
+  label.className = `control-scope-label ${group.kind}`;
+  label.innerHTML = `<span>${escapeHTML(group.label)}</span><small>${escapeHTML(workflowDisplayList(group.targets))}</small>`;
+  label.title = `${source.name}: ${group.label} -> ${workflowDisplayList(group.targets)}`;
+  label.style.left = `${rect.left}px`;
+  label.style.top = `${rect.top}px`;
+  label.style.maxWidth = `${rect.width}px`;
+  return label;
+}
+
+function activeControlScopeStage() {
+  const hovered = state.hoveredControlStage ? state.graph.stages.find(stage => stage.name === state.hoveredControlStage) : null;
+  if (hovered && workflowControlScopeGroups(hovered).length) return hovered;
+  const selected = selectedStage();
+  if (selected && workflowControlScopeGroups(selected).length) return selected;
+  const selectedName = String(selected?.name || "").trim();
+  if (!selectedName) return null;
+  return (state.graph.stages || []).find(stage => workflowControlScopeGroups(stage).some(group => group.targets.includes(selectedName))) || null;
+}
+
+function workflowControlScopeGroups(stage = {}) {
+  const nodeType = normalizedNodeType(stage);
+  if (!controlTypes.has(nodeType)) return [];
+  const groups = new Map();
+  const add = (kind, label, targets) => {
+    const cleanTargets = workflowReferenceTargets(targets).filter(target => target && target !== stage.name);
+    if (!cleanTargets.length) return;
+    const key = `${kind}:${label}`;
+    const group = groups.get(key) || { kind, label, targets: [] };
+    cleanTargets.forEach(target => {
+      if (!group.targets.includes(target)) group.targets.push(target);
+    });
+    groups.set(key, group);
+  };
+  for (const link of workflowOutgoingLinks(stage, { includeControlBody: true })) {
+    const entries = link.entries || [];
+    if (entries.some(entry => entry.kind === "body")) {
+      add("body", t("workflow.controlScope.body"), link.target);
+      continue;
+    }
+    const routeEntry = entries.find(entry => entry.kind === "routes" || entry.kind === "cases");
+    if (routeEntry) {
+      add(routeEntry.kind === "cases" ? "case" : "route", workflowRouteLabel(routeEntry.key), link.target);
+      continue;
+    }
+    if (!entries.some(entry => entry.kind === "next")) continue;
+    if (workflowNodeHasBodyStage(nodeType)) {
+      add("after", t("workflow.controlScope.after"), link.target);
+    } else if (nodeType === "parallel") {
+      add("branch", t("workflow.controlScope.branch"), link.target);
+    } else if (nodeType === "checkpoint" || nodeType === "input_gate") {
+      add("after", t("workflow.controlScope.continue"), link.target);
+    }
+  }
+  return [...groups.values()];
+}
+
+function workflowControlScopePadding(kind) {
+  if (kind === "body") return 34;
+  if (kind === "after") return 28;
+  return 24;
+}
+
+function workflowControlScopeLabelReserve(kind) {
+  if (kind === "body") return 44;
+  if (kind === "after") return 40;
+  return 38;
+}
+
+function workflowControlScopeLabelTop(bounds, scopeTop) {
+  const preferred = bounds.top - 36;
+  if (preferred >= 8) return preferred;
+  return Math.max(8, scopeTop + 8);
+}
+
+function workflowCanvasNodeElement(surface, stageName) {
+  return Array.from(surface?.querySelectorAll(".flow-node") || [])
+    .find(node => node.dataset.stageName === stageName) || null;
+}
+
+function unionRects(rects = []) {
+  const left = Math.min(...rects.map(rect => rect.left));
+  const top = Math.min(...rects.map(rect => rect.top));
+  const right = Math.max(...rects.map(rect => rect.left + rect.width));
+  const bottom = Math.max(...rects.map(rect => rect.top + rect.height));
+  return { left, top, width: right - left, height: bottom - top };
 }
 
 function edgeRuntimeLabel(stage, targetName, point) {
@@ -2445,6 +3150,8 @@ function renderStageForm(root) {
       selectionBadge.textContent = t("workflow.noSelection");
       selectionBadge.className = "badge neutral";
     }
+    updateWorkflowInspectorTabs(root, null, "");
+    applyWorkflowExperienceMode(root);
     renderSelectedStageRuntime(root);
     return;
   }
@@ -2462,6 +3169,9 @@ function renderStageForm(root) {
   }
   root.querySelector("#stageNodeType").value = normalizedNodeType(stage);
   root.querySelector("#stageName").value = stage.name || "";
+  ensureSelectOption(root.querySelector("#stageAgent"), stage.agent || "", stage.agent || "");
+  ensureSelectOption(root.querySelector("#stageSkill"), stage.skill || "", stage.skill || "");
+  ensureSelectOption(root.querySelector("#stageTool"), stage.tool || "", stage.tool || "");
   root.querySelector("#stageAgent").value = stage.agent || "";
   root.querySelector("#stageSkill").value = stage.skill || "";
   root.querySelector("#stageTool").value = stage.tool || "";
@@ -2493,38 +3203,105 @@ function renderStageForm(root) {
   root.querySelector("#stageParamPrompt").value = params.prompt || "";
   root.querySelector("#stageInputMap").value = formatMap(stage.input);
   root.querySelector("#stageOutputsMap").value = formatMap(stage.outputs);
+  root.querySelector("#stageContextInclude").value = formatContextList(stage.context?.include);
+  root.querySelector("#stageContextExclude").value = formatContextList(stage.context?.exclude);
+  root.querySelector("#stageContextMaxTokens").value = stage.context?.max_tokens || "";
+  root.querySelector("#stageContextRetrievalEnabled").checked = !!stage.context?.retrieval?.enabled;
+  root.querySelector("#stageContextRetrievalQuery").value = stage.context?.retrieval?.query || "";
   root.querySelector("#stageParams").value = formatParams(genericStageParams(stage, nodeType));
   root.querySelector("#stageTeamExecute").checked = isTruthyParam(stage.params?.execute);
   root.querySelector("#stageApproval").checked = !!stage.approval;
-  renderArtifactsEditor(root, stage);
-  updateStageArtifactsGuide(root, stage, nodeType);
-  renderAcceptanceEditor(root, stage);
-  updateStageAcceptanceGuide(root, stage, nodeType);
   updateStageFieldVisibility(root, nodeType);
   updateAdvancedFieldVisibility(root, nodeType);
-  updateControlHelp(root, nodeType);
-  updateStageAdvancedGuide(root, stage, nodeType);
+  if (workflowInspectorTabIs("flow")) {
+    updateControlHelp(root, nodeType);
+    updateStageVisualBuilder(root, stage, nodeType);
+  }
+  if (workflowInspectorTabIs("inputs", "outputs")) updateStageInputOutputBuilders(root, stage, nodeType);
+  if (workflowInspectorTabIs("outputs")) {
+    renderArtifactsEditor(root, stage);
+    updateStageArtifactsGuide(root, stage, nodeType);
+    renderAcceptanceEditor(root, stage);
+    updateStageAcceptanceGuide(root, stage, nodeType);
+  }
+  if (workflowInspectorTabIs("advanced")) updateStageAdvancedGuide(root, stage, nodeType);
   updateNodeTypeMeta(root, nodeType);
   updateTeamQuorumPresetOptions(root, stage, nodeType);
   updateTeamTemplatePreview(root, stage, nodeType);
+  updateStageResourcePickers(root, stage, nodeType);
   updateStagePlainSummary(root, stage, nodeType);
+  updateStageTaskEditor(root, stage, nodeType);
+  updateStageSetupSteps(root, stage, nodeType);
   updateStageRoutePreview(root, stage, nodeType);
   updateStageGuidance(root, stage, nodeType);
   updateStageDataFlow(root, stage, nodeType);
+  updateStageContextContract(root, stage, nodeType);
+  if (workflowInspectorTabIs("advanced")) {
+    updateStageContextPresetBuilder(root, stage, nodeType);
+    updateStageContextReferencePicker(root, stage, nodeType);
+  }
   updateWorkflowFormPanels(root);
-  updatePolicyRuleHelp(root);
+  if (workflowInspectorTabIs("flow")) updatePolicyRuleHelp(root);
   scheduleExpressionValidation(root);
-  root.querySelector("#connectHint").textContent = state.connectSource
-    ? `${t("workflow.connectingHint")} ${state.connectSource}. ${t("workflow.connectingInstruction")}`
-    : t("workflow.dragHint");
   renderSelectedStageRuntime(root);
+  updateWorkflowInspectorTabs(root, stage, nodeType);
+  updateWorkflowInspectorEmptyPanels(root);
+  applyWorkflowExperienceMode(root);
+}
+
+function updateWorkflowInspectorTabs(root, stage, nodeType) {
+  const counts = workflowInspectorTabCounts(stage, nodeType);
+  renderWorkflowInspectorTabs(root);
+  root.querySelectorAll("[data-workflow-inspector-tab]").forEach(button => {
+    const id = button.dataset.workflowInspectorTab || "";
+    const count = counts[id] || 0;
+    const base = workflowInspectorTabs().find(tab => tab.id === id)?.label || id;
+    button.innerHTML = `${escapeHTML(base)}${count ? `<span>${escapeHTML(String(count))}</span>` : ""}`;
+    button.disabled = !stage;
+  });
+  setWorkflowInspectorTab(root, state.inspectorTab || "overview", { render: false });
+}
+
+function workflowInspectorTabCounts(stage, nodeType) {
+  if (!stage) return {};
+  const base = stageFieldSet(nodeType, stage);
+  const advanced = advancedFieldSet(nodeType);
+  const inputs =
+    (advanced.has("input") ? Object.keys(stage.input || {}).length : 0) +
+    (advanced.has("input_fields_json") ? inputGateFieldCount(stage.params) : 0);
+  const outputs =
+    (base.has("artifacts") ? normalizeArtifacts(stage.artifacts).length : 0) +
+    (base.has("acceptance_criteria") ? normalizeAcceptanceCriteria(stage.acceptance_criteria).length : 0) +
+    (advanced.has("outputs") ? Object.keys(stage.outputs || {}).length : 0);
+  const flow =
+    (base.has("next") ? (stage.next || []).length : 0) +
+    (advanced.has("routes") ? Object.keys(stage.routes || {}).length : 0) +
+    (advanced.has("cases") ? Object.keys(stage.cases || {}).length : 0);
+  return {
+    inputs,
+    outputs,
+    flow,
+    advanced: advanced.size + (hasStageContextContract(stage.context) ? 1 : 0)
+  };
+}
+
+function inputGateFieldCount(params = {}) {
+  const raw = String(params.fields_json || "").trim();
+  if (!raw) return 0;
+  try {
+    const parsed = JSON.parse(raw);
+    const fields = Array.isArray(parsed) ? parsed : parsed.fields;
+    return Array.isArray(fields) ? fields.length : 0;
+  } catch {
+    return 0;
+  }
 }
 
 function updateAdvancedFieldVisibility(root, nodeType) {
   const container = root.querySelector("#stageAdvancedFields");
   if (!container) return;
   const visible = advancedFieldSet(nodeType);
-  container.querySelectorAll("[data-field]").forEach(node => {
+  root.querySelectorAll("#stageForm [data-field]").forEach(node => {
     node.classList.toggle("hidden", !visible.has(node.dataset.field));
   });
   const hasVisibleField = Boolean(container.querySelector("[data-field]:not(.hidden)"));
@@ -2551,7 +3328,7 @@ function updateStageAdvancedGuide(root, stage, nodeType) {
   const guide = root.querySelector("#stageAdvancedGuide");
   if (!guide || !stage) return;
   const visible = new Set([
-    ...stageFieldSet(nodeType),
+    ...stageFieldSet(nodeType, stage),
     ...advancedFieldSet(nodeType)
   ]);
   const items = advancedGuideItems(nodeType, visible);
@@ -2577,6 +3354,622 @@ function updateStageAdvancedGuide(root, stage, nodeType) {
           </div>` : ""}
         </section>`).join("")}
     </div>`;
+}
+
+function updateStageVisualBuilder(root, stage, nodeType) {
+  const builder = root.querySelector("#stageVisualBuilder");
+  if (!builder || !stage) return;
+  const supported = ["condition", "switch", "router", "policy_guard", "guard", "quality_gate", "quality_guard", "quality-guard", "parallel", "join", "for_each", "loop", "sub_workflow", "checkpoint"].includes(nodeType);
+  builder.classList.toggle("hidden", !supported);
+  if (!supported) {
+    builder.innerHTML = "";
+    return;
+  }
+  if (nodeType === "condition") {
+    builder.innerHTML = renderConditionVisualBuilder(stage);
+    return;
+  }
+  if (nodeType === "switch" || nodeType === "router") {
+    builder.innerHTML = renderSwitchVisualBuilder(stage);
+    return;
+  }
+  if (isQualityGateType(nodeType)) {
+    builder.innerHTML = renderQualityVisualBuilder(stage);
+    return;
+  }
+  if (nodeType === "parallel") {
+    builder.innerHTML = renderParallelVisualBuilder(stage);
+    return;
+  }
+  if (nodeType === "join") {
+    builder.innerHTML = renderJoinVisualBuilder(stage);
+    return;
+  }
+  if (nodeType === "for_each") {
+    builder.innerHTML = renderForEachVisualBuilder(stage);
+    return;
+  }
+  if (nodeType === "loop") {
+    builder.innerHTML = renderLoopVisualBuilder(stage);
+    return;
+  }
+  if (nodeType === "sub_workflow") {
+    builder.innerHTML = renderSubWorkflowVisualBuilder(stage);
+    return;
+  }
+  if (nodeType === "checkpoint") {
+    builder.innerHTML = renderCheckpointVisualBuilder(stage);
+    return;
+  }
+  builder.innerHTML = renderPolicyVisualBuilder(stage);
+}
+
+function renderConditionVisualBuilder(stage) {
+  const parsed = parseConditionExpression(stage.condition || "");
+  const routes = stage.routes || {};
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualConditionTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualConditionHelp"))}</small>
+    </div>
+    <div class="workflow-visual-grid">
+      ${renderWorkflowReferenceControl(stage, {
+        label: t("workflow.visualConditionSource"),
+        value: parsed.source,
+        fieldAttr: `data-visual-field="condition-source"`,
+        refTargetAttr: "data-visual-ref-target",
+        refValueAttr: "data-visual-ref-value",
+        target: "condition-source",
+        placeholder: t("workflow.visualConditionSourcePlaceholder"),
+        wide: true
+      })}
+      <label><span>${escapeHTML(t("workflow.visualConditionOperator"))}</span><select data-visual-field="condition-operator">
+        ${conditionOperatorOptions().map(option => `<option value="${escapeHTML(option.value)}" ${option.value === parsed.operator ? "selected" : ""}>${escapeHTML(option.label)}</option>`).join("")}
+      </select></label>
+      <label><span>${escapeHTML(t("workflow.visualConditionValue"))}</span><input data-visual-field="condition-value" value="${escapeHTML(parsed.value)}" placeholder="${escapeHTML(t("workflow.visualConditionValuePlaceholder"))}"></label>
+    </div>
+    <div class="workflow-visual-routes">
+      <label><span>${escapeHTML(t("workflow.visualRouteTrue"))}</span>${renderStageTargetInput("condition-true", routes.true || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualRouteFalse"))}</span>${renderStageTargetInput("condition-false", routes.false || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualRouteDefault"))}</span>${renderStageTargetInput("condition-default", routes.default || "")}</label>
+    </div>
+  </section>`;
+}
+
+function renderSwitchVisualBuilder(stage) {
+  const cases = stage.cases || {};
+  const caseEntries = Object.entries(cases).filter(([key]) => key !== "default").slice(0, 4);
+  while (caseEntries.length < 2) caseEntries.push(["", ""]);
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualSwitchTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualSwitchHelp"))}</small>
+    </div>
+    ${renderWorkflowReferenceControl(stage, {
+      label: t("workflow.visualSwitchSource"),
+      value: stage.switch_on || "",
+      fieldAttr: `data-visual-field="switch-source"`,
+      refTargetAttr: "data-visual-ref-target",
+      refValueAttr: "data-visual-ref-value",
+      target: "switch-source",
+      placeholder: t("workflow.visualSwitchSourcePlaceholder")
+    })}
+    <div class="workflow-visual-case-grid">
+      ${caseEntries.map(([value, target], index) => `
+        <label><span>${escapeHTML(t("workflow.visualCaseValue", { index: index + 1 }))}</span><input data-visual-field="switch-case-value" data-visual-index="${index}" value="${escapeHTML(value)}" placeholder="${escapeHTML(t("workflow.visualCaseValuePlaceholder"))}"></label>
+        <label><span>${escapeHTML(t("workflow.visualCaseTarget", { index: index + 1 }))}</span>${renderStageTargetInput("switch-case-target", target, index)}</label>
+      `).join("")}
+      <label><span>${escapeHTML(t("workflow.visualRouteDefault"))}</span>${renderStageTargetInput("switch-default", cases.default || "")}</label>
+    </div>
+  </section>`;
+}
+
+function renderPolicyVisualBuilder(stage) {
+  const routes = stage.routes || {};
+  const policyRule = selectedPolicyRuleName(stage);
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualPolicyTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualPolicyHelp"))}</small>
+    </div>
+    <div class="workflow-visual-grid">
+      <label><span>${escapeHTML(t("workflow.policyRule"))}</span><select data-visual-field="policy-rule">
+        ${policyRuleOptions().map(option => `<option value="${escapeHTML(option.name)}" ${option.name === policyRule ? "selected" : ""}>${escapeHTML(policyRuleLabel(option))}</option>`).join("")}
+      </select></label>
+      ${renderWorkflowReferenceControl(stage, {
+        label: t("workflow.policy"),
+        value: stage.policy || "",
+        fieldAttr: `data-visual-field="policy-expression"`,
+        refTargetAttr: "data-visual-ref-target",
+        refValueAttr: "data-visual-ref-value",
+        target: "policy-expression",
+        placeholder: t("workflow.policyPlaceholder")
+      })}
+    </div>
+    <div class="workflow-visual-routes">
+      <label><span>${escapeHTML(t("workflow.visualRouteAllow"))}</span>${renderStageTargetInput("policy-allow", routes.allow || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualRouteDeny"))}</span>${renderStageTargetInput("policy-deny", routes.deny || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualRouteBlock"))}</span>${renderStageTargetInput("policy-block", routes.block || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualRouteDefault"))}</span>${renderStageTargetInput("policy-default", routes.default || "")}</label>
+    </div>
+  </section>`;
+}
+
+function renderQualityVisualBuilder(stage) {
+  const routes = stage.routes || {};
+  const params = stage.params || {};
+  const allowUnknown = params.allow_unknown === undefined ? true : isTruthyParam(params.allow_unknown);
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualQualityTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualQualityHelp"))}</small>
+    </div>
+    <div class="workflow-visual-grid">
+      <label><span>${escapeHTML(t("workflow.visualQualitySource"))}</span>${renderStageTargetInput("quality-source", params.stage || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualQualityMinScore"))}</span><input data-visual-field="quality-min-score" type="number" min="0" max="100" step="1" value="${escapeHTML(params.min_score || "")}" placeholder="${escapeHTML(t("workflow.visualQualityMinScorePlaceholder"))}"></label>
+    </div>
+    <div class="workflow-visual-check-grid">
+      ${renderVisualToggle("quality-require-acceptance", "workflow.visualQualityRequireAcceptance", isTruthyParam(params.require_acceptance), "workflow.visualQualityRequireAcceptanceHelp")}
+      ${renderVisualToggle("quality-require-verification", "workflow.visualQualityRequireVerification", isTruthyParam(params.require_verification), "workflow.visualQualityRequireVerificationHelp")}
+      ${renderVisualToggle("quality-require-evidence", "workflow.visualQualityRequireEvidence", isTruthyParam(params.require_evidence), "workflow.visualQualityRequireEvidenceHelp")}
+      ${renderVisualToggle("quality-allow-unknown", "workflow.visualQualityAllowUnknown", allowUnknown, "workflow.visualQualityAllowUnknownHelp")}
+    </div>
+    <div class="workflow-visual-routes three">
+      <label><span>${escapeHTML(t("workflow.visualRoutePass"))}</span>${renderStageTargetInput("quality-pass", routes.pass || routes.allow || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualRouteWarning"))}</span>${renderStageTargetInput("quality-warning", routes.warning || routes.warn || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualRouteFail"))}</span>${renderStageTargetInput("quality-fail", routes.fail || routes.deny || routes.block || "")}</label>
+    </div>
+  </section>`;
+}
+
+function renderParallelVisualBuilder(stage) {
+  const branches = visualStageListValues(stage.next, 3, 6);
+  const joinTarget = parallelCommonJoinTarget(stage);
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualParallelTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualParallelHelp"))}</small>
+    </div>
+    <div class="workflow-visual-branch-list">
+      ${branches.map((branch, index) => `<label><span>${escapeHTML(t("workflow.visualParallelBranch", { index: index + 1 }))}</span>${renderStageTargetInput("parallel-branch", branch, index)}</label>`).join("")}
+    </div>
+    <div class="workflow-visual-grid two">
+      <label><span>${escapeHTML(t("workflow.visualParallelJoin"))}</span>${renderStageTargetInput("parallel-join", joinTarget)}</label>
+      ${renderVisualToggle("parallel-concurrent", "workflow.visualParallelConcurrent", isTruthyParam(stage.params?.concurrent), "workflow.visualParallelConcurrentHelp")}
+    </div>
+  </section>`;
+}
+
+function renderJoinVisualBuilder(stage) {
+  const waitFor = visualStageListValues(stage.params?.wait_for, 3, 6);
+  const nextTargets = visualStageListValues(stage.next, 1, 2);
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualJoinTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualJoinHelp"))}</small>
+    </div>
+    <div class="workflow-visual-branch-list">
+      ${waitFor.map((stageName, index) => `<label><span>${escapeHTML(t("workflow.visualJoinWaitFor", { index: index + 1 }))}</span>${renderStageTargetInput("join-wait-for", stageName, index)}</label>`).join("")}
+    </div>
+    <div class="workflow-visual-grid two">
+      <label><span>${escapeHTML(t("workflow.visualJoinNext"))}</span>${renderStageTargetInput("join-next", nextTargets[0] || "")}</label>
+    </div>
+  </section>`;
+}
+
+function renderForEachVisualBuilder(stage) {
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualForEachTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualForEachHelp"))}</small>
+    </div>
+    ${renderWorkflowReferenceControl(stage, {
+      label: t("workflow.eachItems"),
+      value: stage.params?.items || stage.params?.items_ref || "",
+      fieldAttr: `data-visual-field="for-each-items"`,
+      refTargetAttr: "data-visual-ref-target",
+      refValueAttr: "data-visual-ref-value",
+      target: "for-each-items",
+      placeholder: t("workflow.eachItemsPlaceholder")
+    })}
+    <div class="workflow-visual-grid two">
+      <label><span>${escapeHTML(t("workflow.bodyStage"))}</span>${renderStageTargetInput("for-each-stage", stage.params?.stage || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualForEachContinue"))}</span>${renderStageTargetInput("for-each-next", (stage.next || [])[0] || "")}</label>
+    </div>
+  </section>`;
+}
+
+function renderLoopVisualBuilder(stage) {
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualLoopTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualLoopHelp"))}</small>
+    </div>
+    <div class="workflow-visual-grid two">
+      <label><span>${escapeHTML(t("workflow.bodyStage"))}</span>${renderStageTargetInput("loop-stage", stage.params?.stage || "")}</label>
+      <label><span>${escapeHTML(t("workflow.loopMaxIterations"))}</span><input data-visual-field="loop-max-iterations" type="number" min="1" value="${escapeHTML(stage.params?.max_iterations || "")}" placeholder="${examplePlaceholder("3")}"></label>
+    </div>
+    ${renderWorkflowReferenceControl(stage, {
+      label: t("workflow.loopUntil"),
+      value: stage.params?.until || "",
+      fieldAttr: `data-visual-field="loop-until"`,
+      refTargetAttr: "data-visual-ref-target",
+      refValueAttr: "data-visual-ref-value",
+      target: "loop-until",
+      placeholder: t("workflow.loopUntilPlaceholder")
+    })}
+    <div class="workflow-visual-grid two">
+      <label><span>${escapeHTML(t("workflow.visualLoopContinue"))}</span>${renderStageTargetInput("loop-next", (stage.next || [])[0] || "")}</label>
+    </div>
+  </section>`;
+}
+
+function renderSubWorkflowVisualBuilder(stage) {
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualSubWorkflowTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualSubWorkflowHelp"))}</small>
+    </div>
+    <div class="workflow-visual-grid two">
+      <label><span>${escapeHTML(t("workflow.subWorkflowName"))}</span>${renderWorkflowGraphNameInput("sub-workflow-name", stage.params?.workflow || "")}</label>
+      <label><span>${escapeHTML(t("workflow.visualSubWorkflowContinue"))}</span>${renderStageTargetInput("sub-workflow-next", (stage.next || [])[0] || "")}</label>
+    </div>
+    ${renderWorkflowReferenceControl(stage, {
+      label: t("workflow.subWorkflowRequest"),
+      value: stage.params?.request || "",
+      fieldAttr: `data-visual-field="sub-workflow-request"`,
+      refTargetAttr: "data-visual-ref-target",
+      refValueAttr: "data-visual-ref-value",
+      target: "sub-workflow-request",
+      placeholder: t("workflow.subWorkflowRequestPlaceholder")
+    })}
+  </section>`;
+}
+
+function renderCheckpointVisualBuilder(stage) {
+  return `<section class="workflow-visual-builder-card">
+    <div class="workflow-visual-builder-head">
+      <span>${escapeHTML(t("workflow.visualBuilderKicker"))}</span>
+      <strong>${escapeHTML(t("workflow.visualCheckpointTitle"))}</strong>
+      <small>${escapeHTML(t("workflow.visualCheckpointHelp"))}</small>
+    </div>
+    <label><span>${escapeHTML(t("workflow.checkpointPrompt"))}</span><input data-visual-field="checkpoint-prompt" value="${escapeHTML(stage.params?.prompt || "")}" placeholder="${escapeHTML(t("workflow.checkpointPromptPlaceholder"))}"></label>
+    <div class="workflow-visual-grid two">
+      <label><span>${escapeHTML(t("workflow.visualCheckpointContinue"))}</span>${renderStageTargetInput("checkpoint-next", (stage.next || [])[0] || "")}</label>
+    </div>
+  </section>`;
+}
+
+function renderVisualToggle(field, labelKey, checked, helpKey = "") {
+  return `<label class="check workflow-visual-toggle">
+    <input type="checkbox" data-visual-field="${escapeHTML(field)}" ${checked ? "checked" : ""}>
+    <span>${escapeHTML(t(labelKey))}</span>
+    ${helpKey ? `<small>${escapeHTML(t(helpKey))}</small>` : ""}
+  </label>`;
+}
+
+function renderStageTargetInput(field, value, index = "") {
+  const targets = (state.graph.stages || []).map(stage => stage.name).filter(Boolean);
+  const datalistID = `workflowStageTargets-${String(field).replace(/[^A-Za-z0-9_-]+/g, "-")}-${index}`;
+  return `<span class="workflow-target-input">
+    <input data-visual-field="${escapeHTML(field)}" ${index !== "" ? `data-visual-index="${escapeHTML(index)}"` : ""} value="${escapeHTML(value || "")}" list="${escapeHTML(datalistID)}" placeholder="${escapeHTML(t("workflow.visualRouteTargetPlaceholder"))}">
+    <datalist id="${escapeHTML(datalistID)}">${targets.map(target => `<option value="${escapeHTML(target)}"></option>`).join("")}</datalist>
+  </span>`;
+}
+
+function renderWorkflowGraphNameInput(field, value) {
+  const names = [
+    ...(state.workflows || []).map(item => item.name || item.id || ""),
+    ...(state.workflowTemplates || []).map(item => item.name || item.id || "")
+  ].map(name => String(name || "").trim()).filter(Boolean);
+  const unique = [...new Set(names)];
+  const datalistID = `workflowGraphNames-${String(field).replace(/[^A-Za-z0-9_-]+/g, "-")}`;
+  return `<span class="workflow-target-input">
+    <input data-visual-field="${escapeHTML(field)}" value="${escapeHTML(value || "")}" list="${escapeHTML(datalistID)}" placeholder="${escapeHTML(t("workflow.subWorkflowNamePlaceholder"))}">
+    <datalist id="${escapeHTML(datalistID)}">${unique.map(name => `<option value="${escapeHTML(name)}"></option>`).join("")}</datalist>
+  </span>`;
+}
+
+function renderWorkflowReferenceControl(stage, config) {
+  const value = String(config.value || "").trim();
+  const options = workflowFlowReferenceOptions(stage).slice(0, 8);
+  const preview = value ? renderWorkflowRefPreview(value) : `<span class="workflow-ref-preview empty"><strong>${escapeHTML(t("workflow.referencePreviewEmpty"))}</strong><small>${escapeHTML(t("workflow.referencePreviewEmptyHelp"))}</small></span>`;
+  const classes = ["workflow-reference-control"];
+  if (config.wide) classes.push("wide");
+  return `<div class="${classes.join(" ")}">
+    <label>
+      <span>${escapeHTML(config.label)}</span>
+      <input ${config.fieldAttr} data-reference-field="${escapeHTML(config.target || "")}" value="${escapeHTML(value)}" placeholder="${escapeHTML(config.placeholder || "")}">
+    </label>
+    <div class="workflow-reference-control-preview">${preview}</div>
+    <div class="workflow-reference-control-picks" aria-label="${escapeHTML(t("workflow.referenceQuickPick"))}">
+      <strong>${escapeHTML(t("workflow.referenceQuickPick"))}</strong>
+      <div>
+        ${options.map(option => renderWorkflowReferencePickButton(option, {
+          selected: option.ref === value,
+          target: config.target
+        })).join("")}
+      </div>
+    </div>
+  </div>`;
+}
+
+function renderWorkflowReferencePickButton(option, config) {
+  const info = workflowReferenceInfo(option.ref);
+  return `<button type="button" class="${escapeHTML(option.tone || "default")} ${config.selected ? "selected" : ""}" data-reference-target="${escapeHTML(config.target || "")}" data-reference-value="${escapeHTML(option.ref)}" title="${escapeHTML(option.help || info.preview)}" aria-pressed="${config.selected ? "true" : "false"}">
+    <strong>${escapeHTML(option.label || info.label)}</strong>
+    <small>${escapeHTML(info.preview)}</small>
+  </button>`;
+}
+
+function workflowFlowReferenceOptions(stage) {
+  const base = [
+    { ref: "workflow.input", label: t("workflow.inputRefWorkflowInput"), help: t("workflow.inputRefWorkflowInputHelp"), tone: "input" },
+    { ref: "previous.summary", label: t("workflow.inputRefPreviousSummary"), help: t("workflow.inputRefPreviousSummaryHelp"), tone: "summary" },
+    { ref: "previous.output", label: t("workflow.inputRefPreviousOutput"), help: t("workflow.inputRefPreviousOutputHelp"), tone: "output" },
+    { ref: "previous.decision", label: t("workflow.contextRefPreviousDecision"), help: t("workflow.contextRefPreviousDecisionHelp"), tone: "decision" },
+    { ref: "previous.next_actions", label: t("workflow.contextRefPreviousActions"), help: t("workflow.contextRefPreviousActionsHelp"), tone: "decision" },
+    { ref: "previous.evidence", label: t("workflow.contextRefPreviousEvidence"), help: t("workflow.contextRefPreviousEvidenceHelp"), tone: "artifact" },
+    { ref: "previous.artifacts.report", label: t("workflow.contextRefPreviousArtifact"), help: t("workflow.contextRefPreviousArtifactHelp"), tone: "artifact" }
+  ];
+  const upstream = workflowAvailableOutputRefs(stage).slice(0, 10).map(ref => ({
+    ref,
+    label: outputReferenceLabel(ref),
+    help: t("workflow.contextRefUpstreamHelp"),
+    tone: "output"
+  }));
+  const seen = new Set();
+  return [...base, ...upstream].filter(option => {
+    if (!option.ref || seen.has(option.ref)) return false;
+    seen.add(option.ref);
+    return true;
+  });
+}
+
+function visualStageListValues(values, minRows = 2, maxRows = 6) {
+  const list = (Array.isArray(values) ? values : String(values || "").split(","))
+    .map(value => String(value || "").trim())
+    .filter(Boolean)
+    .slice(0, maxRows);
+  while (list.length < minRows) list.push("");
+  return list;
+}
+
+function visualStageListFromBuilder(builder, field) {
+  const seen = new Set();
+  const values = [];
+  builder.querySelectorAll(`[data-visual-field="${field}"]`).forEach(input => {
+    const value = slug(input.value || "");
+    if (!value || seen.has(value)) return;
+    seen.add(value);
+    values.push(value);
+  });
+  return values;
+}
+
+function parallelCommonJoinTarget(stage) {
+  const branches = visualStageListValues(stage.next, 0, 20);
+  const candidates = branches
+    .map(name => state.graph.stages.find(item => item.name === name))
+    .filter(Boolean)
+    .map(branch => (Array.isArray(branch.next) ? branch.next : [])[0] || "")
+    .filter(Boolean);
+  if (!candidates.length) return "";
+  return candidates.every(candidate => candidate === candidates[0]) ? candidates[0] : "";
+}
+
+function applyParallelJoinTarget(branches, joinTarget) {
+  if (!joinTarget) return;
+  const joinStage = state.graph.stages.find(stage => stage.name === joinTarget);
+  if (!joinStage) return;
+  for (const branchName of branches) {
+    if (!branchName || branchName === joinTarget) continue;
+    const branch = state.graph.stages.find(stage => stage.name === branchName);
+    if (!branch || normalizedNodeType(branch) === "end") continue;
+    branch.next = Array.isArray(branch.next) ? branch.next : [];
+    if (!branch.next.includes(joinTarget)) branch.next.push(joinTarget);
+  }
+}
+
+function isQualityGateType(nodeType) {
+  return ["quality_gate", "quality_guard", "quality-guard"].includes(String(nodeType || "").trim().toLowerCase());
+}
+
+function conditionOperatorOptions() {
+  return [
+    { value: "exists", label: t("workflow.conditionOperator.exists") },
+    { value: "contains", label: t("workflow.conditionOperator.contains") },
+    { value: "equals", label: t("workflow.conditionOperator.equals") },
+    { value: "matches", label: t("workflow.conditionOperator.matches") },
+    { value: "is_true", label: t("workflow.conditionOperator.isTrue") },
+    { value: "is_false", label: t("workflow.conditionOperator.isFalse") }
+  ];
+}
+
+function parseConditionExpression(expression) {
+  const text = String(expression || "").trim();
+  if (!text) return { source: "", operator: "is_true", value: "" };
+  let match = text.match(/^contains\((.*),\s*["']([^"']+)["']\)$/);
+  if (match) return { source: match[1].trim(), operator: "contains", value: match[2].trim() };
+  match = text.match(/^matches\((.*),\s*["']([^"']+)["']\)$/);
+  if (match) return { source: match[1].trim(), operator: "matches", value: match[2].trim() };
+  match = text.match(/^(.*?)\s*==\s*["']?([^"']+)["']?$/);
+  if (match) return { source: match[1].trim(), operator: "equals", value: match[2].trim() };
+  match = text.match(/^exists\((.*)\)$/);
+  if (match) return { source: match[1].trim(), operator: "exists", value: "" };
+  match = text.match(/^!\s*(.+)$/);
+  if (match) return { source: match[1].trim(), operator: "is_false", value: "" };
+  return { source: text, operator: "is_true", value: "" };
+}
+
+function buildConditionExpression(source, operator, value) {
+  const ref = String(source || "").trim();
+  const expected = String(value || "").trim();
+  if (!ref) return "";
+  switch (operator) {
+    case "exists":
+      return `exists(${ref})`;
+    case "contains":
+      return expected ? `contains(${ref}, "${expected}")` : ref;
+    case "equals":
+      return expected ? `${ref} == "${expected}"` : ref;
+    case "matches":
+      return expected ? `matches(${ref}, "${expected}")` : ref;
+    case "is_false":
+      return `!${ref}`;
+    case "is_true":
+    default:
+      return ref;
+  }
+}
+
+function applyVisualBuilder(root, rerender = true) {
+  const stage = selectedStage();
+  if (!stage) return;
+  const builder = root.querySelector("#stageVisualBuilder");
+  if (!builder || builder.classList.contains("hidden")) return;
+  const nodeType = normalizedNodeType(stage);
+  const value = field => String(builder.querySelector(`[data-visual-field="${field}"]`)?.value || "").trim();
+  if (nodeType === "condition") {
+    stage.condition = buildConditionExpression(value("condition-source"), value("condition-operator"), value("condition-value"));
+    stage.routes = compactRouteMap({
+      true: slug(value("condition-true")),
+      false: slug(value("condition-false")),
+      default: slug(value("condition-default"))
+    });
+  } else if (nodeType === "switch" || nodeType === "router") {
+    stage.switch_on = value("switch-source");
+    const nextCases = {};
+    builder.querySelectorAll('[data-visual-field="switch-case-value"]').forEach(input => {
+      const index = input.dataset.visualIndex || "";
+      const key = String(input.value || "").trim();
+      const target = slug(builder.querySelector(`[data-visual-field="switch-case-target"][data-visual-index="${index}"]`)?.value || "");
+      if (key && target) nextCases[key] = target;
+    });
+    const fallback = slug(value("switch-default"));
+    if (fallback) nextCases.default = fallback;
+    stage.cases = nextCases;
+  } else if (["policy_guard", "guard"].includes(nodeType)) {
+    stage.params = stage.params || {};
+    setParamValue(stage.params, "rule", value("policy-rule"));
+    stage.policy = value("policy-expression");
+    stage.routes = compactRouteMap({
+      allow: slug(value("policy-allow")),
+      deny: slug(value("policy-deny")),
+      block: slug(value("policy-block")),
+      default: slug(value("policy-default"))
+    });
+  } else if (isQualityGateType(nodeType)) {
+    stage.params = stage.params || {};
+    setParamValue(stage.params, "stage", value("quality-source"));
+    setParamValue(stage.params, "min_score", value("quality-min-score"));
+    setParamValue(stage.params, "require_acceptance", builder.querySelector('[data-visual-field="quality-require-acceptance"]')?.checked ? "true" : "");
+    setParamValue(stage.params, "require_verification", builder.querySelector('[data-visual-field="quality-require-verification"]')?.checked ? "true" : "");
+    setParamValue(stage.params, "require_evidence", builder.querySelector('[data-visual-field="quality-require-evidence"]')?.checked ? "true" : "");
+    setParamValue(stage.params, "allow_unknown", builder.querySelector('[data-visual-field="quality-allow-unknown"]')?.checked ? "true" : "false");
+    stage.routes = compactRouteMap({
+      pass: slug(value("quality-pass")),
+      warning: slug(value("quality-warning")),
+      fail: slug(value("quality-fail"))
+    });
+  } else if (nodeType === "parallel") {
+    const branches = visualStageListFromBuilder(builder, "parallel-branch");
+    stage.next = branches;
+    stage.params = stage.params || {};
+    setParamValue(stage.params, "concurrent", builder.querySelector('[data-visual-field="parallel-concurrent"]')?.checked ? "true" : "");
+    applyParallelJoinTarget(branches, slug(value("parallel-join")));
+  } else if (nodeType === "join") {
+    stage.params = stage.params || {};
+    setParamValue(stage.params, "wait_for", visualStageListFromBuilder(builder, "join-wait-for").join(","));
+    stage.next = visualStageListFromBuilder(builder, "join-next").slice(0, 1);
+  } else if (nodeType === "for_each") {
+    stage.params = stage.params || {};
+    setParamValue(stage.params, "items", value("for-each-items"));
+    delete stage.params.items_ref;
+    setParamValue(stage.params, "stage", value("for-each-stage"));
+    stage.next = visualStageListFromBuilder(builder, "for-each-next").slice(0, 1);
+  } else if (nodeType === "loop") {
+    stage.params = stage.params || {};
+    setParamValue(stage.params, "stage", value("loop-stage"));
+    setParamValue(stage.params, "until", value("loop-until"));
+    setParamValue(stage.params, "max_iterations", value("loop-max-iterations"));
+    stage.next = visualStageListFromBuilder(builder, "loop-next").slice(0, 1);
+  } else if (nodeType === "sub_workflow") {
+    stage.params = stage.params || {};
+    setParamValue(stage.params, "workflow", value("sub-workflow-name"));
+    setParamValue(stage.params, "request", value("sub-workflow-request"));
+    stage.next = visualStageListFromBuilder(builder, "sub-workflow-next").slice(0, 1);
+  } else if (nodeType === "checkpoint") {
+    stage.params = stage.params || {};
+    setParamValue(stage.params, "prompt", value("checkpoint-prompt"));
+    stage.next = visualStageListFromBuilder(builder, "checkpoint-next").slice(0, 1);
+  }
+  pruneEmptyStageFields(stage);
+  if (rerender) {
+    renderStageForm(root);
+    renderCanvas(root);
+  } else {
+    syncVisualBuilderToRawFields(root, stage, nodeType);
+    clearWorkflowValidation(root);
+    clearWorkflowTransfer(root);
+    updateStageRoutePreview(root, stage, nodeType);
+    updateStageDataFlow(root, stage, nodeType);
+    updateStageContextContract(root, stage, nodeType);
+    scheduleExpressionValidation(root, { force: true });
+    scheduleWorkflowRepaint(root);
+  }
+}
+
+function compactRouteMap(map) {
+  return Object.fromEntries(Object.entries(map || {}).filter(([, target]) => String(target || "").trim()));
+}
+
+function syncVisualBuilderToRawFields(root, stage, nodeType) {
+  const condition = root.querySelector("#stageCondition");
+  const routes = root.querySelector("#stageRoutes");
+  const cases = root.querySelector("#stageCases");
+  const policy = root.querySelector("#stagePolicy");
+  const policyRule = root.querySelector("#stagePolicyRule");
+  const switchOn = root.querySelector("#stageSwitchOn");
+  const next = root.querySelector("#stageNext");
+  const params = root.querySelector("#stageParams");
+  const waitFor = root.querySelector("#stageParamWaitFor");
+  const workflow = root.querySelector("#stageParamWorkflow");
+  const request = root.querySelector("#stageParamRequest");
+  const items = root.querySelector("#stageParamItems");
+  const bodyStage = root.querySelector("#stageParamStage");
+  const until = root.querySelector("#stageParamUntil");
+  const maxIterations = root.querySelector("#stageParamMaxIterations");
+  const prompt = root.querySelector("#stageParamPrompt");
+  if (condition) condition.value = stage.condition || "";
+  if (routes) routes.value = formatMap(stage.routes);
+  if (cases) cases.value = formatMap(stage.cases);
+  if (policy) policy.value = stage.policy || "";
+  if (policyRule) {
+    const rule = selectedPolicyRuleName(stage);
+    ensureSelectOption(policyRule, rule, rule);
+    policyRule.value = rule;
+  }
+  if (switchOn) switchOn.value = stage.switch_on || "";
+  if (next) next.value = (stage.next || []).join(", ");
+  if (waitFor) waitFor.value = stage.params?.wait_for || "";
+  if (workflow) workflow.value = stage.params?.workflow || "";
+  if (request) request.value = stage.params?.request || "";
+  if (items) items.value = stage.params?.items || stage.params?.items_ref || "";
+  if (bodyStage) bodyStage.value = stage.params?.stage || "";
+  if (until) until.value = stage.params?.until || "";
+  if (maxIterations) maxIterations.value = stage.params?.max_iterations || "";
+  if (prompt) prompt.value = stage.params?.prompt || "";
+  if (params) params.value = formatParams(genericStageParams(stage, nodeType));
 }
 
 function advancedGuideItems(nodeType, visible) {
@@ -3227,6 +4620,143 @@ function nodeTypeExampleStageSummary(stage) {
   return parts.join(" / ");
 }
 
+function updateStageResourcePickers(root, stage = selectedStage(), nodeType = stage ? normalizedNodeType(stage) : "") {
+  const configs = [
+    { kind: "agent", selector: "#stageAgentPicker", selected: stage?.agent || "", visible: ["agent", "skill", "tool", "custom"].includes(nodeType), icon: "agent" },
+    { kind: "skill", selector: "#stageSkillPicker", selected: stage?.skill || "", visible: ["agent", "skill", "tool", "custom"].includes(nodeType), icon: "skill" },
+    { kind: "tool", selector: "#stageToolPicker", selected: stage?.tool || "", visible: nodeType === "tool", icon: "tool" },
+    { kind: "team_template", selector: "#stageTeamTemplatePicker", selected: stage?.params?.team || stage?.params?.template || "", visible: nodeType === "team", icon: "team" }
+  ];
+  for (const config of configs) {
+    const panel = root.querySelector(config.selector);
+    if (!panel) continue;
+    const visible = !!stage && config.visible;
+    panel.classList.toggle("hidden", !visible);
+    if (!visible) {
+      panel.innerHTML = "";
+      continue;
+    }
+    panel.innerHTML = renderStageResourcePicker(config);
+  }
+}
+
+function renderStageResourcePicker(config) {
+  const options = prioritizedWorkflowResourceOptions(config.kind, config.selected).slice(0, 6);
+  const total = workflowResourceOptions(config.kind).length;
+  const selectedOption = workflowResourceOptionByName(config.kind, config.selected);
+  const title = t(`workflow.resourcePicker.${config.kind}.title`);
+  const help = t(`workflow.resourcePicker.${config.kind}.help`);
+  const meta = config.selected
+    ? t("workflow.resourcePickerSelected", { name: workflowResourceTitle(selectedOption, config.selected) })
+    : t("workflow.resourcePickerChoose");
+  return `
+    <div class="workflow-resource-picker-head">
+      <div>
+        <strong>${escapeHTML(title)}</strong>
+        <span>${escapeHTML(help)}</span>
+      </div>
+      <em>${escapeHTML(meta)}</em>
+    </div>
+    <div class="workflow-resource-card-list">
+      ${options.length ? options.map(option => renderStageResourceCard(config.kind, option, option.name === config.selected, config.icon)).join("") : `<div class="workflow-resource-empty">${escapeHTML(t("workflow.resourcePickerEmpty"))}</div>`}
+    </div>
+    ${total > options.length ? `<small class="workflow-resource-picker-more">${escapeHTML(t("workflow.resourcePickerMore", { count: total - options.length }))}</small>` : ""}`;
+}
+
+function renderStageResourceCard(kind, option, selected, icon) {
+  const name = option.name || "";
+  const title = workflowResourceTitle(option, name);
+  const description = workflowResourceDescription(option, kind);
+  const chips = workflowResourceChips(option, kind);
+  return `<button type="button" class="workflow-resource-card ${selected ? "selected" : ""}" data-stage-resource-choice="${escapeHTML(kind)}" data-stage-resource-value="${escapeHTML(name)}" aria-pressed="${selected ? "true" : "false"}" title="${escapeHTML(description || title)}">
+    <i aria-hidden="true">${nodeIcon(icon || kind)}</i>
+    <span>
+      <strong>${escapeHTML(title)}</strong>
+      <small>${escapeHTML(description)}</small>
+    </span>
+    ${chips.length ? `<b>${chips.slice(0, 3).map(chip => `<em>${escapeHTML(chip)}</em>`).join("")}</b>` : ""}
+  </button>`;
+}
+
+function selectStageResource(root, kind, value) {
+  const stage = selectedStage();
+  if (!stage) return;
+  const select = kind === "team_template"
+    ? root.querySelector("#stageParamTeam")
+    : kind === "agent"
+      ? root.querySelector("#stageAgent")
+      : kind === "skill"
+        ? root.querySelector("#stageSkill")
+        : root.querySelector("#stageTool");
+  if (!select) return;
+  ensureSelectOption(select, value, workflowResourceTitle(workflowResourceOptionByName(kind, value), value));
+  select.value = value;
+  syncStageFromForm(root);
+  const updatedStage = selectedStage();
+  if (stageRecommendationCanAutoApply(updatedStage, normalizedNodeType(updatedStage))) {
+    applyStageRecommendedDefaults(root, "all", { quiet: true, source: "resource" });
+  }
+}
+
+function prioritizedWorkflowResourceOptions(kind, selected) {
+  const options = workflowResourceOptions(kind);
+  const selectedName = String(selected || "").trim();
+  if (!selectedName) return options;
+  const selectedOption = options.find(option => option.name === selectedName);
+  if (!selectedOption) return [{ name: selectedName }, ...options];
+  return [selectedOption, ...options.filter(option => option.name !== selectedName)];
+}
+
+function workflowResourceOptionByName(kind, name) {
+  const key = String(name || "").trim();
+  if (!key) return null;
+  return workflowResourceOptions(kind).find(option => option.name === key) || null;
+}
+
+function workflowResourceOptions(kind) {
+  if (kind === "agent") return (state.options?.agents || []).map(item => normalizeWorkflowResourceOption(item, "agent")).filter(item => item.name);
+  if (kind === "skill") return (state.options?.skills || []).map(item => normalizeWorkflowResourceOption(item, "skill")).filter(item => item.name);
+  if (kind === "tool") return (state.options?.tools || []).map(item => normalizeWorkflowResourceOption(item, "tool")).filter(item => item.name);
+  if (kind === "team_template") return teamTemplateOptions().map(item => normalizeWorkflowResourceOption(item, "team_template")).filter(item => item.name);
+  return [];
+}
+
+function normalizeWorkflowResourceOption(item, kind) {
+  if (typeof item === "string") return { name: item, kind };
+  if (!item || typeof item !== "object") return { name: "", kind };
+  const name = String(item.name || item.id || item.tool || item.title || "").trim();
+  return { ...item, name, kind };
+}
+
+function workflowResourceTitle(option, fallback = "") {
+  return workflowDisplayValue(option?.title || option?.label || option?.name || fallback || "");
+}
+
+function workflowResourceDescription(option, kind = "") {
+  const description = option?.description || option?.summary || option?.help || "";
+  if (description) return workflowDisplayText(description);
+  if (kind === "agent") return t("workflow.resourcePicker.agent.fallback");
+  if (kind === "skill") return t("workflow.resourcePicker.skill.fallback");
+  if (kind === "tool") return t("workflow.resourcePicker.tool.fallback");
+  if (kind === "team_template") return t("workflow.resourcePicker.team_template.fallback");
+  return "";
+}
+
+function workflowResourceChips(option, kind) {
+  const chips = [];
+  if (option?.mode) chips.push(workflowDisplayValue(option.mode));
+  if (option?.preferred_agent) chips.push(`${t("workflow.agent")}: ${workflowDisplayValue(option.preferred_agent)}`);
+  if (kind === "team_template") {
+    const source = option?.source === "custom" || option?.custom ? t("workflow.teamTemplateCustom") : t("workflow.teamTemplateBuiltIn");
+    chips.push(source);
+    const roles = Number(option?.roles || option?.role_templates?.length || 0);
+    if (roles) chips.push(t("workflow.teamTemplateRolesCount", { count: roles }));
+  }
+  if (Array.isArray(option?.tags)) chips.push(...option.tags.slice(0, 2).map(workflowDisplayValue));
+  if (Array.isArray(option?.next_skills) && option.next_skills.length) chips.push(t("workflow.resourcePickerNextSkills", { count: option.next_skills.length }));
+  return chips.filter(Boolean);
+}
+
 function updateTeamTemplatePreview(root, stage = selectedStage(), nodeType = stage ? normalizedNodeType(stage) : "") {
   const panel = root.querySelector("#stageTeamTemplatePreview");
   if (!panel) return;
@@ -3482,7 +5012,8 @@ function expressionAssistContext(root) {
   const advancedPanel = root.querySelector("#stageAdvancedPanel");
   const active = document.activeElement instanceof Element ? document.activeElement : null;
   const focusedField = active?.dataset?.expressionField || "";
-  if (advancedPanel && !advancedPanel.open && !focusedField) return { visible: false };
+  const advancedVisible = state.inspectorTab === "advanced" || advancedPanel?.classList.contains("active");
+  if (advancedPanel && !advancedPanel.open && !focusedField && !advancedVisible) return { visible: false };
   const visibleFields = visibleExpressionAssistFields(root);
   if (!visibleFields.length) return { visible: false };
   let field = focusedField && visibleFields.includes(focusedField) ? focusedField : state.expressionAssist.field;
@@ -3651,8 +5182,8 @@ function renderExpressionSuggestionChip(suggestion) {
   const reference = String(suggestion.reference || "");
   const source = expressionSuggestionSourceLabel(suggestion.source);
   const type = suggestion.type ? `${source} / ${localizedText(suggestion.type)}` : source;
-  const stage = suggestion.stage ? `<small>${escapeHTML(suggestion.stage)}</small>` : "";
-  return `<button type="button" class="workflow-expression-chip" data-expression-suggestion="${escapeHTML(reference)}" title="${escapeHTML(localizedText(suggestion.description || reference))}">
+  const stage = suggestion.stage ? `<small>${escapeHTML(localizedText(suggestion.stage))}</small>` : "";
+  return `<button type="button" class="workflow-expression-chip" data-expression-suggestion="${escapeHTML(reference)}" title="${escapeHTML(workflowDisplayText(suggestion.description || reference))}">
     <strong>${escapeHTML(reference)}</strong>
     <span>${escapeHTML(type)}</span>
     ${stage}
@@ -3811,8 +5342,9 @@ function updateStageDataFlow(root, stage, nodeType) {
   const inputs = workflowStageMapEntries(stage.input);
   const outputs = workflowStageMapEntries(stage.outputs);
   const refs = workflowStageReferenceEntries(stage);
+  const contextRefs = workflowStageContextRefs(stage);
   const available = workflowAvailableOutputRefs(stage).slice(0, 8);
-  const hasData = inputs.length || outputs.length || refs.length || available.length;
+  const hasData = inputs.length || outputs.length || refs.length || contextRefs.length || available.length;
   target.classList.toggle("hidden", !hasData);
   if (!hasData) {
     target.innerHTML = "";
@@ -3830,8 +5362,277 @@ function updateStageDataFlow(root, stage, nodeType) {
       ${renderWorkflowDataFlowBlock(t("workflow.dataFlowInputs"), inputs, t("workflow.dataFlowNoInputs"), "input")}
       ${renderWorkflowDataFlowBlock(t("workflow.dataFlowOutputs"), outputs, t("workflow.dataFlowNoOutputs"), "output")}
     </div>
-    ${refs.length ? `<div class="workflow-stage-data-flow-refs"><strong>${escapeHTML(t("workflow.dataFlowReads"))}</strong>${refs.slice(0, 6).map(ref => `<code>${escapeHTML(ref)}</code>`).join("")}</div>` : ""}
-    ${available.length ? `<div class="workflow-stage-data-flow-refs muted-list"><strong>${escapeHTML(t("workflow.dataFlowAvailable"))}</strong>${available.map(ref => `<button type="button" data-copy-stage-ref="${escapeHTML(ref)}">${escapeHTML(ref)}</button>`).join("")}</div>` : ""}`;
+    ${refs.length ? `<div class="workflow-stage-data-flow-refs"><strong>${escapeHTML(t("workflow.dataFlowReads"))}</strong>${refs.slice(0, 6).map(ref => renderWorkflowRefPreview(ref)).join("")}</div>` : ""}
+    ${contextRefs.length ? `<div class="workflow-stage-data-flow-refs contract"><strong>${escapeHTML(t("workflow.dataFlowContext"))}</strong>${contextRefs.slice(0, 8).map(ref => renderWorkflowRefPreview(ref)).join("")}</div>` : ""}
+    ${available.length ? `<div class="workflow-stage-data-flow-refs muted-list"><strong>${escapeHTML(t("workflow.dataFlowAvailable"))}</strong>${available.map(ref => renderWorkflowRefPreviewButton(ref)).join("")}</div>` : ""}`;
+}
+
+function updateStageInputOutputBuilders(root, stage, nodeType) {
+  updateStageInputMapBuilder(root, stage, nodeType);
+  updateStageOutputsMapBuilder(root, stage, nodeType);
+}
+
+function updateStageInputMapBuilder(root, stage, nodeType) {
+  const target = root.querySelector("#stageInputMapBuilder");
+  if (!target || !stage) return;
+  const supported = advancedFieldSet(nodeType).has("input");
+  target.classList.toggle("hidden", !supported);
+  if (!supported) {
+    target.innerHTML = "";
+    return;
+  }
+  const refs = inputMapReferenceOptions(stage);
+  const selectedRefs = new Set(Object.values(stage.input || {}).map(value => String(value || "").trim()).filter(Boolean));
+  target.innerHTML = `
+    <div class="workflow-map-builder-head">
+      <div>
+        <strong>${escapeHTML(t("workflow.inputBuilderTitle"))}</strong>
+        <span>${escapeHTML(t("workflow.inputBuilderHelp"))}</span>
+      </div>
+      <em>${escapeHTML(t("workflow.mapBuilderClickToAdd"))}</em>
+    </div>
+    <div class="workflow-map-builder-list">
+      ${refs.map(option => renderInputMapReferenceButton(option, selectedRefs.has(option.ref))).join("")}
+    </div>
+    ${renderDeveloperRawButton("input")}`;
+}
+
+function updateStageOutputsMapBuilder(root, stage, nodeType) {
+  const target = root.querySelector("#stageOutputsMapBuilder");
+  if (!target || !stage) return;
+  const supported = advancedFieldSet(nodeType).has("outputs");
+  target.classList.toggle("hidden", !supported);
+  if (!supported) {
+    target.innerHTML = "";
+    return;
+  }
+  const presets = outputMapPresetOptions(stage, nodeType);
+  const selectedOutputs = new Set(Object.keys(stage.outputs || {}).map(value => String(value || "").trim()).filter(Boolean));
+  target.innerHTML = `
+    <div class="workflow-map-builder-head">
+      <div>
+        <strong>${escapeHTML(t("workflow.outputBuilderTitle"))}</strong>
+        <span>${escapeHTML(t("workflow.outputBuilderHelp"))}</span>
+      </div>
+      <em>${escapeHTML(t("workflow.mapBuilderClickToAdd"))}</em>
+    </div>
+    <div class="workflow-map-builder-list">
+      ${presets.map(option => renderOutputMapPresetButton(option, selectedOutputs.has(option.key))).join("")}
+    </div>
+    ${renderDeveloperRawButton("outputs")}`;
+}
+
+function renderDeveloperRawButton(target) {
+  if (!state.expertMode) return "";
+  return `<button type="button" class="ghost-button workflow-task-open developer" data-stage-task-open-developer="${escapeHTML(target)}">${escapeHTML(t("workflow.openDeveloperFields"))}</button>`;
+}
+
+function renderExpertFlowActions(target = "") {
+  if (!state.expertMode) return "";
+  return `<div class="workflow-task-actions">
+      <button type="button" class="ghost-button workflow-task-open" data-stage-task-open-tab="flow">${escapeHTML(t("workflow.taskOpenFlow"))}</button>
+      ${target ? `<button type="button" class="ghost-button workflow-task-open developer" data-stage-task-open-developer="${escapeHTML(target)}">${escapeHTML(t("workflow.openDeveloperFields"))}</button>` : ""}
+    </div>`;
+}
+
+function renderInputMapReferenceButton(option, selected = false) {
+  const info = workflowReferenceInfo(option.ref);
+  return `<button type="button" class="${selected ? "selected" : ""}" data-input-map-ref="${escapeHTML(option.ref)}" title="${escapeHTML(option.help)}" aria-pressed="${selected ? "true" : "false"}">
+    <strong>${escapeHTML(option.label)}</strong>
+    <small>${escapeHTML(info.preview)}</small>
+    <em>${escapeHTML(info.kind)}</em>
+  </button>`;
+}
+
+function renderOutputMapPresetButton(option, selected = false) {
+  const info = workflowReferenceInfo(option.ref);
+  return `<button type="button" class="${selected ? "selected" : ""}" data-output-map-preset="${escapeHTML(option.value)}" title="${escapeHTML(option.help)}" aria-pressed="${selected ? "true" : "false"}">
+    <strong>${escapeHTML(option.label)}</strong>
+    <small>${escapeHTML(info.preview)}</small>
+    <em>${escapeHTML(info.kind)}</em>
+  </button>`;
+}
+
+function inputMapReferenceOptions(stage) {
+  const refs = [
+    { ref: "workflow.input", label: t("workflow.inputRefWorkflowInput"), help: t("workflow.inputRefWorkflowInputHelp") },
+    { ref: "previous.summary", label: t("workflow.inputRefPreviousSummary"), help: t("workflow.inputRefPreviousSummaryHelp") },
+    { ref: "previous.output", label: t("workflow.inputRefPreviousOutput"), help: t("workflow.inputRefPreviousOutputHelp") },
+    { ref: "previous.raw_output", label: t("workflow.inputRefPreviousRaw"), help: t("workflow.inputRefPreviousRawHelp") }
+  ];
+  workflowAvailableOutputRefs(stage).slice(0, 10).forEach(ref => {
+    refs.push({ ref, label: outputReferenceLabel(ref), help: t("workflow.inputRefUpstreamHelp") });
+  });
+  return refs;
+}
+
+function outputMapPresetOptions(stage, nodeType) {
+  const base = [
+    { key: "summary", ref: "result.summary", label: t("workflow.outputPresetSummary"), help: t("workflow.outputPresetSummaryHelp") },
+    { key: "output", ref: "result.output", label: t("workflow.outputPresetOutput"), help: t("workflow.outputPresetOutputHelp") },
+    { key: "raw_output", ref: "result.raw_output", label: t("workflow.outputPresetRaw"), help: t("workflow.outputPresetRawHelp") },
+    { key: "decision", ref: "result.decision", label: t("workflow.outputPresetDecision"), help: t("workflow.outputPresetDecisionHelp") },
+    { key: "next_actions", ref: "result.next_actions", label: t("workflow.outputPresetNextActions"), help: t("workflow.outputPresetNextActionsHelp") },
+    { key: "evidence", ref: "result.evidence", label: t("workflow.outputPresetEvidence"), help: t("workflow.outputPresetEvidenceHelp") },
+    { key: "artifacts", ref: "result.artifacts", label: t("workflow.outputPresetArtifacts"), help: t("workflow.outputPresetArtifactsHelp") },
+    { key: "findings", ref: "result.findings", label: t("workflow.outputPresetFindings"), help: t("workflow.outputPresetFindingsHelp") },
+    { key: "changes", ref: "result.changes", label: t("workflow.outputPresetChanges"), help: t("workflow.outputPresetChangesHelp") },
+    { key: "tool_results", ref: "result.tool_results", label: t("workflow.outputPresetToolResults"), help: t("workflow.outputPresetToolResultsHelp") }
+  ];
+  const preferred = new Set(["summary", "output"]);
+  if (["condition", "switch", "router", "policy_guard"].includes(nodeType) || isQualityGateType(nodeType)) {
+    preferred.add("decision");
+    preferred.add("evidence");
+  }
+  if (["tool", "agent", "skill", "team"].includes(nodeType)) {
+    preferred.add("findings");
+    preferred.add("changes");
+    preferred.add("artifacts");
+  }
+  return base
+    .sort((left, right) => Number(!preferred.has(left.key)) - Number(!preferred.has(right.key)) || left.key.localeCompare(right.key))
+    .map(item => ({ ...item, value: `${item.key}=${item.ref}` }));
+}
+
+function outputReferenceLabel(ref) {
+  const match = String(ref || "").match(/^stages\.([^.]+)\.outputs\.([^.]+)$/);
+  if (!match) return t("workflow.inputRefUpstream");
+  return t("workflow.inputRefStageOutput", { stage: match[1], output: workflowDisplayValue(match[2]) });
+}
+
+function workflowReferenceInfo(ref) {
+  const raw = String(ref || "").trim();
+  if (!raw) return { label: t("workflow.variableUnknown"), preview: t("workflow.variablePreviewConfigured"), kind: t("workflow.variableKind.reference") };
+  if (raw === "workflow.input") {
+    return { label: t("workflow.inputRefWorkflowInput"), preview: t("workflow.variablePreviewWorkflowInput"), kind: t("workflow.variableKind.input") };
+  }
+  if (raw.startsWith("exclude:")) {
+    const inner = workflowReferenceInfo(raw.slice("exclude:".length));
+    return {
+      label: t("workflow.variableExcluded", { name: inner.label }),
+      preview: t("workflow.variablePreviewExcluded"),
+      kind: t("workflow.variableKind.context")
+    };
+  }
+  if (raw === "raw_tool_logs") {
+    return { label: t("workflow.variableRawToolLogs"), preview: t("workflow.variablePreviewExcluded"), kind: t("workflow.variableKind.context") };
+  }
+  if (raw === "large_file_contents") {
+    return { label: t("workflow.variableLargeFileContents"), preview: t("workflow.variablePreviewExcluded"), kind: t("workflow.variableKind.context") };
+  }
+  if (raw === "raw_output") {
+    return { label: t("workflow.outputPresetRaw"), preview: t("workflow.variablePreviewExcluded"), kind: t("workflow.variableKind.context") };
+  }
+  const previous = raw.match(/^previous\.([A-Za-z0-9_.-]+)$/);
+  if (previous) {
+    const field = workflowDisplayValue(previous[1].replaceAll("_", " "));
+    return {
+      label: previousReferenceLabel(previous[1]),
+      preview: t("workflow.variablePreviewPrevious", { field }),
+      kind: t("workflow.variableKind.previous")
+    };
+  }
+  const stageOutput = raw.match(/^stages\.([^.]+)\.outputs\.([^.]+)$/);
+  if (stageOutput) {
+    return {
+      label: t("workflow.inputRefStageOutput", { stage: stageOutput[1], output: workflowDisplayValue(stageOutput[2]) }),
+      preview: t("workflow.variablePreviewStageOutput", { stage: stageOutput[1] }),
+      kind: t("workflow.variableKind.output")
+    };
+  }
+  const result = raw.match(/^result\.([A-Za-z0-9_.-]+)$/);
+  if (result) {
+    return {
+      label: resultReferenceLabel(result[1]),
+      preview: t("workflow.variablePreviewCurrentResult"),
+      kind: t("workflow.variableKind.result")
+    };
+  }
+  const context = raw.match(/^(exclude:)?(memory|files|previous|workflow)\.([A-Za-z0-9_.-]+)$/);
+  if (context) {
+    const excluded = Boolean(context[1]);
+    const name = contextReferenceLabel(`${context[2]}.${context[3]}`);
+    return {
+      label: excluded ? t("workflow.variableExcluded", { name }) : name,
+      preview: excluded ? t("workflow.variablePreviewExcluded") : t("workflow.variablePreviewContext"),
+      kind: t("workflow.variableKind.context")
+    };
+  }
+  if (/^(artifact:)?sha256:[a-f0-9]{64}$/i.test(raw)) {
+    return {
+      label: t("workflow.contextRefArtifactObject"),
+      preview: raw.replace(/^artifact:/, ""),
+      kind: t("workflow.variableKind.context")
+    };
+  }
+  if (raw.startsWith("max_tokens:")) {
+    return { label: t("workflow.contextMaxTokens"), preview: raw.replace("max_tokens:", ""), kind: t("workflow.variableKind.context") };
+  }
+  if (raw.startsWith("retrieval:")) {
+    return { label: t("workflow.contextRetrievalEnabled"), preview: t("workflow.variablePreviewContext"), kind: t("workflow.variableKind.context") };
+  }
+  if (raw.startsWith("query:")) {
+    return { label: t("workflow.contextRetrievalQuery"), preview: raw.slice("query:".length), kind: t("workflow.variableKind.context") };
+  }
+  return { label: workflowDisplayValue(raw), preview: t("workflow.variablePreviewConfigured"), kind: t("workflow.variableKind.reference") };
+}
+
+function previousReferenceLabel(field) {
+  const normalized = String(field || "").trim();
+  const labels = {
+    summary: t("workflow.inputRefPreviousSummary"),
+    output: t("workflow.inputRefPreviousOutput"),
+    raw_output: t("workflow.inputRefPreviousRaw"),
+    decision: t("workflow.contextRefPreviousDecision"),
+    next_actions: t("workflow.contextRefPreviousActions"),
+    "artifacts.report": t("workflow.contextRefPreviousArtifact"),
+    evidence: t("workflow.contextRefPreviousEvidence")
+  };
+  return labels[normalized] || t("workflow.variablePreviousField", { field: workflowDisplayValue(normalized.replaceAll("_", " ")) });
+}
+
+function resultReferenceLabel(field) {
+  const normalized = String(field || "").trim();
+  const labels = {
+    summary: t("workflow.outputPresetSummary"),
+    output: t("workflow.outputPresetOutput"),
+    raw_output: t("workflow.outputPresetRaw"),
+    decision: t("workflow.outputPresetDecision"),
+    next_actions: t("workflow.outputPresetNextActions"),
+    evidence: t("workflow.outputPresetEvidence"),
+    artifacts: t("workflow.outputPresetArtifacts"),
+    findings: t("workflow.outputPresetFindings"),
+    changes: t("workflow.outputPresetChanges"),
+    tool_results: t("workflow.outputPresetToolResults")
+  };
+  return labels[normalized] || t("workflow.variableResultField", { field: workflowDisplayValue(normalized.replaceAll("_", " ")) });
+}
+
+function contextReferenceLabel(ref) {
+  const labels = {
+    "memory.project": t("workflow.contextRefMemoryProject"),
+    "files.changed": t("workflow.contextRefFilesChanged"),
+    "workflow.input": t("workflow.inputRefWorkflowInput"),
+    "previous.summary": t("workflow.inputRefPreviousSummary"),
+    "previous.decision": t("workflow.contextRefPreviousDecision"),
+    "previous.next_actions": t("workflow.contextRefPreviousActions"),
+    "previous.artifacts.report": t("workflow.contextRefPreviousArtifact"),
+    "previous.evidence": t("workflow.contextRefPreviousEvidence"),
+    "artifact": t("workflow.contextRefArtifactObject")
+  };
+  return labels[ref] || workflowDisplayValue(String(ref || "").replaceAll("_", " "));
+}
+
+function workflowStageContextRefs(stage) {
+  const context = stage?.context || {};
+  const refs = [
+    ...normalizeContextList(context.include),
+    ...normalizeContextList(context.exclude).map(ref => `exclude:${ref}`)
+  ];
+  if (Number(context.max_tokens || 0) > 0) refs.push(`max_tokens:${context.max_tokens}`);
+  if (context.retrieval?.enabled) refs.push("retrieval:enabled");
+  if (String(context.retrieval?.query || "").trim()) refs.push(`query:${context.retrieval.query}`);
+  return refs;
 }
 
 function workflowStageMapEntries(map) {
@@ -3844,10 +5645,295 @@ function renderWorkflowDataFlowBlock(title, entries, emptyText, kind) {
   return `<section class="workflow-stage-data-flow-block ${escapeHTML(kind)}">
     <strong>${escapeHTML(title)}</strong>
     ${entries.length
-      ? `<div>${entries.slice(0, 5).map(([key, value]) => `<span><b>${escapeHTML(key || "-")}</b><code>${escapeHTML(value || "-")}</code></span>`).join("")}</div>`
+      ? `<div>${entries.slice(0, 5).map(([key, value]) => renderWorkflowDataFlowEntry(key, value, kind)).join("")}</div>`
       : `<p>${escapeHTML(emptyText)}</p>`}
     ${entries.length > 5 ? `<small>${escapeHTML(t("workflow.dataFlowMore", { count: entries.length - 5 }))}</small>` : ""}
   </section>`;
+}
+
+function renderWorkflowDataFlowEntry(key, value, kind) {
+  const info = workflowReferenceInfo(value);
+  const outputInfo = kind === "output" ? workflowReferenceInfo(value) : info;
+  return `<span class="workflow-data-flow-entry">
+    <b>${escapeHTML(key || "-")}</b>
+    <strong>${escapeHTML(outputInfo.label || value || "-")}</strong>
+    <small>${escapeHTML(outputInfo.preview || t("workflow.variablePreviewConfigured"))}</small>
+    <details>
+      <summary>${escapeHTML(t("workflow.variableTechnicalRef"))}</summary>
+      <code>${escapeHTML(value || "-")}</code>
+    </details>
+  </span>`;
+}
+
+function renderWorkflowRefPreview(ref) {
+  const info = workflowReferenceInfo(ref);
+  return `<span class="workflow-ref-preview">
+    <strong>${escapeHTML(info.label)}</strong>
+    <small>${escapeHTML(info.preview)}</small>
+    <details>
+      <summary>${escapeHTML(t("workflow.variableTechnicalRef"))}</summary>
+      <code>${escapeHTML(ref)}</code>
+    </details>
+  </span>`;
+}
+
+function renderWorkflowRefPreviewButton(ref) {
+  const info = workflowReferenceInfo(ref);
+  return `<button type="button" data-copy-stage-ref="${escapeHTML(ref)}" title="${escapeHTML(info.preview)}">
+    <strong>${escapeHTML(info.label)}</strong>
+    <small>${escapeHTML(info.preview)}</small>
+  </button>`;
+}
+
+function updateStageContextContract(root, stage, nodeType) {
+  const panel = root.querySelector("#stageContextContract");
+  const badge = root.querySelector("#stageContextContractBadge");
+  if (!panel || !badge || !stage) return;
+  const supported = nodeType !== "start" && nodeType !== "end";
+  panel.classList.toggle("hidden", !supported);
+  if (!supported) {
+    badge.textContent = t("workflow.contextContractDefault");
+    return;
+  }
+  const context = normalizeStageContext(stage.context);
+  const includeCount = context.include.length;
+  const excludeCount = context.exclude.length;
+  const configured = hasStageContextContract(context);
+  panel.classList.toggle("configured", configured);
+  badge.textContent = configured
+    ? t("workflow.contextContractCount", { count: includeCount + excludeCount + (context.max_tokens ? 1 : 0) + (context.retrieval.enabled || context.retrieval.query ? 1 : 0) })
+    : t("workflow.contextContractDefault");
+}
+
+function updateStageContextPresetBuilder(root, stage, nodeType) {
+  const target = root.querySelector("#stageContextPresetBuilder");
+  if (!target || !stage) return;
+  const supported = nodeType !== "start" && nodeType !== "end";
+  target.classList.toggle("hidden", !supported);
+  if (!supported) {
+    target.innerHTML = "";
+    return;
+  }
+  const presets = contextPresetOptions();
+  target.innerHTML = `
+    <div class="workflow-context-presets-head">
+      <strong>${escapeHTML(t("workflow.contextPresetTitle"))}</strong>
+      <span>${escapeHTML(t("workflow.contextPresetHelp"))}</span>
+    </div>
+    <div class="workflow-context-preset-list">
+      ${presets.map(preset => `<button type="button" data-context-preset="${escapeHTML(preset.id)}">
+        <strong>${escapeHTML(preset.label)}</strong>
+        <span>${escapeHTML(preset.help)}</span>
+      </button>`).join("")}
+    </div>`;
+}
+
+function updateStageContextReferencePicker(root, stage, nodeType) {
+  const target = root.querySelector("#stageContextRefPicker");
+  if (!target || !stage) return;
+  const supported = nodeType !== "start" && nodeType !== "end";
+  target.classList.toggle("hidden", !supported);
+  if (!supported) {
+    target.innerHTML = "";
+    return;
+  }
+  const selected = new Set(normalizeStageContext(stage.context).include);
+  const options = contextReferencePickerOptions(stage);
+  target.innerHTML = `
+    <div class="workflow-reference-picker-head">
+      <strong>${escapeHTML(t("workflow.contextRefPickerTitle"))}</strong>
+      <span>${escapeHTML(t("workflow.contextRefPickerHelp"))}</span>
+    </div>
+    <div class="workflow-reference-picker-list">
+      ${options.map(option => renderContextReferenceButton(option, selected.has(option.ref))).join("")}
+    </div>`;
+}
+
+function contextReferencePickerOptions(stage) {
+  const base = [
+    { ref: "workflow.input", label: t("workflow.inputRefWorkflowInput"), help: t("workflow.inputRefWorkflowInputHelp"), tone: "input" },
+    { ref: "previous.summary", label: t("workflow.inputRefPreviousSummary"), help: t("workflow.inputRefPreviousSummaryHelp"), tone: "summary" },
+    { ref: "previous.decision", label: t("workflow.contextRefPreviousDecision"), help: t("workflow.contextRefPreviousDecisionHelp"), tone: "decision" },
+    { ref: "previous.next_actions", label: t("workflow.contextRefPreviousActions"), help: t("workflow.contextRefPreviousActionsHelp"), tone: "decision" },
+    { ref: "previous.artifacts.report", label: t("workflow.contextRefPreviousArtifact"), help: t("workflow.contextRefPreviousArtifactHelp"), tone: "artifact" },
+    { ref: "previous.evidence", label: t("workflow.contextRefPreviousEvidence"), help: t("workflow.contextRefPreviousEvidenceHelp"), tone: "artifact" },
+    { ref: "memory.project", label: t("workflow.contextRefMemoryProject"), help: t("workflow.contextRefMemoryProjectHelp"), tone: "memory" },
+    { ref: "files.changed", label: t("workflow.contextRefFilesChanged"), help: t("workflow.contextRefFilesChangedHelp"), tone: "file" }
+  ];
+  const upstream = workflowAvailableOutputRefs(stage).slice(0, 8).map(ref => ({
+    ref,
+    label: outputReferenceLabel(ref),
+    help: t("workflow.contextRefUpstreamHelp"),
+    tone: "output"
+  }));
+  const seen = new Set();
+  return [...base, ...upstream].filter(option => {
+    if (!option.ref || seen.has(option.ref)) return false;
+    seen.add(option.ref);
+    return true;
+  });
+}
+
+function renderContextReferenceButton(option, selected = false) {
+  return `<button type="button" class="${selected ? "selected" : ""} ${escapeHTML(option.tone || "default")}" data-context-include-ref="${escapeHTML(option.ref)}" title="${escapeHTML(option.help || option.ref)}" aria-pressed="${selected ? "true" : "false"}">
+    <strong>${escapeHTML(option.label || option.ref)}</strong>
+    <small>${escapeHTML(option.help || workflowReferenceInfo(option.ref).preview)}</small>
+    ${selected ? `<em>${escapeHTML(t("workflow.contextRefIncluded"))}</em>` : ""}
+  </button>`;
+}
+
+function contextPresetOptions() {
+  return [
+    { id: "minimal", label: t("workflow.contextPreset.minimal"), help: t("workflow.contextPreset.minimalHelp") },
+    { id: "previous-summary", label: t("workflow.contextPreset.previousSummary"), help: t("workflow.contextPreset.previousSummaryHelp") },
+    { id: "previous-artifacts", label: t("workflow.contextPreset.previousArtifacts"), help: t("workflow.contextPreset.previousArtifactsHelp") },
+    { id: "project-files", label: t("workflow.contextPreset.projectFiles"), help: t("workflow.contextPreset.projectFilesHelp") }
+  ];
+}
+
+function contextPresetDefinition(preset) {
+  const presets = {
+    minimal: {
+      include: ["previous.summary"],
+      exclude: ["raw_tool_logs", "large_file_contents", "raw_output"],
+      max_tokens: 1600,
+      retrieval: { enabled: false, query: "" }
+    },
+    "previous-summary": {
+      include: ["previous.summary", "previous.decision", "previous.next_actions"],
+      exclude: ["raw_tool_logs", "large_file_contents"],
+      max_tokens: 2600,
+      retrieval: { enabled: false, query: "" }
+    },
+    "previous-artifacts": {
+      include: ["previous.summary", "previous.artifacts.report", "previous.evidence"],
+      exclude: ["raw_tool_logs", "large_file_contents", "raw_output"],
+      max_tokens: 3600,
+      retrieval: { enabled: false, query: "" }
+    },
+    "project-files": {
+      include: ["memory.project", "files.changed", "previous.summary"],
+      exclude: ["raw_tool_logs", "large_file_contents"],
+      max_tokens: 4000,
+      retrieval: { enabled: true, query: "{{input.goal}}" }
+    }
+  };
+  const value = presets[preset];
+  return value ? { ...value, include: [...value.include], exclude: [...value.exclude], retrieval: { ...value.retrieval } } : null;
+}
+
+function applyContextPreset(root, preset) {
+  const stage = selectedStage();
+  if (!stage) return;
+  stage.context = contextPresetDefinition(preset) || undefined;
+  clearWorkflowValidation(root);
+  clearWorkflowTransfer(root);
+  renderStageForm(root);
+  renderCanvas(root);
+}
+
+function addContextIncludeRef(root, ref) {
+  const stage = selectedStage();
+  const value = String(ref || "").trim();
+  if (!stage || !value) return;
+  const context = normalizeStageContext(stage.context);
+  if (!context.include.includes(value)) context.include.push(value);
+  stage.context = context;
+  clearWorkflowValidation(root);
+  clearWorkflowTransfer(root);
+  renderStageForm(root);
+  renderCanvas(root);
+}
+
+function addArtifactDraftToSelectedStage(root) {
+  const draft = state.graphTransfer?.artifactDraft;
+  const ref = String(draft?.ref || "").trim();
+  const stage = selectedStage();
+  if (!stage || !ref) return false;
+  const contextRef = artifactContextRef(ref);
+  const context = normalizeStageContext(stage.context);
+  if (!context.include.includes(contextRef)) context.include.push(contextRef);
+  stage.context = context;
+  state.graphTransfer = {
+    tone: "ready",
+    title: t("workflow.artifactDraftAdded"),
+    body: t("workflow.artifactDraftAddedHelp", { stage: stage.name || t("workflow.stageName"), ref }),
+    artifactDraft: null
+  };
+  renderStageForm(root);
+  renderCanvas(root);
+  renderWorkflowTransfer(root);
+  return true;
+}
+
+function artifactContextRef(ref) {
+  const value = String(ref || "").trim();
+  return value.startsWith("artifact:") ? value : `artifact:${value}`;
+}
+
+function openArtifactDraftForWorkflow() {
+  let raw = "";
+  try {
+    raw = localStorage.getItem(workflowArtifactDraftStorageKey) || "";
+    if (raw) localStorage.removeItem(workflowArtifactDraftStorageKey);
+  } catch {
+    raw = "";
+  }
+  if (!raw) return;
+  let draft = {};
+  try {
+    draft = JSON.parse(raw);
+  } catch {
+    draft = { ref: raw };
+  }
+  const ref = String(draft?.ref || "").trim();
+  if (!ref) return;
+  state.graphTransfer = {
+    tone: "artifact",
+    title: t("workflow.artifactDraftTitle"),
+    body: t("workflow.artifactDraftBody", { ref }),
+    artifactDraft: {
+      ref,
+      title: String(draft.title || ""),
+      summary: String(draft.summary || "")
+    }
+  };
+}
+
+function handleWorkflowTransferAction(root, action) {
+  if (action === "dismiss") {
+    clearWorkflowTransfer(root);
+    return;
+  }
+  if (action === "use-artifact") {
+    addArtifactDraftToSelectedStage(root);
+    return;
+  }
+  if (action === "copy-artifact") {
+    copyWorkflowTransferArtifactRef(root);
+  }
+}
+
+async function copyWorkflowTransferArtifactRef(root) {
+  const ref = String(state.graphTransfer?.artifactDraft?.ref || "").trim();
+  if (!ref) return;
+  try {
+    await navigator.clipboard.writeText(ref);
+    state.graphTransfer = {
+      ...state.graphTransfer,
+      tone: "ready",
+      title: t("workflow.artifactDraftCopied"),
+      body: t("workflow.artifactDraftCopiedHelp", { ref })
+    };
+  } catch (error) {
+    state.graphTransfer = {
+      ...state.graphTransfer,
+      tone: "error",
+      title: t("workflow.artifactDraftCopyFailed"),
+      body: localizedWorkflowErrorMessage(error, t("workflow.artifactDraftCopyFailed"))
+    };
+  }
+  renderWorkflowTransfer(root);
 }
 
 function workflowStageReferenceEntries(stage) {
@@ -3907,6 +5993,551 @@ function addDataFlowReferenceToStageInput(root, ref) {
   renderCanvas(root);
 }
 
+function addOutputMapPreset(root, preset) {
+  const stage = selectedStage();
+  const value = String(preset || "").trim();
+  if (!stage || !value) return;
+  const index = value.indexOf("=");
+  if (index <= 0) return;
+  const key = value.slice(0, index).trim();
+  const ref = value.slice(index + 1).trim();
+  if (!key || !ref) return;
+  stage.outputs = stage.outputs && typeof stage.outputs === "object" && !Array.isArray(stage.outputs) ? { ...stage.outputs } : {};
+  stage.outputs[key] = ref;
+  clearWorkflowValidation(root);
+  clearWorkflowTransfer(root);
+  renderStageForm(root);
+  renderCanvas(root);
+}
+
+function renderStageRecommendedDefaults(stage, nodeType) {
+  const recommendations = stageRecommendedDefaults(stage, nodeType);
+  if (!recommendations) return "";
+  const notice = stageRecommendationNotice(stage);
+  return `<section class="workflow-recommendation-panel" aria-label="${escapeHTML(t("workflow.recommendationTitle"))}">
+    <div class="workflow-recommendation-head">
+      <i aria-hidden="true">${nodeIcon(nodeType === "custom" ? "agent" : nodeType)}</i>
+      <span>
+        <strong>${escapeHTML(t("workflow.recommendationTitle"))}</strong>
+        <small>${escapeHTML(recommendations.resourceSummary || t("workflow.recommendationHelp"))}</small>
+      </span>
+      <em>${escapeHTML(t("workflow.recommendationReady"))}</em>
+    </div>
+    ${notice ? `<div class="workflow-recommendation-notice">${escapeHTML(notice)}</div>` : ""}
+    <div class="workflow-recommendation-body">
+      ${renderStageRecommendationGroup(t("workflow.recommendationInput"), recommendations.inputLabels)}
+      ${renderStageRecommendationGroup(t("workflow.recommendationContext"), recommendations.contextLabels)}
+      ${renderStageRecommendationGroup(t("workflow.recommendationOutput"), recommendations.outputLabels)}
+      ${renderStageRecommendationGroup(t("workflow.recommendationEvidence"), recommendations.evidenceLabels)}
+    </div>
+    <div class="workflow-recommendation-actions">
+      <button type="button" class="primary small" data-stage-recommendation="all">${escapeHTML(t("workflow.recommendationApplyAll"))}</button>
+      <button type="button" class="ghost-button" data-stage-recommendation="input">${escapeHTML(t("workflow.recommendationApplyInput"))}</button>
+      <button type="button" class="ghost-button" data-stage-recommendation="output">${escapeHTML(t("workflow.recommendationApplyOutput"))}</button>
+      <button type="button" class="ghost-button" data-stage-recommendation="acceptance">${escapeHTML(t("workflow.recommendationApplyAcceptance"))}</button>
+    </div>
+  </section>`;
+}
+
+function renderStageRecommendationGroup(title, labels = []) {
+  const visible = (labels || []).filter(Boolean).slice(0, 4);
+  if (!visible.length) return "";
+  return `<div class="workflow-recommendation-group">
+    <strong>${escapeHTML(title)}</strong>
+    <div>${visible.map(label => `<span>${escapeHTML(label)}</span>`).join("")}</div>
+  </div>`;
+}
+
+function stageRecommendationNotice(stage) {
+  const notice = state.stageRecommendationNotice;
+  if (!notice || notice.stage !== stage?.name) return "";
+  if (Date.now() - notice.time > 7000) {
+    state.stageRecommendationNotice = null;
+    return "";
+  }
+  return notice.text || "";
+}
+
+function stageRecommendedDefaults(stage, nodeType) {
+  if (!stage || ["start", "end"].includes(nodeType)) return null;
+  const profile = stageRecommendationProfile(stage, nodeType);
+  const resource = stageRecommendationResource(stage, nodeType);
+  const option = nodeTypeOption(nodeType);
+  const canInput = advancedFieldSet(nodeType).has("input");
+  const canOutput = advancedFieldSet(nodeType).has("outputs");
+  const canContext = nodeType !== "start" && nodeType !== "end";
+  const canArtifact = stageFieldSet(nodeType, stage).has("artifacts");
+  const canAcceptance = stageFieldSet(nodeType, stage).has("acceptance_criteria");
+  const outputs = mergeRecommendationOutputs(profile.outputs, metadataOutputKeys(option), resourceOutputKeys(resource?.option), canOutput, stage, nodeType);
+  const inputRefs = canInput ? preferredInputRefs(stage, nodeType, profile.inputRefs) : [];
+  const contextPreset = canContext ? profile.contextPreset : "";
+  const artifacts = canArtifact ? profile.artifacts : [];
+  const acceptance = canAcceptance ? profile.acceptance : [];
+  const resourceTitle = resource?.title || nodeDisplayType(nodeType);
+  const resourceDescription = resource?.description || nodeTypeHelp(option);
+  return {
+    nodeType,
+    inputRefs,
+    contextPreset,
+    outputs,
+    artifacts,
+    acceptance,
+    inputLabels: inputRefs.map(ref => workflowReferenceInfo(ref).label),
+    contextLabels: contextPreset ? [contextPresetLabel(contextPreset)] : [],
+    outputLabels: outputs.map(key => outputPresetLabel(key, stage, nodeType)),
+    evidenceLabels: [
+      ...artifacts.map(item => stageRecommendationEvidenceLabel(item)),
+      ...acceptance.map(item => stageRecommendationAcceptanceLabel(item))
+    ],
+    resourceSummary: resourceTitle
+      ? t("workflow.recommendationResourceHelp", { type: nodeDisplayType(nodeType), resource: resourceTitle })
+      : (resourceDescription || t("workflow.recommendationHelp"))
+  };
+}
+
+function stageRecommendationEvidenceLabel(item) {
+  const name = typeof item === "string" ? item : item?.label || item?.name || "";
+  if (name === "evidence") return t("workflow.recommendationEvidenceArtifact");
+  if (name === "report") return t("workflow.recommendationReportArtifact");
+  return workflowDisplayValue(name);
+}
+
+function stageRecommendationAcceptanceLabel(item) {
+  const name = typeof item === "string" ? item : item?.label || item?.name || "";
+  if (name === "has-tool-result") return t("workflow.recommendationAcceptanceToolResultLabel");
+  if (name === "team-handoff") return t("workflow.recommendationAcceptanceTeamHandoffLabel");
+  if (name === "quality-decision") return t("workflow.recommendationAcceptanceQualityDecisionLabel");
+  if (name === "has-output") return t("workflow.recommendationAcceptanceOutputLabel");
+  return workflowDisplayValue(name);
+}
+
+function stageRecommendationProfile(stage, nodeType) {
+  const hasIncoming = workflowHasIncomingStage(stage);
+  const primaryInput = hasIncoming ? "previous.summary" : "workflow.input";
+  const profiles = {
+    agent: {
+      inputRefs: [primaryInput],
+      contextPreset: hasIncoming ? "previous-summary" : "project-files",
+      outputs: ["summary", "evidence", "next_actions"],
+      artifacts: ["report"],
+      acceptance: ["has-output"]
+    },
+    custom: {
+      inputRefs: [primaryInput],
+      contextPreset: hasIncoming ? "previous-summary" : "project-files",
+      outputs: ["summary", "evidence", "next_actions"],
+      artifacts: ["report"],
+      acceptance: ["has-output"]
+    },
+    skill: {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: hasIncoming ? "minimal" : "project-files",
+      outputs: ["summary", "evidence"],
+      artifacts: ["evidence"],
+      acceptance: ["has-output"]
+    },
+    tool: {
+      inputRefs: [primaryInput],
+      contextPreset: hasIncoming ? "previous-summary" : "minimal",
+      outputs: ["summary", "tool_results", "artifacts"],
+      artifacts: ["evidence"],
+      acceptance: ["has-tool-result"]
+    },
+    team: {
+      inputRefs: [primaryInput],
+      contextPreset: hasIncoming ? "previous-artifacts" : "project-files",
+      outputs: ["summary", "decision", "next_actions", "evidence"],
+      artifacts: ["report", "evidence"],
+      acceptance: ["team-handoff"]
+    },
+    condition: {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: "minimal",
+      outputs: ["decision"],
+      artifacts: [],
+      acceptance: []
+    },
+    switch: {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: "minimal",
+      outputs: ["decision"],
+      artifacts: [],
+      acceptance: []
+    },
+    router: {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: "minimal",
+      outputs: ["decision"],
+      artifacts: [],
+      acceptance: []
+    },
+    policy_guard: {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: "minimal",
+      outputs: ["decision", "evidence"],
+      artifacts: ["evidence"],
+      acceptance: []
+    },
+    guard: {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: "minimal",
+      outputs: ["decision", "evidence"],
+      artifacts: ["evidence"],
+      acceptance: []
+    },
+    quality_gate: {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: "previous-artifacts",
+      outputs: ["decision", "evidence"],
+      artifacts: ["evidence"],
+      acceptance: ["quality-decision"]
+    },
+    quality_guard: {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: "previous-artifacts",
+      outputs: ["decision", "evidence"],
+      artifacts: ["evidence"],
+      acceptance: ["quality-decision"]
+    },
+    "quality-guard": {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: "previous-artifacts",
+      outputs: ["decision", "evidence"],
+      artifacts: ["evidence"],
+      acceptance: ["quality-decision"]
+    },
+    input_gate: {
+      inputRefs: ["workflow.input"],
+      contextPreset: "minimal",
+      outputs: ["summary", "output"],
+      artifacts: [],
+      acceptance: []
+    },
+    checkpoint: {
+      inputRefs: [hasIncoming ? "previous.summary" : "workflow.input"],
+      contextPreset: "minimal",
+      outputs: ["decision"],
+      artifacts: [],
+      acceptance: []
+    },
+    sub_workflow: {
+      inputRefs: [primaryInput],
+      contextPreset: hasIncoming ? "previous-summary" : "project-files",
+      outputs: ["summary", "artifacts", "decision"],
+      artifacts: ["report"],
+      acceptance: ["has-output"]
+    }
+  };
+  const fallback = controlTypes.has(nodeType)
+    ? { inputRefs: [primaryInput], contextPreset: "minimal", outputs: ["summary"], artifacts: [], acceptance: [] }
+    : profiles.agent;
+  const profile = profiles[nodeType] || fallback;
+  return {
+    inputRefs: [...profile.inputRefs],
+    contextPreset: profile.contextPreset,
+    outputs: [...profile.outputs],
+    artifacts: [...profile.artifacts],
+    acceptance: [...profile.acceptance]
+  };
+}
+
+function workflowHasIncomingStage(stage) {
+  const name = String(stage?.name || "").trim();
+  if (!name) return false;
+  return (state.graph.stages || []).some(item => item !== stage && workflowOutgoingTargetNames(item, null, { includeControlBody: true }).includes(name));
+}
+
+function workflowIsControlBodyStage(stage) {
+  const name = String(stage?.name || "").trim();
+  if (!name) return false;
+  return (state.graph.stages || []).some(item => item !== stage && workflowNodeHasBodyStage(normalizedNodeType(item)) && workflowReferenceTargets(item.params?.stage || item.params?.body || item.params?.do || item.params?.each_stage || item.params?.loop_stage || item.params?.target).includes(name));
+}
+
+function stageRecommendationCanAutoApply(stage, nodeType) {
+  if (!stage || ["start", "end"].includes(nodeType)) return false;
+  return !Object.keys(stage.input || {}).length &&
+    !Object.keys(stage.outputs || {}).length &&
+    !hasStageContextContract(stage.context) &&
+    !normalizeArtifacts(stage.artifacts).length &&
+    !normalizeAcceptanceCriteria(stage.acceptance_criteria).length;
+}
+
+function stageRecommendationResource(stage, nodeType) {
+  const resources = [];
+  if (nodeType === "team") {
+    const name = stage?.params?.team || stage?.params?.template || "";
+    const option = teamTemplateSummary(name) || workflowResourceOptionByName("team_template", name);
+    if (name) resources.push({ kind: "team_template", name, option });
+  } else if (nodeType === "tool") {
+    if (stage?.tool) resources.push({ kind: "tool", name: stage.tool, option: workflowResourceOptionByName("tool", stage.tool) });
+  } else if (nodeType === "skill") {
+    if (stage?.skill) resources.push({ kind: "skill", name: stage.skill, option: workflowResourceOptionByName("skill", stage.skill) });
+  } else if (nodeType === "agent" || nodeType === "custom") {
+    if (stage?.agent) resources.push({ kind: "agent", name: stage.agent, option: workflowResourceOptionByName("agent", stage.agent) });
+    if (stage?.skill) resources.push({ kind: "skill", name: stage.skill, option: workflowResourceOptionByName("skill", stage.skill) });
+  }
+  const selected = resources.find(item => item.option) || resources[0];
+  if (!selected) return null;
+  return {
+    ...selected,
+    title: workflowResourceTitle(selected.option, selected.name),
+    description: workflowResourceDescription(selected.option, selected.kind)
+  };
+}
+
+function preferredInputRefs(stage, nodeType, refs = []) {
+  const available = inputMapReferenceOptions(stage).map(option => option.ref);
+  const candidates = [...refs, "workflow.input", "previous.summary", ...available];
+  const seen = new Set();
+  return candidates
+    .map(ref => String(ref || "").trim())
+    .filter(ref => {
+      if (!ref || seen.has(ref)) return false;
+      if (!available.includes(ref) && !["workflow.input", "previous.summary", "previous.output"].includes(ref)) return false;
+      if (!workflowHasIncomingStage(stage) && ref.startsWith("previous.")) return false;
+      seen.add(ref);
+      return true;
+    })
+    .slice(0, nodeType === "team" ? 2 : 1);
+}
+
+function metadataOutputKeys(option) {
+  const outputs = Array.isArray(option?.outputs) ? option.outputs : [];
+  return outputs
+    .map(output => typeof output === "string" ? output : output?.name || output?.key || output?.field || output?.label)
+    .map(key => String(key || "").trim())
+    .filter(Boolean);
+}
+
+function resourceOutputKeys(option) {
+  const values = [];
+  const add = value => {
+    if (Array.isArray(value)) values.push(...value);
+  };
+  add(option?.outputs);
+  add(option?.output_contract);
+  add(option?.produces);
+  add(option?.expected_outputs);
+  return values
+    .map(output => typeof output === "string" ? output : output?.name || output?.key || output?.field || output?.label)
+    .map(key => String(key || "").trim())
+    .filter(Boolean);
+}
+
+function mergeRecommendationOutputs(primary, metadata, resource, canOutput, stage = selectedStage(), nodeType = normalizedNodeType(stage)) {
+  if (!canOutput) return [];
+  const allowed = new Set(outputMapPresetOptions(stage, nodeType).map(option => option.key));
+  const seen = new Set();
+  return [...primary, ...metadata, ...resource]
+    .map(key => normalizeRecommendationOutputKey(key))
+    .filter(key => {
+      if (!key || seen.has(key) || !allowed.has(key)) return false;
+      seen.add(key);
+      return true;
+    })
+    .slice(0, 5);
+}
+
+function normalizeRecommendationOutputKey(value) {
+  const key = String(value || "").trim().toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  const aliases = {
+    action: "next_actions",
+    actions: "next_actions",
+    next_action: "next_actions",
+    next_steps: "next_actions",
+    artifact: "artifacts",
+    artifact_refs: "artifacts",
+    result: "output",
+    result_text: "output",
+    raw: "raw_output",
+    tool_result: "tool_results",
+    finding: "findings",
+    change: "changes"
+  };
+  return aliases[key] || key;
+}
+
+function outputPresetLabel(key, stage = selectedStage(), nodeType = normalizedNodeType(stage)) {
+  const preset = outputMapPresetOptions(stage, nodeType).find(option => option.key === key);
+  return preset?.label || workflowDisplayValue(key);
+}
+
+function contextPresetLabel(preset) {
+  return contextPresetOptions().find(option => option.id === preset)?.label || workflowDisplayValue(preset);
+}
+
+function applyStageRecommendedDefaults(root, scope = "all", options = {}) {
+  const stage = selectedStage();
+  if (!stage) return 0;
+  const nodeType = normalizedNodeType(stage);
+  const recommendations = stageRecommendedDefaults(stage, nodeType);
+  if (!recommendations) return 0;
+  let applied = 0;
+  const applyAll = scope === "all" || scope === "missing";
+  const shouldApply = name => applyAll || scope === name;
+
+  if (shouldApply("input")) {
+    applied += applyRecommendedInputs(stage, recommendations, nodeType);
+    applied += applyRecommendedContext(stage, recommendations, nodeType);
+  }
+  if (shouldApply("output")) {
+    applied += applyRecommendedOutputs(stage, recommendations, nodeType);
+    applied += applyRecommendedArtifacts(stage, recommendations, nodeType);
+  }
+  if (shouldApply("acceptance")) {
+    applied += applyRecommendedAcceptance(stage, recommendations, nodeType);
+  }
+
+  if (!applied) {
+    if (!options.quiet) {
+      state.stageRecommendationNotice = {
+        stage: stage.name,
+        text: t("workflow.recommendationAlreadyApplied"),
+        time: Date.now()
+      };
+      renderStageForm(root);
+    }
+    return 0;
+  }
+  clearWorkflowValidation(root);
+  clearWorkflowTransfer(root);
+  pruneUnsupportedStageFields(stage, nodeType);
+  pruneEmptyStageFields(stage);
+  if (!options.quiet) {
+    state.stageRecommendationNotice = {
+      stage: stage.name,
+      text: t("workflow.recommendationApplied", { count: applied }),
+      time: Date.now()
+    };
+  }
+  renderStageForm(root);
+  renderCanvas(root);
+  return applied;
+}
+
+function applyRecommendedInputs(stage, recommendations, nodeType) {
+  if (!advancedFieldSet(nodeType).has("input")) return 0;
+  stage.input = stage.input && typeof stage.input === "object" && !Array.isArray(stage.input) ? { ...stage.input } : {};
+  let applied = 0;
+  const currentValues = new Set(Object.values(stage.input).map(value => String(value || "").trim()).filter(Boolean));
+  for (const ref of recommendations.inputRefs || []) {
+    if (!ref || currentValues.has(ref)) continue;
+    const base = workflowInputKeyFromRef(ref);
+    let key = base;
+    let index = 2;
+    while (stage.input[key]) {
+      key = `${base}_${index}`;
+      index += 1;
+    }
+    stage.input[key] = ref;
+    currentValues.add(ref);
+    applied += 1;
+  }
+  return applied;
+}
+
+function applyRecommendedContext(stage, recommendations, nodeType) {
+  if (["start", "end"].includes(nodeType) || hasStageContextContract(stage.context)) return 0;
+  const context = contextPresetDefinition(recommendations.contextPreset);
+  if (!context) return 0;
+  stage.context = context;
+  return 1;
+}
+
+function applyRecommendedOutputs(stage, recommendations, nodeType) {
+  if (!advancedFieldSet(nodeType).has("outputs")) return 0;
+  stage.outputs = stage.outputs && typeof stage.outputs === "object" && !Array.isArray(stage.outputs) ? { ...stage.outputs } : {};
+  let applied = 0;
+  const presets = new Map(outputMapPresetOptions(stage, nodeType).map(option => [option.key, option.ref]));
+  for (const key of recommendations.outputs || []) {
+    if (!key || stage.outputs[key] || !presets.has(key)) continue;
+    stage.outputs[key] = presets.get(key);
+    applied += 1;
+  }
+  return applied;
+}
+
+function applyRecommendedArtifacts(stage, recommendations, nodeType) {
+  if (!stageFieldSet(nodeType, stage).has("artifacts")) return 0;
+  stage.artifacts = normalizeArtifacts(stage.artifacts);
+  const existing = new Set(stage.artifacts.map(item => item.name || item.kind).filter(Boolean));
+  let applied = 0;
+  for (const item of recommendations.artifacts || []) {
+    const name = typeof item === "string" ? item : item.name;
+    if (!name || existing.has(name)) continue;
+    const artifact = name === "evidence"
+      ? createNamedArtifactDraft(stage, "evidence", {
+        kind: "evidence",
+        title: t("workflow.artifactGuideEvidenceTitle"),
+        ref: "result.evidence",
+        summary: "result.summary"
+      })
+      : createNamedArtifactDraft(stage, "report", {
+        kind: "report",
+        title: t("workflow.artifactGuideReportTitle"),
+        ref: "result.output",
+        summary: "result.summary"
+      });
+    if (artifact.name) {
+      const baseName = artifact.name;
+      let index = 2;
+      while (existing.has(artifact.name)) {
+        artifact.name = `${baseName}-${index}`;
+        index += 1;
+      }
+    }
+    stage.artifacts.push(artifact);
+    existing.add(artifact.name);
+    applied += 1;
+  }
+  return applied;
+}
+
+function applyRecommendedAcceptance(stage, recommendations, nodeType) {
+  if (!stageFieldSet(nodeType, stage).has("acceptance_criteria")) return 0;
+  stage.acceptance_criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria);
+  const existing = new Set(stage.acceptance_criteria.map(item => item.name || item.description).filter(Boolean));
+  let applied = 0;
+  for (const item of recommendations.acceptance || []) {
+    const name = typeof item === "string" ? item : item.name;
+    if (!name || existing.has(name)) continue;
+    const criterion = recommendedAcceptanceCriterion(stage, name);
+    stage.acceptance_criteria.push(criterion);
+    existing.add(criterion.name);
+    applied += 1;
+  }
+  return applied;
+}
+
+function recommendedAcceptanceCriterion(stage, name) {
+  if (name === "has-tool-result") {
+    return createNamedAcceptanceCriterionDraft(stage, "has-tool-result", {
+      description: t("workflow.recommendationAcceptanceToolResult"),
+      ref: "result.tool_results",
+      exists: true
+    });
+  }
+  if (name === "team-handoff") {
+    return createNamedAcceptanceCriterionDraft(stage, "team-handoff", {
+      description: t("workflow.recommendationAcceptanceTeamHandoff"),
+      ref: "result.next_actions",
+      exists: true
+    });
+  }
+  if (name === "quality-decision") {
+    return createNamedAcceptanceCriterionDraft(stage, "quality-decision", {
+      description: t("workflow.recommendationAcceptanceQualityDecision"),
+      ref: "result.decision",
+      exists: true
+    });
+  }
+  return createNamedAcceptanceCriterionDraft(stage, "has-output", {
+    description: t("workflow.acceptanceGuideExistsDescription"),
+    ref: "result.output",
+    exists: true
+  });
+}
+
 function workflowInputKeyFromRef(ref) {
   const parts = String(ref || "").split(".");
   const output = parts[parts.length - 1] || "upstream";
@@ -3943,6 +6574,764 @@ function updateStagePlainSummary(root, stage, nodeType) {
       <small>${escapeHTML(t("workflow.stageSummaryNextStep"))}</small>
       <strong>${escapeHTML(nextItem?.text || t("workflow.stageGuide.readyItem"))}</strong>
     </div>`;
+}
+
+function updateStageTaskEditor(root, stage, nodeType) {
+  const target = root.querySelector("#stageTaskEditor");
+  if (!target || !stage) return;
+  const steps = stageSetupSteps(stage, nodeType);
+  const ready = steps.filter(step => step.status === "ready").length;
+  const total = steps.length || 1;
+  const actors = stageTaskResourceConfigs(stage, nodeType);
+  const canRead = !["start", "end"].includes(nodeType);
+  const canPublish = canRead && (
+    advancedFieldSet(nodeType).has("outputs") ||
+    stageFieldSet(nodeType, stage).has("artifacts") ||
+    stageFieldSet(nodeType, stage).has("acceptance_criteria")
+  );
+  target.innerHTML = `
+    <div class="workflow-task-editor-head">
+      <div>
+        <span>${escapeHTML(t("workflow.taskEditorKicker"))}</span>
+        <strong id="stageTaskEditorTitle">${escapeHTML(t("workflow.taskEditorTitle"))}</strong>
+        <small>${escapeHTML(t("workflow.taskEditorHelp"))}</small>
+      </div>
+      <em id="stageTaskEditorStatus">${escapeHTML(t("workflow.taskEditorProgress", { ready, total }))}</em>
+    </div>
+    ${canRead ? renderStageRecommendedDefaults(stage, nodeType) : ""}
+    <div class="workflow-task-editor-grid">
+      ${renderStageTaskSection("purpose", t("workflow.taskPurposeTitle"), t("workflow.taskPurposeHelp"), renderStageTaskPurpose(stage, nodeType))}
+      ${actors.length ? renderStageTaskSection("actor", t("workflow.taskActorTitle"), t("workflow.taskActorHelp"), actors.map(renderStageTaskResourceBlock).join("")) : ""}
+      ${canRead ? renderStageTaskSection("input", t("workflow.taskInputTitle"), t("workflow.taskInputHelp"), renderStageTaskInput(stage, nodeType)) : ""}
+      ${canPublish ? renderStageTaskSection("output", t("workflow.taskOutputTitle"), t("workflow.taskOutputHelp"), renderStageTaskOutput(stage, nodeType)) : ""}
+      ${renderStageTaskSection("flow", t("workflow.taskFlowTitle"), t("workflow.taskFlowHelp"), renderStageTaskFlow(stage, nodeType))}
+    </div>`;
+}
+
+function renderStageTaskSection(kind, title, help, body) {
+  return `<section class="workflow-task-section ${escapeHTML(kind)}">
+    <div class="workflow-task-section-head">
+      <i aria-hidden="true">${stageSetupIcon(kind === "actor" ? "actor" : kind === "input" ? "input" : kind === "output" ? "output" : kind === "flow" ? "flow" : "purpose")}</i>
+      <span>
+        <strong>${escapeHTML(title)}</strong>
+        <small>${escapeHTML(help)}</small>
+      </span>
+    </div>
+    ${body}
+  </section>`;
+}
+
+function renderStageTaskPurpose(stage, nodeType) {
+  return `<div class="workflow-task-field-grid two">
+    <label>
+      <span>${escapeHTML(t("workflow.nodeType"))}</span>
+      <select data-stage-task-field="node_type">
+        ${workflowNodeTypeChoices().map(option => `<option value="${escapeHTML(option.type)}" ${option.type === nodeType ? "selected" : ""}>${escapeHTML(nodeTypeLabel(option))}</option>`).join("")}
+      </select>
+    </label>
+    <label>
+      <span>${escapeHTML(t("workflow.stageName"))}</span>
+      <input data-stage-task-field="name" value="${escapeHTML(stage.name || "")}" placeholder="${escapeHTML(t("workflow.taskNamePlaceholder"))}">
+    </label>
+    ${stageFieldSet(nodeType, stage).has("approval") ? `<label class="check workflow-task-approval">
+      <input type="checkbox" data-stage-task-field="approval" ${stage.approval ? "checked" : ""}>
+      <span>${escapeHTML(t("workflow.requireApproval"))}</span>
+      <small>${escapeHTML(t("workflow.taskApprovalHelp"))}</small>
+    </label>` : ""}
+  </div>`;
+}
+
+function stageTaskResourceConfigs(stage, nodeType) {
+  const configs = [];
+  const add = (kind, selected, icon) => configs.push({ kind, selected, visible: true, icon });
+  if (nodeType === "team") {
+    add("team_template", stage?.params?.team || stage?.params?.template || "", "team");
+  } else if (nodeType === "tool") {
+    add("tool", stage?.tool || "", "tool");
+  } else if (nodeType === "skill") {
+    add("skill", stage?.skill || "", "skill");
+  } else if (nodeType === "agent" || nodeType === "custom") {
+    add("agent", stage?.agent || "", "agent");
+    add("skill", stage?.skill || "", "skill");
+  }
+  return configs;
+}
+
+function renderStageTaskResourceBlock(config) {
+  return `<div class="workflow-task-resource">${renderStageResourcePicker(config)}</div>`;
+}
+
+function renderStageTaskInput(stage, nodeType) {
+  const canMap = advancedFieldSet(nodeType).has("input");
+  const selectedRefs = new Set(Object.values(stage.input || {}).map(value => String(value || "").trim()).filter(Boolean));
+  const refs = canMap ? inputMapReferenceOptions(stage).slice(0, 6) : [];
+  const context = normalizeStageContext(stage.context);
+  const contextPresetHTML = state.expertMode ? `<div class="workflow-task-chip-group">
+      <strong>${escapeHTML(t("workflow.contextPresetTitle"))}</strong>
+      <div>${contextPresetOptions().map(option => renderStageTaskChip({
+        label: option.label,
+        value: option.help,
+        meta: t("workflow.variableKind.context"),
+        help: option.help,
+        selected: stageContextMatchesPreset(context, option.id),
+        attr: `data-stage-task-context-preset="${escapeHTML(option.id)}"`
+      })).join("")}</div>
+    </div>` : "";
+  return `<div class="workflow-task-stack">
+    ${refs.length ? `<div class="workflow-task-chip-group">
+      <strong>${escapeHTML(t("workflow.taskInputQuickRefs"))}</strong>
+      <div>${refs.map(option => renderStageTaskChip({
+        label: option.label,
+        value: workflowReferenceInfo(option.ref).preview,
+        meta: workflowReferenceInfo(option.ref).kind,
+        help: option.help,
+        selected: selectedRefs.has(option.ref),
+        attr: `data-stage-task-input-ref="${escapeHTML(option.ref)}"`
+      })).join("")}</div>
+    </div>` : `<p class="workflow-task-muted">${escapeHTML(t("workflow.taskInputContextOnly"))}</p>`}
+    ${contextPresetHTML}
+    ${state.expertMode ? `<button type="button" class="ghost-button workflow-task-open" data-stage-task-open-tab="inputs">${escapeHTML(t("workflow.taskOpenInputs"))}</button>` : ""}
+  </div>`;
+}
+
+function renderStageTaskOutput(stage, nodeType) {
+  const canOutput = advancedFieldSet(nodeType).has("outputs");
+  const canArtifact = stageFieldSet(nodeType, stage).has("artifacts");
+  const canAcceptance = stageFieldSet(nodeType, stage).has("acceptance_criteria");
+  const selectedOutputs = new Set(Object.keys(stage.outputs || {}).map(value => String(value || "").trim()).filter(Boolean));
+  const presets = canOutput ? outputMapPresetOptions(stage, nodeType).slice(0, 6) : [];
+  return `<div class="workflow-task-stack">
+    ${presets.length ? `<div class="workflow-task-chip-group">
+      <strong>${escapeHTML(t("workflow.taskOutputQuickPresets"))}</strong>
+      <div>${presets.map(option => renderStageTaskChip({
+        label: option.label,
+        value: workflowReferenceInfo(option.ref).preview,
+        meta: workflowReferenceInfo(option.ref).kind,
+        help: option.help,
+        selected: selectedOutputs.has(option.key),
+        attr: `data-stage-task-output-preset="${escapeHTML(option.value)}"`
+      })).join("")}</div>
+    </div>` : `<p class="workflow-task-muted">${escapeHTML(t("workflow.taskOutputNotNeeded"))}</p>`}
+    ${(canArtifact || canAcceptance) ? `<div class="workflow-task-action-row">
+      ${canArtifact ? `<button type="button" class="ghost-button" data-stage-task-artifact="report">${escapeHTML(t("workflow.artifactGuideAddReport"))}</button>
+      <button type="button" class="ghost-button" data-stage-task-artifact="evidence">${escapeHTML(t("workflow.artifactGuideAddEvidence"))}</button>` : ""}
+      ${canAcceptance ? `<button type="button" class="ghost-button" data-stage-task-acceptance="exists">${escapeHTML(t("workflow.acceptanceGuideAddExists"))}</button>` : ""}
+    </div>` : ""}
+    ${state.expertMode ? `<button type="button" class="ghost-button workflow-task-open" data-stage-task-open-tab="outputs">${escapeHTML(t("workflow.taskOpenOutputs"))}</button>` : ""}
+  </div>`;
+}
+
+function renderStageTaskFlow(stage, nodeType) {
+  if (nodeType === "end") {
+    return `<p class="workflow-task-muted">${escapeHTML(t("workflow.taskFlowEnd"))}</p>`;
+  }
+  if (nodeType === "condition") return renderStageTaskConditionFlow(stage);
+  if (nodeType === "switch" || nodeType === "router") return renderStageTaskSwitchFlow(stage);
+  if (nodeType === "policy_guard" || nodeType === "guard") return renderStageTaskPolicyFlow(stage);
+  if (isQualityGateType(nodeType)) return renderStageTaskQualityFlow(stage);
+  if (nodeType === "parallel") return renderStageTaskParallelFlow(stage);
+  if (nodeType === "join") return renderStageTaskJoinFlow(stage);
+  if (nodeType === "for_each") return renderStageTaskForEachFlow(stage);
+  if (nodeType === "loop") return renderStageTaskLoopFlow(stage);
+  if (nodeType === "sub_workflow") return renderStageTaskSubWorkflowFlow(stage);
+  if (nodeType === "checkpoint") return renderStageTaskCheckpointFlow(stage);
+  return `<div class="workflow-task-stack">
+    <label class="workflow-task-target-field">
+      <span>${escapeHTML(t("workflow.taskFlowNextTarget"))}</span>
+      ${renderStageTaskTargetSelect(stage, (stage.next || [])[0] || "", `data-stage-task-field="next-primary"`)}
+    </label>
+    ${stage.next?.length > 1 ? `<small class="workflow-task-muted">${escapeHTML(t("workflow.taskFlowMoreTargets", { count: stage.next.length - 1 }))}</small>` : ""}
+    ${renderExpertFlowActions("routes")}
+  </div>`;
+}
+
+function renderStageTaskConditionFlow(stage) {
+  const parsed = parseConditionExpression(stage.condition || "");
+  const routes = stage.routes || {};
+  return `<div class="workflow-task-stack">
+    <div class="workflow-task-field-grid">
+      ${renderWorkflowReferenceControl(stage, {
+        label: t("workflow.visualConditionSource"),
+        value: parsed.source,
+        fieldAttr: `data-stage-task-field="condition-source"`,
+        target: "condition-source",
+        placeholder: t("workflow.visualConditionSourcePlaceholder"),
+        wide: true
+      })}
+      <label><span>${escapeHTML(t("workflow.visualConditionOperator"))}</span><select data-stage-task-field="condition-operator">
+        ${conditionOperatorOptions().map(option => `<option value="${escapeHTML(option.value)}" ${option.value === parsed.operator ? "selected" : ""}>${escapeHTML(option.label)}</option>`).join("")}
+      </select></label>
+      <label><span>${escapeHTML(t("workflow.visualConditionValue"))}</span><input data-stage-task-field="condition-value" value="${escapeHTML(parsed.value)}" placeholder="${escapeHTML(t("workflow.visualConditionValuePlaceholder"))}"></label>
+    </div>
+    <div class="workflow-task-field-grid">
+      ${renderStageTaskRouteSelect(stage, "true", routes.true || "", t("workflow.visualRouteTrue"))}
+      ${renderStageTaskRouteSelect(stage, "false", routes.false || "", t("workflow.visualRouteFalse"))}
+      ${renderStageTaskRouteSelect(stage, "default", routes.default || "", t("workflow.visualRouteDefault"))}
+    </div>
+    ${renderExpertFlowActions("cases")}
+  </div>`;
+}
+
+function renderStageTaskSwitchFlow(stage) {
+  const cases = stage.cases || {};
+  return `<div class="workflow-task-stack">
+    ${renderWorkflowReferenceControl(stage, {
+      label: t("workflow.visualSwitchSource"),
+      value: stage.switch_on || "",
+      fieldAttr: `data-stage-task-field="switch_on"`,
+      target: "switch_on",
+      placeholder: t("workflow.visualSwitchSourcePlaceholder"),
+      wide: true
+    })}
+    <div class="workflow-task-field-grid">
+      ${renderStageTaskCaseSelect(stage, "default", cases.default || "", t("workflow.visualRouteDefault"))}
+    </div>
+    ${renderExpertFlowActions("routes")}
+  </div>`;
+}
+
+function renderStageTaskPolicyFlow(stage) {
+  const routes = stage.routes || {};
+  return `<div class="workflow-task-stack">
+    ${renderWorkflowReferenceControl(stage, {
+      label: t("workflow.policy"),
+      value: stage.policy || "",
+      fieldAttr: `data-stage-task-field="policy"`,
+      target: "policy",
+      placeholder: t("workflow.policyPlaceholder"),
+      wide: true
+    })}
+    <div class="workflow-task-field-grid">
+      ${renderStageTaskRouteSelect(stage, "allow", routes.allow || "", t("workflow.visualRouteAllow"))}
+      ${renderStageTaskRouteSelect(stage, "deny", routes.deny || "", t("workflow.visualRouteDeny"))}
+      ${renderStageTaskRouteSelect(stage, "block", routes.block || "", t("workflow.visualRouteBlock"))}
+    </div>
+    ${renderExpertFlowActions("routes")}
+  </div>`;
+}
+
+function renderStageTaskQualityFlow(stage) {
+  const routes = stage.routes || {};
+  return `<div class="workflow-task-stack">
+    <div class="workflow-task-field-grid">
+      <label><span>${escapeHTML(t("workflow.visualQualitySource"))}</span>${renderStageTaskTargetSelect(stage, stage.params?.stage || "", `data-stage-task-field="param.stage"`)}</label>
+      <label><span>${escapeHTML(t("workflow.visualQualityMinScore"))}</span><input data-stage-task-field="param.min_score" type="number" min="0" max="100" step="1" value="${escapeHTML(stage.params?.min_score || "")}" placeholder="${escapeHTML(t("workflow.visualQualityMinScorePlaceholder"))}"></label>
+    </div>
+    <div class="workflow-task-field-grid">
+      ${renderStageTaskRouteSelect(stage, "pass", routes.pass || routes.allow || "", t("workflow.visualRoutePass"))}
+      ${renderStageTaskRouteSelect(stage, "warning", routes.warning || routes.warn || "", t("workflow.visualRouteWarning"))}
+      ${renderStageTaskRouteSelect(stage, "fail", routes.fail || routes.deny || routes.block || "", t("workflow.visualRouteFail"))}
+    </div>
+    ${renderExpertFlowActions()}
+  </div>`;
+}
+
+function renderStageTaskParallelFlow(stage) {
+  const branches = visualStageListValues(stage.next, 2, 4);
+  return `<div class="workflow-task-stack">
+    <div class="workflow-task-field-grid">
+      ${branches.map((branch, index) => `<label><span>${escapeHTML(t("workflow.visualParallelBranch", { index: index + 1 }))}</span>${renderStageTaskTargetSelect(stage, branch, `data-stage-task-next-index="${index}"`)}</label>`).join("")}
+    </div>
+    ${renderExpertFlowActions()}
+  </div>`;
+}
+
+function renderStageTaskJoinFlow(stage) {
+  return renderStageTaskParamFlow(stage, [
+    ["param.wait_for", t("workflow.joinWaitFor"), stage.params?.wait_for || "", t("workflow.joinWaitForPlaceholder")]
+  ]);
+}
+
+function renderStageTaskForEachFlow(stage) {
+  return `<div class="workflow-task-stack">
+    ${renderWorkflowReferenceControl(stage, {
+      label: t("workflow.eachItems"),
+      value: stage.params?.items || stage.params?.items_ref || "",
+      fieldAttr: `data-stage-task-field="param.items"`,
+      target: "param.items",
+      placeholder: t("workflow.eachItemsPlaceholder"),
+      wide: true
+    })}
+    <div class="workflow-task-field-grid">
+      ${renderStageTaskTargetSelectWithLabel(stage, "param.stage", t("workflow.bodyStage"), stage.params?.stage || "")}
+      ${renderStageTaskTargetSelectWithLabel(stage, "next-primary", t("workflow.taskFlowNextTarget"), (stage.next || [])[0] || "")}
+    </div>
+    ${renderExpertFlowActions()}
+  </div>`;
+}
+
+function renderStageTaskLoopFlow(stage) {
+  return `<div class="workflow-task-stack">
+    <div class="workflow-task-field-grid">
+      ${renderStageTaskTargetSelectWithLabel(stage, "param.stage", t("workflow.bodyStage"), stage.params?.stage || "")}
+      <label><span>${escapeHTML(t("workflow.loopMaxIterations"))}</span><input data-stage-task-field="param.max_iterations" type="number" min="1" value="${escapeHTML(stage.params?.max_iterations || "")}" placeholder="3"></label>
+    </div>
+    ${renderWorkflowReferenceControl(stage, {
+      label: t("workflow.loopUntil"),
+      value: stage.params?.until || "",
+      fieldAttr: `data-stage-task-field="param.until"`,
+      target: "param.until",
+      placeholder: t("workflow.loopUntilPlaceholder"),
+      wide: true
+    })}
+    <div class="workflow-task-field-grid">
+      ${renderStageTaskTargetSelectWithLabel(stage, "next-primary", t("workflow.taskFlowNextTarget"), (stage.next || [])[0] || "")}
+    </div>
+    ${renderExpertFlowActions()}
+  </div>`;
+}
+
+function renderStageTaskSubWorkflowFlow(stage) {
+  return `<div class="workflow-task-stack">
+    <div class="workflow-task-field-grid">
+      <label><span>${escapeHTML(t("workflow.subWorkflowName"))}</span><input data-stage-task-field="param.workflow" value="${escapeHTML(stage.params?.workflow || "")}" placeholder="${escapeHTML(t("workflow.subWorkflowNamePlaceholder"))}"></label>
+      ${renderStageTaskTargetSelectWithLabel(stage, "next-primary", t("workflow.visualSubWorkflowContinue"), (stage.next || [])[0] || "")}
+    </div>
+    ${renderWorkflowReferenceControl(stage, {
+      label: t("workflow.subWorkflowRequest"),
+      value: stage.params?.request || "",
+      fieldAttr: `data-stage-task-field="param.request"`,
+      target: "param.request",
+      placeholder: t("workflow.subWorkflowRequestPlaceholder"),
+      wide: true
+    })}
+    ${renderExpertFlowActions()}
+  </div>`;
+}
+
+function renderStageTaskCheckpointFlow(stage) {
+  return `<div class="workflow-task-stack">
+    <label><span>${escapeHTML(t("workflow.checkpointPrompt"))}</span><input data-stage-task-field="param.prompt" value="${escapeHTML(stage.params?.prompt || "")}" placeholder="${escapeHTML(t("workflow.checkpointPromptPlaceholder"))}"></label>
+    <div class="workflow-task-field-grid">
+      ${renderStageTaskTargetSelectWithLabel(stage, "next-primary", t("workflow.visualCheckpointContinue"), (stage.next || [])[0] || "")}
+    </div>
+    ${renderExpertFlowActions()}
+  </div>`;
+}
+
+function renderStageTaskParamFlow(stage, fields) {
+  return `<div class="workflow-task-stack">
+    <div class="workflow-task-field-grid">
+      ${fields.map(([field, label, value, placeholder]) => `<label><span>${escapeHTML(label)}</span><input data-stage-task-field="${escapeHTML(field)}" value="${escapeHTML(value || "")}" placeholder="${escapeHTML(placeholder || "")}"></label>`).join("")}
+      <label class="workflow-task-target-field">
+        <span>${escapeHTML(t("workflow.taskFlowNextTarget"))}</span>
+        ${renderStageTaskTargetSelect(stage, (stage.next || [])[0] || "", `data-stage-task-field="next-primary"`)}
+      </label>
+    </div>
+    ${renderExpertFlowActions()}
+  </div>`;
+}
+
+function renderStageTaskTargetSelectWithLabel(stage, field, label, value) {
+  return `<label class="workflow-task-target-field"><span>${escapeHTML(label)}</span>${renderStageTaskTargetSelect(stage, value, `data-stage-task-field="${escapeHTML(field)}"`)}</label>`;
+}
+
+function renderStageTaskRouteSelect(stage, routeKey, value, label) {
+  return `<label><span>${escapeHTML(label)}</span>${renderStageTaskTargetSelect(stage, value, `data-stage-task-route-key="${escapeHTML(routeKey)}"`)}</label>`;
+}
+
+function renderStageTaskCaseSelect(stage, caseKey, value, label) {
+  return `<label><span>${escapeHTML(label)}</span>${renderStageTaskTargetSelect(stage, value, `data-stage-task-case-key="${escapeHTML(caseKey)}"`)}</label>`;
+}
+
+function renderStageTaskTargetSelect(stage, value, attributes) {
+  const current = String(stage?.name || "").trim();
+  const selected = String(value || "").trim();
+  const names = (state.graph.stages || [])
+    .map(item => String(item?.name || "").trim())
+    .filter(name => name && name !== current);
+  const unique = [...new Set(selected && !names.includes(selected) ? [selected, ...names] : names)];
+  return `<select ${attributes}>
+    <option value="">${escapeHTML(t("workflow.taskNoTarget"))}</option>
+    ${unique.map(name => `<option value="${escapeHTML(name)}" ${name === selected ? "selected" : ""}>${escapeHTML(name)}</option>`).join("")}
+  </select>`;
+}
+
+function renderStageTaskChip({ label, value, meta, help, selected, attr }) {
+  return `<button type="button" class="workflow-task-chip ${selected ? "selected" : ""}" ${attr} title="${escapeHTML(help || value || label)}" aria-pressed="${selected ? "true" : "false"}">
+    <strong>${escapeHTML(label || value)}</strong>
+    ${value ? `<small>${escapeHTML(value)}</small>` : ""}
+    ${meta ? `<em>${escapeHTML(meta)}</em>` : ""}
+  </button>`;
+}
+
+function stageContextMatchesPreset(context, preset) {
+  const expected = contextPresetDefinition(preset);
+  if (!expected) return false;
+  const normalized = normalizeStageContext(context);
+  return sameStringList(normalized.include, expected.include) &&
+    sameStringList(normalized.exclude, expected.exclude) &&
+    normalized.max_tokens === expected.max_tokens &&
+    normalized.retrieval.enabled === expected.retrieval.enabled &&
+    normalized.retrieval.query === expected.retrieval.query;
+}
+
+function sameStringList(left = [], right = []) {
+  const a = [...left].map(item => String(item || "").trim()).filter(Boolean).sort();
+  const b = [...right].map(item => String(item || "").trim()).filter(Boolean).sort();
+  return a.length === b.length && a.every((item, index) => item === b[index]);
+}
+
+function handleStageTaskEditorAction(root, button) {
+  if (button.dataset.stageRecommendation) {
+    applyStageRecommendedDefaults(root, button.dataset.stageRecommendation || "all");
+    return;
+  }
+  if (button.dataset.stageTaskInputRef) {
+    addDataFlowReferenceToStageInput(root, button.dataset.stageTaskInputRef);
+    return;
+  }
+  if (button.dataset.stageTaskOutputPreset) {
+    addOutputMapPreset(root, button.dataset.stageTaskOutputPreset);
+    return;
+  }
+  if (button.dataset.stageTaskContextPreset) {
+    applyContextPreset(root, button.dataset.stageTaskContextPreset);
+    return;
+  }
+  if (button.dataset.stageTaskArtifact) {
+    addArtifactGuideExample(root, button.dataset.stageTaskArtifact);
+    return;
+  }
+  if (button.dataset.stageTaskAcceptance) {
+    addAcceptanceGuideExample(root, button.dataset.stageTaskAcceptance);
+    return;
+  }
+  if (button.dataset.stageTaskOpenTab) {
+    setWorkflowInspectorTab(root, button.dataset.stageTaskOpenTab, { render: true });
+    return;
+  }
+  if (button.dataset.stageTaskOpenDeveloper) {
+    openWorkflowDeveloperFields(root, button.dataset.stageTaskOpenDeveloper || "");
+  }
+}
+
+function openWorkflowDeveloperFields(root, target = "") {
+  if (!state.expertMode) setWorkflowExpertMode(root, true, { repaint: false });
+  setWorkflowInspectorTab(root, "advanced", { render: true });
+  const advanced = root.querySelector("#stageAdvancedPanel");
+  const raw = root.querySelector("#stageAdvancedRawPanel");
+  if (advanced) advanced.open = true;
+  if (raw && !raw.classList.contains("hidden")) raw.open = true;
+  const selector = workflowDeveloperFieldSelector(target);
+  const field = selector ? root.querySelector(selector) : raw;
+  if (field instanceof HTMLElement) {
+    field.scrollIntoView({ block: "nearest", inline: "nearest" });
+    const input = field.matches("input, textarea, select") ? field : field.querySelector("input, textarea, select");
+    input?.focus?.();
+  }
+}
+
+function workflowDeveloperFieldSelector(target = "") {
+  const normalized = String(target || "").trim();
+  const selectors = {
+    input: "#stageInputMap",
+    outputs: "#stageOutputsMap",
+    routes: "#stageRoutes",
+    cases: "#stageCases",
+    params: "#stageParams"
+  };
+  return selectors[normalized] || "";
+}
+
+function handleWorkflowReferenceSelection(root, button) {
+  const target = String(button.dataset.referenceTarget || "").trim();
+  const value = String(button.dataset.referenceValue || "").trim();
+  if (!target) return false;
+  const control = button.closest(".workflow-reference-control");
+  const input = [...(control?.querySelectorAll("[data-reference-field]") || [])]
+    .find(node => node.dataset.referenceField === target);
+  if (!(input instanceof HTMLInputElement || input instanceof HTMLTextAreaElement)) return false;
+  input.value = value;
+  input.dispatchEvent(new Event("input", { bubbles: true }));
+  input.dispatchEvent(new Event("change", { bubbles: true }));
+  return true;
+}
+
+function applyStageTaskEditorField(root, input) {
+  const stage = selectedStage();
+  if (!stage) return;
+  const oldName = stage.name;
+  const field = input.dataset.stageTaskField || "";
+  const value = input.type === "checkbox" ? input.checked : String(input.value || "").trim();
+  let rerender = false;
+  if (input.dataset.stageTaskRouteKey) {
+    stage.routes = compactRouteMap({ ...(stage.routes || {}), [input.dataset.stageTaskRouteKey]: slug(value) });
+  } else if (input.dataset.stageTaskCaseKey) {
+    stage.cases = compactRouteMap({ ...(stage.cases || {}), [input.dataset.stageTaskCaseKey]: slug(value) });
+  } else if (input.dataset.stageTaskNextIndex !== undefined) {
+    stage.next = Array.from(root.querySelectorAll("#stageTaskEditor [data-stage-task-next-index]"))
+      .map(item => slug(item.value || ""))
+      .filter(Boolean);
+  } else if (field === "node_type") {
+    stage.node_type = String(value || "agent");
+    rerender = true;
+  } else if (field === "name") {
+    stage.name = slug(value);
+    if (oldName && stage.name && oldName !== stage.name) renameStageReferences(oldName, stage.name);
+  } else if (field === "approval") {
+    stage.approval = !!value;
+  } else if (field === "next-primary") {
+    const target = slug(value);
+    stage.next = target ? [target] : [];
+  } else if (field === "condition-source" || field === "condition-operator" || field === "condition-value") {
+    const editor = root.querySelector("#stageTaskEditor");
+    const source = editor?.querySelector('[data-stage-task-field="condition-source"]')?.value || "";
+    const operator = editor?.querySelector('[data-stage-task-field="condition-operator"]')?.value || "is_true";
+    const expected = editor?.querySelector('[data-stage-task-field="condition-value"]')?.value || "";
+    stage.condition = buildConditionExpression(source, operator, expected);
+  } else if (field === "switch_on") {
+    stage.switch_on = value;
+  } else if (field === "policy") {
+    stage.policy = value;
+  } else if (field.startsWith("param.")) {
+    stage.params = stage.params || {};
+    const paramKey = field.slice("param.".length);
+    setParamValue(stage.params, paramKey, value);
+    if (paramKey === "items") delete stage.params.items_ref;
+  }
+  refreshStageAfterTaskEditorEdit(root, rerender);
+}
+
+function refreshStageAfterTaskEditorEdit(root, rerender = false) {
+  const stage = selectedStage();
+  if (!stage) return;
+  clearWorkflowValidation(root);
+  clearWorkflowTransfer(root);
+  const nodeType = normalizedNodeType(stage);
+  pruneUnsupportedStageFields(stage, nodeType);
+  pruneEmptyStageFields(stage);
+  syncStageTaskRawFields(root, stage, nodeType);
+  if (rerender) {
+    renderStageForm(root);
+    renderCanvas(root);
+    return;
+  }
+  updateStagePlainSummary(root, stage, nodeType);
+  updateStageSetupSteps(root, stage, nodeType);
+  updateStageRoutePreview(root, stage, nodeType);
+  updateStageGuidance(root, stage, nodeType);
+  updateStageDataFlow(root, stage, nodeType);
+  updateStageContextContract(root, stage, nodeType);
+  updateWorkflowInspectorTabs(root, stage, nodeType);
+  scheduleExpressionValidation(root, { force: true });
+  scheduleWorkflowRepaint(root);
+}
+
+function syncStageTaskRawFields(root, stage, nodeType) {
+  const setValue = (selector, value) => {
+    const node = root.querySelector(selector);
+    if (node) node.value = value || "";
+  };
+  const nodeTypeSelect = root.querySelector("#stageNodeType");
+  if (nodeTypeSelect) {
+    ensureSelectOption(nodeTypeSelect, nodeType, nodeDisplayType(nodeType));
+    nodeTypeSelect.value = nodeType;
+  }
+  setValue("#stageName", stage.name || "");
+  ensureSelectOption(root.querySelector("#stageAgent"), stage.agent || "", stage.agent || "");
+  ensureSelectOption(root.querySelector("#stageSkill"), stage.skill || "", stage.skill || "");
+  ensureSelectOption(root.querySelector("#stageTool"), stage.tool || "", stage.tool || "");
+  setValue("#stageNext", (stage.next || []).join(", "));
+  setValue("#stageCondition", stage.condition || "");
+  setValue("#stagePolicy", stage.policy || "");
+  setValue("#stageSwitchOn", stage.switch_on || "");
+  setValue("#stageRoutes", formatMap(stage.routes));
+  setValue("#stageCases", formatMap(stage.cases));
+  setValue("#stageParamWorkflow", stage.params?.workflow || "");
+  setValue("#stageParamRequest", stage.params?.request || "");
+  setValue("#stageParamItems", stage.params?.items || stage.params?.items_ref || "");
+  setValue("#stageParamStage", stage.params?.stage || "");
+  setValue("#stageParamUntil", stage.params?.until || "");
+  setValue("#stageParamMaxIterations", stage.params?.max_iterations || "");
+  setValue("#stageParamWaitFor", stage.params?.wait_for || "");
+  setValue("#stageParamPrompt", stage.params?.prompt || "");
+  setValue("#stageInputMap", formatMap(stage.input));
+  setValue("#stageOutputsMap", formatMap(stage.outputs));
+  setValue("#stageParams", formatParams(genericStageParams(stage, nodeType)));
+  const approval = root.querySelector("#stageApproval");
+  if (approval) approval.checked = !!stage.approval;
+}
+
+function updateStageSetupSteps(root, stage, nodeType) {
+  const target = root.querySelector("#stageSetupSteps");
+  if (!target || !stage) return;
+  const steps = stageSetupSteps(stage, nodeType);
+  const ready = steps.filter(step => step.status === "ready").length;
+  const needsWork = steps.filter(step => step.status !== "ready").length;
+  target.innerHTML = `
+    <div class="workflow-stage-setup-head">
+      <div>
+        <span>${escapeHTML(t("workflow.stageSetupKicker"))}</span>
+        <strong>${escapeHTML(t("workflow.stageSetupTitle"))}</strong>
+      </div>
+      <em class="${needsWork ? "warn" : "ready"}">${escapeHTML(needsWork ? t("workflow.stageSetupNeedsWork", { count: needsWork }) : t("workflow.stageSetupReady", { count: ready }))}</em>
+    </div>
+    <div class="workflow-stage-setup-list">
+      ${steps.map(renderStageSetupStep).join("")}
+    </div>`;
+}
+
+function stageSetupSteps(stage, nodeType) {
+  const steps = [
+    stageSetupPurposeStep(stage, nodeType)
+  ];
+  if (stageSetupShowsActor(nodeType)) steps.push(stageSetupActorStep(stage, nodeType));
+  if (!["start", "end"].includes(nodeType)) steps.push(stageSetupInputStep(stage, nodeType));
+  if (!["start", "end"].includes(nodeType)) steps.push(stageSetupOutputStep(stage, nodeType));
+  steps.push(stageSetupFlowStep(stage, nodeType));
+  return steps;
+}
+
+function stageSetupPurposeStep(stage, nodeType) {
+  const ready = Boolean(String(stage.name || "").trim());
+  return {
+    id: "purpose",
+    tab: "overview",
+    target: "#stageName",
+    icon: "purpose",
+    status: ready ? "ready" : "todo",
+    title: t("workflow.stageSetupPurposeTitle"),
+    body: ready
+      ? t("workflow.stageSetupPurposeReady", { name: stage.name, type: nodeDisplayType(nodeType) })
+      : t("workflow.stageSetupPurposeTodo")
+  };
+}
+
+function stageSetupActorStep(stage, nodeType) {
+  const actor = stageSetupActorValue(stage, nodeType);
+  const required = stageSetupActorRequired(nodeType);
+  return {
+    id: "actor",
+    tab: stageSetupActorTab(nodeType),
+    target: stageSetupActorTarget(nodeType),
+    icon: "actor",
+    status: actor ? "ready" : required ? "warn" : "optional",
+    title: t("workflow.stageSetupActorTitle"),
+    body: actor
+      ? t("workflow.stageSetupActorReady", { actor })
+      : required
+        ? t("workflow.stageSetupActorTodo")
+        : t("workflow.stageSetupActorOptional", { type: nodeDisplayType(nodeType) })
+  };
+}
+
+function stageSetupInputStep(stage, nodeType) {
+  const hasInput = Object.keys(stage.input || {}).length > 0 || hasStageContextContract(stage.context) || workflowStageReferenceEntries(stage).length > 0;
+  const controlNeedsRule = ["condition", "switch", "router", "policy_guard"].includes(nodeType) || isQualityGateType(nodeType);
+  const ready = hasInput || !controlNeedsRule;
+  return {
+    id: "input",
+    tab: "inputs",
+    target: "#workflowInspectorPanel-inputs",
+    icon: "input",
+    status: ready ? hasInput ? "ready" : "optional" : "warn",
+    title: t("workflow.stageSetupInputTitle"),
+    body: hasInput
+      ? t("workflow.stageSetupInputReady", { count: Object.keys(stage.input || {}).length + workflowStageContextRefs(stage).length })
+      : controlNeedsRule
+        ? t("workflow.stageSetupInputTodo")
+        : t("workflow.stageSetupInputOptional")
+  };
+}
+
+function stageSetupOutputStep(stage, nodeType) {
+  const count = Object.keys(stage.outputs || {}).length + normalizeArtifacts(stage.artifacts).length + normalizeAcceptanceCriteria(stage.acceptance_criteria).length;
+  const optional = ["start", "end", "checkpoint", "join", "parallel"].includes(nodeType);
+  return {
+    id: "output",
+    tab: "outputs",
+    target: "#workflowInspectorPanel-outputs",
+    icon: "output",
+    status: count ? "ready" : optional ? "optional" : "todo",
+    title: t("workflow.stageSetupOutputTitle"),
+    body: count
+      ? t("workflow.stageSetupOutputReady", { count })
+      : optional
+        ? t("workflow.stageSetupOutputOptional")
+        : t("workflow.stageSetupOutputTodo")
+  };
+}
+
+function stageSetupFlowStep(stage, nodeType) {
+  const next = workflowOutgoingTargetNames(stage);
+  const required = nodeType !== "end" && !workflowIsControlBodyStage(stage);
+  const hasBranchRules = Object.keys(stage.routes || {}).length > 0 || Object.keys(stage.cases || {}).length > 0;
+  return {
+    id: "flow",
+    tab: "flow",
+    target: hasBranchRules ? "#stageVisualBuilder" : "#stageNext",
+    icon: "flow",
+    status: next.length || !required ? "ready" : "warn",
+    title: t("workflow.stageSetupFlowTitle"),
+    body: next.length
+      ? t("workflow.stageSetupFlowReady", { targets: workflowDisplayList(next) })
+      : required
+        ? t("workflow.stageSetupFlowTodo")
+        : t("workflow.stageSetupFlowEnd")
+  };
+}
+
+function stageSetupActorRequired(nodeType) {
+  return ["agent", "skill", "tool", "team", "custom"].includes(nodeType);
+}
+
+function stageSetupShowsActor(nodeType) {
+  return ["agent", "skill", "tool", "team", "custom", "sub_workflow"].includes(nodeType);
+}
+
+function stageSetupActorValue(stage, nodeType) {
+  if (nodeType === "team") return teamTemplateTitle(stage.params?.team || stage.params?.template || "");
+  if (nodeType === "tool") return stage.tool || "";
+  if (nodeType === "skill") return stage.skill || stage.agent || "";
+  if (nodeType === "agent" || nodeType === "custom") return stage.agent || stage.skill || "";
+  if (nodeType === "sub_workflow") return stage.params?.workflow || "";
+  return controlTypes.has(nodeType) ? nodeDisplayType(nodeType) : "";
+}
+
+function stageSetupActorTab(nodeType) {
+  return nodeType === "sub_workflow" ? "flow" : "overview";
+}
+
+function stageSetupActorTarget(nodeType) {
+  if (nodeType === "team") return "#stageTeamTemplatePicker";
+  if (nodeType === "tool") return "#stageToolPicker";
+  if (nodeType === "skill") return "#stageSkillPicker";
+  if (nodeType === "sub_workflow") return "#stageParamWorkflow";
+  return "#stageAgentPicker";
+}
+
+function renderStageSetupStep(step) {
+  const statusKey = step.status === "ready" ? "workflow.stageSetupStatusReady" : step.status === "warn" ? "workflow.stageSetupStatusNeedsWork" : step.status === "todo" ? "workflow.stageSetupStatusTodo" : "workflow.stageSetupStatusOptional";
+  return `<button type="button" class="workflow-stage-setup-step ${escapeHTML(step.status)}" data-stage-setup-tab="${escapeHTML(step.tab)}" data-stage-setup-target="${escapeHTML(step.target)}">
+    <i>${stageSetupIcon(step.icon)}</i>
+    <span>
+      <strong>${escapeHTML(step.title)}</strong>
+      <small>${escapeHTML(step.body)}</small>
+    </span>
+    <em>${escapeHTML(t(statusKey))}</em>
+  </button>`;
+}
+
+function stageSetupIcon(type) {
+  const icons = {
+    purpose: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h10l4 4v12H5V4Zm2 2v12h10V9h-3V6H7Zm2 5h6v2H9v-2Zm0 4h5v2H9v-2Z"/></svg>`,
+    actor: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 4a4 4 0 1 1 0 8 4 4 0 0 1 0-8Zm0 10c4.4 0 8 2.2 8 5v1H4v-1c0-2.8 3.6-5 8-5Zm0-8a2 2 0 1 0 0 4 2 2 0 0 0 0-4Zm-5.5 12h11c-.8-1.1-2.8-2-5.5-2s-4.7.9-5.5 2Z"/></svg>`,
+    input: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 6h10v2H4V6Zm0 5h10v2H4v-2Zm0 5h10v2H4v-2Zm12-8 4 4-4 4v-3h-5v-2h5V8Z"/></svg>`,
+    output: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h10v6H4V5Zm2 2v2h6V7H6Zm-2 6h10v6H4v-6Zm2 2v2h6v-2H6Zm10-8 4 5-4 5v-4h-4v-2h4V7Z"/></svg>`,
+    flow: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h5v5H5V4Zm9 0h5v5h-5V4ZM5 15h5v5H5v-5Zm9 0h5v5h-5v-5Zm-5-8h4v2H9V7Zm1 9h4v2h-4v-2Zm1-6h2v3h4v2h-6v-5Z"/></svg>`
+  };
+  return icons[type] || icons.purpose;
+}
+
+function jumpToStageSetupTarget(root, tab, targetSelector) {
+  setWorkflowInspectorTab(root, tab, { render: true });
+  window.setTimeout(() => {
+    const node = targetSelector ? root.querySelector(targetSelector) : null;
+    const target = node?.matches("input, textarea, select, button") ? node : node?.querySelector("input, textarea, select, button");
+    node?.scrollIntoView({ block: "center", inline: "nearest", behavior: "smooth" });
+    if (target instanceof HTMLElement) target.focus({ preventScroll: true });
+  }, 60);
 }
 
 function updateStageRoutePreview(root, stage, nodeType) {
@@ -4124,7 +7513,7 @@ function stageGuidanceItems(stage, nodeType) {
   const items = [];
   const add = (tone, key) => items.push({ tone, text: t(key) });
   if (!String(stage.name || "").trim()) add("error", "workflow.stageGuide.missingName");
-  if (nodeType !== "end" && !workflowOutgoingTargetNames(stage).length) add("warn", "workflow.stageGuide.missingNext");
+  if (nodeType !== "end" && !workflowOutgoingTargetNames(stage).length && !workflowIsControlBodyStage(stage)) add("warn", "workflow.stageGuide.missingNext");
   if (["agent", "skill", "custom", "team"].includes(nodeType) && !stage.agent && nodeType !== "team") {
     add("warn", "workflow.stageGuide.missingAgent");
   }
@@ -4139,6 +7528,13 @@ function stageGuidanceItems(stage, nodeType) {
     if (!Object.keys(stage.cases || {}).length) add("warn", "workflow.stageGuide.missingCases");
   }
   if (nodeType === "policy_guard" && !selectedPolicyRuleName(stage) && !stage.policy) add("warn", "workflow.stageGuide.missingPolicy");
+  if (isQualityGateType(nodeType)) {
+    if (!stage.routes?.pass && !stage.next?.length) add("warn", "workflow.stageGuide.missingQualityPassRoute");
+    if (!stage.routes?.fail && !stage.params?.reason) add("warn", "workflow.stageGuide.missingQualityFailRoute");
+  }
+  if (nodeType === "parallel") {
+    if (!Array.isArray(stage.next) || stage.next.length < 2) add("warn", "workflow.stageGuide.missingParallelBranches");
+  }
   if (nodeType === "input_gate") {
     const fieldsStatus = workflowInputFieldsSchemaStatus(stage.params?.fields_json);
     if (fieldsStatus === "missing") add("warn", "workflow.stageGuide.missingInputForm");
@@ -4175,7 +7571,7 @@ function workflowInputFieldsSchemaStatus(value) {
 }
 
 function updateStageFieldVisibility(root, nodeType) {
-  const visible = stageFieldSet(nodeType);
+  const visible = stageFieldSet(nodeType, selectedStage());
   root.querySelectorAll("[data-stage-field]").forEach(node => {
     node.classList.toggle("hidden", !visible.has(node.dataset.stageField));
   });
@@ -4184,16 +7580,29 @@ function updateStageFieldVisibility(root, nodeType) {
 function updateWorkflowFormPanels(root) {
   const advanced = root.querySelector("#stageAdvancedPanel");
   if (advanced) {
-    const visibleAdvancedNodes = Array.from(advanced.querySelectorAll("[data-stage-field]:not(.hidden), [data-field]:not(.hidden)"));
-    const visibleAdvanced = visibleAdvancedNodes[0];
-    advanced.classList.toggle("hidden", !visibleAdvanced);
+    const visibleAdvancedNodes = Array.from(advanced.querySelectorAll("[data-stage-field]:not(.hidden), [data-field]:not(.hidden)"))
+      .filter(node => !node.closest("#stageAdvancedRawPanel"));
+    const rawNodes = Array.from(root.querySelectorAll("#stageAdvancedRawPanel [data-stage-field]:not(.hidden), #stageAdvancedRawPanel [data-field]:not(.hidden)"));
+    const rawPanel = root.querySelector("#stageAdvancedRawPanel");
+    const rawCount = root.querySelector("#stageAdvancedRawCount");
+    const contextContract = root.querySelector("#stageContextContract");
+    const contextVisible = workflowInspectorNodeVisible(contextContract);
+    const hasAdvancedContent = Boolean(visibleAdvancedNodes.length || rawNodes.length || contextVisible);
+    root.querySelector("#stageAdvancedEmpty")?.classList.toggle("hidden", hasAdvancedContent);
+    if (rawPanel) {
+      rawPanel.classList.toggle("hidden", !rawNodes.length);
+      if (!rawNodes.length) rawPanel.open = false;
+    }
+    if (rawCount) rawCount.textContent = rawNodes.length ? t("workflow.advancedVisibleCount", { count: rawNodes.length }) : t("workflow.optional");
+    advanced.classList.remove("hidden");
     const badge = root.querySelector("#stageAdvancedCount");
     if (badge) {
-      badge.textContent = visibleAdvancedNodes.length
-        ? t("workflow.advancedVisibleCount", { count: visibleAdvancedNodes.length })
+      const total = visibleAdvancedNodes.length + rawNodes.length + (contextVisible ? 1 : 0);
+      badge.textContent = total
+        ? t("workflow.advancedVisibleCount", { count: total })
         : t("workflow.optional");
     }
-    if (!visibleAdvanced) advanced.open = false;
+    if (!hasAdvancedContent && !workflowInspectorTabIs("advanced")) advanced.open = false;
   }
   const artifacts = root.querySelector("#stageArtifactsPanel");
   const artifactEditor = root.querySelector("#stageArtifactsEditor");
@@ -4212,7 +7621,7 @@ function updateWorkflowFormPanels(root) {
   }
 }
 
-function stageFieldSet(nodeType) {
+function stageFieldSet(nodeType, stage = selectedStage()) {
   const visible = new Set(["node_type", "name"]);
   if (nodeType !== "end") visible.add("next");
 
@@ -4222,10 +7631,8 @@ function stageFieldSet(nodeType) {
     if (["agent", "skill", "tool", "next", "next_strategy", "artifacts", "acceptance_criteria", "approval"].includes(base)) {
       visible.add(base);
     }
-    if (base === "params") visible.add("params");
   }
   if (executableTypes.has(nodeType)) {
-    visible.add("params");
     visible.add("artifacts");
     visible.add("acceptance_criteria");
     visible.add("approval");
@@ -4245,36 +7652,34 @@ function stageFieldSet(nodeType) {
     }
     if (nodeType === "team") {
       visible.add("team_template");
-      visible.add("params");
       visible.add("acceptance_criteria");
     }
-    if (controlTypes.has(nodeType)) visible.add("params");
   }
 
   if (["condition", "switch", "router", "policy_guard", "parallel"].includes(nodeType) || executableTypes.has(nodeType)) {
     visible.add("next_strategy");
-  }
-  if (["team", "policy_guard", "input_gate", "for_each", "loop", "sub_workflow", "join", "checkpoint"].includes(nodeType)) {
-    visible.add("params");
   }
   if (nodeType === "team") {
     visible.add("team_template");
     visible.add("team_quorum_preset");
     visible.add("team_execute");
   }
-  if (nodeType === "policy_guard") visible.add("params");
   if (nodeType === "start" || nodeType === "end") {
     visible.delete("agent");
     visible.delete("skill");
     visible.delete("tool");
-    visible.delete("params");
     visible.delete("artifacts");
     visible.delete("acceptance_criteria");
     visible.delete("approval");
     visible.delete("next_strategy");
   }
   if (nodeType !== "team") visible.delete("team_execute");
+  if (hasGenericParams(stage, nodeType)) visible.add("params");
   return visible;
+}
+
+function hasGenericParams(stage, nodeType) {
+  return Object.keys(genericStageParams(stage || {}, nodeType)).length > 0;
 }
 
 function advancedFieldSet(nodeType) {
@@ -4291,6 +7696,12 @@ function advancedFieldSet(nodeType) {
     visible.add("policy");
     visible.add("routes");
   }
+  if (nodeType === "guard") {
+    visible.add("policy_rule");
+    visible.add("policy");
+    visible.add("routes");
+  }
+  if (isQualityGateType(nodeType)) visible.add("routes");
   if (!fields.size) {
     if (executableTypes.has(nodeType)) {
       visible.add("input");
@@ -4347,7 +7758,7 @@ function advancedFieldSet(nodeType) {
 }
 
 function controlNodeHelp(nodeType) {
-  const supported = new Set(["condition", "switch", "router", "policy_guard", "parallel", "join", "input_gate", "checkpoint", "for_each", "loop", "sub_workflow"]);
+  const supported = new Set(["condition", "switch", "router", "policy_guard", "quality_gate", "quality_guard", "quality-guard", "parallel", "join", "input_gate", "checkpoint", "for_each", "loop", "sub_workflow"]);
   if (!supported.has(nodeType)) return null;
   return {
     kicker: t("workflow.controlHelp.kicker"),
@@ -4366,6 +7777,7 @@ function nodeFieldNames(nodeType) {
 function renderArtifactsEditor(root, stage) {
   const list = root.querySelector("#stageArtifactsList");
   if (!list) return;
+  list.dataset.stageName = stage?.name || "";
   const artifacts = normalizeArtifacts(stage.artifacts);
   if (!artifacts.length) {
     list.innerHTML = `<div class="artifact-empty">${escapeHTML(t("workflow.artifactsEmpty"))}</div>`;
@@ -4377,6 +7789,7 @@ function renderArtifactsEditor(root, stage) {
 function renderAcceptanceEditor(root, stage) {
   const list = root.querySelector("#stageAcceptanceList");
   if (!list) return;
+  list.dataset.stageName = stage?.name || "";
   const criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria);
   if (!criteria.length) {
     list.innerHTML = `<div class="artifact-empty">${escapeHTML(t("workflow.acceptanceCriteriaEmpty"))}</div>`;
@@ -4388,7 +7801,7 @@ function renderAcceptanceEditor(root, stage) {
 function updateStageArtifactsGuide(root, stage, nodeType) {
   const guide = root.querySelector("#stageArtifactsGuide");
   if (!guide || !stage) return;
-  const supportsArtifacts = stageFieldSet(nodeType).has("artifacts");
+  const supportsArtifacts = stageFieldSet(nodeType, stage).has("artifacts");
   guide.classList.toggle("hidden", !supportsArtifacts);
   if (!supportsArtifacts) {
     guide.innerHTML = "";
@@ -4427,7 +7840,7 @@ function updateStageArtifactsGuide(root, stage, nodeType) {
 function updateStageAcceptanceGuide(root, stage, nodeType) {
   const guide = root.querySelector("#stageAcceptanceGuide");
   if (!guide || !stage) return;
-  const supportsCriteria = stageFieldSet(nodeType).has("acceptance_criteria");
+  const supportsCriteria = stageFieldSet(nodeType, stage).has("acceptance_criteria");
   guide.parentElement?.classList.toggle("hidden", !supportsCriteria);
   guide.classList.toggle("hidden", !supportsCriteria);
   if (!supportsCriteria) {
@@ -4536,7 +7949,11 @@ function syncArtifactsFromForm(root) {
 }
 
 function readArtifactsFromForm(root) {
-  const rows = root.querySelectorAll("#stageArtifactsList .artifact-item");
+  const stage = selectedStage();
+  const list = root.querySelector("#stageArtifactsList");
+  if (!list || !stage) return [];
+  if ((list.dataset.stageName || "") !== (stage.name || "")) return normalizeArtifacts(stage.artifacts);
+  const rows = list.querySelectorAll(".artifact-item");
   return [...rows].map(row => {
     const artifact = {};
     row.querySelectorAll("[data-artifact-field]").forEach(input => {
@@ -4561,7 +7978,11 @@ function syncAcceptanceCriteriaFromForm(root) {
 }
 
 function readAcceptanceCriteriaFromForm(root) {
-  const rows = root.querySelectorAll("#stageAcceptanceList .workflow-acceptance-item");
+  const stage = selectedStage();
+  const list = root.querySelector("#stageAcceptanceList");
+  if (!list || !stage) return [];
+  if ((list.dataset.stageName || "") !== (stage.name || "")) return normalizeAcceptanceCriteria(stage.acceptance_criteria);
+  const rows = list.querySelectorAll(".workflow-acceptance-item");
   return [...rows].map(row => {
     const criterion = {};
     row.querySelectorAll("[data-acceptance-field]").forEach(input => {
@@ -4783,7 +8204,7 @@ function workflowOrderPreview() {
     if (!stage) continue;
     seen.add(name);
     order.push(name);
-    const explicitNext = workflowOutgoingTargetNames(stage, byName);
+    const explicitNext = workflowOutgoingTargetNames(stage, byName, { includeControlBody: true });
     if (explicitNext.length) {
       queue.push(...explicitNext);
       continue;
@@ -4795,9 +8216,9 @@ function workflowOrderPreview() {
   return order;
 }
 
-function workflowOutgoingTargetNames(stage, byName = null) {
+function workflowOutgoingTargetNames(stage, byName = null, options = {}) {
   const seen = new Set();
-  return workflowOutgoingLinks(stage)
+  return workflowOutgoingLinks(stage, options)
     .map(link => link.target)
     .filter(name => {
       if (!name || seen.has(name) || (byName && !byName.has(name))) return false;
@@ -4806,10 +8227,10 @@ function workflowOutgoingTargetNames(stage, byName = null) {
     });
 }
 
-function workflowOutgoingLinks(stage = {}) {
+function workflowOutgoingLinks(stage = {}, options = {}) {
   const links = new Map();
   const type = normalizedNodeType(stage);
-  const routeFirst = ["condition", "switch", "router", "policy_guard", "quality_gate", "quality_guard", "input_gate"].includes(type);
+  const routeFirst = ["condition", "switch", "router", "policy_guard", "input_gate"].includes(type) || isQualityGateType(type);
   const add = (target, entry = {}) => {
     const name = String(target || "").trim();
     if (!name || name === stage.name) return;
@@ -4832,7 +8253,7 @@ function workflowOutgoingLinks(stage = {}) {
           kind,
           key,
           order: baseOrder + index * 10 + targetIndex,
-          label: `${workflowDisplayValue(key)}: ${workflowDisplayValue(target)}`
+          label: `${workflowRouteLabel(key)}: ${workflowDisplayValue(target)}`
         });
       });
     });
@@ -4846,7 +8267,20 @@ function workflowOutgoingLinks(stage = {}) {
     addMap(stage.routes, "routes", 1000);
     addMap(stage.cases, "cases", 1100);
   }
+  if (options.includeControlBody && workflowNodeHasBodyStage(type)) {
+    workflowReferenceTargets(stage.params?.stage || stage.params?.body || stage.params?.do || stage.params?.each_stage || stage.params?.loop_stage || stage.params?.target)
+      .forEach((target, index) => add(target, {
+        kind: "body",
+        key: "stage",
+        order: -100 + index,
+        label: t("workflow.routePreview.bodyStage")
+      }));
+  }
   return [...links.values()].sort((left, right) => left.order - right.order || left.target.localeCompare(right.target));
+}
+
+function workflowNodeHasBodyStage(type) {
+  return ["for_each", "foreach", "map", "loop", "until", "while"].includes(String(type || "").trim().toLowerCase());
 }
 
 function workflowReferenceTargets(value) {
@@ -4884,6 +8318,7 @@ function syncStageFromForm(root) {
   stage.cases = parseMap(root.querySelector("#stageCases").value);
   stage.input = parseMap(root.querySelector("#stageInputMap").value);
   stage.outputs = parseMap(root.querySelector("#stageOutputsMap").value);
+  stage.context = readStageContextContract(root);
   stage.params = parseParams(root.querySelector("#stageParams").value);
   applyDedicatedParamsFromForm(root, stage, normalizedNodeType(stage));
   if (normalizedNodeType(stage) === "team" && oldTeamTemplate && oldTeamTemplate !== stage.params.team) {
@@ -4924,27 +8359,76 @@ function syncStageFromForm(root) {
   }
   pruneUnsupportedStageFields(stage, nodeType);
   pruneEmptyStageFields(stage);
-  renderArtifactsEditor(root, stage);
-  updateStageArtifactsGuide(root, stage, nodeType);
-  renderAcceptanceEditor(root, stage);
-  updateStageAcceptanceGuide(root, stage, nodeType);
+  if (workflowInspectorTabIs("outputs")) {
+    renderArtifactsEditor(root, stage);
+    updateStageArtifactsGuide(root, stage, nodeType);
+    renderAcceptanceEditor(root, stage);
+    updateStageAcceptanceGuide(root, stage, nodeType);
+  }
   updateStageFieldVisibility(root, nodeType);
   updateAdvancedFieldVisibility(root, nodeType);
-  updateControlHelp(root, nodeType);
-  updateStageAdvancedGuide(root, stage, nodeType);
+  if (workflowInspectorTabIs("flow")) {
+    updateControlHelp(root, nodeType);
+    updateStageVisualBuilder(root, stage, nodeType);
+  }
+  if (workflowInspectorTabIs("advanced")) updateStageAdvancedGuide(root, stage, nodeType);
   updateNodeTypeMeta(root, nodeType);
   updateTeamTemplatePreview(root, stage, nodeType);
+  updateStageResourcePickers(root, stage, nodeType);
   updateStagePlainSummary(root, stage, nodeType);
+  updateStageTaskEditor(root, stage, nodeType);
+  updateStageSetupSteps(root, stage, nodeType);
   updateStageRoutePreview(root, stage, nodeType);
   updateStageGuidance(root, stage, nodeType);
   updateStageDataFlow(root, stage, nodeType);
-  updatePolicyRuleHelp(root);
+  updateStageContextContract(root, stage, nodeType);
+  if (workflowInspectorTabIs("advanced")) {
+    updateStageContextPresetBuilder(root, stage, nodeType);
+    updateStageContextReferencePicker(root, stage, nodeType);
+  }
+  if (workflowInspectorTabIs("flow")) updatePolicyRuleHelp(root);
   scheduleExpressionValidation(root, { force: true });
+  updateWorkflowInspectorEmptyPanels(root);
   scheduleWorkflowRepaint(root);
 }
 
+function updateWorkflowInspectorEmptyPanels(root) {
+  [
+    ["#stageInputBuilderSlot", "#stageInputEmpty"],
+    ["#stageOutputBuilderSlot", "#stageOutputEmpty"],
+    ["#stageFlowBuilderSlot", "#stageFlowEmpty"]
+  ].forEach(([selector, emptySelector]) => {
+    const slot = root.querySelector(selector);
+    if (!slot) return;
+    const slotContent = workflowInspectorSlotHasVisibleContent(slot);
+    const panelContent = workflowInspectorPanelHasVisibleContent(root, selector, slotContent);
+    slot.classList.toggle("hidden", !slotContent);
+    root.querySelector(emptySelector)?.classList.toggle("hidden", panelContent);
+  });
+}
+
+function workflowInspectorSlotHasVisibleContent(slot) {
+  return Array.from(slot.children).some(child => workflowInspectorNodeVisible(child));
+}
+
+function workflowInspectorPanelHasVisibleContent(root, selector, slotContent) {
+  if (selector !== "#stageOutputBuilderSlot") return slotContent;
+  const artifacts = root.querySelector("#stageArtifactsPanel");
+  return slotContent || workflowInspectorNodeVisible(artifacts);
+}
+
+function workflowInspectorNodeVisible(node) {
+  if (!(node instanceof Element)) return false;
+  if (node.classList.contains("hidden")) return false;
+  if (node.matches("label") && node.classList.contains("hidden")) return false;
+  if (node.classList.contains("workflow-visual-builder") && !node.innerHTML.trim()) return false;
+  if (node.classList.contains("workflow-map-builder") && !node.innerHTML.trim()) return false;
+  if (node.classList.contains("workflow-input-builder") && !node.innerHTML.trim()) return false;
+  return true;
+}
+
 function pruneUnsupportedStageFields(stage, nodeType) {
-  const baseVisible = stageFieldSet(nodeType);
+  const baseVisible = stageFieldSet(nodeType, stage);
   const advancedVisible = advancedFieldSet(nodeType);
   if (!baseVisible.has("next")) delete stage.next;
   if (!baseVisible.has("next_strategy")) delete stage.next_strategy;
@@ -4970,6 +8454,7 @@ function pruneUnsupportedStageFields(stage, nodeType) {
   if (!advancedVisible.has("cases")) delete stage.cases;
   if (!advancedVisible.has("input")) delete stage.input;
   if (!advancedVisible.has("outputs")) delete stage.outputs;
+  if (nodeType === "start" || nodeType === "end") delete stage.context;
 }
 
 function pruneEmptyStageFields(stage) {
@@ -4981,11 +8466,57 @@ function pruneEmptyStageFields(stage) {
   }
   if (!Array.isArray(stage.artifacts) || !stage.artifacts.length) delete stage.artifacts;
   if (!Array.isArray(stage.acceptance_criteria) || !stage.acceptance_criteria.length) delete stage.acceptance_criteria;
+  if (!hasStageContextContract(stage.context)) delete stage.context;
 }
 
 function addConnection(sourceName, targetName) {
   const source = state.graph.stages.find(stage => stage.name === sourceName);
   if (!source || !targetName || sourceName === targetName) return;
+  const sourceType = normalizedNodeType(source);
+  const sourceNext = Array.isArray(source.next) ? source.next : [];
+  if (sourceType === "condition") {
+    source.routes = source.routes || {};
+    if (!source.routes.true) {
+      source.routes.true = targetName;
+    } else if (!source.routes.false && source.routes.true !== targetName) {
+      source.routes.false = targetName;
+    } else if (!sourceNext.includes(targetName)) {
+      source.next = [...sourceNext, targetName];
+    }
+    state.graphValidation = null;
+    state.graphTransfer = null;
+    return;
+  }
+  if (isQualityGateType(sourceType)) {
+    source.routes = source.routes || {};
+    if (!source.routes.pass) {
+      source.routes.pass = targetName;
+    } else if (!source.routes.fail && source.routes.pass !== targetName) {
+      source.routes.fail = targetName;
+    } else if (!source.routes.warning && source.routes.pass !== targetName && source.routes.fail !== targetName) {
+      source.routes.warning = targetName;
+    } else if (!sourceNext.includes(targetName)) {
+      source.next = [...sourceNext, targetName];
+    }
+    state.graphValidation = null;
+    state.graphTransfer = null;
+    return;
+  }
+  if (["policy_guard", "guard"].includes(sourceType)) {
+    source.routes = source.routes || {};
+    if (!source.routes.allow) {
+      source.routes.allow = targetName;
+    } else if (!source.routes.deny && source.routes.allow !== targetName) {
+      source.routes.deny = targetName;
+    } else if (!source.routes.block && source.routes.allow !== targetName && source.routes.deny !== targetName) {
+      source.routes.block = targetName;
+    } else if (!sourceNext.includes(targetName)) {
+      source.next = [...sourceNext, targetName];
+    }
+    state.graphValidation = null;
+    state.graphTransfer = null;
+    return;
+  }
   source.next = source.next || [];
   if (!source.next.includes(targetName)) source.next.push(targetName);
   state.graphValidation = null;
@@ -5039,9 +8570,27 @@ function renameStageReferences(oldName, newName) {
     stage.next = (stage.next || []).map(name => name === oldName ? newName : name);
     replaceStageMapReference(stage.routes, oldName, newName);
     replaceStageMapReference(stage.cases, oldName, newName);
+    replaceStageParamReference(stage.params, oldName, newName);
   }
   if (state.connectSource === oldName) state.connectSource = newName;
   if (state.connecting?.sourceName === oldName) state.connecting.sourceName = newName;
+}
+
+function repeatBodyParamKeys() {
+  return ["stage", "body", "do", "each_stage", "loop_stage", "target"];
+}
+
+function replaceStageParamReference(params, oldName, newName) {
+  if (!params || typeof params !== "object") return;
+  for (const key of repeatBodyParamKeys()) {
+    if (!(key in params)) continue;
+    const nextValue = replaceReferenceTarget(params[key], oldName, newName);
+    if (nextValue == null || nextValue === "") {
+      delete params[key];
+    } else {
+      params[key] = nextValue;
+    }
+  }
 }
 
 function replaceStageMapReference(values, oldName, newName) {
@@ -5090,6 +8639,21 @@ function removeStageMapReference(values, targetName) {
   });
 }
 
+function removeStageParamReference(params, targetName) {
+  if (!params || typeof params !== "object") return;
+  for (const key of repeatBodyParamKeys()) {
+    const value = params[key];
+    const targets = workflowReferenceTargets(value);
+    if (!targets.includes(targetName)) continue;
+    const remaining = targets.filter(target => target !== targetName);
+    if (!remaining.length) {
+      delete params[key];
+    } else {
+      params[key] = remaining.join(", ");
+    }
+  }
+}
+
 function nodeRects(root) {
   const surface = root.querySelector("#canvasSurface");
   const surfaceRect = surface.getBoundingClientRect();
@@ -5110,17 +8674,264 @@ function edgeAnchors(sourceRect, targetRect, slot = {}) {
   const leftToRight = workflowEdgeLeftToRight(sourceRect, targetRect);
   const sourceOffset = edgeSlotOffset(slot.sourceIndex || 0, slot.sourceCount || 1, sourceRect.height);
   const targetOffset = edgeSlotOffset(slot.targetIndex || 0, slot.targetCount || 1, targetRect.height);
+  const gap = workflowNodeMetrics.edgeAnchorGap;
   const from = {
-    x: leftToRight ? sourceRect.left + sourceRect.width : sourceRect.left,
+    x: leftToRight ? sourceRect.left + sourceRect.width + gap : sourceRect.left - gap,
     y: sourceRect.top + sourceRect.height / 2 + sourceOffset,
     direction: leftToRight ? 1 : -1
   };
   const to = {
-    x: leftToRight ? targetRect.left : targetRect.left + targetRect.width,
+    x: leftToRight ? targetRect.left - gap : targetRect.left + targetRect.width + gap,
     y: targetRect.top + targetRect.height / 2 + targetOffset,
     direction: leftToRight ? -1 : 1
   };
   return { from, to };
+}
+
+function edgeGeometry(edge, slot = {}, rects = new Map()) {
+  const anchors = edgeAnchors(edge.sourceRect, edge.targetRect, slot);
+  const obstacles = edgeObstacleRects(rects, edge.sourceName, edge.targetName);
+  return {
+    ...anchors,
+    points: edgeRoutePoints(anchors.from, anchors.to, obstacles, slot)
+  };
+}
+
+function edgeObstacleRects(rects, sourceName, targetName) {
+  const obstacles = [];
+  for (const [name, rect] of rects.entries()) {
+    if (name === sourceName || name === targetName) continue;
+    obstacles.push(expandEdgeObstacleRect(rect));
+  }
+  return obstacles;
+}
+
+function expandEdgeObstacleRect(rect) {
+  const margin = workflowNodeMetrics.edgeObstacleGap;
+  return {
+    left: rect.left - margin,
+    top: rect.top - margin,
+    right: rect.left + rect.width + margin,
+    bottom: rect.top + rect.height + margin
+  };
+}
+
+function edgeRoutePoints(from, to, obstacles = [], slot = {}) {
+  const direction = from.direction || (to.x >= from.x ? 1 : -1);
+  const entryDirection = to.direction || -direction;
+  const run = workflowNodeMetrics.edgeRouteRun;
+  const exit = { x: from.x + direction * run, y: from.y };
+  const entry = { x: to.x + entryDirection * run, y: to.y };
+  const midX = Math.round((exit.x + entry.x) / 2);
+  const routeBias = edgeRouteSlotBias(slot);
+  const sideRun = Math.max(run, Math.abs(routeBias));
+  const directRoute = direction === 1 && exit.x <= entry.x
+    ? compactEdgeRoute([from, exit, { x: midX, y: from.y }, { x: midX, y: to.y }, entry, to])
+    : null;
+  if (directRoute && edgeRouteIntersections(directRoute, obstacles) === 0) return directRoute;
+  const candidates = [];
+  if (directRoute) {
+    candidates.push(directRoute);
+  } else {
+    const laneX = direction === 1
+      ? Math.max(from.x + run, to.x + run)
+      : Math.min(from.x - run, to.x - run);
+    candidates.push(compactEdgeRoute([from, { x: laneX, y: from.y }, { x: laneX, y: to.y }, to]));
+  }
+
+  for (const laneY of edgeLaneCandidates(from, to, exit, entry, obstacles, routeBias)) {
+    candidates.push(compactEdgeRoute([
+      from,
+      exit,
+      { x: exit.x, y: laneY },
+      { x: entry.x, y: laneY },
+      entry,
+      to
+    ]));
+  }
+
+  for (const laneX of edgeColumnCandidates(from, to, exit, entry, obstacles, routeBias)) {
+    candidates.push(compactEdgeRoute([
+      from,
+      { x: laneX, y: from.y },
+      { x: laneX, y: to.y },
+      to
+    ]));
+  }
+
+  candidates.push(compactEdgeRoute([
+    from,
+    { x: from.x + direction * sideRun, y: from.y },
+    { x: from.x + direction * sideRun, y: to.y },
+    to
+  ]));
+
+  let best = candidates[0];
+  let bestScore = Number.POSITIVE_INFINITY;
+  for (const candidate of candidates) {
+    const score = edgeRouteScore(candidate, obstacles);
+    if (score < bestScore) {
+      best = candidate;
+      bestScore = score;
+    }
+    if (score < 1) break;
+  }
+  return best;
+}
+
+function edgeLaneCandidates(from, to, exit, entry, obstacles, routeBias = 0) {
+  const minX = Math.min(from.x, to.x, exit.x, entry.x);
+  const maxX = Math.max(from.x, to.x, exit.x, entry.x);
+  const blockers = obstacles.filter(rect => rangesOverlap(minX, maxX, rect.left, rect.right));
+  const averageY = (from.y + to.y) / 2;
+  if (!blockers.length) return [];
+  const top = Math.min(...blockers.map(rect => rect.top));
+  const bottom = Math.max(...blockers.map(rect => rect.bottom));
+  const gap = workflowNodeMetrics.edgeLaneGap;
+  return uniqueNumbers([
+    top - gap,
+    bottom + gap,
+    averageY + routeBias,
+    from.y + routeBias,
+    to.y + routeBias
+  ])
+    .filter(value => Number.isFinite(value) && value >= 24)
+    .sort((a, b) => Math.abs(a - averageY) - Math.abs(b - averageY));
+}
+
+function edgeColumnCandidates(from, to, exit, entry, obstacles, routeBias = 0) {
+  const minY = Math.min(from.y, to.y);
+  const maxY = Math.max(from.y, to.y);
+  const blockers = obstacles.filter(rect => rangesOverlap(minY, maxY, rect.top, rect.bottom));
+  if (!blockers.length) return [];
+  const left = Math.min(...blockers.map(rect => rect.left));
+  const right = Math.max(...blockers.map(rect => rect.right));
+  const averageX = (exit.x + entry.x) / 2;
+  const gap = workflowNodeMetrics.edgeLaneGap;
+  return uniqueNumbers([left - gap, right + gap, averageX + routeBias, averageX - routeBias])
+    .filter(value => Number.isFinite(value) && value >= 24)
+    .sort((a, b) => Math.abs(a - averageX) - Math.abs(b - averageX));
+}
+
+function compactEdgeRoute(points) {
+  const compacted = [];
+  for (const point of points) {
+    if (!point || !Number.isFinite(point.x) || !Number.isFinite(point.y)) continue;
+    const next = { x: Math.round(point.x), y: Math.round(point.y) };
+    const previous = compacted[compacted.length - 1];
+    if (previous && previous.x === next.x && previous.y === next.y) continue;
+    compacted.push(next);
+  }
+  for (let index = compacted.length - 2; index > 0; index--) {
+    const previous = compacted[index - 1];
+    const current = compacted[index];
+    const next = compacted[index + 1];
+    const sameVertical = previous.x === current.x && current.x === next.x;
+    const sameHorizontal = previous.y === current.y && current.y === next.y;
+    if (sameVertical || sameHorizontal) compacted.splice(index, 1);
+  }
+  return compacted;
+}
+
+function edgeRouteScore(points, obstacles) {
+  const intersections = edgeRouteIntersections(points, obstacles);
+  const bends = Math.max(0, points.length - 2);
+  const clearancePenalty = edgeRouteClearancePenalty(points, obstacles);
+  return intersections * 10000 + clearancePenalty + edgeRouteLength(points) + bends * 18;
+}
+
+function edgeRouteIntersections(points, obstacles) {
+  let count = 0;
+  for (let index = 1; index < points.length; index++) {
+    const a = points[index - 1];
+    const b = points[index];
+    for (const rect of obstacles) {
+      if (segmentIntersectsRect(a, b, rect)) count++;
+    }
+  }
+  return count;
+}
+
+function edgeRouteLength(points) {
+  let length = 0;
+  for (let index = 1; index < points.length; index++) {
+    length += Math.abs(points[index].x - points[index - 1].x) + Math.abs(points[index].y - points[index - 1].y);
+  }
+  return length / 100;
+}
+
+function edgeRouteClearancePenalty(points, obstacles) {
+  let penalty = 0;
+  for (let index = 1; index < points.length; index++) {
+    const a = points[index - 1];
+    const b = points[index];
+    for (const rect of obstacles) {
+      const distance = segmentRectManhattanDistance(a, b, rect);
+      if (distance < workflowNodeMetrics.edgeObstacleGap) {
+        penalty += (workflowNodeMetrics.edgeObstacleGap - distance) * 12;
+      }
+    }
+  }
+  return penalty;
+}
+
+function segmentRectManhattanDistance(a, b, rect) {
+  if (segmentIntersectsRect(a, b, rect)) return 0;
+  if (a.x === b.x) {
+    if (rangesOverlap(Math.min(a.y, b.y), Math.max(a.y, b.y), rect.top, rect.bottom)) {
+      if (a.x <= rect.left) return rect.left - a.x;
+      if (a.x >= rect.right) return a.x - rect.right;
+    }
+    return Math.min(
+      pointRectManhattanDistance(a, rect),
+      pointRectManhattanDistance(b, rect)
+    );
+  }
+  if (a.y === b.y) {
+    if (rangesOverlap(Math.min(a.x, b.x), Math.max(a.x, b.x), rect.left, rect.right)) {
+      if (a.y <= rect.top) return rect.top - a.y;
+      if (a.y >= rect.bottom) return a.y - rect.bottom;
+    }
+    return Math.min(
+      pointRectManhattanDistance(a, rect),
+      pointRectManhattanDistance(b, rect)
+    );
+  }
+  return Math.min(pointRectManhattanDistance(a, rect), pointRectManhattanDistance(b, rect));
+}
+
+function pointRectManhattanDistance(point, rect) {
+  const dx = point.x < rect.left ? rect.left - point.x : point.x > rect.right ? point.x - rect.right : 0;
+  const dy = point.y < rect.top ? rect.top - point.y : point.y > rect.bottom ? point.y - rect.bottom : 0;
+  return dx + dy;
+}
+
+function segmentIntersectsRect(a, b, rect) {
+  if (a.x === b.x) {
+    return a.x > rect.left && a.x < rect.right && rangesOverlap(Math.min(a.y, b.y), Math.max(a.y, b.y), rect.top, rect.bottom);
+  }
+  if (a.y === b.y) {
+    return a.y > rect.top && a.y < rect.bottom && rangesOverlap(Math.min(a.x, b.x), Math.max(a.x, b.x), rect.left, rect.right);
+  }
+  return false;
+}
+
+function rangesOverlap(aMin, aMax, bMin, bMax) {
+  return Math.max(aMin, bMin) < Math.min(aMax, bMax);
+}
+
+function uniqueNumbers(values) {
+  return [...new Set(values.map(value => Math.round(value)))];
+}
+
+function edgeRouteSlotBias(slot = {}) {
+  const sourceIndex = Number.isFinite(slot.sourceIndex) ? slot.sourceIndex : 0;
+  const sourceCount = Number.isFinite(slot.sourceCount) ? slot.sourceCount : 1;
+  const targetIndex = Number.isFinite(slot.targetIndex) ? slot.targetIndex : 0;
+  const targetCount = Number.isFinite(slot.targetCount) ? slot.targetCount : 1;
+  const sourceBias = sourceCount > 1 ? sourceIndex - (sourceCount - 1) / 2 : 0;
+  const targetBias = targetCount > 1 ? targetIndex - (targetCount - 1) / 2 : 0;
+  return Math.round((sourceBias + targetBias) * workflowNodeMetrics.edgeLaneGap * 0.42);
 }
 
 function workflowEdgeLeftToRight(sourceRect, targetRect) {
@@ -5131,19 +8942,57 @@ function workflowEdgeLeftToRight(sourceRect, targetRect) {
 
 function edgeSlotOffset(index, count, height) {
   if (count <= 1) return 0;
-  const span = Math.max(0, height / 2 - 32);
+  const span = Math.max(0, height / 2 - 24);
   if (!span) return 0;
-  const step = Math.min(24, (span * 2) / Math.max(1, count - 1));
+  const step = Math.min(30, (span * 2) / Math.max(1, count - 1));
   return Math.round((index - (count - 1) / 2) * step);
 }
 
-function edgeD({ from, to }) {
+function edgeD({ from, to, points }) {
+  if (Array.isArray(points) && points.length > 1) return roundedEdgePolylineD(points);
   const { c1, c2 } = edgeControlPoints(from, to);
   return `M ${from.x} ${from.y} C ${c1.x} ${c1.y}, ${c2.x} ${c2.y}, ${to.x} ${to.y}`;
 }
 
+function roundedEdgePolylineD(points) {
+  if (!Array.isArray(points) || points.length < 2) return "";
+  const radius = 16;
+  const commands = [`M ${points[0].x} ${points[0].y}`];
+  for (let index = 1; index < points.length; index++) {
+    const previous = points[index - 1];
+    const current = points[index];
+    const next = points[index + 1];
+    if (!next) {
+      commands.push(`L ${current.x} ${current.y}`);
+      continue;
+    }
+    const beforeLength = Math.abs(current.x - previous.x) + Math.abs(current.y - previous.y);
+    const afterLength = Math.abs(next.x - current.x) + Math.abs(next.y - current.y);
+    const corner = Math.min(radius, beforeLength / 2, afterLength / 2);
+    if (corner <= 1) {
+      commands.push(`L ${current.x} ${current.y}`);
+      continue;
+    }
+    const before = pointToward(current, previous, corner);
+    const after = pointToward(current, next, corner);
+    commands.push(`L ${before.x} ${before.y}`);
+    commands.push(`Q ${current.x} ${current.y} ${after.x} ${after.y}`);
+  }
+  return commands.join(" ");
+}
+
+function pointToward(from, to, distance) {
+  const dx = to.x - from.x;
+  const dy = to.y - from.y;
+  const length = Math.max(1, Math.abs(dx) + Math.abs(dy));
+  return {
+    x: Math.round(from.x + dx / length * distance),
+    y: Math.round(from.y + dy / length * distance)
+  };
+}
+
 function edgeControlPoints(from, to) {
-  const distance = Math.max(72, Math.abs(to.x - from.x) * 0.45);
+  const distance = Math.max(112, Math.abs(to.x - from.x) * 0.5);
   return {
     c1: { x: from.x + distance * from.direction, y: from.y },
     c2: { x: to.x + distance * to.direction, y: to.y }
@@ -5154,10 +9003,14 @@ function edgePath(d, className) {
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
   path.setAttribute("class", className);
   path.setAttribute("d", d);
+  if (!className.includes("edge-underlay") && !className.includes("draft")) {
+    path.setAttribute("marker-end", "url(#arrow)");
+  }
   return path;
 }
 
-function edgeMidpoint({ from, to }) {
+function edgeMidpoint({ from, to, points }) {
+  if (Array.isArray(points) && points.length > 1) return polylineMidpoint(points);
   const { c1, c2 } = edgeControlPoints(from, to);
   const t = 0.5;
   const mt = 1 - t;
@@ -5165,6 +9018,27 @@ function edgeMidpoint({ from, to }) {
     x: mt ** 3 * from.x + 3 * mt ** 2 * t * c1.x + 3 * mt * t ** 2 * c2.x + t ** 3 * to.x,
     y: mt ** 3 * from.y + 3 * mt ** 2 * t * c1.y + 3 * mt * t ** 2 * c2.y + t ** 3 * to.y
   };
+}
+
+function polylineMidpoint(points) {
+  const total = edgeRouteLength(points) * 100;
+  if (total <= 0) return points[Math.floor(points.length / 2)] || { x: 0, y: 0 };
+  let walked = 0;
+  const target = total / 2;
+  for (let index = 1; index < points.length; index++) {
+    const a = points[index - 1];
+    const b = points[index];
+    const length = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (walked + length >= target) {
+      const ratio = (target - walked) / Math.max(1, length);
+      return {
+        x: Math.round(a.x + (b.x - a.x) * ratio),
+        y: Math.round(a.y + (b.y - a.y) * ratio)
+      };
+    }
+    walked += length;
+  }
+  return points[points.length - 1];
 }
 
 function edgeDeleteButton(root, sourceName, targetName, point, link = null) {
@@ -5202,6 +9076,7 @@ function removeStageAt(index) {
     other.next = (other.next || []).filter(name => name !== stage.name);
     removeStageMapReference(other.routes, stage.name);
     removeStageMapReference(other.cases, stage.name);
+    removeStageParamReference(other.params, stage.name);
   }
   if (state.connectSource === stage.name) state.connectSource = "";
   if (state.connecting?.sourceName === stage.name) state.connecting = null;
@@ -5242,13 +9117,15 @@ function renderWorkflowValidation(root) {
   }
   if (snapshot.loading) {
     panel.className = "workflow-validation-panel loading";
-    panel.innerHTML = `<strong>${escapeHTML(t("workflow.validationChecking"))}</strong><span>${escapeHTML(t("workflow.validationCheckingHelp"))}</span>`;
+    panel.innerHTML = `${workflowValidationDismissButtonHTML()}<strong>${escapeHTML(t("workflow.validationChecking"))}</strong><span>${escapeHTML(t("workflow.validationCheckingHelp"))}</span>`;
+    bindWorkflowValidationDismiss(root, panel);
     updateWorkflowBoardStatusVisibility(root);
     return;
   }
   if (snapshot.error) {
     panel.className = "workflow-validation-panel error";
-    panel.innerHTML = `<strong>${escapeHTML(t("workflow.validationFailed"))}</strong><span>${escapeHTML(workflowValidationMessage({ message: snapshot.error }))}</span>`;
+    panel.innerHTML = `${workflowValidationDismissButtonHTML()}<strong>${escapeHTML(t("workflow.validationFailed"))}</strong><span>${escapeHTML(workflowValidationMessage({ message: snapshot.error }))}</span>`;
+    bindWorkflowValidationDismiss(root, panel);
     updateWorkflowBoardStatusVisibility(root);
     return;
   }
@@ -5265,6 +9142,7 @@ function renderWorkflowValidation(root) {
   const parallelRows = parallel.slice(0, 3).map(item => workflowParallelValidationRow(item)).join("");
   panel.className = `workflow-validation-panel ${tone}`;
   panel.innerHTML = `
+    ${workflowValidationDismissButtonHTML()}
     <div class="workflow-validation-head">
       <div>
         <strong>${escapeHTML(title)}</strong>
@@ -5274,7 +9152,20 @@ function renderWorkflowValidation(root) {
     </div>
     ${issueRows ? `<div class="workflow-validation-list">${issueRows}</div>` : `<p>${escapeHTML(t("workflow.validationNoIssues"))}</p>`}
     ${parallelRows ? `<div class="workflow-validation-parallel">${parallelRows}</div>` : ""}`;
+  bindWorkflowValidationDismiss(root, panel);
   updateWorkflowBoardStatusVisibility(root);
+}
+
+function workflowValidationDismissButtonHTML() {
+  return `<button type="button" class="workflow-validation-dismiss" data-workflow-validation-dismiss aria-label="${escapeHTML(t("workflow.validationDismiss"))}" title="${escapeHTML(t("workflow.validationDismiss"))}">×</button>`;
+}
+
+function bindWorkflowValidationDismiss(root, panel) {
+  panel.querySelector("[data-workflow-validation-dismiss]")?.addEventListener("click", event => {
+    event.preventDefault();
+    state.graphValidation = null;
+    renderWorkflowValidation(root);
+  });
 }
 
 const workflowValidationMessagePatterns = [
@@ -5476,6 +9367,12 @@ function workflowValidationFieldLabel(field) {
     "retry.max_attempts": t("workflow.maxAttempts"),
     acceptance_criteria: t("workflow.runtimeField.acceptance"),
     outputs: t("workflow.outputsMap"),
+    context: t("workflow.contextContractTitle"),
+    "context.include": t("workflow.contextInclude"),
+    "context.exclude": t("workflow.contextExclude"),
+    "context.max_tokens": t("workflow.contextMaxTokens"),
+    "context.retrieval": t("workflow.contextRetrievalEnabled"),
+    "context.retrieval.query": t("workflow.contextRetrievalQuery"),
     approval: t("workflow.approvalGate"),
     artifacts: t("workflow.artifacts"),
     "artifacts.name": t("workflow.artifactName"),
@@ -5686,8 +9583,28 @@ function renderWorkflowTransfer(root) {
     return;
   }
   panel.className = `workflow-validation-panel workflow-transfer-panel ${snapshot.tone || "warn"}`;
-  panel.innerHTML = `<strong>${escapeHTML(snapshot.title || "")}</strong><span>${escapeHTML(snapshot.body || "")}</span>`;
+  panel.innerHTML = `
+    ${workflowTransferDismissButtonHTML()}
+    <div class="workflow-transfer-copy">
+      <strong>${escapeHTML(snapshot.title || "")}</strong>
+      <span>${escapeHTML(snapshot.body || "")}</span>
+    </div>
+    ${snapshot.artifactDraft ? workflowArtifactDraftActionsHTML(snapshot.artifactDraft) : ""}`;
   updateWorkflowBoardStatusVisibility(root);
+}
+
+function workflowTransferDismissButtonHTML() {
+  return `<button type="button" class="workflow-validation-dismiss" data-workflow-transfer-action="dismiss" aria-label="${escapeHTML(t("workflow.validationDismiss"))}" title="${escapeHTML(t("workflow.validationDismiss"))}">×</button>`;
+}
+
+function workflowArtifactDraftActionsHTML(draft = {}) {
+  const ref = String(draft.ref || "").trim();
+  return `<div class="workflow-transfer-actions">
+    <button type="button" class="primary" data-workflow-transfer-action="use-artifact" ${selectedStage() ? "" : "disabled"}>${escapeHTML(t("workflow.artifactDraftUseSelected"))}</button>
+    <button type="button" data-workflow-transfer-action="copy-artifact">${escapeHTML(t("workflow.artifactDraftCopy"))}</button>
+    <code title="${escapeHTML(ref)}">${escapeHTML(ref)}</code>
+  </div>
+  ${selectedStage() ? "" : `<small class="workflow-transfer-hint">${escapeHTML(t("workflow.artifactDraftSelectStage"))}</small>`}`;
 }
 
 function clearWorkflowTransfer(root) {
@@ -6285,6 +10202,11 @@ function normalizeGraph(doc) {
     stage.cases = stage.cases || {};
     stage.input = stage.input || {};
     stage.outputs = stage.outputs || {};
+    if (hasStageContextContract(stage.context)) {
+      stage.context = normalizeStageContext(stage.context);
+    } else {
+      delete stage.context;
+    }
     stage.artifacts = normalizeArtifacts(stage.artifacts);
     stage.acceptance_criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria || stage.acceptance);
     ensurePosition(stage, index);
@@ -6316,6 +10238,8 @@ function nodeIcon(type) {
     router: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h6v6H4V5Zm10 0h6v6h-6V5ZM4 15h6v4H4v-4Zm4-5h2v2h5v3h-2v-1H8v-4Z"/></svg>`,
     policy_guard: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 6v6c0 4.6-3.2 7.8-8 9-4.8-1.2-8-4.4-8-9V6l8-3Zm0 2.2L6 7.4V12c0 3.4 2.2 5.8 6 6.9 3.8-1.1 6-3.5 6-6.9V7.4l-6-2.2Zm-1 8.6 4.6-4.6L17 10.6l-6 6-3.2-3.2 1.4-1.4 1.8 1.8Z"/></svg>`,
     quality_gate: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 6v6c0 4.6-3.2 7.8-8 9-4.8-1.2-8-4.4-8-9V6l8-3Zm0 2.2L6 7.4V12c0 3.4 2.2 5.8 6 6.9 3.8-1.1 6-3.5 6-6.9V7.4l-6-2.2Zm-3 7.1 1.5-1.4 1.1 1.2L14.9 9l1.4 1.5-4.7 4.5L9 12.3Z"/></svg>`,
+    quality_guard: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 6v6c0 4.6-3.2 7.8-8 9-4.8-1.2-8-4.4-8-9V6l8-3Zm0 2.2L6 7.4V12c0 3.4 2.2 5.8 6 6.9 3.8-1.1 6-3.5 6-6.9V7.4l-6-2.2Zm-3 7.1 1.5-1.4 1.1 1.2L14.9 9l1.4 1.5-4.7 4.5L9 12.3Z"/></svg>`,
+    "quality-guard": `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3 20 6v6c0 4.6-3.2 7.8-8 9-4.8-1.2-8-4.4-8-9V6l8-3Zm0 2.2L6 7.4V12c0 3.4 2.2 5.8 6 6.9 3.8-1.1 6-3.5 6-6.9V7.4l-6-2.2Zm-3 7.1 1.5-1.4 1.1 1.2L14.9 9l1.4 1.5-4.7 4.5L9 12.3Z"/></svg>`,
     parallel: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 5h4v4H5V5Zm10 0h4v4h-4V5ZM5 15h4v4H5v-4Zm10 0h4v4h-4v-4Zm-4-8h2v4h4v2h-4v4h-2v-4H7v-2h4V7Z"/></svg>`,
     join: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M5 4h4v4H7v3h4V8h2v3h4V8h-2V4h4v4h-2v5h-4v3h2v4H9v-4h2v-3H7V8H5V4Z"/></svg>`,
     input_gate: `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 5h16v14H4V5Zm2 2v10h12V7H6Zm2 2h8v2H8V9Zm0 4h5v2H8v-2Z"/></svg>`,
@@ -6334,7 +10258,7 @@ function nodeMetaLines(stage, nodeType) {
     if (nodeType === "condition") return [workflowDisplayValue(stage.condition || t("workflow.condition")), routeSummary(stage.routes)];
     if (nodeType === "switch" || nodeType === "router") return [workflowDisplayValue(stage.switch_on || t("workflow.switchOn")), routeSummary(stage.cases)];
     if (nodeType === "policy_guard") return [workflowDisplayValue(stage.params?.rule || stage.policy || t("workflow.policy")), routeSummary(stage.routes)];
-    if (nodeType === "quality_gate" || nodeType === "quality_guard") return [nodeDisplayType(nodeType), routeSummary(stage.routes)];
+    if (isQualityGateType(nodeType)) return [nodeDisplayType(nodeType), routeSummary(stage.routes)];
     if (nodeType === "parallel") return [t("workflow.node.parallel"), workflowDisplayList(stage.next || []) || t("workflow.nextStages")];
     if (nodeType === "join") return [t("workflow.node.join"), workflowDisplayValue(stage.params?.wait_for || t("workflow.nextStages"))];
     if (nodeType === "input_gate") return [t("workflow.node.input_gate"), inputGateFieldSummary(stage.params)];
@@ -6351,6 +10275,31 @@ function nodeMetaLines(stage, nodeType) {
     return [nodeType === "start" ? t("workflow.node.startHelp") : t("workflow.node.endHelp"), workflowDisplayList(stage.next || []) || "-"];
   }
   return [workflowDisplayValue(stage.agent || t("workflow.noAgent")), workflowDisplayValue(stage.skill || stage.tool || t("workflow.noSkill"))];
+}
+
+function nodeControlSummary(stage, nodeType) {
+  if (!controlTypes.has(nodeType)) return "";
+  const groups = workflowControlScopeGroups(stage);
+  const body = groups.find(group => group.kind === "body");
+  const after = groups.find(group => group.kind === "after");
+  const branchCount = groups.filter(group => group.kind === "route" || group.kind === "case" || group.kind === "branch").length;
+  const parts = [];
+  if (body) parts.push(`${t("workflow.controlScope.bodyShort")}: ${workflowDisplayList(body.targets)}`);
+  if (branchCount) parts.push(t("workflow.controlScope.branchCount", { count: branchCount }));
+  if (after) parts.push(`${t("workflow.controlScope.afterShort")}: ${workflowDisplayList(after.targets)}`);
+  if (!parts.length) parts.push(t("workflow.controlScope.selectHint"));
+  return `<div class="node-control-summary">
+    <strong>${escapeHTML(t("workflow.controlNodeBadge"))}</strong>
+    <span>${escapeHTML(parts.join(" / "))}</span>
+  </div>`;
+}
+
+function workflowNodeCanvasTitle(stage, nodeType) {
+  const base = `${nodeDisplayType(nodeType)} ${stage.name || t("workflow.noStage")}`;
+  if (!controlTypes.has(nodeType)) return base;
+  const groups = workflowControlScopeGroups(stage);
+  if (!groups.length) return `${base} - ${t("workflow.controlScope.selectHint")}`;
+  return `${base} - ${groups.map(group => `${group.label}: ${workflowDisplayList(group.targets)}`).join(" / ")}`;
 }
 
 function inputGateFieldSummary(params = {}) {
@@ -6475,6 +10424,24 @@ function graphPoint(root, event) {
   };
 }
 
+function visibleCanvasStagePosition(root, nodeType = "agent") {
+  const canvas = root.querySelector("#canvas");
+  const type = String(nodeType || "agent").trim().toLowerCase();
+  const width = workflowNodeWidth(type);
+  const height = workflowNodeHeight(type);
+  const zoom = Math.max(state.zoom, 0.1);
+  if (!canvas) {
+    return {
+      x: workflowNodeMetrics.leftPadding,
+      y: workflowNodeMetrics.topPadding
+    };
+  }
+  return {
+    x: Math.round(Math.max(workflowNodeMetrics.leftPadding, (canvas.scrollLeft + canvas.clientWidth / 2) / zoom - width / 2)),
+    y: Math.round(Math.max(workflowNodeMetrics.topPadding, (canvas.scrollTop + canvas.clientHeight / 2) / zoom - height / 2))
+  };
+}
+
 function bindWorkflowShortcuts() {
   if (state.shortcutsBound) return;
   state.shortcutsBound = true;
@@ -6545,7 +10512,7 @@ function setCanvasZoom(root, value, anchor = canvasCenterAnchor(root)) {
   const graphAnchor = graphPoint(root, anchor);
   const anchorOffsetX = anchor.clientX - rect.left;
   const anchorOffsetY = anchor.clientY - rect.top;
-  const nextZoom = Math.max(0.35, Math.min(1.8, Math.round(value * 100) / 100));
+  const nextZoom = Math.max(0.25, Math.min(1.8, Math.round(value * 100) / 100));
   if (nextZoom === state.zoom) return;
   markCanvasZooming(canvas);
   state.zoom = nextZoom;
@@ -6594,10 +10561,11 @@ function workflowLayoutPlan(root, stages) {
   const graph = workflowLayoutGraph(stages);
   const depth = workflowLayoutDepths(stages, graph);
   const columns = workflowLayoutColumns(stages, depth, graph);
+  workflowLayoutAlignBranches(columns, graph);
   workflowRefineColumnOrder(columns, graph);
 
-  const xGap = 178;
-  const yGap = 104;
+  const xGap = 128;
+  const yGap = 84;
   const layoutColumns = columns.map(column => {
     const items = column.stages.map(stage => ({
       stage,
@@ -6636,7 +10604,7 @@ function workflowLayoutGraph(stages) {
   const incoming = new Map(stages.map(stage => [stage.name, []]));
   const outgoing = new Map(stages.map(stage => [stage.name, []]));
   for (const stage of stages) {
-    const links = workflowOutgoingLinks(stage).filter(link => byName.has(link.target));
+    const links = workflowOutgoingLinks(stage, { includeControlBody: true }).filter(link => byName.has(link.target));
     outgoing.set(stage.name, links);
     for (const link of links) {
       incoming.get(link.target)?.push({
@@ -6661,7 +10629,10 @@ function workflowLayoutDepths(stages, graph) {
     depth.set(stage.name, nextDepth);
     const nextSeen = new Set(seen);
     nextSeen.add(stage.name);
-    for (const link of graph.outgoing.get(stage.name) || []) visit(graph.byName.get(link.target), nextDepth + 1, nextSeen);
+    for (const link of graph.outgoing.get(stage.name) || []) {
+      const step = workflowLinkIsControlBody(link) ? 0 : 1;
+      visit(graph.byName.get(link.target), nextDepth + step, nextSeen);
+    }
   };
   (starts.length ? starts : stages.slice(0, 1)).forEach(stage => visit(stage, 0));
   let fallbackDepth = Math.max(0, ...depth.values());
@@ -6686,6 +10657,49 @@ function workflowLayoutColumns(stages, depth, graph) {
       .sort((left, right) => workflowLayoutCompare(left, right, graph, new Map(), "initial"));
     return { index, stages: stagesInColumn };
   });
+}
+
+function workflowLayoutAlignBranches(columns, graph) {
+  if (columns.length <= 1) return;
+  for (let pass = 0; pass < 3; pass++) {
+    const columnByStage = workflowLayoutColumnMap(columns);
+    for (const column of columns) {
+      for (const stage of column.stages) {
+        const links = graph.outgoing.get(stage.name) || [];
+        const branches = links
+          .map(link => ({
+            target: graph.byName.get(link.target),
+            offset: workflowLayoutBranchOffset(link)
+          }))
+          .filter(item => item.target && Number.isFinite(item.offset));
+        if (branches.length < 2) continue;
+        const sourceColumn = columnByStage.get(stage.name);
+        for (const branch of branches) {
+          const targetColumn = columnByStage.get(branch.target.name);
+          if (!sourceColumn || !targetColumn || targetColumn.index <= sourceColumn.index) continue;
+          workflowMoveStageNearRow(targetColumn.column, branch.target.name, sourceColumn.row + branch.offset);
+        }
+      }
+    }
+  }
+}
+
+function workflowLayoutColumnMap(columns) {
+  const out = new Map();
+  columns.forEach((column, index) => {
+    column.stages.forEach((stage, row) => {
+      out.set(stage.name, { column, index, row });
+    });
+  });
+  return out;
+}
+
+function workflowMoveStageNearRow(column, stageName, targetRow) {
+  const currentIndex = column.stages.findIndex(stage => stage.name === stageName);
+  if (currentIndex < 0) return;
+  const [stage] = column.stages.splice(currentIndex, 1);
+  const bounded = Math.max(0, Math.min(column.stages.length, Math.round(targetRow)));
+  column.stages.splice(bounded, 0, stage);
 }
 
 function workflowRefineColumnOrder(columns, graph) {
@@ -6733,15 +10747,39 @@ function workflowLayoutNodePriority(stage) {
 function workflowLayoutRank(stage, graph, rows, mode) {
   if (mode === "incoming") {
     const rank = workflowLayoutNeighborRank(graph.incoming.get(stage.name) || [], rows, "source", "order");
-    if (Number.isFinite(rank)) return rank;
+    if (Number.isFinite(rank)) return rank + workflowLayoutIncomingBranchBias(graph.incoming.get(stage.name) || []);
   }
   if (mode === "outgoing") {
     const rank = workflowLayoutNeighborRank(graph.outgoing.get(stage.name) || [], rows, "target", "order");
     if (Number.isFinite(rank)) return rank;
   }
   const incomingRank = workflowLayoutNeighborRank(graph.incoming.get(stage.name) || [], workflowLayoutOriginalRows(graph), "source", "order");
-  if (Number.isFinite(incomingRank)) return incomingRank;
+  if (Number.isFinite(incomingRank)) return incomingRank + workflowLayoutIncomingBranchBias(graph.incoming.get(stage.name) || []);
   return graph.originalIndex.get(stage.name) || 0;
+}
+
+function workflowLayoutIncomingBranchBias(links = []) {
+  if (!links.length) return 0;
+  const biases = links.map(link => workflowLayoutBranchBias(link.link || link)).filter(Number.isFinite);
+  if (!biases.length) return 0;
+  return biases.reduce((total, value) => total + value, 0) / biases.length;
+}
+
+function workflowLayoutBranchBias(link = {}) {
+  const offset = workflowLayoutBranchOffset(link);
+  return Number.isFinite(offset) ? offset * 180 : 0;
+}
+
+function workflowLayoutBranchOffset(link = {}) {
+  if (workflowLinkIsControlBody(link)) return 1;
+  const keys = (link.entries || []).map(entry => String(entry.key || "").trim().toLowerCase());
+  const labels = (link.labels || []).map(label => String(label || "").trim().toLowerCase());
+  const haystack = [...keys, ...labels].join(" ");
+  if (!haystack) return 0;
+  if (/(warning|warn|review|manual|checkpoint|operator)/.test(haystack)) return -1;
+  if (/(fail|failed|failure|deny|denied|block|blocked|false|revise|revision|reject|rejected|error)/.test(haystack)) return 1;
+  if (/(pass|passed|success|allow|allowed|true|yes|ok|default|next)/.test(haystack)) return 0;
+  return 0;
 }
 
 function workflowLayoutNeighborRank(links, rows, nameKey, orderKey) {
@@ -6770,9 +10808,9 @@ function fitCanvas(root) {
   const canvas = root.querySelector("#canvas");
   applyCanvasGeometry(root);
   const bounds = graphBounds();
-  const availableWidth = Math.max(320, canvas.clientWidth - 48);
-  const availableHeight = Math.max(260, canvas.clientHeight - 48);
-  const next = Math.min(1.2, availableWidth / bounds.width, availableHeight / bounds.height);
+  const availableWidth = Math.max(320, canvas.clientWidth - 64);
+  const availableHeight = Math.max(260, canvas.clientHeight - 64);
+  const next = Math.min(1.35, availableWidth / bounds.width, availableHeight / bounds.height);
   setCanvasZoom(root, next);
   applyCanvasGeometry(root);
   centerGraphInViewport(root);
@@ -6809,8 +10847,8 @@ function applyCanvasGeometry(root) {
   const bounds = graphBounds();
   const viewportWidth = Math.ceil((canvas?.clientWidth || workflowNodeMetrics.minCanvasWidth) / Math.max(state.zoom, 0.1));
   const viewportHeight = Math.ceil((canvas?.clientHeight || workflowNodeMetrics.minCanvasHeight) / Math.max(state.zoom, 0.1));
-  const horizontalPad = Math.max(300, Math.ceil(viewportWidth * 0.28));
-  const verticalPad = Math.max(260, Math.ceil(viewportHeight * 0.30));
+  const horizontalPad = Math.max(420, Math.ceil(viewportWidth * 0.36));
+  const verticalPad = Math.max(380, Math.ceil(viewportHeight * 0.4));
   state.canvas.width = Math.max(
     workflowNodeMetrics.minCanvasWidth,
     viewportWidth,
@@ -6883,6 +10921,10 @@ function workflowNodeHeight(type) {
 
 function selectedStage() {
   return state.graph.stages[state.selected];
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
 }
 
 function fillSelect(select, values) {
@@ -6965,6 +11007,8 @@ function dedicatedParamKeys(nodeType) {
   if (nodeType === "team") ["team", "template", "execute", "approval_preset", "review_preset", "quorum_preset", "preset"].forEach(key => keys.add(key));
   if (nodeType === "input_gate") keys.add("fields_json");
   if (nodeType === "policy_guard") keys.add("rule");
+  if (isQualityGateType(nodeType)) ["stage", "min_score", "require_acceptance", "require_verification", "require_evidence", "allow_unknown"].forEach(key => keys.add(key));
+  if (nodeType === "parallel") keys.add("concurrent");
   if (nodeType === "for_each") ["items", "items_ref", "stage"].forEach(key => keys.add(key));
   if (nodeType === "loop") ["stage", "until", "max_iterations"].forEach(key => keys.add(key));
   if (nodeType === "sub_workflow") ["workflow", "request"].forEach(key => keys.add(key));
@@ -7014,6 +11058,65 @@ function setParamValue(params, key, value) {
 
 function parseParams(raw) {
   return parseMap(raw);
+}
+
+function readStageContextContract(root) {
+  const include = parseContextList(root.querySelector("#stageContextInclude")?.value || "");
+  const exclude = parseContextList(root.querySelector("#stageContextExclude")?.value || "");
+  const maxTokens = Number.parseInt(root.querySelector("#stageContextMaxTokens")?.value || "", 10);
+  const retrieval = {
+    enabled: !!root.querySelector("#stageContextRetrievalEnabled")?.checked,
+    query: String(root.querySelector("#stageContextRetrievalQuery")?.value || "").trim()
+  };
+  const context = {
+    include,
+    exclude,
+    max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 0,
+    retrieval
+  };
+  return hasStageContextContract(context) ? context : undefined;
+}
+
+function parseContextList(raw) {
+  return String(raw || "")
+    .split(/\r?\n|,/)
+    .map(item => item.trim())
+    .filter(Boolean);
+}
+
+function formatContextList(values) {
+  return normalizeContextList(values).join("\n");
+}
+
+function normalizeContextList(values) {
+  if (!Array.isArray(values)) return [];
+  return values.map(item => String(item || "").trim()).filter(Boolean);
+}
+
+function normalizeStageContext(value) {
+  const context = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const retrieval = context.retrieval && typeof context.retrieval === "object" && !Array.isArray(context.retrieval) ? context.retrieval : {};
+  const maxTokens = Number.parseInt(context.max_tokens || context.maxTokens || "", 10);
+  return {
+    include: normalizeContextList(context.include),
+    exclude: normalizeContextList(context.exclude),
+    max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 0,
+    retrieval: {
+      enabled: !!retrieval.enabled,
+      query: String(retrieval.query || "").trim()
+    }
+  };
+}
+
+function hasStageContextContract(value) {
+  const context = normalizeStageContext(value);
+  return Boolean(
+    context.include.length ||
+    context.exclude.length ||
+    context.max_tokens > 0 ||
+    context.retrieval.enabled ||
+    context.retrieval.query
+  );
 }
 
 function isTruthyParam(value) {

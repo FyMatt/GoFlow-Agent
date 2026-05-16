@@ -1,0 +1,409 @@
+name: complex-project-delivery
+description: Long-running delivery workflow for complex software tasks with user plan confirmation, iterative implementation, verification, review, plan updates, final full validation, and a final report.
+stages:
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next:
+        - intake
+      position:
+        x: 180
+        "y": 872
+    - name: intake
+      node_type: agent
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named User Goal, Problem Context, Functional Requirements, Non-Functional Requirements, Constraints, Unknowns, Acceptance Criteria, Risks, and Clarifying Questions.
+        purpose: Turn the user's high-level request into a stable requirement analysis before planning implementation.
+        stability_rule: Preserve the full requirement history as artifacts and summaries; do not rely on raw chat history.
+      outputs:
+        requirements: result.output
+        risks: result.findings
+        summary: result.summary
+      artifacts:
+        - name: requirement-analysis
+          kind: requirements
+          title: Requirement analysis
+          ref: result.output
+          summary: User goal, functional requirements, constraints, acceptance criteria, risks, and open questions.
+      acceptance_criteria:
+        - name: has-functional-requirements
+          ref: result.output
+          contains: Functional Requirements
+          expected: requirement analysis lists functional requirements
+        - name: has-acceptance-criteria
+          ref: result.output
+          contains: Acceptance Criteria
+          expected: requirement analysis defines user-visible success criteria
+        - name: has-risks
+          ref: result.output
+          contains: Risks
+          expected: requirement analysis records project risks
+      context:
+        include:
+            - memory.project
+            - workflow.input
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 3200
+        retrieval:
+            enabled: true
+            query: '{{input.goal}}'
+      next:
+        - plan
+      position:
+        x: 609
+        "y": 458
+    - name: plan
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Project Plan, Milestones, Work Slices, Dependencies, Target Files, Verification Strategy, Review Strategy, Stop Conditions, User Checkpoints, and Definition of Done.
+        planning_rule: Each work slice must include objective, expected files or modules, acceptance checks, validation command or manual check, risk, rollback note, and completion signal.
+        purpose: Build a user-reviewable project plan that can be executed in small stable slices.
+      input:
+        request: workflow.input
+        requirements: stages.intake.outputs.requirements
+      outputs:
+        project_plan: result.output
+        summary: result.summary
+      artifacts:
+        - name: project-plan
+          kind: plan
+          title: Project plan
+          ref: result.output
+          summary: Milestones, work slices, dependencies, verification strategy, review strategy, stop conditions, and definition of done.
+      acceptance_criteria:
+        - name: has-work-slices
+          ref: result.output
+          contains: Work Slices
+          expected: plan decomposes the project into executable slices
+        - name: has-verification-strategy
+          ref: result.output
+          contains: Verification Strategy
+          expected: plan explains how implementation will be checked
+        - name: has-definition-of-done
+          ref: result.output
+          contains: Definition of Done
+          expected: plan states what complete means
+      context:
+        include:
+            - memory.project
+            - stages.intake.outputs.requirements
+            - previous.summary
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 3800
+        retrieval:
+            enabled: true
+            query: '{{input.goal}}'
+      next:
+        - confirm-plan
+      position:
+        x: 1085
+        "y": 404
+    - name: confirm-plan
+      node_type: checkpoint
+      agent: ""
+      skill: ""
+      params:
+        prompt: Review the requirement analysis and project plan. Approve only when the plan, work slices, acceptance criteria, verification strategy, and stop conditions match the user's intent.
+      next:
+        - delivery-loop
+      position:
+        x: 1640
+        "y": 404
+    - name: delivery-loop
+      node_type: loop
+      agent: ""
+      skill: ""
+      params:
+        max_iterations: "12"
+        stage: iteration
+        until: contains(previous.raw_output, "PROJECT_COMPLETE")
+      outputs:
+        complete: result.passed
+        iteration_count: result.iteration_count
+        loop_outputs: result.outputs
+        loop_summaries: result.summaries
+      artifacts:
+        - name: iteration-history
+          kind: plan
+          title: Iteration history
+          ref: result.outputs
+          summary: Aggregated outputs from each implementation, verification, review, and plan-update iteration.
+      acceptance_criteria:
+        - name: loop-recorded-iterations
+          ref: result.iteration_count
+          expected: loop records how many delivery iterations ran
+          exists: true
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.project-plan
+            - files.changed
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+            - unrelated_session_history
+        max_tokens: 3600
+      next:
+        - loop-quality
+      position:
+        x: 2155
+        "y": 430
+    - name: iteration
+      node_type: agent
+      agent: fixer
+      skill: code-writing
+      params:
+        failure_policy: If implementation or verification fails, update the plan with the failure, next fix, and required evidence instead of hiding it.
+        iteration_policy: Use the project plan and previous iteration summaries to choose the next unfinished slice. Preserve user edits. Keep changes scoped. Run or describe the most relevant verification. Review your own result before declaring completion.
+        output_contract: Emit sections named Iteration Number, Selected Work Slice, Implementation Summary, Files Changed, Verification Performed, Review Findings, Plan Update, Remaining Work, Completion Decision, and Next Action. Include the exact token PROJECT_COMPLETE only when every accepted requirement is implemented, verified, reviewed, and the plan has no remaining work.
+        purpose: Execute one project delivery slice, verify it, review it, update the project plan, and decide whether another iteration is needed.
+      input:
+        previous_iterations: stages.delivery-loop.outputs.loop_summaries
+        project_plan: stages.plan.outputs.project_plan
+        request: workflow.input
+        requirements: stages.intake.outputs.requirements
+      outputs:
+        changes: result.changes
+        findings: result.findings
+        iteration_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: iteration-report
+          kind: change_report
+          title: Iteration report
+          ref: result.output
+          summary: Implemented slice, verification performed, review findings, plan update, remaining work, and completion decision.
+      acceptance_criteria:
+        - name: has-selected-slice
+          ref: result.output
+          contains: Selected Work Slice
+          expected: iteration chooses the next planned slice
+        - name: has-verification
+          ref: result.output
+          contains: Verification Performed
+          expected: iteration records tests, checks, or why they could not run
+        - name: has-plan-update
+          ref: result.output
+          contains: Plan Update
+          expected: iteration updates project plan status
+        - name: has-completion-decision
+          ref: result.output
+          contains: Completion Decision
+          expected: iteration states whether more work remains
+      retry:
+        max_attempts: 2
+      approval: true
+      context:
+        include:
+            - memory.project
+            - stages.intake.outputs.requirements
+            - stages.plan.outputs.project_plan
+            - previous.summary
+            - previous.artifacts.iteration-report
+            - files.changed
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+            - unrelated_session_history
+        max_tokens: 5200
+        retrieval:
+            enabled: true
+            query: '{{input.goal}}'
+      position:
+        x: 2168
+        "y": 884
+    - name: loop-quality
+      node_type: quality_gate
+      agent: ""
+      skill: ""
+      params:
+        allow_unknown: "true"
+        min_score: "75"
+        reason: delivery loop did not produce enough iteration evidence or did not reach the declared completion signal
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "false"
+        stage: delivery-loop
+      routes:
+        fail: recovery-plan
+        pass: final-validation
+        warning: operator-review
+      position:
+        x: 2683
+        "y": 496
+    - name: operator-review
+      node_type: checkpoint
+      agent: ""
+      skill: ""
+      params:
+        prompt: The delivery loop completed with warnings. Review iteration reports, changed files, verification evidence, and remaining work before final validation.
+      next:
+        - final-validation
+      position:
+        x: 3235
+        "y": 150
+    - name: recovery-plan
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Recovery Decision, Failed Iterations, Missing Evidence, Updated Plan, Recommended Next Action, and User Decision Needed.
+        purpose: Explain why the delivery loop did not meet the bar and provide a safe recovery plan.
+      input:
+        failures: stages.loop-quality.outputs.failures
+        iteration_history: stages.delivery-loop.outputs.loop_outputs
+        loop_quality: stages.loop-quality.outputs.quality_status
+      outputs:
+        recovery_plan: result.output
+        summary: result.summary
+      artifacts:
+        - name: recovery-plan
+          kind: plan
+          title: Recovery plan
+          ref: result.output
+          summary: Failed iterations, missing evidence, updated plan, and recommended next action.
+      acceptance_criteria:
+        - name: has-recovery-decision
+          ref: result.output
+          contains: Recovery Decision
+          expected: recovery plan states how to proceed safely
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.iteration-history
+            - stages.delivery-loop.outputs.loop_outputs
+            - stages.loop-quality.outputs.failures
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 4200
+      next:
+        - final-report
+      position:
+        x: 3206
+        "y": 883
+    - name: final-validation
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        output_contract: Emit sections named Final Validation Result, Full Test Pass, Commands Run, Requirements Coverage, Failures, Residual Risks, and Release Recommendation.
+        purpose: Run or describe the broadest practical validation across the whole project after all iterations are complete.
+        validation_policy: Prefer real project commands from memory or the plan. If a command cannot run, explain the blocker and provide substitute checks.
+      input:
+        iteration_history: stages.delivery-loop.outputs.loop_outputs
+        project_plan: stages.plan.outputs.project_plan
+        requirements: stages.intake.outputs.requirements
+      outputs:
+        final_validation: result.output
+        findings: result.findings
+        summary: result.summary
+      artifacts:
+        - name: final-validation-report
+          kind: verification
+          title: Final validation report
+          ref: result.output
+          summary: Full-project validation result, commands, coverage, failures, residual risks, and release recommendation.
+      acceptance_criteria:
+        - name: has-final-result
+          ref: result.output
+          contains: Final Validation Result
+          expected: final validation declares pass, warning, or fail
+        - name: has-requirements-coverage
+          ref: result.output
+          contains: Requirements Coverage
+          expected: final validation maps results back to accepted requirements
+        - name: has-commands
+          ref: result.output
+          contains: Commands Run
+          expected: final validation records exact commands or explains why none ran
+      context:
+        include:
+            - memory.project
+            - previous.summary
+            - previous.artifacts.iteration-history
+            - stages.intake.outputs.requirements
+            - stages.plan.outputs.project_plan
+            - stages.delivery-loop.outputs.loop_outputs
+            - files.changed
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 5200
+        retrieval:
+            enabled: true
+            query: '{{input.goal}}'
+      next:
+        - final-report
+      position:
+        x: 3864
+        "y": 500
+    - name: final-report
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Completion Summary, Requirements Delivered, Files Changed, Verification Evidence, Review Notes, Residual Risks, User Follow-Up, and Artifact References.
+        purpose: Produce the final user-facing completion report after the project is implemented and validated.
+      input:
+        final_validation: stages.final-validation.outputs.final_validation
+        iteration_history: stages.delivery-loop.outputs.loop_outputs
+        project_plan: stages.plan.outputs.project_plan
+        recovery_plan: stages.recovery-plan.outputs.recovery_plan
+        requirements: stages.intake.outputs.requirements
+      outputs:
+        final_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: completion-report
+          kind: report
+          title: Completion report
+          ref: result.output
+          summary: Final user-facing report with delivered requirements, changed files, verification evidence, risks, and artifact references.
+      acceptance_criteria:
+        - name: has-completion-summary
+          ref: result.output
+          contains: Completion Summary
+          expected: final report summarizes completion status
+        - name: has-verification-evidence
+          ref: result.output
+          contains: Verification Evidence
+          expected: final report includes final validation evidence
+        - name: has-artifact-references
+          ref: result.output
+          contains: Artifact References
+          expected: final report references reusable artifacts or reports
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.final-validation-report
+            - previous.artifacts.recovery-plan
+            - previous.artifacts.iteration-history
+            - stages.final-validation.outputs.final_validation
+            - stages.recovery-plan.outputs.recovery_plan
+            - files.changed
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 4600
+      next:
+        - end
+      position:
+        x: 4410
+        "y": 729
+    - name: end
+      node_type: end
+      agent: ""
+      skill: ""
+      position:
+        x: 5140
+        "y": 812

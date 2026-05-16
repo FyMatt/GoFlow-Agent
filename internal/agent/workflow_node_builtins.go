@@ -155,6 +155,8 @@ func cloneWorkflowGraphStageDocument(stage WorkflowGraphStageDocument) WorkflowG
 	stage.Outputs = copyStringMap(stage.Outputs)
 	stage.Routes = copyStringMap(stage.Routes)
 	stage.Cases = copyStringMap(stage.Cases)
+	stage.Context.Include = append([]string(nil), stage.Context.Include...)
+	stage.Context.Exclude = append([]string(nil), stage.Context.Exclude...)
 	stage.Next = append([]string(nil), stage.Next...)
 	stage.OnError = append([]string(nil), stage.OnError...)
 	stage.Artifacts = append([]WorkflowGraphArtifactDocument(nil), stage.Artifacts...)

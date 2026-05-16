@@ -21,6 +21,7 @@ bin/
 *.test
 *.out
 coverage.out
+.goflow-studio*.log
 
 __pycache__/
 *.pyc

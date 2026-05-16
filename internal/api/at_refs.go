@@ -2,6 +2,8 @@ package api
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -10,11 +12,13 @@ import (
 	"unicode"
 	"unicode/utf8"
 
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
 const maxHTTPAtReferenceBytes = 256 * 1024
 const maxHTTPAtReferenceTotalBytes = 768 * 1024
+const httpAtReferenceSummaryThresholdBytes = 64 * 1024
 
 type httpAtReference struct {
 	RawPath      string
@@ -22,6 +26,10 @@ type httpAtReference struct {
 	RelativePath string
 	Content      string
 	Size         int
+	Summary      string
+	Hash         string
+	Language     string
+	SummaryOnly  bool
 }
 
 func (s *Server) expandAtReferences(ctx context.Context, input string, handler func(schema.StreamEvent) error) (string, error) {
@@ -35,7 +43,11 @@ func (s *Server) expandAtReferences(ctx context.Context, input string, handler f
 		if !s.workspace.Confirmed() {
 			return "", fmt.Errorf("workspace confirmation required before resolving @file references")
 		}
-		next, err := expandHTTPAtFileReferences(ctx, expanded, s.workspace.Root(), handler)
+		var store *memory.Store
+		if s.runtime != nil {
+			store = s.runtime.MemoryStore()
+		}
+		next, err := expandHTTPAtFileReferences(ctx, expanded, s.workspace.Root(), store, handler)
 		if err != nil {
 			return "", err
 		}
@@ -51,7 +63,7 @@ func (s *Server) expandAtReferences(ctx context.Context, input string, handler f
 	return expanded, nil
 }
 
-func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string, handler func(schema.StreamEvent) error) (string, error) {
+func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string, store *memory.Store, handler func(schema.StreamEvent) error) (string, error) {
 	paths := parseHTTPAtReferencePaths(input)
 	if len(paths) == 0 {
 		return input, nil
@@ -80,10 +92,10 @@ func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string
 		if info.IsDir() {
 			return "", fmt.Errorf("@%s: path is a directory; reference a file", rawPath)
 		}
-		if info.Size() > maxHTTPAtReferenceBytes {
+		if info.Size() > maxHTTPAtReferenceBytes && store == nil {
 			return "", fmt.Errorf("@%s: file too large: %d bytes exceeds %d", rawPath, info.Size(), maxHTTPAtReferenceBytes)
 		}
-		if total+int(info.Size()) > maxHTTPAtReferenceTotalBytes {
+		if store == nil && total+int(info.Size()) > maxHTTPAtReferenceTotalBytes {
 			return "", fmt.Errorf("@%s: referenced files exceed total limit %d bytes", rawPath, maxHTTPAtReferenceTotalBytes)
 		}
 		callID := fmt.Sprintf("http-at-ref-%d", index+1)
@@ -98,9 +110,19 @@ func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string
 		if err != nil {
 			return "", err
 		}
-		total += len(data)
 		ref := httpAtReference{RawPath: rawPath, ResolvedPath: resolved, RelativePath: rel, Content: content, Size: len(data)}
+		if shouldSummarizeHTTPAtReference(ref, store) {
+			ref = summarizeHTTPAtReference(ctx, ref, data, store)
+		} else {
+			total += len(data)
+			if total > maxHTTPAtReferenceTotalBytes {
+				return "", fmt.Errorf("@%s: referenced files exceed total limit %d bytes", rawPath, maxHTTPAtReferenceTotalBytes)
+			}
+		}
 		refs = append(refs, ref)
+		if store != nil {
+			_ = store.MarkFilePathsUsedByTask(ctx, []string{rel}, "")
+		}
 		if handler != nil {
 			payload, _ := json.Marshal(map[string]any{
 				"path": rel,
@@ -110,6 +132,33 @@ func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string
 		}
 	}
 	return buildHTTPAtReferencePrompt(input, refs), nil
+}
+
+func shouldSummarizeHTTPAtReference(ref httpAtReference, store *memory.Store) bool {
+	if store == nil {
+		return false
+	}
+	return ref.Size > httpAtReferenceSummaryThresholdBytes
+}
+
+func summarizeHTTPAtReference(ctx context.Context, ref httpAtReference, data []byte, store *memory.Store) httpAtReference {
+	ref.SummaryOnly = true
+	if len(data) > 0 {
+		sum := sha256.Sum256(data)
+		ref.Hash = hex.EncodeToString(sum[:])
+	}
+	if store != nil {
+		if summary, ok, err := store.FileSummaryForPath(ctx, ref.RelativePath); err == nil && ok {
+			ref.Summary = strings.TrimSpace(summary.Summary)
+			ref.Hash = firstNonEmptyAPIString(summary.Hash, ref.Hash)
+			ref.Language = strings.TrimSpace(summary.Language)
+		}
+	}
+	if ref.Summary == "" {
+		ref.Summary = fmt.Sprintf("Large workspace file (%d bytes); full content omitted from @file prompt expansion.", ref.Size)
+	}
+	ref.Content = ""
+	return ref
 }
 
 func decodeHTTPAtReferenceUTF8(rawPath string, data []byte) (string, error) {
@@ -127,6 +176,22 @@ func buildHTTPAtReferencePrompt(input string, refs []httpAtReference) string {
 	b.WriteString(input)
 	b.WriteString("\n\nReferenced workspace files:\n")
 	for _, ref := range refs {
+		if ref.SummaryOnly {
+			fmt.Fprintf(&b, "\n--- @%s (%d bytes, summary-only) ---\n", ref.RelativePath, ref.Size)
+			if ref.Hash != "" {
+				fmt.Fprintf(&b, "hash=%s\n", ref.Hash)
+			}
+			if ref.Language != "" {
+				fmt.Fprintf(&b, "language=%s\n", ref.Language)
+			}
+			b.WriteString("Full content omitted from prompt expansion. Use read_file if exact content is required.\n")
+			if ref.Summary != "" {
+				b.WriteString("summary: ")
+				b.WriteString(ref.Summary)
+				b.WriteString("\n")
+			}
+			continue
+		}
 		fmt.Fprintf(&b, "\n--- @%s (%d bytes) ---\n", ref.RelativePath, ref.Size)
 		b.WriteString(ref.Content)
 		if !strings.HasSuffix(ref.Content, "\n") {
@@ -134,6 +199,15 @@ func buildHTTPAtReferencePrompt(input string, refs []httpAtReference) string {
 		}
 	}
 	return b.String()
+}
+
+func firstNonEmptyAPIString(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
 }
 
 func (s *Server) expandSessionArtifactReferences(input string, refs []string, handler func(schema.StreamEvent) error) (string, error) {

@@ -203,3 +203,61 @@ session:
 		t.Fatalf("expected runtime home %q, got %q", runtimeHome, cfg.RuntimeHome)
 	}
 }
+
+func TestBootstrapStartsWithIncompleteProviderSetup(t *testing.T) {
+	runtimeHome := t.TempDir()
+	configDir := filepath.Join(runtimeHome, "configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(configDir, "goflow.yaml")
+	workspaceRoot := t.TempDir()
+	skillDir := filepath.Join(runtimeHome, "skills", "first-run")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte(`---
+name: first-run
+description: Minimal bootstrap test skill.
+version: 1.0.0
+author: GoFlow
+activation:
+  keywords: ["hello"]
+  embedding_description: bootstrap test
+---
+
+## Workflow
+
+Answer normally.
+`), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if err := os.WriteFile(configPath, []byte(`providers:
+  primary:
+    provider: openai-compatible
+agents:
+  chat:
+    provider: primary
+    mode: chat
+    max_iterations: 1
+skill:
+  directory: ./skills
+session:
+  max_history: 8
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	app, err := Bootstrap(context.Background(), BootstrapOptions{RuntimeHome: runtimeHome, WorkspaceRoot: workspaceRoot, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("Bootstrap should allow first-run provider setup diagnostics: %v", err)
+	}
+	defer app.Close()
+	if app.Runtime == nil {
+		t.Fatal("expected runtime")
+	}
+	_, err = app.Runtime.RunStream(context.Background(), "hello", nil)
+	if err == nil || !strings.Contains(err.Error(), "model provider setup required") {
+		t.Fatalf("expected setup-required run error, got %v", err)
+	}
+}

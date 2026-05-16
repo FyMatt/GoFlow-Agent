@@ -1,4 +1,4 @@
-#!/usr/bin/env python3
+﻿#!/usr/bin/env python3
 """Optional browser smoke test for the embedded Web Studio.
 
 This script starts GoFlow HTTP mode with a temporary runtime and opens the
@@ -11,6 +11,8 @@ from __future__ import annotations
 
 import argparse
 import base64
+import gzip
+import hashlib
 import json
 import os
 import re
@@ -25,10 +27,12 @@ import time
 import urllib.error
 import urllib.parse
 import urllib.request
+from datetime import datetime, timezone
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+SMOKE_LAZY_TIMELINE_MARKER = "SMOKE_LAZY_TIMELINE_DETAIL_LOADED"
 
 
 class BrowserSmokeUnavailable(RuntimeError):
@@ -65,6 +69,15 @@ def request_text(url: str, timeout: float = 5.0) -> tuple[int, str]:
             return response.status, response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         return exc.code, exc.read().decode("utf-8", errors="replace")
+
+
+def assert_asset_contains(base_url: str, path: str, needles: list[str]) -> None:
+    status, body = request_text(f"{base_url}{path}")
+    if status != 200:
+        raise AssertionError(f"{path} returned {status}: {body[:500]}")
+    for needle in needles:
+        if needle not in body:
+            raise AssertionError(f"{path} missing asset marker {needle!r}")
 
 
 def build_binary(tmpdir: Path, env: dict[str, str]) -> Path:
@@ -175,6 +188,155 @@ def write_smoke_runtime_config(runtime_home: Path) -> Path:
     config_path = config_dir / "goflow.yaml"
     config_path.write_text(config_text, encoding="utf-8")
     return config_path
+
+
+def write_smoke_artifact(workspace: Path) -> dict:
+    content = "# Smoke artifact\n\nFull artifact body for memory viewer."
+    encoded = content.encode("utf-8")
+    digest = hashlib.sha256(encoded).hexdigest()
+    ref = f"sha256:{digest}"
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    artifact_dir = workspace / ".goflow" / "artifacts"
+    objects_dir = artifact_dir / "objects"
+    objects_dir.mkdir(parents=True, exist_ok=True)
+    object_path = objects_dir / f"{digest}.json.gz"
+    obj = {
+        "ref": ref,
+        "hash": digest,
+        "created_at": now,
+        "updated_at": now,
+        "mime": "text/markdown",
+        "summary": "Smoke artifact summary",
+        "content": content,
+        "size": len(encoded),
+        "stored_bytes": 0,
+        "kind": "smoke_report",
+        "title": "Smoke Artifact Report",
+        "metadata": {"source": "smoke"},
+    }
+    with gzip.open(object_path, "wt", encoding="utf-8") as file:
+        json.dump(obj, file, indent=2)
+        file.write("\n")
+    stored_bytes = object_path.stat().st_size
+    metadata = {key: value for key, value in obj.items() if key != "content"}
+    metadata["stored_bytes"] = stored_bytes
+    (artifact_dir / "index.json").write_text(
+        json.dumps({"updated_at": now, "objects": [metadata]}, indent=2) + "\n",
+        encoding="utf-8",
+    )
+    return {"hash": digest, "ref": ref, "content": content, "title": obj["title"]}
+
+
+def write_smoke_session(workspace: Path) -> dict:
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    run_id = "run-agent-smoke-lazy"
+    artifact_ref = "goflow://session-artifacts/artifact-agent-smoke"
+    artifact_content = "# Smoke artifact\n\nFull artifact body for run history viewer."
+    session_dir = workspace / ".goflow"
+    session_dir.mkdir(parents=True, exist_ok=True)
+    snapshot = {
+        "active_agent": "chat",
+        "mode": "chat",
+        "recent_prompts": [],
+        "recent_tools": [],
+        "agent_runs": [
+            {
+                "id": run_id,
+                "status": "completed",
+                "request": "Smoke run for summary-first history rendering.",
+                "output": "Smoke run summary only. Timeline details load on demand.",
+                "agent_id": "chat",
+                "mode": "chat",
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": now,
+                "attempt": 1,
+                "events_count": 2,
+                "artifacts_count": 1,
+                "diffs_count": 0,
+                "events": [
+                    {
+                        "seq": 1,
+                        "at": now,
+                        "type": "agent_run_started",
+                        "content": "Smoke run started.",
+                        "agent_id": "chat",
+                        "mode": "chat",
+                    },
+                    {
+                        "seq": 2,
+                        "at": now,
+                        "type": "tool_result",
+                        "content": f"{SMOKE_LAZY_TIMELINE_MARKER}: full timeline payload should appear only after lazy loading.",
+                        "tool_name": "smoke_tool",
+                        "tool_call_id": "call-smoke-lazy",
+                        "agent_id": "chat",
+                        "mode": "chat",
+                    },
+                ],
+                "artifacts": [
+                    {
+                        "id": "artifact-agent-smoke",
+                        "ref": artifact_ref,
+                        "artifact_ref": artifact_ref,
+                        "kind": "tool_result",
+                        "title": "Smoke Artifact Result",
+                        "summary": "Smoke artifact summary",
+                        "content": "",
+                        "mime": "text/markdown",
+                        "size": 54,
+                        "stored_bytes": 0,
+                        "tool_name": "smoke_tool",
+                        "tool_call_id": "call-smoke-artifact",
+                        "agent_id": "chat",
+                        "mode": "chat",
+                        "metadata": {"source": "smoke"}
+                    }
+                ],
+            }
+        ],
+        "workflow": {},
+        "workflow_runs": [],
+        "messages": [],
+        "blackboard": [],
+        "artifacts": [
+            {
+                "id": "artifact-agent-smoke",
+                "ref": artifact_ref,
+                "artifact_ref": artifact_ref,
+                "kind": "tool_result",
+                "title": "Smoke Artifact Result",
+                "summary": "Smoke artifact summary",
+                "content": artifact_content,
+                "content_bytes": len(artifact_content.encode("utf-8")),
+                "stored_bytes": len(artifact_content.encode("utf-8")),
+                "mime": "text/markdown",
+                "tool_name": "smoke_tool",
+                "tool_call_id": "call-smoke-artifact",
+                "agent_id": "chat",
+                "mode": "chat",
+                "metadata": {"source": "smoke"}
+            }
+        ],
+        "pending_approvals": [
+            {
+                "call_id": "call-smoke-approval",
+                "tool_name": "write_file",
+                "agent_id": "chat",
+                "arguments_summary": "path=demo.py content=1200 chars",
+                "agent_run_id": run_id,
+                "risk": {
+                    "risk_level": "high",
+                    "kind": "write",
+                    "requires_approval": True,
+                    "workspace_scoped_inputs": True,
+                    "workspace_scope_enforced": True,
+                },
+            }
+        ],
+    }
+    (session_dir / "session.json").write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
+    return {"run_id": run_id, "marker": SMOKE_LAZY_TIMELINE_MARKER, "artifact_ref": artifact_ref}
 
 
 def wait_for_server(base_url: str, proc: subprocess.Popen[str], timeout: float) -> None:
@@ -304,15 +466,23 @@ def evaluate_browser_json(browser: Path, url: str, script: str, timeout: float, 
             }})()
             """
         )
-        response = devtools_call(
-            urllib.parse.urlparse(str(page["webSocketDebuggerUrl"])),
-            {
-                "id": 1,
-                "method": "Runtime.evaluate",
-                "params": {"expression": expression, "awaitPromise": True, "returnByValue": True},
-            },
-            timeout,
-        )
+        parsed_debug_url = urllib.parse.urlparse(str(page["webSocketDebuggerUrl"]))
+        response: dict[str, object] = {}
+        for attempt in range(1, 5):
+            response = devtools_call(
+                parsed_debug_url,
+                {
+                    "id": attempt,
+                    "method": "Runtime.evaluate",
+                    "params": {"expression": expression, "awaitPromise": True, "returnByValue": True},
+                },
+                timeout,
+            )
+            error = response.get("error")
+            if isinstance(error, dict) and "Execution context was destroyed" in str(error.get("message", "")):
+                time.sleep(0.35 * attempt)
+                continue
+            break
         if response.get("exceptionDetails"):
             raise AssertionError(f"browser eval exception for {url}: {response['exceptionDetails']}")
         result = response.get("result", {}).get("result", {}).get("value")
@@ -500,18 +670,23 @@ def assert_approval_queue_layout(browser: Path, base_url: str, timeout: float, p
         (() => {
           const list = document.querySelector("#approvalList");
           if (!list) return { missing: true };
-          const card = document.createElement("button");
-          card.type = "button";
-          card.className = "item approval-card";
-          card.innerHTML = '<div class="approval-card-head"><strong>write_file</strong><span class="badge warn">Tool</span></div><p>path=demo.py content=1200 chars</p><small>call-1</small>';
-          list.appendChild(card);
-          const listStyle = getComputedStyle(list);
-          return {
-            missing: false,
-            listHeight: Math.round(list.getBoundingClientRect().height),
-            cardHeight: Math.round(card.getBoundingClientRect().height),
-            alignContent: listStyle.alignContent,
-            gridAutoRows: listStyle.gridAutoRows
+            const card = document.createElement("button");
+            card.type = "button";
+            card.className = "item approval-card";
+            card.innerHTML = '<div class="approval-card-head"><strong>write_file</strong><span class="badge warn">Tool</span></div><div class="approval-card-answers"><span><small>Will run</small><b>write_file</b></span><span><small>May touch</small><b>Workspace files</b></span><span><small>Why approval</small><b>Protected tool call</b></span></div><p>path=demo.py content=1200 chars</p><small>call-1</small>';
+            const group = document.createElement("section");
+            group.className = "approval-group";
+            group.innerHTML = '<div class="approval-group-head"><div><strong>Tool queue</strong><span>1 pending / Tool approval</span></div><span class="badge warn">Needs decision</span></div><div class="approval-group-list"></div>';
+            group.querySelector(".approval-group-list").appendChild(card);
+            list.appendChild(group);
+            const listStyle = getComputedStyle(list);
+            return {
+              missing: false,
+              listHeight: Math.round(list.getBoundingClientRect().height),
+              groupHeight: Math.round(group.getBoundingClientRect().height),
+              cardHeight: Math.round(card.getBoundingClientRect().height),
+              alignContent: listStyle.alignContent,
+              gridAutoRows: listStyle.gridAutoRows
           };
         })()
         """,
@@ -524,8 +699,704 @@ def assert_approval_queue_layout(browser: Path, base_url: str, timeout: float, p
     list_height = int(metrics.get("listHeight") or 0)
     if card_height <= 0 or list_height <= 0:
         raise AssertionError(f"approval queue layout did not measure correctly, got {metrics}")
-    if card_height > 220 or card_height > max(220, list_height // 2):
+    if card_height > 280 or card_height > max(280, list_height // 2):
         raise AssertionError(f"single approval card should not stretch to fill the queue, got {metrics}")
+
+
+def assert_ordinary_user_decision_surfaces(browser: Path, base_url: str, timeout: float, profile_dir: Path) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#approvals",
+        """
+        (() => {
+          const group = document.querySelector(".approval-group");
+          const card = document.querySelector(".approval-card");
+          const answers = Array.from(document.querySelectorAll(".approval-card-answers b")).map(node => node.textContent.trim());
+          const labels = Array.from(document.querySelectorAll(".approval-card-answers small")).map(node => node.textContent.trim());
+          const inspect = document.querySelector("[data-approval-inspect]");
+          return {
+            hasGroup: Boolean(group),
+            hasCard: Boolean(card),
+            labels,
+            answers,
+            inspectLabel: inspect ? inspect.textContent.trim() : "",
+            activeCard: Boolean(document.querySelector(".approval-card.active"))
+          };
+        })()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if not metrics.get("hasGroup") or not metrics.get("hasCard") or not metrics.get("activeCard"):
+        raise AssertionError(f"approval decision surface should group and select the pending request, got {metrics}")
+    joined_labels = " ".join(metrics.get("labels") or [])
+    joined_answers = " ".join(metrics.get("answers") or [])
+    if "Will run" not in joined_labels or "May touch" not in joined_labels or "Why approval" not in joined_labels:
+        raise AssertionError(f"approval card should answer the three user questions, got {metrics}")
+    if "write_file" not in joined_answers or ("Workspace files" not in joined_answers and "Files or state may be changed" not in joined_answers):
+        raise AssertionError(f"approval card should explain the tool and workspace impact, got {metrics}")
+    if "Inspect" not in str(metrics.get("inspectLabel", "")):
+        raise AssertionError(f"approval detail should expose an inspect action, got {metrics}")
+
+    zh = evaluate_browser_json(
+        browser,
+        f"{base_url}/console?lang=zh#approvals",
+        """
+        (() => ({
+          group: Boolean(document.querySelector(".approval-group")),
+          labels: Array.from(document.querySelectorAll(".approval-card-answers small")).map(node => node.textContent.trim()),
+          inspect: document.querySelector("[data-approval-inspect]")?.textContent.trim() || "",
+          body: document.body.textContent
+        }))()
+        """,
+        timeout,
+        profile_dir,
+    )
+    zh_labels = " ".join(zh.get("labels") or [])
+    if not zh.get("group") or "将执行" not in zh_labels or "可能影响" not in zh_labels or "审批原因" not in zh_labels:
+        raise AssertionError(f"Chinese approval card should use localized ordinary-user labels, got {zh}")
+    if "查看" not in str(zh.get("inspect", "")):
+        raise AssertionError(f"Chinese approval detail should localize inspect action, got {zh}")
+
+
+def assert_workspace_risk_surface(browser: Path, base_url: str, timeout: float, profile_dir: Path) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#workspace",
+        """
+        (() => {
+          const cards = Array.from(document.querySelectorAll(".workspace-risk-card"));
+          return {
+            hasCallout: Boolean(document.querySelector(".workspace-risk-callout")),
+            cardCount: cards.length,
+            titles: cards.map(card => card.querySelector("strong")?.textContent.trim() || ""),
+            body: document.body.textContent
+          };
+        })()
+        """,
+        timeout,
+        profile_dir,
+    )
+    titles = " ".join(metrics.get("titles") or [])
+    if not metrics.get("hasCallout") or int(metrics.get("cardCount") or 0) < 1:
+        raise AssertionError(f"workspace should surface current action risk cards when approvals are pending, got {metrics}")
+    if "Approval" not in titles and "Workspace" not in titles:
+        raise AssertionError(f"workspace risk cards should explain approval/workspace impact, got {metrics}")
+
+    zh = evaluate_browser_json(
+        browser,
+        f"{base_url}/console?lang=zh#workspace",
+        """
+        (() => ({
+          hasCallout: Boolean(document.querySelector(".workspace-risk-callout")),
+          cardCount: document.querySelectorAll(".workspace-risk-card").length,
+          body: document.body.textContent
+        }))()
+        """,
+        timeout,
+        profile_dir,
+    )
+    body = str(zh.get("body", ""))
+    if not zh.get("hasCallout") or int(zh.get("cardCount") or 0) < 1 or "审批可能触碰工作区" not in body:
+        raise AssertionError(f"Chinese workspace risk surface should be localized and action-related, got {zh}")
+
+
+def assert_memory_artifact_layout(browser: Path, base_url: str, timeout: float, profile_dir: Path, artifact: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#memory",
+        f"""
+        (async () => {{
+          const deadline = Date.now() + 5000;
+          while (Date.now() < deadline && !document.querySelector(".memory-artifact-index-item")) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const view = document.querySelector(".memory-view");
+          const form = document.querySelector(".memory-artifact-form");
+          const input = document.querySelector("#artifactRef");
+          const button = document.querySelector(".memory-artifact-load-button");
+          const indexItem = document.querySelector(".memory-artifact-index-item");
+          if (!view || !form || !input || !button || !indexItem) return {{ missing: true }};
+          const initialButtonStyle = getComputedStyle(button);
+          const initialButtonMetrics = {{
+            whiteSpace: initialButtonStyle.whiteSpace,
+            scrollWidth: Math.round(button.scrollWidth),
+            clientWidth: Math.round(button.clientWidth)
+          }};
+          input.value = {json.dumps(artifact["ref"])};
+          form.dispatchEvent(new Event("submit", {{ bubbles: true, cancelable: true }}));
+          const detailDeadline = Date.now() + 5000;
+          while (Date.now() < detailDeadline && !document.querySelector(".memory-artifact .markdown-body")) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const artifactBody = document.querySelector(".memory-artifact .markdown-body");
+          const currentView = document.querySelector(".memory-view");
+          const currentButton = document.querySelector(".memory-artifact-load-button");
+          const buttonStyle = currentButton ? getComputedStyle(currentButton) : initialButtonStyle;
+          const viewRect = currentView ? currentView.getBoundingClientRect() : view.getBoundingClientRect();
+          const bodyRect = document.body.getBoundingClientRect();
+          return {{
+            missing: false,
+            hasRecentItem: Boolean(indexItem),
+            hasArtifactBody: Boolean(artifactBody),
+            bodyText: artifactBody ? artifactBody.textContent : "",
+            buttonWhiteSpace: buttonStyle.whiteSpace || initialButtonMetrics.whiteSpace,
+            buttonScrollWidth: Math.round((currentButton ? currentButton.scrollWidth : 0) || initialButtonMetrics.scrollWidth),
+            buttonClientWidth: Math.round((currentButton ? currentButton.clientWidth : 0) || initialButtonMetrics.clientWidth),
+            viewScrollWidth: Math.round((currentView ? currentView.scrollWidth : 0) || view.scrollWidth),
+            viewClientWidth: Math.round((currentView ? currentView.clientWidth : 0) || view.clientWidth),
+            bodyWidth: Math.round(bodyRect.width),
+            viewWidth: Math.round(viewRect.width)
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missing"):
+        raise AssertionError("memory artifact layout missing expected nodes")
+    if not metrics.get("hasRecentItem"):
+        raise AssertionError(f"memory artifact index did not render a recent artifact, got {metrics}")
+    if not metrics.get("hasArtifactBody") or "Full artifact body for memory viewer" not in str(metrics.get("bodyText", "")):
+        raise AssertionError(f"memory artifact viewer did not lazy-load full content, got {metrics}")
+    if int(metrics.get("buttonScrollWidth") or 0) > int(metrics.get("buttonClientWidth") or 0) + 2:
+        raise AssertionError(f"artifact load button text should not overflow, got {metrics}")
+    if int(metrics.get("viewScrollWidth") or 0) > int(metrics.get("viewClientWidth") or 0) + 2:
+        raise AssertionError(f"memory view should not create horizontal overflow, got {metrics}")
+
+
+def assert_catalog_brief_creation_path(browser: Path, base_url: str, timeout: float, profile_dir: Path) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#catalog",
+        """
+        (async () => {
+          const openDeadline = Date.now() + 5000;
+          while (Date.now() < openDeadline && !document.querySelector('[data-new-resource="skill"]')) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const open = document.querySelector('[data-new-resource="skill"]');
+          if (!open) return { missingOpen: true };
+          open.click();
+          const deadline = Date.now() + 5000;
+          while (Date.now() < deadline && document.querySelector("#resourceDesigner")?.classList.contains("hidden")) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const designer = document.querySelector("#resourceDesigner");
+          const type = document.querySelector("#resourceType");
+          const name = document.querySelector("#resourceName");
+          const goal = document.querySelector("#resourceBriefGoal");
+          const inputs = document.querySelector("#resourceBriefInputs");
+          const outputs = document.querySelector("#resourceBriefOutputs");
+          const example = document.querySelector("#resourceBriefExample");
+          const apply = document.querySelector("#resourceBriefApply");
+          if (!designer || !type || !name || !goal || !inputs || !outputs || !example || !apply) return { missingForm: true };
+          name.value = "smoke-brief-skill";
+          name.dispatchEvent(new Event("input", { bubbles: true }));
+          goal.value = "Summarize user requirements into clear implementation tasks.";
+          inputs.value = "User request\\nCurrent project context";
+          outputs.value = "Task list\\nAcceptance checks";
+          example.value = "Create a task plan for a new settings page.";
+          [goal, inputs, outputs, example].forEach(node => node.dispatchEvent(new Event("input", { bubbles: true })));
+          document.querySelector("#skillInstructions").value = "";
+          apply.click();
+          await new Promise(resolve => setTimeout(resolve, 350));
+          const preview = document.querySelector("#resourceBriefPreview");
+          const instructions = document.querySelector("#skillInstructions");
+          const dependencyPicker = document.querySelector("[data-resource-dependency-picker]");
+          const advanced = document.querySelector("[data-resource-advanced], .resource-advanced-section, .resource-isolation-options");
+          return {
+            missingOpen: false,
+            missingForm: false,
+            designerOpen: !designer.classList.contains("hidden"),
+            typeValue: type.value,
+            previewText: preview ? preview.textContent : "",
+            instructionsText: instructions ? instructions.value : "",
+            hasDependencyPicker: Boolean(dependencyPicker),
+            advancedHiddenOrSecondary: Boolean(advanced && (advanced.closest("details") || advanced.classList.contains("hidden") || advanced.closest("[data-designer-section-panel]")))
+          };
+        })()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingOpen") or metrics.get("missingForm"):
+        raise AssertionError(f"resource brief creation path missing expected controls, got {metrics}")
+    if not metrics.get("designerOpen") or metrics.get("typeValue") != "skill":
+        raise AssertionError(f"resource brief creation should open the skill designer, got {metrics}")
+    if "Summarize user requirements" not in str(metrics.get("previewText", "")):
+        raise AssertionError(f"resource brief preview should reflect the user's plain-language goal, got {metrics}")
+    if "Acceptance checks" not in str(metrics.get("instructionsText", "")):
+        raise AssertionError(f"resource brief apply should generate reusable skill instructions, got {metrics}")
+    if not metrics.get("hasDependencyPicker"):
+        raise AssertionError(f"resource designer should expose visual dependency choices, got {metrics}")
+
+
+def assert_workflow_metadata_zh(browser: Path, base_url: str, timeout: float, profile_dir: Path) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        zh_url(base_url, "/workflows"),
+        """
+        (async () => {
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline && !document.querySelector('.flow-node[data-stage-name="plan"]')) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const node = document.querySelector('.flow-node[data-stage-name="plan"]');
+          if (!node) return { missingNode: true };
+          node.click();
+          const metaDeadline = Date.now() + 4000;
+          let panel = document.querySelector("#stageNodeTypeMeta");
+          while (
+            Date.now() < metaDeadline &&
+            (!panel || panel.classList.contains("hidden") || !panel.textContent.trim())
+          ) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+            panel = document.querySelector("#stageNodeTypeMeta");
+          }
+          const text = panel ? panel.textContent.replace(/\\s+/g, " ").trim() : "";
+          return {
+            missingNode: false,
+            hasMeta: Boolean(panel && !panel.classList.contains("hidden") && text),
+            text,
+            hasDescription: text.includes("传给运行时并在 Studio 中展示的额外节点参数"),
+            hasExample: text.includes("purpose: 说明这个阶段需要产出什么"),
+            hasPlanExample: text.includes("计划阶段"),
+            englishLeaks: [
+              "Extra node parameters passed to the runtime and shown in Studio.",
+              "purpose: Explain what this stage must produce",
+              "Create a plan that later stages can consume.",
+            ].filter(item => text.includes(item)),
+          };
+        })()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingNode"):
+        raise AssertionError("workflow zh smoke could not find the preset plan node")
+    if not metrics.get("hasMeta"):
+        raise AssertionError(f"workflow zh smoke did not render node metadata, got {metrics}")
+    if not metrics.get("hasDescription") or not metrics.get("hasExample") or not metrics.get("hasPlanExample"):
+        raise AssertionError(f"workflow zh smoke missing localized node metadata, got {metrics}")
+    if metrics.get("englishLeaks"):
+        raise AssertionError(f"workflow zh smoke found untranslated node metadata, got {metrics}")
+
+
+def assert_simple_workflow_build_path(browser: Path, base_url: str, timeout: float, profile_dir: Path) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/workflows",
+        """
+        (async () => {
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline && !document.querySelector('[data-template="condition"]')) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const search = document.querySelector("#nodePaletteSearch");
+          if (!search) return { missingPalette: true };
+          search.value = "condition";
+          search.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise(resolve => setTimeout(resolve, 250));
+          const conditionButton = document.querySelector('[data-template="condition"]');
+          if (!conditionButton) return { missingPalette: true };
+          conditionButton.click();
+          const nodeDeadline = Date.now() + 5000;
+          while (Date.now() < nodeDeadline && !document.querySelector('.flow-node[data-stage-name^="condition"]')) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const node = document.querySelector('.flow-node[data-stage-name^="condition"]');
+          const inspector = document.querySelector("#stageForm");
+          const taskEditor = document.querySelector("#stageTaskEditor");
+          const routePreview = document.querySelector("#stageRoutePreview");
+          const rawFields = document.querySelector(".workflow-raw-fields");
+          const validate = document.querySelector("#validateGraph");
+          const statusBeforeDismiss = document.querySelector("#workflowBoardStatus");
+          if (!node || !inspector || !taskEditor || !validate) return { missingNode: true };
+          validate.click();
+          const validationDeadline = Date.now() + 5000;
+          let panel = document.querySelector("#workflowValidationPanel");
+          while (Date.now() < validationDeadline && (!panel || panel.classList.contains("hidden") || panel.classList.contains("loading"))) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+            panel = document.querySelector("#workflowValidationPanel");
+          }
+          const validationText = panel ? panel.textContent : "";
+          const dismiss = panel?.querySelector("[data-workflow-validation-dismiss]");
+          const beforeDismissHidden = panel?.classList.contains("hidden") || false;
+          if (dismiss) {
+            dismiss.click();
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          return {
+            missingPalette: false,
+            missingNode: false,
+            nodeText: node.textContent,
+            selected: node.classList.contains("selected"),
+            taskEditorText: taskEditor.textContent,
+            hasRoutePreview: Boolean(routePreview && !routePreview.classList.contains("hidden")),
+            rawFieldsClosed: rawFields ? !rawFields.open : false,
+            validationText,
+            validationDismissed: Boolean(panel && panel.classList.contains("hidden")),
+            boardStatusHiddenAfterDismiss: Boolean(statusBeforeDismiss && statusBeforeDismiss.classList.contains("hidden"))
+          };
+        })()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingPalette") or metrics.get("missingNode"):
+        raise AssertionError(f"simple workflow build path missing expected controls, got {metrics}")
+    if "condition" not in str(metrics.get("nodeText", "")).lower() or not metrics.get("selected"):
+        raise AssertionError(f"clicking a palette node should add and select a condition node, got {metrics}")
+    if "condition" not in str(metrics.get("taskEditorText", "")).lower() and "route" not in str(metrics.get("taskEditorText", "")).lower():
+        raise AssertionError(f"workflow inspector should show the simple task editor for the condition node, got {metrics}")
+    if not metrics.get("rawFieldsClosed"):
+        raise AssertionError(f"raw workflow fields should remain folded in the default view, got {metrics}")
+    if not str(metrics.get("validationText", "")).strip():
+        raise AssertionError(f"workflow validation should produce a visible, dismissible result, got {metrics}")
+    if not metrics.get("validationDismissed"):
+        raise AssertionError(f"workflow validation panel should be dismissible, got {metrics}")
+
+
+def assert_settings_warning_resolution_path(browser: Path, base_url: str, timeout: float, profile_dir: Path) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#settings",
+        """
+        (async () => {
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline && !document.querySelector(".settings-essential-panel")) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const essential = document.querySelector(".settings-essential-panel");
+          const providerForm = document.querySelector("[data-provider-setup-form]");
+          const workspaceCard = document.querySelector(".settings-workspace-readiness");
+          const confirm = document.querySelector("[data-settings-workspace-confirm]");
+          const update = document.querySelector(".settings-update-basic");
+          const advanced = document.querySelector(".settings-advanced-runtime");
+          if (!essential || !providerForm || !workspaceCard || !update || !advanced) return { missing: true };
+          const confirmTextBefore = confirm ? confirm.textContent.trim() : "";
+          if (confirm) {
+            confirm.click();
+            const confirmDeadline = Date.now() + 5000;
+            while (Date.now() < confirmDeadline && confirm.getAttribute("aria-busy") === "true") {
+              await new Promise(resolve => setTimeout(resolve, 120));
+            }
+          }
+          const output = document.querySelector("[data-settings-workspace-output]");
+          const advancedWasOpen = advanced.open;
+          advanced.open = true;
+          await new Promise(resolve => setTimeout(resolve, 100));
+          return {
+            missing: false,
+            hasEssential: Boolean(essential),
+            hasProgress: document.querySelectorAll(".settings-setup-progress article").length,
+            providerFields: Boolean(
+              providerForm.querySelector("[data-provider-setup-type]") &&
+              providerForm.querySelector("[data-provider-setup-model]") &&
+              providerForm.querySelector("[data-provider-setup-api-key]")
+            ),
+            confirmTextBefore,
+            confirmBusy: confirm ? confirm.getAttribute("aria-busy") : "",
+            workspaceOutput: output ? output.textContent.trim() : "",
+            hasUpdateBasics: Boolean(update.querySelector("[data-settings-update-check]") || update.classList.contains("disabled")),
+            advancedDefaultClosed: advancedWasOpen === false,
+            advancedOpenHasPaths: advanced.textContent.includes("Config file") || advanced.textContent.includes("Runtime home")
+          };
+        })()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missing"):
+        raise AssertionError(f"settings ordinary setup path missing expected controls, got {metrics}")
+    if int(metrics.get("hasProgress") or 0) < 3:
+        raise AssertionError(f"settings should show setup progress cards, got {metrics}")
+    if not metrics.get("providerFields"):
+        raise AssertionError(f"settings should guide Provider/model/API Key configuration, got {metrics}")
+    if metrics.get("confirmTextBefore") and metrics.get("confirmBusy") == "true":
+        raise AssertionError(f"settings workspace confirmation should clear busy state, got {metrics}")
+    if not metrics.get("hasUpdateBasics"):
+        raise AssertionError(f"settings should expose a simple update policy action, got {metrics}")
+    if not metrics.get("advancedDefaultClosed") or not metrics.get("advancedOpenHasPaths"):
+        raise AssertionError(f"settings raw paths/env details should stay in closed advanced runtime details, got {metrics}")
+
+
+def assert_playground_context_prompts(browser: Path, base_url: str, timeout: float, profile_dir: Path) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        """
+        (async () => {
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline && !document.querySelector("#runContextGuide")) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const prompt = document.querySelector("#prompt");
+          const guide = document.querySelector("#runContextGuide");
+          if (!prompt || !guide) return { missing: true };
+          prompt.value = "Please edit README.md and run tests";
+          prompt.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise(resolve => setTimeout(resolve, 250));
+          const items = Array.from(guide.querySelectorAll(".run-context-guide-item"));
+          const actionButtons = Array.from(guide.querySelectorAll("[data-run-context-action]"));
+          const runtime = await fetch("/api/runtime").then(response => response.json()).catch(() => ({}));
+          const workspace = runtime.workspace || {};
+          const workspaceConfirmed = Boolean(workspace.confirmed);
+          return {
+            missing: false,
+            hidden: guide.classList.contains("hidden"),
+            text: guide.textContent,
+            actionNames: actionButtons.map(button => button.dataset.runContextAction || ""),
+            itemCount: items.length,
+            workspaceRoot: workspace.root || workspace.display || "",
+            workspaceConfirmed
+          };
+        })()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missing") or metrics.get("hidden"):
+        raise AssertionError(f"playground context prompts should appear for workspace/file tasks, got {metrics}")
+    actions = set(metrics.get("actionNames") or [])
+    required_actions = {"files", "approvals"}
+    if metrics.get("workspaceRoot") and not metrics.get("workspaceConfirmed"):
+        required_actions.add("workspace")
+    if not required_actions.issubset(actions):
+        raise AssertionError(f"playground context prompts should include relevant file, approval, and workspace actions, got {metrics}")
+    text = str(metrics.get("text", ""))
+    if "Attach exact files" not in text or (metrics.get("workspaceRoot") and not metrics.get("workspaceConfirmed") and "Confirm workspace first" not in text):
+        raise AssertionError(f"playground context prompts should use ordinary-user copy, got {metrics}")
+
+    zh = evaluate_browser_json(
+        browser,
+        zh_url(base_url, "/console#playground"),
+        """
+        (async () => {
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline && !document.querySelector("#runContextGuide")) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const prompt = document.querySelector("#prompt");
+          const guide = document.querySelector("#runContextGuide");
+          if (!prompt || !guide) return { missing: true };
+          prompt.value = "请修改 README.md 并运行测试";
+          prompt.dispatchEvent(new Event("input", { bubbles: true }));
+          await new Promise(resolve => setTimeout(resolve, 250));
+          const runtime = await fetch("/api/runtime").then(response => response.json()).catch(() => ({}));
+          const workspace = runtime.workspace || {};
+          return {
+            missing: false,
+            text: guide.textContent,
+            actionNames: Array.from(guide.querySelectorAll("[data-run-context-action]")).map(button => button.dataset.runContextAction || ""),
+            workspaceRoot: workspace.root || workspace.display || "",
+            workspaceConfirmed: Boolean(workspace.confirmed)
+          };
+        })()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if zh.get("missing"):
+        raise AssertionError(f"Chinese playground context prompts missing expected nodes, got {zh}")
+    zh_text = str(zh.get("text", ""))
+    if "引用精确文件" not in zh_text or "个审批等待处理" not in zh_text or (zh.get("workspaceRoot") and not zh.get("workspaceConfirmed") and "先确认工作区" not in zh_text):
+        raise AssertionError(f"Chinese playground context prompts should be localized, got {zh}")
+
+
+def assert_workflow_developer_fields_folded(browser: Path, base_url: str, timeout: float, profile_dir: Path) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/workflows",
+        """
+        (async () => {
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline && !document.querySelector('[data-template="condition"]')) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const conditionButton = document.querySelector('[data-template="condition"]');
+          if (!conditionButton) return { missingPalette: true };
+          conditionButton.click();
+          const nodeDeadline = Date.now() + 5000;
+          while (Date.now() < nodeDeadline && !document.querySelector('.flow-node[data-stage-name^="condition"]')) {
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }
+          const modeToggle = document.querySelector("#workflowExpertMode");
+          if (!modeToggle) return { missingModeToggle: true };
+          if (!modeToggle.checked) {
+            modeToggle.click();
+            await new Promise(resolve => setTimeout(resolve, 350));
+          }
+          const advancedTab = document.querySelector('[data-workflow-inspector-tab="advanced"]');
+          if (!advancedTab) return { missingTabs: true };
+          advancedTab.click();
+          await new Promise(resolve => setTimeout(resolve, 250));
+          const raw = document.querySelector("#stageAdvancedRawPanel");
+          const routes = document.querySelector("#stageRoutes");
+          const params = document.querySelector("#stageParams");
+          const openDeveloper = document.querySelector('[data-stage-task-open-developer]');
+          return {
+            missingPalette: false,
+            missingModeToggle: false,
+            missingTabs: false,
+            expertMode: Boolean(document.querySelector(".studio")?.classList.contains("expert-mode")),
+            rawExists: Boolean(raw),
+            rawClosed: raw ? raw.open === false : false,
+            rawHidden: raw ? raw.classList.contains("hidden") : true,
+            routesInRaw: Boolean(routes && raw && raw.contains(routes.closest("label") || routes)),
+            paramsHiddenOrRaw: Boolean(params && (params.closest("#stageAdvancedRawPanel") || params.closest("label")?.classList.contains("hidden"))),
+            developerButton: Boolean(openDeveloper),
+            advancedText: document.querySelector("#stageAdvancedPanel")?.textContent || ""
+          };
+        })()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingPalette") or metrics.get("missingModeToggle") or metrics.get("missingTabs") or not metrics.get("expertMode"):
+        raise AssertionError(f"workflow developer field smoke missing controls, got {metrics}")
+    if not metrics.get("rawExists") or not metrics.get("rawClosed") or not metrics.get("routesInRaw"):
+        raise AssertionError(f"workflow raw route maps should stay in a closed developer subpanel, got {metrics}")
+    if not metrics.get("paramsHiddenOrRaw") or not metrics.get("developerButton"):
+        raise AssertionError(f"workflow params/raw fields should be optional and reachable from a developer action, got {metrics}")
+
+
+def assert_run_history_lazy_loading(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const marker = {json.dumps(smoke_run["marker"])};
+          const runID = {json.dumps(smoke_run["run_id"])};
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const stack = document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`);
+          const panel = stack?.querySelector('[data-history-lazy-panel="timeline"]');
+          const button = panel?.querySelector('[data-history-load="timeline"]');
+          const content = panel?.querySelector('[data-history-lazy-content="timeline"]');
+          if (!detail || !stack || !panel || !button || !content) return {{ missing: true }};
+          const beforeBodyHasMarker = document.body.textContent.includes(marker);
+          const beforeContentHasMarker = content.textContent.includes(marker);
+          const beforeDetailScrollWidth = Math.round(detail.scrollWidth);
+          const beforeDetailClientWidth = Math.round(detail.clientWidth);
+          button.click();
+          const loadedDeadline = Date.now() + 6000;
+          while (Date.now() < loadedDeadline && !content.textContent.includes(marker)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const timeline = panel.querySelector(".run-history-lazy-timeline");
+          const buttonStyle = getComputedStyle(button);
+          return {{
+            missing: false,
+            beforeBodyHasMarker,
+            beforeContentHasMarker,
+            afterBodyHasMarker: document.body.textContent.includes(marker),
+            afterContentHasMarker: content.textContent.includes(marker),
+            hasTimeline: Boolean(timeline),
+            panelLoaded: panel.classList.contains("loaded"),
+            buttonDisabled: button.disabled,
+            buttonBusy: button.getAttribute("aria-busy"),
+            buttonText: button.textContent.trim(),
+            buttonWhiteSpace: buttonStyle.whiteSpace,
+            beforeDetailScrollWidth,
+            beforeDetailClientWidth,
+            detailScrollWidth: Math.round(detail.scrollWidth),
+            detailClientWidth: Math.round(detail.clientWidth),
+            timelineScrollWidth: timeline ? Math.round(timeline.scrollWidth) : 0,
+            timelineClientWidth: timeline ? Math.round(timeline.clientWidth) : 0
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missing"):
+        raise AssertionError("run history lazy loading missing expected nodes")
+    if metrics.get("beforeBodyHasMarker") or metrics.get("beforeContentHasMarker"):
+        raise AssertionError(f"run history loaded timeline detail before click, got {metrics}")
+    if not metrics.get("afterBodyHasMarker") or not metrics.get("afterContentHasMarker") or not metrics.get("hasTimeline"):
+        raise AssertionError(f"run history timeline did not lazy-load marker after click, got {metrics}")
+    if not metrics.get("panelLoaded") or not metrics.get("buttonDisabled"):
+        raise AssertionError(f"run history timeline panel should be marked loaded and disabled after click, got {metrics}")
+    if metrics.get("buttonBusy") != "false":
+        raise AssertionError(f"run history timeline button should clear busy state after load, got {metrics}")
+    if int(metrics.get("detailScrollWidth") or 0) > int(metrics.get("detailClientWidth") or 0) + 2:
+        raise AssertionError(f"run history detail should not create horizontal overflow, got {metrics}")
+    if int(metrics.get("timelineScrollWidth") or 0) > int(metrics.get("timelineClientWidth") or 0) + 2:
+        raise AssertionError(f"run history lazy timeline should not create horizontal overflow, got {metrics}")
+
+
+def assert_run_history_artifacts_lazy_loading(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const artifactRef = {json.dumps(smoke_run["artifact_ref"])};
+          const runID = {json.dumps(smoke_run["run_id"])};
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const stack = document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`);
+          const panel = stack?.querySelector('[data-history-lazy-panel="artifacts"]');
+          const button = panel?.querySelector('[data-history-load="artifacts"]');
+          const content = panel?.querySelector('[data-history-lazy-content="artifacts"]');
+          if (!stack || !panel || !button || !content) return {{ missing: true }};
+          const beforeBodyHasArtifact = document.body.textContent.includes("Smoke Artifact Result");
+          const beforeContentHasArtifact = content.textContent.includes("Smoke Artifact Result");
+          button.click();
+          const loadedDeadline = Date.now() + 6000;
+          while (Date.now() < loadedDeadline && !content.textContent.includes("Smoke Artifact Result")) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const viewer = panel.querySelector(".run-artifact-viewer");
+          const preview = panel.querySelector(".run-artifact-preview");
+          const listItem = panel.querySelector(".run-artifact-list-item");
+          const previewBody = panel.querySelector(".run-artifact-content");
+          const loadButton = panel.querySelector(".run-history-load-copy strong");
+          return {{
+            missing: false,
+            beforeBodyHasArtifact,
+            beforeContentHasArtifact,
+            afterBodyHasArtifact: document.body.textContent.includes("Smoke Artifact Result"),
+            afterContentHasArtifact: content.textContent.includes("Smoke Artifact Result"),
+            hasViewer: Boolean(viewer),
+            hasPreview: Boolean(preview),
+            hasListItem: Boolean(listItem),
+            hasPreviewBody: Boolean(previewBody),
+            loadButtonText: loadButton ? loadButton.textContent.trim() : "",
+            panelLoaded: panel.classList.contains("loaded"),
+            buttonDisabled: button.disabled,
+            buttonBusy: button.getAttribute("aria-busy"),
+            hasArtifactRef: document.body.textContent.includes(artifactRef)
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missing"):
+        raise AssertionError("run history artifacts lazy loading missing expected nodes")
+    if metrics.get("beforeBodyHasArtifact") or metrics.get("beforeContentHasArtifact"):
+        raise AssertionError(f"run history artifacts loaded content before click, got {metrics}")
+    if not metrics.get("afterBodyHasArtifact") or not metrics.get("afterContentHasArtifact"):
+        raise AssertionError(f"run history artifacts did not lazy-load content after click, got {metrics}")
+    if not metrics.get("hasViewer") or not metrics.get("hasPreview") or not metrics.get("hasListItem") or not metrics.get("hasPreviewBody"):
+        raise AssertionError(f"run history artifacts viewer did not render expected subpanels, got {metrics}")
+    if "Loaded" not in str(metrics.get("loadButtonText", "")):
+        raise AssertionError(f"run history artifacts button label did not switch to loaded state, got {metrics}")
+    if not metrics.get("panelLoaded") or not metrics.get("buttonDisabled"):
+        raise AssertionError(f"run history artifacts panel should be marked loaded and disabled after click, got {metrics}")
+    if metrics.get("buttonBusy") != "false":
+        raise AssertionError(f"run history artifacts button should clear busy state after load, got {metrics}")
+    if not metrics.get("hasArtifactRef"):
+        raise AssertionError(f"run history artifacts should surface the ref in the DOM, got {metrics}")
 
 
 def zh_url(base_url: str, path: str) -> str:
@@ -570,6 +1441,8 @@ def main() -> int:
         gotmp_dir.mkdir()
         workspace.mkdir()
         profile_dir.mkdir()
+        smoke_artifact = write_smoke_artifact(workspace)
+        smoke_run = write_smoke_session(workspace)
         config_path = write_smoke_runtime_config(runtime_home)
         env.setdefault("GOCACHE", str(cache_dir))
         env.setdefault("GOTMPDIR", str(gotmp_dir))
@@ -595,6 +1468,28 @@ def main() -> int:
             stderr=subprocess.STDOUT,
         )
         wait_for_server(base_url, proc, args.timeout)
+        assert_asset_contains(
+            base_url,
+            "/assets/views/chat.js",
+            [
+                "runHistoryLazyPanelsHTML",
+                "data-history-lazy-stack",
+                "fetchAgentRun(run.id, options.summary ? { summary: true } : {})",
+                "fetchAgentRunTimeline(run, { limit: 120 })",
+                "include_content: true, limit: 12",
+                "data-run-context-action",
+            ],
+        )
+        assert_asset_contains(
+            base_url,
+            "/assets/i18n.js",
+            ["chat.runHistoryLazyTitle", "chat.runHistoryLazySummaryFirst", "chat.runHistoryLazyLoad", "chat.runContextFilesTitle"],
+        )
+        assert_asset_contains(
+            base_url,
+            "/assets/styles.css",
+            ["run-history-lazy-stack", "run-history-lazy-panel", "run-history-lazy-timeline"],
+        )
         try:
             console_dom = render_dom(browser, f"{base_url}/console", args.timeout, profile_dir)
             workflows_dom = render_dom(browser, f"{base_url}/workflows", args.timeout, profile_dir)
@@ -603,9 +1498,11 @@ def main() -> int:
             catalog_dom = render_dom(browser, f"{base_url}/console#catalog", args.timeout, profile_dir)
             status_dom = render_dom(browser, f"{base_url}/console#status", args.timeout, profile_dir)
             workspace_dom = render_dom(browser, f"{base_url}/console#workspace", args.timeout, profile_dir)
+            memory_dom = render_dom(browser, f"{base_url}/console#memory", args.timeout, profile_dir)
             settings_dom = render_dom(browser, f"{base_url}/console#settings", args.timeout, profile_dir)
             playground_zh_dom = render_dom(browser, zh_url(base_url, "/console#playground"), args.timeout, profile_dir)
             approvals_zh_dom = render_dom(browser, zh_url(base_url, "/console#approvals"), args.timeout, profile_dir)
+            memory_zh_dom = render_dom(browser, zh_url(base_url, "/console#memory"), args.timeout, profile_dir)
             workspace_zh_dom = render_dom(browser, zh_url(base_url, "/console#workspace"), args.timeout, profile_dir)
             status_zh_dom = render_dom(browser, zh_url(base_url, "/console#status"), args.timeout, profile_dir)
             settings_zh_dom = render_dom(browser, zh_url(base_url, "/console#settings"), args.timeout, profile_dir)
@@ -623,7 +1520,7 @@ def main() -> int:
         assert_rendered(
             "/workflows",
             workflows_dom,
-            ["workflow-palette-panel", "workflow-inspector-panel", "canvas-guide", "Workflow Studio"],
+            ["workflow-palette-panel", "workflow-inspector-panel", "canvas-guide", "workflow-context-contract", "Workflows"],
         )
         assert_rendered(
             "/console#playground",
@@ -637,7 +1534,10 @@ def main() -> int:
             ],
         )
         assert_playground_timeline_layout(browser, base_url, args.timeout, profile_dir)
+        assert_playground_context_prompts(browser, base_url, args.timeout, profile_dir)
         assert_approval_queue_layout(browser, base_url, args.timeout, profile_dir)
+        assert_ordinary_user_decision_surfaces(browser, base_url, args.timeout, profile_dir)
+        assert_workspace_risk_surface(browser, base_url, args.timeout, profile_dir)
         assert_rendered(
             "/console#approvals",
             approvals_dom,
@@ -647,17 +1547,35 @@ def main() -> int:
                 "approval-detail",
                 "Pending approvals",
                 "Approve or deny this request",
+                "Will run",
+                "May touch",
+                "Why approval",
             ],
         )
         assert_rendered(
             "/console#catalog",
             catalog_dom,
-            ["resource-shell", "resource-starter-panel", "resource-relation-panel", "Create a linked starter"],
+            ["resource-shell", "resource-starter-panel", "resource-relation-panel", "Create a linked starter", "resource-dependency-picker"],
         )
+        assert_catalog_brief_creation_path(browser, base_url, args.timeout, profile_dir)
         assert_rendered(
             "/console#status",
             status_dom,
-            ["status-hero", "status-mcp", "MCP tool pressure", "Tool pressure"],
+            [
+                "status-hero",
+                "status-advanced",
+                "status-mcp",
+                "status-cost",
+                "status-cost-overview",
+                "status-cost-summary",
+                "status-cost-tuning",
+                "status-health-action",
+                "Start a run",
+                "Advanced diagnostics",
+                "MCP tool pressure",
+                "Tool pressure",
+                "Model and cost diagnostics",
+            ],
         )
         assert_rendered(
             "/console#workspace",
@@ -671,14 +1589,54 @@ def main() -> int:
             ],
         )
         assert_rendered(
+            "/console#memory",
+            memory_dom,
+            [
+                "memory-view",
+                "memory-artifact-panel",
+                "memory-artifact-form",
+                "memory-artifact-index",
+                "memory-artifact-load-button",
+                "Artifact viewer",
+                "Recent artifacts",
+                "Smoke Artifact Report",
+            ],
+        )
+        assert_memory_artifact_layout(browser, base_url, args.timeout, profile_dir, smoke_artifact)
+        assert_workflow_metadata_zh(browser, base_url, args.timeout, profile_dir)
+        assert_simple_workflow_build_path(browser, base_url, args.timeout, profile_dir)
+        assert_workflow_developer_fields_folded(browser, base_url, args.timeout, profile_dir)
+        assert_run_history_lazy_loading(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_run_history_artifacts_lazy_loading(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_rendered(
             "/console#settings",
             settings_dom,
             [
+                "settings-essential-panel",
+                "settings-advanced-runtime",
+                "Essential setup",
+                "Update policy",
                 "settings-update-panel",
                 "settings-update-check",
                 "Check latest release",
                 "Check for updates",
                 "Configuration health",
+            ],
+        )
+        assert_settings_warning_resolution_path(browser, base_url, args.timeout, profile_dir)
+        assert_rendered(
+            "/console?lang=zh#memory",
+            memory_zh_dom,
+            [
+                "memory-view",
+                "memory-artifact-panel",
+                "memory-artifact-form",
+                "memory-artifact-index",
+                "memory-artifact-load-button",
+                "产物查看器",
+                "最近产物",
+                "只有需要 sha256 引用时才加载完整内容。",
+                "Smoke Artifact Report",
             ],
         )
         assert_rendered(
@@ -701,6 +1659,9 @@ def main() -> int:
                 "approval-detail",
                 "待审批",
                 "批准或拒绝这次请求",
+                "将执行",
+                "可能影响",
+                "审批原因",
             ],
         )
         assert_rendered(
@@ -719,8 +1680,11 @@ def main() -> int:
             status_zh_dom,
             [
                 "status-hero",
+                "status-advanced",
                 "status-cost",
                 "运行健康与执行状态",
+                "发起运行",
+                "高级诊断",
                 "模型与成本诊断",
                 "低成本路由调优",
             ],
@@ -729,6 +1693,10 @@ def main() -> int:
             "/console?lang=zh#settings",
             settings_zh_dom,
             [
+                "settings-essential-panel",
+                "settings-advanced-runtime",
+                "必要设置",
+                "更新策略",
                 "settings-update-panel",
                 "settings-update-check",
                 "检查最新版本",

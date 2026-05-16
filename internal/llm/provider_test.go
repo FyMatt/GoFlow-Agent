@@ -50,6 +50,7 @@ func TestNewRegistryBuildsAnthropicProvider(t *testing.T) {
 			Provider: "anthropic",
 			BaseURL:  "https://example.com/v1",
 			APIKey:   "test-key",
+			Model:    "claude-test",
 			Timeout:  5 * time.Second,
 		},
 	})
@@ -66,6 +67,23 @@ func TestNewRegistryBuildsAnthropicProvider(t *testing.T) {
 	}
 	if _, ok := wrapper.primary.(*AnthropicClient); !ok {
 		t.Fatalf("expected AnthropicClient primary, got %T", wrapper.primary)
+	}
+}
+
+func TestNewRegistryAllowsIncompleteProviderButBlocksModelCall(t *testing.T) {
+	registry, err := NewRegistry(config.LLMConfig{}, map[string]config.LLMConfig{
+		"primary": {Provider: "openai-compatible"},
+	})
+	if err != nil {
+		t.Fatalf("NewRegistry: %v", err)
+	}
+	client, err := registry.Client("primary")
+	if err != nil {
+		t.Fatalf("Client: %v", err)
+	}
+	_, err = client.Chat(context.Background(), schema.ChatRequest{})
+	if err == nil || !strings.Contains(err.Error(), "model provider setup required") || !strings.Contains(err.Error(), "api_key") {
+		t.Fatalf("expected setup-required error, got %v", err)
 	}
 }
 
@@ -192,7 +210,7 @@ func TestClientStreamChatFallsBackToNonStreamWhenToolArgumentsAreIncomplete(t *t
 	}))
 	defer server.Close()
 
-	client := NewClient(config.LLMConfig{BaseURL: server.URL, Timeout: 5 * time.Second})
+	client := NewClient(config.LLMConfig{BaseURL: server.URL, APIKey: "test-key", Timeout: 5 * time.Second})
 	resp, err := client.StreamChat(context.Background(), schema.ChatRequest{Model: "test-model"}, nil)
 	if err != nil {
 		t.Fatalf("StreamChat: %v", err)
@@ -302,7 +320,7 @@ func TestClientStreamChatReadsUsageChunkAfterFinish(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(config.LLMConfig{BaseURL: server.URL, Timeout: 5 * time.Second})
+	client := NewClient(config.LLMConfig{BaseURL: server.URL, APIKey: "test-key", Timeout: 5 * time.Second})
 	resp, err := client.StreamChat(context.Background(), schema.ChatRequest{Model: "test-model"}, nil)
 	if err != nil {
 		t.Fatalf("StreamChat: %v", err)
@@ -342,7 +360,7 @@ func TestClientChatRejectsIncompleteNonStreamToolArguments(t *testing.T) {
 	}))
 	defer server.Close()
 
-	client := NewClient(config.LLMConfig{BaseURL: server.URL, Timeout: 5 * time.Second})
+	client := NewClient(config.LLMConfig{BaseURL: server.URL, APIKey: "test-key", Timeout: 5 * time.Second})
 	_, err := client.Chat(context.Background(), schema.ChatRequest{Model: "test-model"})
 	if err == nil {
 		t.Fatal("expected invalid non-stream tool arguments error")

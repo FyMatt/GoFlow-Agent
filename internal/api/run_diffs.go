@@ -45,14 +45,33 @@ type runDiffItem struct {
 	ArgumentsHint string `json:"arguments_hint,omitempty"`
 }
 
-func agentRunDiffResponse(run session.AgentRunSnapshot, query agentRunQuery) runDiffResponse {
-	diffs := agentRunDiffs(run, query)
+func (s *Server) agentRunDiffResponse(run session.AgentRunSnapshot, query agentRunQuery) runDiffResponse {
+	diffs := s.agentRunDiffs(run, query)
+	if !query.IncludeContent {
+		diffs = summarizeRunDiffItems(diffs)
+	}
 	return runDiffResponse{RunID: run.ID, RunKind: "agent", Total: len(diffs), Diffs: diffs}
 }
 
-func workflowRunDiffResponse(run session.WorkflowRunSnapshot, query workflowRunQuery) runDiffResponse {
-	diffs := workflowRunDiffs(run, query)
+func (s *Server) workflowRunDiffResponse(run session.WorkflowRunSnapshot, query workflowRunQuery) runDiffResponse {
+	diffs := s.workflowRunDiffs(run, query)
+	if !query.IncludeContent {
+		diffs = summarizeRunDiffItems(diffs)
+	}
 	return runDiffResponse{RunID: run.ID, RunKind: "workflow", Total: len(diffs), Diffs: diffs}
+}
+
+func summarizeRunDiffItems(items []runDiffItem) []runDiffItem {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]runDiffItem, len(items))
+	for i, item := range items {
+		item.DiffPreview = ""
+		item.Patch = ""
+		out[i] = item
+	}
+	return out
 }
 
 func agentRunDiffs(run session.AgentRunSnapshot, query agentRunQuery) []runDiffItem {
@@ -84,6 +103,72 @@ func agentRunDiffs(run session.AgentRunSnapshot, query agentRunQuery) []runDiffI
 			if ok {
 				add(item)
 			}
+		}
+	}
+	if query.Limit > 0 && len(out) > query.Limit {
+		return append([]runDiffItem(nil), out[:query.Limit]...)
+	}
+	return out
+}
+
+func (s *Server) agentRunDiffs(run session.AgentRunSnapshot, query agentRunQuery) []runDiffItem {
+	run.Events = s.runtime.HydrateAgentRunEvents(run.Events)
+	if len(run.Artifacts) == 0 {
+		return agentRunDiffs(run, query)
+	}
+	if query.IncludeContent {
+		run = s.hydrateAgentRunSnapshotArtifacts(run)
+	}
+	return agentRunArtifactDiffs(run, query)
+}
+
+func (s *Server) hydrateAgentRunSnapshotArtifacts(run session.AgentRunSnapshot) session.AgentRunSnapshot {
+	if s == nil || len(run.Artifacts) == 0 {
+		return run
+	}
+	items := agentRunPersistedArtifacts(run, workflowRunQuery{IncludeContent: true})
+	if len(items) == 0 {
+		return run
+	}
+	items = s.hydrateRunArtifactItems(items, workflowRunQuery{IncludeContent: true})
+	byID := make(map[string]runArtifactItem, len(items))
+	for _, item := range items {
+		byID[item.ID] = item
+	}
+	for i := range run.Artifacts {
+		item, ok := byID[run.Artifacts[i].ID]
+		if !ok {
+			continue
+		}
+		run.Artifacts[i].Content = item.Content
+		run.Artifacts[i].ArtifactRef = firstWorkflowRunQueryValue(run.Artifacts[i].ArtifactRef, item.ArtifactRef)
+		run.Artifacts[i].Hash = firstWorkflowRunQueryValue(run.Artifacts[i].Hash, item.Hash)
+		run.Artifacts[i].ContentBytes = firstPositiveInt(run.Artifacts[i].ContentBytes, item.ContentBytes)
+		run.Artifacts[i].StoredBytes = firstPositiveInt(run.Artifacts[i].StoredBytes, item.StoredBytes)
+		run.Artifacts[i].Mime = firstWorkflowRunQueryValue(run.Artifacts[i].Mime, item.Mime)
+		run.Artifacts[i].Metadata = mergeRunArtifactMetadata(run.Artifacts[i].Metadata, item.Metadata)
+	}
+	return run
+}
+
+func agentRunArtifactDiffs(run session.AgentRunSnapshot, query agentRunQuery) []runDiffItem {
+	seen := make(map[string]struct{})
+	out := make([]runDiffItem, 0)
+	add := func(item runDiffItem) {
+		if !agentRunDiffMatchesQuery(item, query) {
+			return
+		}
+		key := runDiffDedupKey(item)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		out = append(out, item)
+	}
+	for _, artifact := range run.Artifacts {
+		item, ok := runDiffFromAgentArtifact(run.ID, artifact)
+		if ok {
+			add(item)
 		}
 	}
 	if query.Limit > 0 && len(out) > query.Limit {
@@ -148,6 +233,30 @@ func workflowRunDiffs(run session.WorkflowRunSnapshot, query workflowRunQuery) [
 	return out
 }
 
+func (s *Server) workflowRunDiffs(run session.WorkflowRunSnapshot, query workflowRunQuery) []runDiffItem {
+	run.Events = s.runtime.HydrateWorkflowRunEvents(run.Events)
+	if query.IncludeContent {
+		run = s.hydrateWorkflowRunSnapshotArtifacts(run)
+	}
+	return workflowRunDiffs(run, query)
+}
+
+func (s *Server) hydrateWorkflowRunSnapshotArtifacts(run session.WorkflowRunSnapshot) session.WorkflowRunSnapshot {
+	if s == nil || len(run.Artifacts)+len(run.CompletedStages) == 0 {
+		return run
+	}
+	if len(run.Artifacts) > 0 {
+		run.Artifacts = s.workflowRunArtifactsForQuery(run.Artifacts, workflowRunQuery{IncludeContent: true})
+	}
+	for i := range run.CompletedStages {
+		if len(run.CompletedStages[i].Artifacts) == 0 {
+			continue
+		}
+		run.CompletedStages[i].Artifacts = s.workflowRunArtifactsForQuery(run.CompletedStages[i].Artifacts, workflowRunQuery{IncludeContent: true})
+	}
+	return run
+}
+
 func runDiffFromToolResult(runID, runKind, stage, agentID, mode, source string, result schema.ToolResult) (runDiffItem, bool) {
 	return runDiffFromToolPayload(runID, runKind, stage, agentID, mode, source, result.ToolName, result.CallID, "", result.Content, result.IsError, result.Suspended)
 }
@@ -177,6 +286,48 @@ func runDiffFromArtifact(runID, stage string, artifact session.WorkflowRunArtifa
 		item.Path = artifact.Title
 	}
 	return item, strings.TrimSpace(item.DiffPreview) != "" || strings.TrimSpace(item.Summary) != ""
+}
+
+func runDiffFromAgentArtifact(runID string, artifact session.AgentRunArtifactSnapshot) (runDiffItem, bool) {
+	if !runDiffToolName(artifact.ToolName) {
+		return runDiffItem{}, false
+	}
+	metadata := artifact.Metadata
+	item := runDiffItem{
+		ID:           firstWorkflowRunQueryValue(artifact.ID, runID+"-artifact"),
+		RunID:        runID,
+		RunKind:      "agent",
+		AgentID:      artifact.AgentID,
+		Mode:         artifact.Mode,
+		Source:       "artifact",
+		ToolName:     artifact.ToolName,
+		ToolCallID:   artifact.ToolCallID,
+		Path:         firstWorkflowRunQueryValue(metadata["path"], artifact.Title),
+		Status:       metadata["status"],
+		StatusCode:   runDiffStatusCode(metadata["status"]),
+		Summary:      firstWorkflowRunQueryValue(metadata["line_summary"], artifact.Summary, artifact.Title),
+		OldRange:     metadata["old_range"],
+		NewRange:     metadata["new_range"],
+		AddedLines:   runDiffMetadataInt(metadata, "added_lines"),
+		DeletedLines: runDiffMetadataInt(metadata, "deleted_lines"),
+		BytesWritten: runDiffMetadataInt(metadata, "bytes_written"),
+		OldLineCount: runDiffMetadataInt(metadata, "old_line_count"),
+		NewLineCount: runDiffMetadataInt(metadata, "new_line_count"),
+		DiffPreview:  "",
+		Patch:        "",
+		IsError:      workflowRunQueryBool(metadata["is_error"]),
+		NeedsAction:  workflowRunQueryBool(metadata["suspended"]),
+	}
+	item.LineRange = runDiffLineRange(item.OldRange, item.NewRange)
+	if strings.TrimSpace(artifact.Content) != "" {
+		full, ok := runDiffFromToolPayload(runID, "agent", "", artifact.AgentID, artifact.Mode, "artifact", artifact.ToolName, artifact.ToolCallID, "", artifact.Content, item.IsError, item.NeedsAction)
+		if ok {
+			full.ID = firstWorkflowRunQueryValue(item.ID, full.ID)
+			full.Source = "artifact"
+			return full, true
+		}
+	}
+	return item, strings.TrimSpace(item.Path) != "" || strings.TrimSpace(item.Summary) != ""
 }
 
 func runDiffFromToolPayload(runID, runKind, stage, agentID, mode, source, toolName, callID, argsHint, content string, isError, needsAction bool) (runDiffItem, bool) {
@@ -226,6 +377,17 @@ func runDiffFromToolPayload(runID, runKind, stage, agentID, mode, source, toolNa
 	item.LineRange = runDiffLineRange(item.OldRange, item.NewRange)
 	item.Patch = runDiffPatch(item)
 	return item, true
+}
+
+func runDiffMetadataInt(metadata map[string]string, key string) int {
+	if len(metadata) == 0 {
+		return 0
+	}
+	var value json.Number = json.Number(strings.TrimSpace(metadata[key]))
+	if parsed, err := value.Int64(); err == nil {
+		return int(parsed)
+	}
+	return 0
 }
 
 func runDiffPayload(content string) (map[string]any, bool) {

@@ -18,6 +18,7 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/llm"
 	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
 	"github.com/FyMatt/GoFlow-Agent/internal/skill"
 	"github.com/FyMatt/GoFlow-Agent/internal/version"
@@ -90,6 +91,18 @@ type resourceValidationResult struct {
 	ApplyState      string                    `json:"apply_state,omitempty"`
 	ApplyMessage    string                    `json:"apply_message,omitempty"`
 	Issues          []resourceValidationIssue `json:"issues,omitempty"`
+}
+
+type providerTestResult struct {
+	Valid     bool                      `json:"valid"`
+	Resource  string                    `json:"resource"`
+	Name      string                    `json:"name,omitempty"`
+	Status    string                    `json:"status"`
+	Message   string                    `json:"message"`
+	Provider  string                    `json:"provider,omitempty"`
+	Model     string                    `json:"model,omitempty"`
+	LatencyMS int64                     `json:"latency_ms,omitempty"`
+	Issues    []resourceValidationIssue `json:"issues,omitempty"`
 }
 
 type resourceCatalogResponse struct {
@@ -207,11 +220,14 @@ type agentResourceDocument struct {
 
 type providerResourceDocument struct {
 	ID               string  `json:"id" yaml:"id,omitempty"`
+	Type             string  `json:"type,omitempty" yaml:"-"`
 	Provider         string  `json:"provider" yaml:"provider"`
 	BaseURL          string  `json:"base_url" yaml:"base_url"`
 	APIKey           string  `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	EnvKey           string  `json:"env_key,omitempty" yaml:"-"`
 	APIKeySet        bool    `json:"api_key_set,omitempty" yaml:"-"`
 	Model            string  `json:"model" yaml:"model"`
+	DefaultModel     string  `json:"default_model,omitempty" yaml:"-"`
 	FallbackProvider string  `json:"fallback_provider,omitempty" yaml:"fallback_provider,omitempty"`
 	Timeout          string  `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	Temperature      float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
@@ -806,6 +822,10 @@ func (s *Server) handleProviderResourceCollection(w http.ResponseWriter, r *http
 		s.handleProviderResourceValidate(w, r, "")
 		return
 	}
+	if r.Method == http.MethodPost && strings.Trim(r.URL.Path, "/") == "api/resources/providers/test" {
+		s.handleProviderResourceTest(w, r, "")
+		return
+	}
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
@@ -820,8 +840,16 @@ func (s *Server) handleProviderResourceItem(w http.ResponseWriter, r *http.Reque
 		s.handleProviderResourceValidate(w, r, "")
 		return
 	}
+	if len(parts) == 1 && parts[0] == "test" && r.Method == http.MethodPost {
+		s.handleProviderResourceTest(w, r, "")
+		return
+	}
 	if len(parts) == 2 && parts[1] == "validate" && r.Method == http.MethodPost {
 		s.handleProviderResourceValidate(w, r, parts[0])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "test" && r.Method == http.MethodPost {
+		s.handleProviderResourceTest(w, r, parts[0])
 		return
 	}
 	if name == "" || strings.Contains(name, "/") {
@@ -875,6 +903,25 @@ func (s *Server) handleProviderResourceValidate(w http.ResponseWriter, r *http.R
 		return
 	}
 	writeJSON(w, validResourceValidation("provider", normalized.ID, normalized))
+}
+
+func (s *Server) handleProviderResourceTest(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var doc providerResourceDocument
+	if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+		writeJSON(w, providerTestInvalid(name, "body", "invalid json"))
+		return
+	}
+	normalized, err := s.validateProviderResourceDryRun(name, doc)
+	if err != nil {
+		writeJSON(w, providerTestInvalid(firstResourceValidationName(name, doc.ID), resourceValidationField(err.Error()), err.Error()))
+		return
+	}
+	result := testProviderResourceConnection(r.Context(), normalized)
+	writeJSON(w, result)
 }
 
 func (s *Server) handleToolResourceCollection(w http.ResponseWriter, r *http.Request) {
@@ -1184,6 +1231,7 @@ func (s *Server) validateProviderResourceDryRun(name string, doc providerResourc
 			doc.APIKey = existing.APIKey
 		}
 	}
+	normalizeProviderResourceAliases(&doc)
 	applyProviderResourceDefaults(&doc)
 	if err := validateProviderResource(doc, s.providerNamesExcept(id)); err != nil {
 		return providerResourceDocument{}, err
@@ -2179,9 +2227,11 @@ func agentResourceFromProfile(id string, profile config.AgentProfile) agentResou
 func providerResourceFromConfig(id string, provider config.LLMConfig, revealAPIKey bool) providerResourceDocument {
 	doc := providerResourceDocument{
 		ID:               id,
+		Type:             provider.Provider,
 		Provider:         provider.Provider,
 		BaseURL:          provider.BaseURL,
 		Model:            provider.Model,
+		DefaultModel:     provider.Model,
 		FallbackProvider: provider.FallbackProvider,
 		Timeout:          durationString(provider.Timeout),
 		Temperature:      provider.Temperature,
@@ -2198,6 +2248,7 @@ func providerResourceFromConfig(id string, provider config.LLMConfig, revealAPIK
 
 func applyProviderResourceDefaults(doc *providerResourceDocument) {
 	doc.ID = normalizeResourceName(doc.ID)
+	normalizeProviderResourceAliases(doc)
 	if strings.TrimSpace(doc.Provider) == "" {
 		doc.Provider = "openai-compatible"
 	}
@@ -2215,15 +2266,30 @@ func applyProviderResourceDefaults(doc *providerResourceDocument) {
 	}
 }
 
+func normalizeProviderResourceAliases(doc *providerResourceDocument) {
+	if doc == nil {
+		return
+	}
+	if strings.TrimSpace(doc.Provider) == "" {
+		doc.Provider = strings.TrimSpace(doc.Type)
+	}
+	if strings.TrimSpace(doc.Model) == "" {
+		doc.Model = strings.TrimSpace(doc.DefaultModel)
+	}
+	if strings.TrimSpace(doc.APIKey) == "" {
+		envKey := strings.TrimSpace(doc.EnvKey)
+		if envKey != "" {
+			doc.APIKey = envKey
+			if !strings.HasPrefix(envKey, "${") {
+				doc.APIKey = "${" + envKey + "}"
+			}
+		}
+	}
+}
+
 func validateProviderResource(doc providerResourceDocument, existing map[string]struct{}) error {
 	if strings.TrimSpace(doc.Provider) == "" {
 		return fmt.Errorf("provider type is required")
-	}
-	if strings.TrimSpace(doc.BaseURL) == "" {
-		return fmt.Errorf("provider base_url is required")
-	}
-	if strings.TrimSpace(doc.Model) == "" {
-		return fmt.Errorf("provider model is required")
 	}
 	if strings.TrimSpace(doc.Timeout) != "" {
 		if _, err := time.ParseDuration(doc.Timeout); err != nil {
@@ -2266,6 +2332,119 @@ func renderProviderResource(doc providerResourceDocument) (string, error) {
 		return "", fmt.Errorf("render provider config: %w", err)
 	}
 	return "# Loaded automatically from configs/providers/*.yaml.\n" + string(data), nil
+}
+
+func testProviderResourceConnection(parent context.Context, doc providerResourceDocument) providerTestResult {
+	cfg := providerResourceLLMConfig(doc)
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		return providerTestInvalid(doc.ID, "api_key", "model provider setup required: configure api_key in Web Studio Settings/Resources or configs/providers/*.yaml")
+	}
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		return providerTestInvalid(doc.ID, "base_url", "model provider setup required: configure base_url in Web Studio Settings/Resources or configs/providers/*.yaml")
+	}
+	if strings.TrimSpace(cfg.Model) == "" {
+		return providerTestInvalid(doc.ID, "model", "model provider setup required: configure model in Web Studio Settings/Resources or configs/providers/*.yaml")
+	}
+	cfg.Timeout = providerTestTimeout(cfg.Timeout)
+	cfg.RetryCount = 0
+	var client interface {
+		Chat(context.Context, schema.ChatRequest) (schema.ChatResponse, error)
+	}
+	switch strings.TrimSpace(cfg.Provider) {
+	case "", "openai-compatible":
+		client = llm.NewClient(cfg)
+	case "anthropic":
+		client = llm.NewAnthropicClient(cfg)
+	default:
+		return providerTestInvalid(doc.ID, "provider", fmt.Sprintf("unsupported provider %q", cfg.Provider))
+	}
+	ctx, cancel := context.WithTimeout(parent, cfg.Timeout)
+	defer cancel()
+	started := time.Now()
+	_, err := client.Chat(ctx, schema.ChatRequest{
+		Model:       cfg.Model,
+		MaxTokens:   8,
+		Temperature: 0,
+		Messages: []schema.Message{{
+			Role:    "user",
+			Content: "ping",
+		}},
+	})
+	latency := time.Since(started).Milliseconds()
+	if err != nil {
+		return providerTestResult{
+			Valid:     false,
+			Resource:  "provider",
+			Name:      doc.ID,
+			Status:    "error",
+			Message:   err.Error(),
+			Provider:  cfg.Provider,
+			Model:     cfg.Model,
+			LatencyMS: latency,
+			Issues:    []resourceValidationIssue{resourceValidationIssueFor("provider", providerTestErrorField(err.Error()), err.Error())},
+		}
+	}
+	return providerTestResult{
+		Valid:     true,
+		Resource:  "provider",
+		Name:      doc.ID,
+		Status:    "ok",
+		Message:   "provider connection succeeded",
+		Provider:  cfg.Provider,
+		Model:     cfg.Model,
+		LatencyMS: latency,
+	}
+}
+
+func providerTestInvalid(name, field, message string) providerTestResult {
+	return providerTestResult{
+		Valid:    false,
+		Resource: "provider",
+		Name:     firstResourceValidationName(name),
+		Status:   "error",
+		Message:  message,
+		Issues:   []resourceValidationIssue{resourceValidationIssueFor("provider", field, message)},
+	}
+}
+
+func providerResourceLLMConfig(doc providerResourceDocument) config.LLMConfig {
+	timeout, _ := time.ParseDuration(strings.TrimSpace(doc.Timeout))
+	retryBackoff, _ := time.ParseDuration(strings.TrimSpace(doc.RetryBackoff))
+	return config.LLMConfig{
+		Provider:         strings.TrimSpace(doc.Provider),
+		BaseURL:          os.ExpandEnv(strings.TrimSpace(doc.BaseURL)),
+		APIKey:           os.ExpandEnv(strings.TrimSpace(doc.APIKey)),
+		Model:            os.ExpandEnv(strings.TrimSpace(doc.Model)),
+		FallbackProvider: strings.TrimSpace(doc.FallbackProvider),
+		Timeout:          timeout,
+		Temperature:      doc.Temperature,
+		MaxTokens:        doc.MaxTokens,
+		RetryCount:       doc.RetryCount,
+		RetryBackoff:     retryBackoff,
+	}
+}
+
+func providerTestTimeout(timeout time.Duration) time.Duration {
+	if timeout <= 0 || timeout > 15*time.Second {
+		return 15 * time.Second
+	}
+	return timeout
+}
+
+func providerTestErrorField(message string) string {
+	lower := strings.ToLower(message)
+	switch {
+	case strings.Contains(lower, "base_url"):
+		return "base_url"
+	case strings.Contains(lower, "api_key"):
+		return "api_key"
+	case strings.Contains(lower, "model"):
+		return "model"
+	case strings.Contains(lower, "unsupported provider"):
+		return "provider"
+	default:
+		return "connection"
+	}
 }
 
 func readProviderResourceMap(data []byte) (map[string]providerResourceDocument, error) {
@@ -3267,6 +3446,7 @@ func (s *Server) loadProviderResourceSnippet(name string) (providerResourceDocum
 		return providerResourceDocument{}, false
 	}
 	doc.ID = id
+	normalizeProviderResourceAliases(&doc)
 	applyProviderResourceDefaults(&doc)
 	doc.Path = path
 	doc.APIKeySet = strings.TrimSpace(doc.APIKey) != ""

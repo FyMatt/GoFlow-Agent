@@ -87,6 +87,9 @@ type WorkflowStageOutput struct {
 	RawOutput    string                        `json:"raw_output,omitempty"`
 	Variables    map[string]string             `json:"variables,omitempty"`
 	Values       map[string]any                `json:"values,omitempty"`
+	Evidence     []session.WorkflowRunArtifact `json:"evidence,omitempty"`
+	Decision     string                        `json:"decision,omitempty"`
+	NextActions  []string                      `json:"next_actions,omitempty"`
 	Artifacts    []session.WorkflowRunArtifact `json:"artifacts,omitempty"`
 	ToolResults  []schema.ToolResult           `json:"tool_results,omitempty"`
 	Findings     []schema.Finding              `json:"findings,omitempty"`
@@ -208,17 +211,23 @@ func (w *WorkflowRunner) ResumeToolApproval(ctx context.Context, runID string, a
 	defer func() { w.runID = previousRunID }()
 	handler = w.recordWorkflowRunEvents(run.ID, handler)
 	w.runtime.session.SetWorkflow(session.WorkflowSnapshot{
-		RunID:            run.ID,
-		Name:             run.Name,
-		Status:           "running",
-		NextStage:        run.NextStage,
-		Request:          run.Request,
-		Summary:          run.Summary,
-		LastApproval:     run.ApprovalPrompt,
-		PendingCallID:    run.PendingCallID,
-		PendingToolName:  run.PendingToolName,
-		PendingAgentID:   run.PendingAgentID,
-		PendingArguments: run.PendingArgs,
+		RunID:                        run.ID,
+		Name:                         run.Name,
+		Status:                       "running",
+		NextStage:                    run.NextStage,
+		Request:                      run.Request,
+		Summary:                      run.Summary,
+		LastApproval:                 run.ApprovalPrompt,
+		PendingCallID:                run.PendingCallID,
+		PendingToolName:              run.PendingToolName,
+		PendingAgentID:               run.PendingAgentID,
+		PendingArguments:             run.PendingArgs,
+		PendingArgumentsSummary:      run.PendingArgsSummary,
+		PendingArgumentsArtifactRef:  run.PendingArgsArtifactRef,
+		PendingArgumentsHash:         run.PendingArgsHash,
+		PendingArgumentsBytes:        run.PendingArgsBytes,
+		PendingArgumentsStoredBytes:  run.PendingArgsStoredBytes,
+		PendingArgumentsExternalized: run.PendingArgsExternalized,
 	})
 	w.runtime.session.UpdateWorkflowRunState(w.runtime.session.Snapshot().Workflow)
 	w.runtime.session.AppendWorkflowRunEvent(run.ID, session.WorkflowRunEventSnapshot{
@@ -291,6 +300,9 @@ func (w *WorkflowRunner) CanApproveToolApproval(run session.WorkflowRunSnapshot)
 }
 
 func (w *WorkflowRunner) pendingToolApprovalFromRun(ctx context.Context, run session.WorkflowRunSnapshot) (pendingApproval, error) {
+	if w != nil && w.runtime != nil && w.runtime.session != nil {
+		run = w.runtime.session.HydrateWorkflowRunPendingArguments(run)
+	}
 	callID := strings.TrimSpace(run.PendingCallID)
 	if callID == "" {
 		return pendingApproval{}, fmt.Errorf("workflow run %s has no pending tool call id", run.ID)
@@ -378,7 +390,7 @@ func (w *WorkflowRunner) enrichRebuiltToolApproval(run session.WorkflowRunSnapsh
 			pending.workflow = graph.Name
 			pending.stage = WorkflowStage(stage.Name)
 			pending.skillIndex = index
-			pending.stagePrompt = buildWorkflowGraphStagePrompt(graph, stage, pending.request, pending.completed)
+			pending.stagePrompt = w.buildWorkflowGraphStagePrompt(context.Background(), graph, stage, pending.request, pending.completed)
 			if strings.TrimSpace(pending.agent) == "" {
 				pending.agent = strings.TrimSpace(stage.Agent)
 			}
@@ -606,6 +618,10 @@ func (w *WorkflowRunner) completeWorkflowRun(runID string, result WorkflowResult
 		PendingApproval: result.PendingApproval,
 	})
 	w.recordWorkflowResultCollaboration(runID, result)
+	if run, ok := w.runtime.session.WorkflowRun(runID); ok {
+		w.runtime.recordWorkflowTaskMemoryFromRun(run, nil)
+	}
+	_, _, _ = w.runtime.MaybeAutoCompactContext(context.Background(), "workflow run completed")
 }
 
 func (w *WorkflowRunner) failWorkflowRun(runID, name, request string, err error) {
@@ -628,6 +644,8 @@ func (w *WorkflowRunner) failWorkflowRun(runID, name, request string, err error)
 				Summary:   run.Summary,
 			})
 			w.recordWorkflowFailure(runID, run.Name, run.Request, run.Status, run.Summary)
+			w.runtime.recordWorkflowTaskMemoryFromRun(run, err)
+			_, _, _ = w.runtime.MaybeAutoCompactContext(context.Background(), "workflow run cancelled")
 		}
 		return
 	}
@@ -649,6 +667,10 @@ func (w *WorkflowRunner) failWorkflowRun(runID, name, request string, err error)
 		WorkflowStatus: "failed",
 	})
 	w.recordWorkflowFailure(runID, name, request, "failed", err.Error())
+	if run, ok := w.runtime.session.WorkflowRun(runID); ok {
+		w.runtime.recordWorkflowTaskMemoryFromRun(run, err)
+	}
+	_, _, _ = w.runtime.MaybeAutoCompactContext(context.Background(), "workflow run failed")
 }
 
 func (w *WorkflowRunner) recordWorkflowStarted(runID, name, request, retryOf string) {
@@ -2230,13 +2252,66 @@ func buildSkillChainStagePrompt(request string, skill schema.Skill, completed []
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Run workflow skill %q for the following request.\n\nOriginal request:\n%s\n", skill.Name, request)
 	if len(completed) > 0 {
-		builder.WriteString("\nCompleted prior skill stages:\n")
-		for _, stage := range completed {
-			fmt.Fprintf(&builder, "- %s/%s: %s\n", stage.Stage, stage.Agent, truncateSummary(stage.Result.Output))
-		}
+		builder.WriteString("\nWorkflow context contract:\n")
+		builder.WriteString("- include: previous.summary\n")
+		builder.WriteString("- exclude: raw_tool_logs, large_file_contents\n")
+		builder.WriteString("- max_tokens: 1200\n")
+		builder.WriteString("\nSelected prior skill summaries:\n")
+		writeWorkflowStageSummaryList(&builder, completed)
 	}
 	builder.WriteString("\nUse the matched skill instructions for this stage. Produce a concise stage result that the next skill can use.")
 	return builder.String()
+}
+
+func buildPlanFixAuditPlanPrompt(request string) string {
+	return fmt.Sprintf("Create a concise implementation plan for the following request. Focus on concrete code changes, tests, and risks.\n\nRequest:\n%s", request)
+}
+
+func buildPlanFixAuditFixPrompt(request, planOutput string) string {
+	var builder strings.Builder
+	builder.WriteString("Implement the approved plan for the following request. Make minimal necessary changes and summarize what changed.\n\n")
+	fmt.Fprintf(&builder, "Original request:\n%s\n\n", request)
+	builder.WriteString("Workflow context contract:\n")
+	builder.WriteString("- include: previous.summary\n")
+	builder.WriteString("- exclude: raw_tool_logs, large_file_contents\n")
+	builder.WriteString("- max_tokens: 1200\n\n")
+	builder.WriteString("Approved plan summary:\n")
+	builder.WriteString(workflowPromptSummary(planOutput))
+	builder.WriteString("\n")
+	return builder.String()
+}
+
+func buildPlanFixAuditAuditPrompt(request, planOutput, fixOutput string) string {
+	var builder strings.Builder
+	builder.WriteString("Audit the completed implementation against the original request and approved plan. Identify risks, regressions, and any follow-up actions.\n\n")
+	fmt.Fprintf(&builder, "Original request:\n%s\n\n", request)
+	builder.WriteString("Workflow context contract:\n")
+	builder.WriteString("- include: previous.summary\n")
+	builder.WriteString("- exclude: raw_tool_logs, large_file_contents\n")
+	builder.WriteString("- max_tokens: 1600\n\n")
+	builder.WriteString("Plan summary:\n")
+	builder.WriteString(workflowPromptSummary(planOutput))
+	builder.WriteString("\n\nImplementation summary:\n")
+	builder.WriteString(workflowPromptSummary(fixOutput))
+	builder.WriteString("\n")
+	return builder.String()
+}
+
+func writeWorkflowStageSummaryList(builder *strings.Builder, stages []WorkflowStageResult) {
+	if builder == nil {
+		return
+	}
+	for _, stage := range stages {
+		fmt.Fprintf(builder, "- %s/%s: %s\n", stage.Stage, stage.Agent, workflowPromptSummary(stage.Result.Output))
+	}
+}
+
+func workflowPromptSummary(text string) string {
+	text = strings.TrimSpace(strings.ReplaceAll(text, "\n", " "))
+	if len(text) <= 600 {
+		return text
+	}
+	return strings.TrimSpace(text[:597]) + "..."
 }
 
 func runSkillStage(ctx context.Context, runtimeRef *Runtime, agentID, input string, skill schema.Skill, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
@@ -2300,7 +2375,7 @@ func (w *WorkflowRunner) RunPlanFixAudit(ctx context.Context, request string, ap
 	if err := w.runtime.SetActiveAgent(workflowAgentPlanner); err != nil {
 		return WorkflowResult{}, err
 	}
-	planPrompt := fmt.Sprintf("Create a concise implementation plan for the following request. Focus on concrete code changes, tests, and risks.\n\nRequest:\n%s", request)
+	planPrompt := buildPlanFixAuditPlanPrompt(request)
 	w.persistWorkflowState(workflowNamePlanFixAudit, "running", WorkflowStagePlan, request, "", "")
 	planResult, err := w.runtime.RunStream(ctx, planPrompt, handler)
 	if err != nil {
@@ -2327,7 +2402,7 @@ func (w *WorkflowRunner) RunPlanFixAudit(ctx context.Context, request string, ap
 	if err := w.runtime.SetActiveAgent(workflowAgentFixer); err != nil {
 		return WorkflowResult{}, err
 	}
-	fixPrompt := fmt.Sprintf("Implement the approved plan for the following request. Reuse the provided plan, make minimal necessary changes, and summarize what changed.\n\nOriginal request:\n%s\n\nApproved plan:\n%s", request, planResult.Output)
+	fixPrompt := buildPlanFixAuditFixPrompt(request, planResult.Output)
 	fixResult, err := continueAgentRun(ctx, w.runtime, workflowAgentFixer, fixPrompt, schema.ToolCall{}, "", schema.ToolResult{}, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageFix, err)
@@ -2354,7 +2429,7 @@ func (w *WorkflowRunner) RunPlanFixAudit(ctx context.Context, request string, ap
 	if err := w.runtime.SetActiveAgent(workflowAgentAuditor); err != nil {
 		return WorkflowResult{}, err
 	}
-	auditPrompt := fmt.Sprintf("Audit the completed implementation against the original request and approved plan. Identify risks, regressions, and any follow-up actions.\n\nOriginal request:\n%s\n\nPlan summary:\n%s\n\nImplementation summary:\n%s", request, planResult.Output, fixResult.Output)
+	auditPrompt := buildPlanFixAuditAuditPrompt(request, planResult.Output, fixResult.Output)
 	auditResult, err := w.runtime.RunStream(ctx, auditPrompt, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageAudit, err)
@@ -2414,6 +2489,12 @@ func (w *WorkflowRunner) persistWorkflowState(name, status string, nextStage Wor
 			snapshot.PendingToolName = pending.ToolName
 			snapshot.PendingAgentID = pending.AgentID
 			snapshot.PendingArguments = pending.Arguments
+			snapshot.PendingArgumentsSummary = pending.ArgumentsSummary
+			snapshot.PendingArgumentsArtifactRef = pending.ArgumentsArtifactRef
+			snapshot.PendingArgumentsHash = pending.ArgumentsHash
+			snapshot.PendingArgumentsBytes = pending.ArgumentsBytes
+			snapshot.PendingArgumentsStoredBytes = pending.ArgumentsStoredBytes
+			snapshot.PendingArgumentsExternalized = pending.ArgumentsExternalized
 			break
 		}
 	}
@@ -2534,7 +2615,7 @@ func (w *WorkflowRunner) runPlanFixAuditApprovedStages(ctx context.Context, requ
 	if err := w.runtime.SetActiveAgent(workflowAgentFixer); err != nil {
 		return WorkflowResult{}, err
 	}
-	fixPrompt := fmt.Sprintf("Implement the approved plan for the following request. Reuse the provided plan, make minimal necessary changes, and summarize what changed.\n\nOriginal request:\n%s\n\nApproved plan:\n%s", request, planOutput)
+	fixPrompt := buildPlanFixAuditFixPrompt(request, planOutput)
 	fixResult, err := continueAgentRun(ctx, w.runtime, workflowAgentFixer, fixPrompt, schema.ToolCall{}, "", schema.ToolResult{}, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageFix, err)
@@ -2560,7 +2641,7 @@ func (w *WorkflowRunner) runPlanFixAuditApprovedStages(ctx context.Context, requ
 	if err := w.runtime.SetActiveAgent(workflowAgentAuditor); err != nil {
 		return WorkflowResult{}, err
 	}
-	auditPrompt := fmt.Sprintf("Audit the completed implementation against the original request and approved plan. Identify risks, regressions, and any follow-up actions.\n\nOriginal request:\n%s\n\nPlan summary:\n%s\n\nImplementation summary:\n%s", request, planOutput, fixResult.Output)
+	auditPrompt := buildPlanFixAuditAuditPrompt(request, planOutput, fixResult.Output)
 	auditResult, err := w.runtime.RunStream(ctx, auditPrompt, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageAudit, err)
@@ -2622,7 +2703,7 @@ func resumePlanFixAuditWorkflow(w *WorkflowRunner, ctx context.Context, pending 
 		if len(completed) > 0 {
 			planSummary = completed[len(completed)-1].Result.Output
 		}
-		fixPrompt := fmt.Sprintf("Implement the approved plan for the following request. Reuse the provided plan, make minimal necessary changes, and summarize what changed.\n\nOriginal request:\n%s\n\nApproved plan:\n%s", pending.request, planSummary)
+		fixPrompt := buildPlanFixAuditFixPrompt(pending.request, planSummary)
 		fixResult, err := continueAgentRun(ctx, w.runtime, workflowAgentFixer, fixPrompt, pending.call, pending.responseContent, toolResult, handler)
 		if err != nil {
 			return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageFix, err)
@@ -2654,7 +2735,7 @@ func resumePlanFixAuditWorkflow(w *WorkflowRunner, ctx context.Context, pending 
 		if err := w.runtime.SetActiveAgent(workflowAgentAuditor); err != nil {
 			return WorkflowResult{}, err
 		}
-		auditPrompt := fmt.Sprintf("Audit the completed implementation against the original request and approved plan. Identify risks, regressions, and any follow-up actions.\n\nOriginal request:\n%s\n\nPlan summary:\n%s\n\nImplementation summary:\n%s", pending.request, completed[0].Result.Output, completed[len(completed)-1].Result.Output)
+		auditPrompt := buildPlanFixAuditAuditPrompt(pending.request, completed[0].Result.Output, completed[len(completed)-1].Result.Output)
 		auditResult, err := w.runtime.RunStream(ctx, auditPrompt, handler)
 		if err != nil {
 			return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageAudit, err)
@@ -2823,8 +2904,17 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 	profile := applySkillToProfile(runner.profile, matchedSkill)
 	profile = ensureMinimumToolIterations(profile)
 	mode := profile.Mode
-	systemPrompt := BuildSystemPrompt(profile, matchedSkill, runtimeRef.SessionSnapshot())
-	messages := []schema.Message{{Role: "user", Content: input}}
+	memoryText := ""
+	promptContext := promptBudgetContext{}
+	if runtimeRef != nil && runtimeRef.MemoryStore() != nil {
+		if memoryContext, err := runtimeRef.MemoryStore().PromptContextFresh(ctx, input, runtimeRef.currentWorkflowRunID()); err == nil {
+			memoryText = memoryContext.PromptText()
+			promptContext.Memory = &memoryContext
+		}
+	}
+	snapshot := runtimeRef.SessionSnapshot()
+	systemPrompt := BuildSystemPrompt(profile, matchedSkill, snapshot)
+	messages := dynamicContextMessages(memoryText, snapshot, input, []schema.Message{{Role: "user", Content: input}})
 	collectedResults := make([]schema.ToolResult, 0, 1)
 	if strings.TrimSpace(approvedCall.ID) != "" {
 		messages = append(messages, schema.Message{Role: "assistant", Content: approvedResponseContent, ToolCalls: []schema.ToolCall{approvedCall}})
@@ -2835,10 +2925,13 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 		collectedResults = append(collectedResults, approvedResult)
 	}
 	execCtx := newExecutionContext(agentID, profile, tools, runtimeRef.audit, workspaceRoot(runtimeRef))
+	execCtx.MemoryStore = runtimeRef.MemoryStore()
+	execCtx.MemoryTaskID = runtimeRef.currentWorkflowRunID()
 	execCtx.RiskPolicy = runtimeRef.toolRiskPolicy()
 	execCtx.MCPServers = runtimeRef.MCPServerRefs()
 	runtimeRef.applySessionApprovedTools(&execCtx)
 	promptTools := filterPromptTools(profile, tools)
+	promptToolContext := promptBudgetContextWithTools(promptContext, profile, tools)
 	streamedText := false
 	startedAt := time.Now()
 	actionNudge := newActionNudgeTracker(profile, mode, matchedSkill, input)
@@ -2850,11 +2943,11 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 		}
 		emitModelWaitStatus(handler, agentID, mode, modelWaitStatusContext{AfterToolResults: i > 0 && len(collectedResults) > 0})
 		request := schema.ChatRequest{Model: profile.Model, System: systemPrompt, Messages: messages, Tools: promptTools, Temperature: profile.Temperature, MaxTokens: profile.MaxTokens}
-		emitPromptBudget(handler, runtimeRef.session, agentID, mode, request, matchedSkill, len(tools))
+		emitPromptBudget(handler, runtimeRef.session, agentID, mode, request, matchedSkill, len(tools), promptToolContext)
 		resp, err := runAgentChatWithRecovery(ctx, runner.llm, request, agentID, mode, handler, &streamedText, &messages)
 		if err != nil {
 			if isRecoverableToolArgumentError(err) {
-				return runner.finalizeWithInvalidToolArguments(agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, collectedResults, false, i+1, handler, runtimeRef.audit)
+				return runner.finalizeWithInvalidToolArguments(agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, collectedResults, false, i+1, handler, runtimeRef.audit)
 			}
 			return schema.AgentResult{}, fmt.Errorf("llm chat: %w", err)
 		}
@@ -2876,7 +2969,7 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 		}
 		runFinalToolCalls := finalResponseTurn && shouldRunFinalTurnToolCalls(execCtx, resp.ToolCalls)
 		if finalResponseTurn && !runFinalToolCalls {
-			return runner.finalizeAfterIterationBudget(ctx, agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, messages, collectedResults, false, i+1, handler, runtimeRef.audit, runtimeRef)
+			return runner.finalizeAfterIterationBudget(ctx, agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, messages, collectedResults, false, i+1, handler, runtimeRef.audit, runtimeRef)
 		}
 		messages = append(messages, schema.Message{Role: "assistant", Content: resp.Message.Content, ToolCalls: resp.ToolCalls})
 		batchProfile := classifyToolCallBatch(resp.ToolCalls, execCtx)
@@ -2910,7 +3003,7 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 			messages = append(messages, schema.Message{Role: "tool", Name: result.ToolName, ToolCallID: result.CallID, Content: compactToolResultForPromptWithArtifact(result, artifactRef)})
 		}
 		if runFinalToolCalls {
-			return runner.finalizeAfterIterationBudget(ctx, agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, messages, collectedResults, false, i+1, handler, runtimeRef.audit, runtimeRef)
+			return runner.finalizeAfterIterationBudget(ctx, agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, messages, collectedResults, false, i+1, handler, runtimeRef.audit, runtimeRef)
 		}
 		if nudge, ok := actionNudge.Next(batchProfile, len(results)); ok {
 			messages = append(messages, schema.Message{Role: "user", Content: nudge})
@@ -2920,7 +3013,7 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 		}
 		streamedText = false
 	}
-	return runner.finalizeWithLocalBudgetSummary(agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, collectedResults, false, profile.MaxIterations, handler, runtimeRef.audit)
+	return runner.finalizeWithLocalBudgetSummary(agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, collectedResults, false, profile.MaxIterations, handler, runtimeRef.audit)
 }
 
 func summarizeWorkflow(stages []WorkflowStageResult) string {

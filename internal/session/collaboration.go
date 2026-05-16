@@ -15,44 +15,55 @@ const (
 
 // CollaborationMessageSnapshot is a durable agent-to-agent or operator-to-agent message.
 type CollaborationMessageSnapshot struct {
-	ID        string            `json:"id"`
-	At        string            `json:"at,omitempty"`
-	RunID     string            `json:"run_id,omitempty"`
-	Stage     string            `json:"stage,omitempty"`
-	FromAgent string            `json:"from_agent,omitempty"`
-	ToAgent   string            `json:"to_agent,omitempty"`
-	Kind      string            `json:"kind,omitempty"`
-	Subject   string            `json:"subject,omitempty"`
-	Content   string            `json:"content,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	ID                  string            `json:"id"`
+	At                  string            `json:"at,omitempty"`
+	RunID               string            `json:"run_id,omitempty"`
+	Stage               string            `json:"stage,omitempty"`
+	FromAgent           string            `json:"from_agent,omitempty"`
+	ToAgent             string            `json:"to_agent,omitempty"`
+	Kind                string            `json:"kind,omitempty"`
+	Subject             string            `json:"subject,omitempty"`
+	Content             string            `json:"content,omitempty"`
+	ContentArtifactRef  string            `json:"content_artifact_ref,omitempty"`
+	ContentHash         string            `json:"content_hash,omitempty"`
+	ContentBytes        int               `json:"content_bytes,omitempty"`
+	ContentStoredBytes  int               `json:"content_stored_bytes,omitempty"`
+	ContentExternalized bool              `json:"content_externalized,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
 }
 
 // BlackboardEntrySnapshot is a durable shared fact, artifact, decision, or task note.
 type BlackboardEntrySnapshot struct {
-	ID        string            `json:"id"`
-	CreatedAt string            `json:"created_at,omitempty"`
-	UpdatedAt string            `json:"updated_at,omitempty"`
-	Scope     string            `json:"scope,omitempty"`
-	RunID     string            `json:"run_id,omitempty"`
-	Stage     string            `json:"stage,omitempty"`
-	AgentID   string            `json:"agent_id,omitempty"`
-	Kind      string            `json:"kind,omitempty"`
-	Title     string            `json:"title,omitempty"`
-	Content   string            `json:"content,omitempty"`
-	Status    string            `json:"status,omitempty"`
-	Tags      []string          `json:"tags,omitempty"`
-	Metadata  map[string]string `json:"metadata,omitempty"`
+	ID                  string            `json:"id"`
+	CreatedAt           string            `json:"created_at,omitempty"`
+	UpdatedAt           string            `json:"updated_at,omitempty"`
+	Scope               string            `json:"scope,omitempty"`
+	RunID               string            `json:"run_id,omitempty"`
+	Stage               string            `json:"stage,omitempty"`
+	AgentID             string            `json:"agent_id,omitempty"`
+	Kind                string            `json:"kind,omitempty"`
+	Title               string            `json:"title,omitempty"`
+	Content             string            `json:"content,omitempty"`
+	ContentArtifactRef  string            `json:"content_artifact_ref,omitempty"`
+	ContentHash         string            `json:"content_hash,omitempty"`
+	ContentBytes        int               `json:"content_bytes,omitempty"`
+	ContentStoredBytes  int               `json:"content_stored_bytes,omitempty"`
+	ContentExternalized bool              `json:"content_externalized,omitempty"`
+	Status              string            `json:"status,omitempty"`
+	Tags                []string          `json:"tags,omitempty"`
+	Metadata            map[string]string `json:"metadata,omitempty"`
 }
 
 // CollaborationFilter limits message or blackboard queries.
 type CollaborationFilter struct {
-	RunID  string
-	Stage  string
-	Agent  string
-	Kind   string
-	Scope  string
-	Status string
-	Limit  int
+	RunID   string
+	Stage   string
+	Agent   string
+	Kind    string
+	Scope   string
+	Status  string
+	Limit   int
+	Content bool
 }
 
 // AddCollaborationMessage appends a bounded timeline message.
@@ -61,9 +72,9 @@ func (s *State) AddCollaborationMessage(message CollaborationMessageSnapshot) Co
 		return CollaborationMessageSnapshot{}
 	}
 	now := collaborationTimestamp(time.Now().UTC())
-	message = normalizeCollaborationMessage(message, now)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	message = s.normalizeCollaborationMessageLocked(message, now)
 	if strings.TrimSpace(message.ID) == "" {
 		message.ID = uniqueCollaborationMessageID(s.messages, message, now)
 	} else {
@@ -97,7 +108,7 @@ func (s *State) CollaborationMessages(filter CollaborationFilter) []Collaboratio
 		if !collaborationMessageMatches(message, filter) {
 			continue
 		}
-		out = append(out, copyCollaborationMessage(message))
+		out = append(out, s.hydrateCollaborationMessageLocked(copyCollaborationMessage(message), filter.Content))
 		if filter.Limit > 0 && len(out) >= filter.Limit {
 			break
 		}
@@ -111,9 +122,9 @@ func (s *State) UpsertBlackboardEntry(entry BlackboardEntrySnapshot) BlackboardE
 		return BlackboardEntrySnapshot{}
 	}
 	now := collaborationTimestamp(time.Now().UTC())
-	entry = normalizeBlackboardEntry(entry, now)
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	entry = s.normalizeBlackboardEntryLocked(entry, now)
 	if strings.TrimSpace(entry.ID) != "" {
 		for i := range s.blackboard {
 			if s.blackboard[i].ID != entry.ID {
@@ -155,7 +166,7 @@ func (s *State) BlackboardEntries(filter CollaborationFilter) []BlackboardEntryS
 		if !blackboardEntryMatches(entry, filter) {
 			continue
 		}
-		out = append(out, copyBlackboardEntry(entry))
+		out = append(out, s.hydrateBlackboardEntryLocked(copyBlackboardEntry(entry), filter.Content))
 		if filter.Limit > 0 && len(out) >= filter.Limit {
 			break
 		}
@@ -172,7 +183,7 @@ func (s *State) BlackboardEntry(id string) (BlackboardEntrySnapshot, bool) {
 	defer s.mu.RUnlock()
 	for _, entry := range s.blackboard {
 		if entry.ID == strings.TrimSpace(id) {
-			return copyBlackboardEntry(entry), true
+			return s.hydrateBlackboardEntryLocked(copyBlackboardEntry(entry), true), true
 		}
 	}
 	return BlackboardEntrySnapshot{}, false
@@ -196,7 +207,7 @@ func (s *State) DeleteBlackboardEntry(id string) bool {
 	return false
 }
 
-func normalizeCollaborationMessage(message CollaborationMessageSnapshot, now string) CollaborationMessageSnapshot {
+func (s *State) normalizeCollaborationMessageLocked(message CollaborationMessageSnapshot, now string) CollaborationMessageSnapshot {
 	message.ID = strings.TrimSpace(message.ID)
 	message.At = strings.TrimSpace(message.At)
 	if message.At == "" {
@@ -208,12 +219,31 @@ func normalizeCollaborationMessage(message CollaborationMessageSnapshot, now str
 	message.ToAgent = strings.TrimSpace(message.ToAgent)
 	message.Kind = normalizeCollaborationKind(message.Kind, "message")
 	message.Subject = trimCollaborationText(message.Subject)
-	message.Content = trimCollaborationText(message.Content)
 	message.Metadata = cleanStringMap(message.Metadata)
+	message.Content, message.ContentArtifactRef, message.ContentHash, message.ContentBytes, message.ContentStoredBytes, message.ContentExternalized = normalizeCollaborationContentFields(
+		s.artifactStore,
+		message.Content,
+		message.ContentArtifactRef,
+		message.ContentHash,
+		message.ContentBytes,
+		message.ContentStoredBytes,
+		message.ContentExternalized,
+		"collaboration_message_content",
+		firstNonEmpty(message.Subject, "Collaboration message"),
+		map[string]string{
+			"source":     "collaboration_message",
+			"message_id": message.ID,
+			"run_id":     message.RunID,
+			"stage":      message.Stage,
+			"from_agent": message.FromAgent,
+			"to_agent":   message.ToAgent,
+			"kind":       message.Kind,
+		},
+	)
 	return message
 }
 
-func normalizeBlackboardEntry(entry BlackboardEntrySnapshot, now string) BlackboardEntrySnapshot {
+func (s *State) normalizeBlackboardEntryLocked(entry BlackboardEntrySnapshot, now string) BlackboardEntrySnapshot {
 	entry.ID = strings.TrimSpace(entry.ID)
 	entry.CreatedAt = strings.TrimSpace(entry.CreatedAt)
 	entry.UpdatedAt = strings.TrimSpace(entry.UpdatedAt)
@@ -229,10 +259,89 @@ func normalizeBlackboardEntry(entry BlackboardEntrySnapshot, now string) Blackbo
 	entry.AgentID = strings.TrimSpace(entry.AgentID)
 	entry.Kind = normalizeCollaborationKind(entry.Kind, "note")
 	entry.Title = trimCollaborationText(entry.Title)
-	entry.Content = trimCollaborationText(entry.Content)
 	entry.Status = normalizeCollaborationKind(entry.Status, "open")
 	entry.Tags = cleanStringSlice(entry.Tags)
 	entry.Metadata = cleanStringMap(entry.Metadata)
+	entry.Content, entry.ContentArtifactRef, entry.ContentHash, entry.ContentBytes, entry.ContentStoredBytes, entry.ContentExternalized = normalizeCollaborationContentFields(
+		s.artifactStore,
+		entry.Content,
+		entry.ContentArtifactRef,
+		entry.ContentHash,
+		entry.ContentBytes,
+		entry.ContentStoredBytes,
+		entry.ContentExternalized,
+		"blackboard_entry_content",
+		firstNonEmpty(entry.Title, "Blackboard entry"),
+		map[string]string{
+			"source":    "blackboard_entry",
+			"entry_id":  entry.ID,
+			"run_id":    entry.RunID,
+			"stage":     entry.Stage,
+			"agent_id":  entry.AgentID,
+			"kind":      entry.Kind,
+			"scope":     entry.Scope,
+			"status":    entry.Status,
+			"title":     entry.Title,
+			"tag_count": workflowArtifactIntString(len(entry.Tags)),
+		},
+	)
+	return entry
+}
+
+func normalizeCollaborationContentFields(store *ArtifactObjectStore, content, ref, hash string, bytes, stored int, externalized bool, kind, title string, metadata map[string]string) (string, string, string, int, int, bool) {
+	ref, hash, externalized = normalizePendingArgumentReferenceMetadata(ref, hash, externalized)
+	if strings.TrimSpace(content) == "" {
+		return content, ref, hash, bytes, stored, externalized
+	}
+	bytes = len([]byte(content))
+	if stored == 0 {
+		stored = bytes
+	}
+	summary := trimSessionArtifactBytes(content, maxSessionArtifactSummaryBytes)
+	if store == nil || bytes <= maxCollaborationText {
+		return trimCollaborationText(content), ref, hash, bytes, stored, externalized
+	}
+	object, _, err := store.Put(ArtifactObject{
+		Mime:     "text/plain",
+		Summary:  summary,
+		Content:  content,
+		Kind:     kind,
+		Title:    title,
+		Metadata: copyStringMapForArtifact(metadata),
+	})
+	if err != nil {
+		return trimCollaborationText(content), ref, hash, bytes, stored, externalized
+	}
+	return firstPendingArgumentValue(object.Summary, summary), object.Ref, object.Hash, object.Size, int(object.StoredBytes), true
+}
+
+func (s *State) hydrateCollaborationMessageLocked(message CollaborationMessageSnapshot, includeContent bool) CollaborationMessageSnapshot {
+	if includeContent {
+		message.Content, message.ContentArtifactRef, message.ContentHash, message.ContentBytes, message.ContentStoredBytes, message.ContentExternalized = hydrateRunEventContentFields(
+			s.artifactStore,
+			message.Content,
+			message.ContentArtifactRef,
+			message.ContentHash,
+			message.ContentBytes,
+			message.ContentStoredBytes,
+			message.ContentExternalized,
+		)
+	}
+	return message
+}
+
+func (s *State) hydrateBlackboardEntryLocked(entry BlackboardEntrySnapshot, includeContent bool) BlackboardEntrySnapshot {
+	if includeContent {
+		entry.Content, entry.ContentArtifactRef, entry.ContentHash, entry.ContentBytes, entry.ContentStoredBytes, entry.ContentExternalized = hydrateRunEventContentFields(
+			s.artifactStore,
+			entry.Content,
+			entry.ContentArtifactRef,
+			entry.ContentHash,
+			entry.ContentBytes,
+			entry.ContentStoredBytes,
+			entry.ContentExternalized,
+		)
+	}
 	return entry
 }
 

@@ -14,6 +14,7 @@ import { renderWorkspace } from "./views/workspace.js";
 import { renderWorkflows } from "./views/workflows.js";
 import { renderApprovals } from "./views/approvals.js";
 import { renderCatalog } from "./views/catalog.js";
+import { renderMemory } from "./views/memory.js";
 import { renderStatus } from "./views/status.js";
 import { renderSettings } from "./views/settings.js";
 
@@ -24,13 +25,16 @@ const views = {
   workflows: { title: "view.workflows.title", eyebrow: "view.workflows.eyebrow", render: renderWorkflows },
   approvals: { title: "view.approvals.title", eyebrow: "view.approvals.eyebrow", render: renderApprovals },
   catalog: { title: "view.catalog.title", eyebrow: "view.catalog.eyebrow", render: renderCatalog },
+  memory: { title: "view.memory.title", eyebrow: "view.memory.eyebrow", render: renderMemory },
   status: { title: "view.status.title", eyebrow: "view.status.eyebrow", render: renderStatus },
   settings: { title: "view.settings.title", eyebrow: "view.settings.eyebrow", render: renderSettings }
 };
 
 const themeStorageKey = "goflow.theme";
+const sidebarStorageKey = "goflow.sidebar.collapsed";
 
 const app = document.getElementById("app");
+const shellRoot = document.querySelector("[data-app-shell]");
 const sectionTitle = document.getElementById("sectionTitle");
 const sectionEyebrow = document.getElementById("sectionEyebrow");
 const runtimePill = document.getElementById("runtimePill");
@@ -38,6 +42,8 @@ const sideStatus = document.getElementById("sideStatus");
 const languageSelect = document.getElementById("languageSelect");
 const themeToggle = document.getElementById("themeToggle");
 const tourToggle = document.getElementById("tourToggle");
+const sidebarToggle = document.getElementById("sidebarToggle");
+const navButtons = Array.from(document.querySelectorAll(".nav button[data-view]"));
 
 let runtime = null;
 let configDiagnostics = null;
@@ -50,6 +56,7 @@ let runtimeEventSignature = "";
 let approvalBadgeSignature = "";
 let approvalBadgeLastFetch = 0;
 let approvalBadgeResolvedCount = null;
+let sidebarCollapsed = loadSidebarCollapsed();
 const configDiagnosticsRefreshMs = 8000;
 const approvalBadgeRefreshMs = 10000;
 const userScrollIntentWindowMs = 420;
@@ -86,6 +93,8 @@ setupOnboarding({
 
 applyTheme(theme);
 updateDocumentLanguage();
+renderAllNavButtons();
+setSidebarCollapsed(sidebarCollapsed, { persist: false });
 
 async function refreshRuntime() {
   runtime = await request("/api/runtime");
@@ -367,10 +376,11 @@ function updateApprovalNavBadge(runtime) {
   if (!button) return;
   const count = typeof runtime === "number" ? runtime : pendingApprovalCount(runtime);
   const label = t("nav.approvals");
-  button.innerHTML = count
-    ? `${escapeHTML(label)} <span class="nav-badge">${escapeHTML(String(count))}</span>`
-    : escapeHTML(label);
-  button.setAttribute("aria-label", count ? `${label}: ${t("approvals.count", { count })}` : label);
+  renderNavButton(button, {
+    badge: count ? String(count) : "",
+    badgeClass: "nav-badge",
+    ariaLabel: count ? `${label}: ${t("approvals.count", { count })}` : label
+  });
 }
 
 function updateSettingsNavBadge(diagnostics = configDiagnostics) {
@@ -394,12 +404,13 @@ function updateSettingsNavBadge(diagnostics = configDiagnostics) {
     : counts.warnings || diagnostics?.restart_required || statusNeedsAttention
       ? "warn"
       : "info";
-  button.innerHTML = needsAttention
-    ? `${escapeHTML(label)} <span class="nav-badge nav-badge-config nav-badge-config-${badgeTone}">${escapeHTML(String(badgeValue))}</span>`
-    : escapeHTML(label);
-  button.setAttribute("aria-label", needsAttention
-    ? `${label}: ${configStatusText(diagnostics)}, ${configDiagnosticCountLabel(counts)}`
-    : label);
+  renderNavButton(button, {
+    badge: needsAttention ? String(badgeValue) : "",
+    badgeClass: needsAttention ? `nav-badge nav-badge-config nav-badge-config-${badgeTone}` : "",
+    ariaLabel: needsAttention
+      ? `${label}: ${configStatusText(diagnostics)}, ${configDiagnosticCountLabel(counts)}`
+      : label
+  });
 }
 
 function configDiagnosticCounts(diagnostics = {}) {
@@ -512,12 +523,12 @@ async function show(viewName) {
   clearTransientHandlers();
   const resolvedViewName = views[viewName] ? viewName : defaultView();
   const view = views[resolvedViewName] || views.workflows;
-  document.querySelectorAll(".nav button").forEach(button => {
-    button.classList.toggle("active", button.dataset.view === resolvedViewName);
-  });
+  syncNavButtons(resolvedViewName);
   updateDocumentLanguage();
   applyStaticTranslations();
+  renderAllNavButtons();
   updateThemeToggle();
+  updateSidebarToggle();
   sectionTitle.textContent = t(view.title);
   sectionEyebrow.textContent = t(view.eyebrow);
   document.title = `${t(view.title)} - GoFlow`;
@@ -525,6 +536,9 @@ async function show(viewName) {
   app.innerHTML = `<div class="panel loading-panel">${t("common.loading")}</div>`;
   try {
     const current = await refreshRuntime();
+    if (current && typeof current === "object" && configDiagnostics && typeof configDiagnostics === "object") {
+      current.config_diagnostics = configDiagnostics;
+    }
     await view.render(app, current, refreshRuntime);
     notifyViewRendered(resolvedViewName);
   } catch (error) {
@@ -565,7 +579,7 @@ function toggleTheme() {
   updateThemeToggle();
 }
 
-document.querySelectorAll(".nav button").forEach(button => {
+navButtons.forEach(button => {
   button.addEventListener("click", () => {
     location.hash = button.dataset.view;
   });
@@ -577,12 +591,18 @@ languageSelect.value = currentLanguage();
 languageSelect.addEventListener("change", () => {
   setLanguage(languageSelect.value);
   updateDocumentLanguage();
+  renderAllNavButtons();
   updateThemeToggle();
+  updateSidebarToggle();
   show(location.hash.slice(1) || defaultView());
 });
 
 themeToggle?.addEventListener("click", () => {
   toggleTheme();
+});
+
+sidebarToggle?.addEventListener("click", () => {
+  toggleSidebarCollapsed();
 });
 
 function defaultView() {
@@ -599,3 +619,92 @@ function clearTransientHandlers() {
 updateThemeToggle();
 startRuntimeAutoRefresh();
 show(location.hash.slice(1) || defaultView());
+
+function renderAllNavButtons() {
+  navButtons.forEach(button => renderNavButton(button));
+  updateApprovalNavBadge(approvalBadgeResolvedCount ?? runtime ?? 0);
+  updateSettingsNavBadge(configDiagnostics);
+}
+
+function renderNavButton(button, options = {}) {
+  if (!button) return;
+  const label = t(button.dataset.labelKey || `nav.${button.dataset.view || ""}`);
+  const badge = String(options.badge || "").trim();
+  const badgeClass = String(options.badgeClass || "nav-badge").trim();
+  button.innerHTML = `
+    <span class="nav-icon" aria-hidden="true">${navButtonIcon(button.dataset.icon || button.dataset.view || "")}</span>
+    <span class="nav-label">${escapeHTML(label)}</span>
+    ${badge ? `<span class="${escapeHTML(badgeClass)}">${escapeHTML(badge)}</span>` : ""}
+  `;
+  const ariaLabel = String(options.ariaLabel || label).trim() || label;
+  button.setAttribute("aria-label", ariaLabel);
+  button.dataset.tooltip = label;
+  button.title = sidebarCollapsed ? ariaLabel : "";
+}
+
+function syncNavButtons(activeView) {
+  navButtons.forEach(button => {
+    button.classList.toggle("active", button.dataset.view === activeView);
+  });
+}
+
+function loadSidebarCollapsed() {
+  try {
+    return localStorage.getItem(sidebarStorageKey) === "1";
+  } catch {
+    return false;
+  }
+}
+
+function setSidebarCollapsed(next, options = {}) {
+  sidebarCollapsed = Boolean(next);
+  shellRoot?.classList.toggle("sidebar-collapsed", sidebarCollapsed);
+  if (options.persist !== false) {
+    try {
+      localStorage.setItem(sidebarStorageKey, sidebarCollapsed ? "1" : "0");
+    } catch {
+      // Ignore storage failures; the UI still updates for this session.
+    }
+  }
+  renderAllNavButtons();
+  updateSidebarToggle();
+}
+
+function toggleSidebarCollapsed() {
+  setSidebarCollapsed(!sidebarCollapsed);
+}
+
+function updateSidebarToggle() {
+  if (!sidebarToggle) return;
+  const expanded = !sidebarCollapsed;
+  const label = expanded ? t("nav.collapseSidebar") : t("nav.expandSidebar");
+  sidebarToggle.setAttribute("aria-label", label);
+  sidebarToggle.setAttribute("title", label);
+  sidebarToggle.setAttribute("aria-pressed", sidebarCollapsed ? "true" : "false");
+  sidebarToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+}
+
+function navButtonIcon(kind) {
+  switch (String(kind || "").trim().toLowerCase()) {
+    case "overview":
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h7V4H4v8Zm9 8h7v-6h-7v6Zm0-10h7V4h-7v6ZM4 20h7v-4H4v4Z"></path></svg>`;
+    case "workflows":
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><path d="M8 6h8M6 8v8M8 18h8"></path></svg>`;
+    case "catalog":
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h10l4 4v12H5z"></path><path d="M15 4v4h4"></path><path d="M8 12h8M8 16h6"></path></svg>`;
+    case "playground":
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6v12l10-6-10-6Z"></path><path d="M4 6h1M4 12h1M4 18h1"></path></svg>`;
+    case "approvals":
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.2-2.5 8.1-7 9-4.5-.9-7-4.8-7-9V7l7-4Z"></path><path d="m9.5 12 1.7 1.7 3.8-4"></path></svg>`;
+    case "status":
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"></path><path d="M7 16V8"></path><path d="M12 16V5"></path><path d="M17 16v-4"></path></svg>`;
+    case "memory":
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7a5 5 0 0 1 10 0v9H7V7Z"></path><path d="M9 16v2a3 3 0 0 0 6 0v-2"></path><path d="M10 10h4M10 13h4"></path></svg>`;
+    case "workspace":
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5 12 4l9 3.5V19l-9 3-9-3V7.5Z"></path><path d="M12 4v18"></path><path d="m3 7.5 9 3 9-3"></path></svg>`;
+    case "settings":
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1Z"></path></svg>`;
+    default:
+      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v4l2.5 2.5"></path></svg>`;
+  }
+}

@@ -1,10 +1,13 @@
 package agent
 
 import (
+	"context"
+	"encoding/json"
 	"fmt"
 	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/policy"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
@@ -18,6 +21,8 @@ type ExecutionContext struct {
 	Tools         []schema.Tool
 	Audit         *runtime.AuditLogger
 	WorkspaceRoot string
+	MemoryStore   *memory.Store
+	MemoryTaskID  string
 	RiskPolicy    config.ToolRiskPolicyConfig
 	MCPServers    []config.MCPServerRef
 	approvedTools map[string]struct{}
@@ -191,6 +196,35 @@ func (e ExecutionContext) annotateResult(result *schema.ToolResult, tool schema.
 	if result.ToolName == "" {
 		result.ToolName = tool.Name
 	}
+}
+
+func (e ExecutionContext) recordFileReadResult(ctx context.Context, call schema.ToolCall, result schema.ToolResult) {
+	if e.MemoryStore == nil || result.IsError || result.Denied || result.Suspended {
+		return
+	}
+	if !toolNameEquivalent(call.Name, "read_file") && !toolNameEquivalent(result.ToolName, "read_file") {
+		return
+	}
+	path := toolCallStringArgument(call.Arguments, "path")
+	if path == "" {
+		return
+	}
+	_ = e.MemoryStore.MarkFilePathsUsedByTask(ctx, []string{path}, e.MemoryTaskID)
+}
+
+func toolCallStringArgument(arguments []byte, name string) string {
+	name = strings.TrimSpace(name)
+	if len(arguments) == 0 || name == "" {
+		return ""
+	}
+	var values map[string]any
+	if err := json.Unmarshal(arguments, &values); err != nil {
+		return ""
+	}
+	if value, ok := values[name].(string); ok {
+		return strings.TrimSpace(value)
+	}
+	return ""
 }
 
 func approvalScopeKey(kind, toolName string) string {

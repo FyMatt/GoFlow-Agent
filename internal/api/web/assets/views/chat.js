@@ -1,8 +1,9 @@
-import { agentRunEventsURL, agentRunExportURL, checkWorkspaceRequirement, createCollaborationBlackboardEntry, createCollaborationMessage, escapeHTML, fetchAgentRun, fetchAgentRunActions, fetchAgentRunDiffs, fetchAgentRunReplay, fetchAgentRuns, fetchAgentRunTimeline, fetchCollaborationBlackboard, fetchCollaborationMessages, fetchRuns, fetchTeamState, fetchWorkflowRun, fetchWorkflowRunActions, fetchWorkflowRunArtifacts, fetchWorkflowRunDiffs, fetchWorkflowRunEvidence, fetchWorkflowRunReplay, fetchWorkflowRuns, fetchWorkflowRunStages, fetchWorkflowRunTimeline, postJSON, renderSafeMarkdown, request, startAgentRun, startWorkflowRun, streamAgentRunEvents, streamWorkflowRunEvents, submitWorkflowRunInput, updateCollaborationBlackboardAction, workflowRunEventsURL, workflowRunExportURL } from "../api.js";
+import { agentRunEventsURL, agentRunExportURL, checkWorkspaceRequirement, createCollaborationBlackboardEntry, createCollaborationMessage, escapeHTML, fetchAgentRun, fetchAgentRunActions, fetchAgentRunArtifacts, fetchAgentRunContext, fetchAgentRunDiffs, fetchAgentRunReplay, fetchAgentRuns, fetchAgentRunTimeline, fetchCollaborationBlackboard, fetchCollaborationMessages, fetchRuns, fetchTeamState, fetchWorkflowRun, fetchWorkflowRunActions, fetchWorkflowRunArtifacts, fetchWorkflowRunContext, fetchWorkflowRunDiffs, fetchWorkflowRunEvidence, fetchWorkflowRunReplay, fetchWorkflowRuns, fetchWorkflowRunStages, fetchWorkflowRunTimeline, postJSON, renderSafeMarkdown, request, startAgentRun, startWorkflowRun, streamAgentRunEvents, streamWorkflowRunEvents, submitWorkflowRunInput, updateCollaborationBlackboardAction, workflowRunEventsURL, workflowRunExportURL } from "../api.js";
 import { currentLanguage, localizedText, t } from "../i18n.js";
 import { extractSkillScriptContextFromRun, isSkillScriptToolName, skillScriptContextSignature } from "../run_context.js";
 
 const runStateStorageKey = "goflow.playground.runState";
+const runTargetRecentStorageKey = "goflow.playground.recentTargets";
 const workflowRunPollIntervalMS = 2200;
 const workflowRunHistoryPollIntervalMS = 6600;
 const defaultRunEventReconnectMS = 2200;
@@ -29,28 +30,12 @@ export async function renderChat(root, runtime, refreshRuntime) {
         </div>
         <div class="run-console-grid">
           <section class="run-brief panel inset" data-tour-id="playground-targets">
-            <div class="panel-head compact">
+            <div class="panel-head compact run-task-head">
               <div>
-                <h3>${t("chat.runSetupTitle")}</h3>
-                <p class="muted">${t("chat.runSetupHelp")}</p>
+                <h3>${t("chat.taskBriefTitle")}</h3>
+                <p class="muted">${t("chat.taskBriefHelp")}</p>
               </div>
               <span class="badge">${t("chat.runSetupBadge")}</span>
-            </div>
-            <div class="run-target-panel">
-              <label class="compact-field"><span>${t("chat.runMode")}</span><select id="runMode"><option value="agent">${t("chat.modeAgent")}</option><option value="workflow">${t("chat.modeWorkflow")}</option></select></label>
-              <label class="compact-field"><span>${t("chat.agent")}</span><select id="agentSelect"></select></label>
-              <label class="compact-field hidden" id="workflowField"><span>${t("chat.workflow")}</span><select id="workflowSelect"></select></label>
-              <label class="compact-field"><span>${t("chat.skill")}</span><select id="skillSelect"></select></label>
-              <label class="compact-field"><span>${t("chat.tool")}</span><select id="toolSelect"></select></label>
-              <div class="context-actions">
-                <button id="insertContext">${t("chat.insertContext")}</button>
-                <span id="contextFeedback" role="status" aria-live="polite"></span>
-              </div>
-            </div>
-            <div class="run-helper" aria-label="${escapeHTML(t("chat.runHelperAria"))}">
-              <span><strong>1</strong>${t("chat.helperTarget")}</span>
-              <span><strong>2</strong>${t("chat.helperContext")}</span>
-              <span><strong>3</strong>${t("chat.helperTrack")}</span>
             </div>
             <div class="composer-shell">
               <div class="composer-toolbar">
@@ -83,6 +68,39 @@ export async function renderChat(root, runtime, refreshRuntime) {
                 <div id="fileSuggestions" class="file-suggestions reference-list"></div>
               </div>
             </div>
+            <div class="run-recommended-targets">
+              <div class="run-section-copy">
+                <strong>${t("chat.recommendedTargetsTitle")}</strong>
+                <span>${t("chat.recommendedTargetsHelp")}</span>
+              </div>
+              <div id="runTargetCards" class="run-target-cards" aria-label="${escapeHTML(t("chat.targetCardsAria"))}"></div>
+            </div>
+            <details class="run-options-panel">
+              <summary>
+                <span>
+                  <strong>${t("chat.runOptionsTitle")}</strong>
+                  <small>${t("chat.runOptionsHelp")}</small>
+                </span>
+                <span id="runOptionsSummary" class="badge neutral"></span>
+              </summary>
+              <div class="run-target-panel">
+                <label class="compact-field"><span>${t("chat.runMode")}</span><select id="runMode"><option value="agent">${t("chat.modeAgent")}</option><option value="workflow">${t("chat.modeWorkflow")}</option></select></label>
+                <label class="compact-field"><span>${t("chat.agent")}</span><select id="agentSelect"></select></label>
+                <label class="compact-field hidden" id="workflowField"><span>${t("chat.workflow")}</span><select id="workflowSelect"></select></label>
+                <label class="compact-field"><span>${t("chat.skill")}</span><select id="skillSelect"></select></label>
+                <label class="compact-field"><span>${t("chat.tool")}</span><select id="toolSelect"></select></label>
+                <div class="context-actions">
+                  <button id="insertContext">${t("chat.insertContext")}</button>
+                  <span id="contextFeedback" role="status" aria-live="polite"></span>
+                </div>
+              </div>
+            </details>
+            <div class="run-helper" aria-label="${escapeHTML(t("chat.runHelperAria"))}">
+              <span><strong>1</strong>${t("chat.helperTask")}</span>
+              <span><strong>2</strong>${t("chat.helperTarget")}</span>
+              <span><strong>3</strong>${t("chat.helperTrack")}</span>
+            </div>
+            <div id="runContextGuide" class="run-context-guide" aria-live="polite"></div>
           </section>
 
           <section class="run-timeline panel inset" data-tour-id="playground-timeline">
@@ -114,7 +132,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
               <div id="resultPreview" class="result-preview hidden" aria-live="polite"></div>
               <div id="resultOutput" class="result-output hidden"></div>
             </aside>
-            <details class="run-collab panel inset collab-panel" data-tour-id="playground-collaboration">
+            <details id="runCollabPanel" class="run-collab panel inset collab-panel" data-tour-id="playground-collaboration">
               <summary class="collab-summary">
                 <div class="panel-head compact collab-head">
                   <div>
@@ -233,6 +251,9 @@ export async function renderChat(root, runtime, refreshRuntime) {
   const skillSelect = root.querySelector("#skillSelect");
   const toolSelect = root.querySelector("#toolSelect");
   const insertContext = root.querySelector("#insertContext");
+  const runTargetCards = root.querySelector("#runTargetCards");
+  const runOptionsSummary = root.querySelector("#runOptionsSummary");
+  const runCollabPanel = root.querySelector("#runCollabPanel");
   const referenceToggle = root.querySelector("#referenceToggle");
   const referenceClose = root.querySelector("#referenceClose");
   const referencePopover = root.querySelector("#referencePopover");
@@ -279,10 +300,12 @@ export async function renderChat(root, runtime, refreshRuntime) {
 
   const runState = createRunState(messages, timelineJumpLatest, resultPreview, resultOutput, resultEmpty, resultStatus, runAttention, runTimelineHint, runLiveStatus, root, runStatus, send);
   runState.refreshRuntime = refreshRuntime;
+  let latestRuntime = runtime;
   const disposeTimelineLayoutSync = bindRunTimelineHeightSync(root);
   const disposeTimelineFollow = bindTimelineFollowMode(runState);
   const collaborationState = createCollaborationState(root, runtime, runState);
   const historyState = createWorkflowHistoryState(root, runState, collaborationState, refreshRuntime);
+  bindRunEmptyStateActions(root, prompt);
   const referencePickerController = new AbortController();
   runState.submitWorkflowInput = createWorkflowInputSubmitHandler(runState, messages, collaborationState, refreshRuntime);
   runState.historyRefresh = () => loadWorkflowRunHistory(historyState, currentHistoryRunKey(runState), { background: true }).catch(() => {});
@@ -297,10 +320,41 @@ export async function renderChat(root, runtime, refreshRuntime) {
     syncRunUnloadGuard(runState);
   };
   window.addEventListener("goflow:view-dispose", disposeRunView, { once: true });
+  let syncTargetCards = () => {};
+  renderRunTargetCards(runTargetCards, {
+    runtime,
+    workflowEntries,
+    agentSelect,
+    workflowSelect,
+    runMode,
+    onSelect: () => syncTarget()
+  });
+  const rerenderRunTargetCards = () => renderRunTargetCards(runTargetCards, {
+    runtime,
+    workflowEntries,
+    agentSelect,
+    workflowSelect,
+    runMode,
+    onSelect: () => syncTarget()
+  });
+  syncTargetCards = () => updateRunTargetCards(runTargetCards, runMode.value, agentSelect.value, workflowSelect.value);
+  const syncRunContextGuide = () => updateRunContextGuide(root, {
+    mode: runMode.value,
+    skill: skillSelect.value,
+    tool: toolSelect.value,
+    runtime: latestRuntime,
+    promptValue: prompt.value,
+    referenceOpen: !referencePopover.classList.contains("hidden"),
+    runState
+  });
+  runState.syncContextGuide = syncRunContextGuide;
   const syncTarget = () => {
     workflowField.classList.toggle("hidden", runMode.value !== "workflow");
     const target = runMode.value === "workflow" && workflowSelect.value ? workflowSelect.value : agentSelect.value || "-";
     targetSummary.textContent = `${runModeLabel(runMode.value)}: ${target}`;
+    if (runOptionsSummary) runOptionsSummary.textContent = t("chat.runOptionsSummary", { mode: runModeLabel(runMode.value), target });
+    syncTargetCards();
+    syncRunContextGuide();
   };
   [runMode, agentSelect, workflowSelect, skillSelect, toolSelect].forEach(input => {
     input.addEventListener("change", syncTarget);
@@ -308,13 +362,13 @@ export async function renderChat(root, runtime, refreshRuntime) {
   syncTarget();
   bindCollaborationControls(collaborationState);
   bindWorkflowHistoryControls(historyState);
+  bindCollaborationLazyLoad(runCollabPanel, collaborationState);
   await restorePlaygroundRunState(runState, collaborationState, runtime);
   if (runState.currentRunType === "agent" && shouldPollAgentRunStatus(runState.lastWorkflowStatus)) {
     startAgentRunPolling(runState, collaborationState, { runID: runState.currentRunID, eventsURL: runState.eventsURL });
   } else if (runState.currentRunType !== "agent" && shouldPollWorkflowRunStatus(runState.lastWorkflowStatus)) {
     startWorkflowRunPolling(runState, collaborationState, { runID: runState.currentRunID, workflowName: runState.currentWorkflowName });
   }
-  await loadCollaborationData(collaborationState);
   await loadWorkflowRunHistory(historyState, initialRunHistoryFocus(runState));
   startWorkflowHistoryPolling(historyState);
 
@@ -338,6 +392,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
     referencePopover.classList.add("hidden");
     referencePopover.setAttribute("aria-hidden", "true");
     referenceToggle.setAttribute("aria-expanded", "false");
+    syncRunContextGuide();
   };
   let referenceSearchTimer = 0;
   let referenceLoadSeq = 0;
@@ -360,6 +415,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
     referencePopover.classList.remove("hidden");
     referencePopover.setAttribute("aria-hidden", "false");
     referenceToggle.setAttribute("aria-expanded", "true");
+    syncRunContextGuide();
     referencePrefix.focus();
     referencePrefix.select();
     if (!(await ensureWorkspaceRequirementForReference(referenceFeedback, suggestions))) return;
@@ -394,10 +450,36 @@ export async function renderChat(root, runtime, refreshRuntime) {
       }
     }, { passive: true, signal: referencePickerController.signal });
   });
+  root.querySelector("#runContextGuide")?.addEventListener("click", event => {
+    const action = event.target instanceof Element ? event.target.closest("[data-run-context-action]") : null;
+    if (!action) return;
+    event.stopPropagation();
+    const name = action.dataset.runContextAction || "";
+    if (name === "workspace") {
+      location.hash = "workspace";
+      return;
+    }
+    if (name === "approvals") {
+      location.hash = "approvals";
+      return;
+    }
+    if (name === "cost") {
+      location.hash = "status";
+      return;
+    }
+    if (name === "files") {
+      referenceToggle.click();
+    }
+  });
   root.addEventListener("click", event => {
     if (!event.target.closest(".reference-picker") && !event.target.closest(".reference-popover")) closeReferencePicker();
   });
   ["click", "keyup", "select", "input"].forEach(type => prompt.addEventListener(type, rememberPromptSelection));
+  prompt.addEventListener("input", syncRunContextGuide);
+  window.addEventListener("goflow:runtime", event => {
+    latestRuntime = event.detail || latestRuntime;
+    syncRunContextGuide();
+  }, { signal: referencePickerController.signal });
 
   send.onclick = async () => {
     const rawInput = prompt.value.trim();
@@ -424,6 +506,9 @@ export async function renderChat(root, runtime, refreshRuntime) {
       agentName: agentSelect.value || ""
     });
     if (!workspaceReady) return;
+    const targetValue = runMode.value === "workflow" ? workflowSelect.value : agentSelect.value || "";
+    rememberRunTarget(runMode.value, targetValue, targetValue);
+    rerenderRunTargetCards();
     stopWorkflowRunPolling(runState);
     stopAgentRunPolling(runState);
     resetRunState(runState);
@@ -439,6 +524,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
     });
     prompt.value = "";
     setRunStatus(root, runStatus, send, true);
+    syncRunContextGuide();
     setTimelineHint(runState, t("chat.timelineRunning"));
     setResultStatus(runState, t("chat.resultStreaming"));
     setRunLiveStatus(runState, t("chat.realtimeSyncing"), "syncing");
@@ -472,7 +558,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
         setTimelineHint(runState, t("chat.timelineDone"));
         setResultStatus(runState, runState.hasResult ? t("chat.resultReady") : t("chat.resultIdle"));
       }
-      await loadCollaborationData(collaborationState);
+      markCollaborationStale(collaborationState);
     } catch (error) {
       const message = chatDisplayText(error.message || t("chat.errorTitle"));
       finalizeStreamingResult(runState);
@@ -498,6 +584,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
       }
       saveRunState(runState, { running: runStillActive });
       syncRunUnloadGuard(runState);
+      syncRunContextGuide();
       refreshRuntime().catch(() => {});
       runState.historyRefresh?.();
     }
@@ -512,7 +599,8 @@ export async function renderChat(root, runtime, refreshRuntime) {
     setRunStatus(root, runStatus, send, false, t("chat.ready"));
     setRunLiveStatus(runState, t("chat.realtimeIdle"), "idle");
     resetCollaborationState(collaborationState, "");
-    loadCollaborationData(collaborationState);
+    markCollaborationStale(collaborationState);
+    syncRunContextGuide();
   };
 }
 
@@ -832,6 +920,168 @@ function fillSelect(select, values, emptyLabel) {
   }
 }
 
+function renderRunTargetCards(container, options = {}) {
+  if (!container) return;
+  const cards = runTargetCardItems(options.runtime, options.workflowEntries);
+  if (!cards.length) {
+    container.innerHTML = `<div class="run-target-empty">${escapeHTML(t("chat.targetCardsEmpty"))}</div>`;
+    return;
+  }
+  container.innerHTML = cards.map(card => `
+    <button type="button" class="run-target-card" data-run-card-mode="${escapeHTML(card.mode)}" data-run-card-value="${escapeHTML(card.value)}" aria-pressed="false">
+      <span class="run-target-card-icon" aria-hidden="true">${runTargetCardIconHTML(card.mode)}</span>
+      <span class="run-target-card-copy">
+        <strong>${escapeHTML(card.title)}</strong>
+        <small>${escapeHTML(card.help)}</small>
+      </span>
+      <span class="run-target-card-badges">
+        ${card.recent ? `<span class="run-target-card-recent">${escapeHTML(t("chat.targetCardRecent"))}</span>` : ""}
+        <span class="run-target-card-kind">${escapeHTML(card.kind)}</span>
+      </span>
+    </button>`).join("");
+  container.querySelectorAll(".run-target-card").forEach(button => {
+    button.addEventListener("click", () => {
+      const mode = button.dataset.runCardMode || "agent";
+      const value = button.dataset.runCardValue || "";
+      options.runMode.value = mode;
+      if (mode === "workflow" && options.workflowSelect) {
+        options.workflowSelect.value = value;
+      } else if (options.agentSelect) {
+        options.agentSelect.value = value;
+      }
+      options.onSelect?.();
+    });
+  });
+  updateRunTargetCards(container, options.runMode?.value, options.agentSelect?.value, options.workflowSelect?.value);
+}
+
+function runTargetCardItems(runtime = {}, workflowEntries = []) {
+  const items = [];
+  const seen = new Set();
+  const recent = readRecentRunTargets();
+  const add = item => {
+    if (!item?.value) return;
+    const key = `${item.mode}:${item.value}`;
+    if (seen.has(key)) return;
+    seen.add(key);
+    const recentItem = recent.find(entry => entry.key === key);
+    items.push({
+      ...item,
+      recent: Boolean(recentItem),
+      recentUpdatedAt: recentItem?.updatedAt || 0,
+      recentCount: recentItem?.count || 0
+    });
+  };
+  const agents = Array.isArray(runtime.agents) && runtime.agents.length
+    ? runtime.agents
+    : (runtime.active_agent ? [{ id: runtime.active_agent, mode: runtime.mode || "" }] : []);
+  const active = runtime.active_agent || agents[0]?.id || "";
+  const sortedAgents = sortRunTargetsByRecent(agents.map(agent => ({
+    raw: agent,
+    key: `agent:${agent.id || agent.name || ""}`,
+    active: (agent.id || agent.name || "") === active
+  })), recent).map(item => item.raw);
+  sortedAgents.slice(0, 3).forEach(agent => {
+    const name = agent.id || agent.name || "";
+    add({
+      mode: "agent",
+      value: name,
+      title: name || t("chat.modeAgent"),
+      help: agent.description || t(agent.id === active ? "chat.targetCardActiveAgentHelp" : "chat.targetCardAgentHelp", { mode: modeLabel(agent.mode) }),
+      kind: t("chat.modeAgent")
+    });
+  });
+  sortRunTargetsByRecent((workflowEntries || []).filter(item => item?.value).map(item => ({
+    raw: item,
+    key: `workflow:${item.value}`,
+    active: false
+  })), recent).map(item => item.raw).slice(0, 4).forEach(item => {
+    add({
+      mode: "workflow",
+      value: item.value,
+      title: item.name || item.value,
+      help: item.title || t("chat.targetCardWorkflowHelp"),
+      kind: t("chat.modeWorkflow")
+    });
+  });
+  return items.sort((a, b) => runTargetCardSortScore(b) - runTargetCardSortScore(a)).slice(0, 4);
+}
+
+function sortRunTargetsByRecent(items = [], recent = []) {
+  const byKey = new Map(recent.map((item, index) => [item.key, { ...item, index }]));
+  return [...items].sort((a, b) => {
+    const recentA = byKey.get(a.key);
+    const recentB = byKey.get(b.key);
+    if (recentA || recentB) {
+      return (recentB?.updatedAt || 0) - (recentA?.updatedAt || 0)
+        || (recentB?.count || 0) - (recentA?.count || 0)
+        || (recentA?.index ?? 999) - (recentB?.index ?? 999);
+    }
+    if (a.active !== b.active) return a.active ? -1 : 1;
+    return 0;
+  });
+}
+
+function runTargetCardSortScore(card = {}) {
+  return (card.recentUpdatedAt || 0) + (card.recentCount || 0) * 1000 + (card.recent ? 10000000000000 : 0);
+}
+
+function readRecentRunTargets() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(runTargetRecentStorageKey) || "[]");
+    return Array.isArray(raw)
+      ? raw
+        .filter(item => item && typeof item === "object" && item.key && item.mode && item.value)
+        .sort((a, b) => Number(b.updatedAt || 0) - Number(a.updatedAt || 0))
+        .slice(0, 12)
+      : [];
+  } catch {
+    return [];
+  }
+}
+
+function rememberRunTarget(mode, value, label = "") {
+  const normalizedMode = mode === "workflow" ? "workflow" : "agent";
+  const normalizedValue = String(value || "").trim();
+  if (!normalizedValue) return;
+  try {
+    const key = `${normalizedMode}:${normalizedValue}`;
+    const current = readRecentRunTargets();
+    const previous = current.find(item => item.key === key);
+    const next = [
+      {
+        key,
+        mode: normalizedMode,
+        value: normalizedValue,
+        label: label || normalizedValue,
+        count: Math.min(999, Number(previous?.count || 0) + 1),
+        updatedAt: Date.now()
+      },
+      ...current.filter(item => item.key !== key)
+    ].slice(0, 12);
+    localStorage.setItem(runTargetRecentStorageKey, JSON.stringify(next));
+  } catch {
+    // Ignore storage failures; recommendation cards can still render.
+  }
+}
+
+function updateRunTargetCards(container, mode, agentValue, workflowValue) {
+  if (!container) return;
+  const current = mode === "workflow" ? workflowValue : agentValue;
+  container.querySelectorAll(".run-target-card").forEach(button => {
+    const active = button.dataset.runCardMode === mode && button.dataset.runCardValue === current;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function runTargetCardIconHTML(mode) {
+  if (mode === "workflow") {
+    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h4v4H7zM13 13h4v4h-4zM11 9h3.5a1.5 1.5 0 0 1 1.5 1.5V13M9 11v2.5A1.5 1.5 0 0 0 10.5 15H13"/></svg>`;
+  }
+  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V9a4 4 0 0 1 4-4zM6 19a6 6 0 0 1 12 0M8 11h8"/></svg>`;
+}
+
 function workflowExecutorEntries(options = {}, workflowGraphs = []) {
   const executors = Array.isArray(options.workflow_executors) ? options.workflow_executors : [];
   const source = executors.length ? executors : (workflowGraphs || []).filter(item => item.valid !== false);
@@ -888,6 +1138,121 @@ function contextDirectives(root) {
   if (skill) lines.push(`Use skill: ${skill}`);
   if (tool) lines.push(`Prefer tool: ${tool}`);
   return lines;
+}
+
+function updateRunContextGuide(root, selection = {}) {
+  const target = root.querySelector("#runContextGuide");
+  if (!target) return;
+  const runtime = selection.runtime || {};
+  const guideItems = runContextGuideItems(selection, runtime);
+  const actionItems = runContextActionItems(selection, runtime);
+  const items = [...actionItems, ...guideItems].map(runContextGuideItem).filter(Boolean);
+  target.classList.toggle("hidden", !items.length);
+  target.innerHTML = items.join("");
+}
+
+function runContextGuideItems(selection = {}, runtime = {}) {
+  const items = [];
+  if (selection.mode === "workflow") {
+    items.push({ kind: "target", title: t("chat.runContextGuideWorkflow"), body: t("chat.runContextGuideWorkflowHelp") });
+  }
+  if (selection.skill) {
+    items.push({ kind: "skill", title: t("chat.runContextGuideSkill"), body: t("chat.runContextGuideSkillHelp", { skill: selection.skill }) });
+  }
+  if (selection.tool) {
+    items.push({ kind: "tool", title: t("chat.runContextGuideTool"), body: t("chat.runContextGuideToolHelp", { tool: selection.tool }) });
+  }
+  const latestCost = runtime?.cost?.latest || runtime?.session?.prompt_budget || null;
+  const historySamples = Number(runtime?.cost?.samples || 0);
+  if (latestCost || historySamples) {
+    const tokens = Number(latestCost?.estimated_prompt_tokens || runtime?.cost?.average_estimated_prompt_tokens || 0);
+    items.push({
+      kind: "cost",
+      title: t("chat.runContextGuideCost"),
+      body: tokens ? t("chat.runContextGuideCostHelp", { tokens: tokenCountText(tokens) }) : t("chat.runContextGuideCostHelpNoData")
+    });
+  }
+  return items;
+}
+
+function runContextActionItems(selection = {}, runtime = {}) {
+  const items = [];
+  const workspace = runtime?.workspace || {};
+  const needsWorkspace = workspace.root && !workspace.confirmed && runPromptLooksWorkspaceScoped(selection.promptValue);
+  if (needsWorkspace) {
+    items.push({
+      kind: "workspace action",
+      title: t("chat.runContextWorkspaceTitle"),
+      body: t("chat.runContextWorkspaceBody"),
+      action: t("chat.workspacePreflightAction"),
+      actionName: "workspace"
+    });
+  }
+  const approvals = runPendingApprovalCount(runtime, selection.runState);
+  if (approvals > 0) {
+    items.push({
+      kind: "approval action",
+      title: t("chat.runContextApprovalTitle", { count: approvals }),
+      body: t("chat.runContextApprovalBody"),
+      action: t("chat.openApprovals"),
+      actionName: "approvals"
+    });
+  }
+  if (!selection.referenceOpen && runPromptLooksFileScoped(selection.promptValue)) {
+    items.push({
+      kind: "file action",
+      title: t("chat.runContextFilesTitle"),
+      body: t("chat.runContextFilesBody"),
+      action: t("chat.referenceFiles"),
+      actionName: "files"
+    });
+  }
+  const latestCost = runtime?.cost?.latest || runtime?.session?.prompt_budget || null;
+  const hasCostWarning = Array.isArray(runtime?.cost?.recommendations) && runtime.cost.recommendations.length > 0;
+  if (latestCost || hasCostWarning) {
+    items.push({
+      kind: "cost action",
+      title: t("chat.runContextCostTitle"),
+      body: hasCostWarning ? t("chat.runContextCostBodyWarnings", { count: runtime.cost.recommendations.length }) : t("chat.runContextCostBody"),
+      action: t("chat.runContextualOpenContext"),
+      actionName: "cost"
+    });
+  }
+  return items;
+}
+
+function runPromptLooksWorkspaceScoped(value = "") {
+  const text = String(value || "").toLowerCase();
+  if (!text.trim()) return false;
+  return /(^|\s)@[\w./\\-]+/.test(text) || /(file|folder|workspace|repo|project|code|test|build|run|edit|write|delete|read|diff|文件|目录|工作区|项目|代码|测试|构建|运行|修改|写入|删除|读取)/i.test(text);
+}
+
+function runPromptLooksFileScoped(value = "") {
+  const text = String(value || "");
+  if (!text.trim()) return false;
+  return /(^|\s)@[\w./\\-]+/.test(text) || /(\b[\w.-]+\.(go|js|ts|tsx|jsx|py|md|yaml|yml|json|css|html)\b|文件|目录|路径|代码)/i.test(text);
+}
+
+function runPendingApprovalCount(runtime = {}, runState = null) {
+  const pending = Array.isArray(runtime?.session?.pending_approvals) ? runtime.session.pending_approvals.length : 0;
+  const workflowRuns = normalizeWorkflowRunList(runtime?.session?.workflow_runs);
+  const agentRuns = normalizeAgentRunList(runtime?.session?.agent_runs);
+  const pausedRuns = [...workflowRuns, ...agentRuns].filter(run => isApprovalStatus(run?.status) || String(run?.status || "").toLowerCase() === "awaiting_tool_approval").length;
+  const current = runState?.awaitingApproval ? 1 : 0;
+  return Math.max(pending, pausedRuns, current);
+}
+
+function runContextGuideItem(item) {
+  if (!item?.title && !item?.body) return "";
+  const action = item.actionName
+    ? `<button type="button" data-run-context-action="${escapeHTML(item.actionName)}">${escapeHTML(item.action || t("chat.runContextActionOpen"))}</button>`
+    : "";
+  return `<span class="run-context-guide-item ${escapeHTML(item.kind || "")}">
+    <i aria-hidden="true"></i>
+    <strong>${escapeHTML(item.title || "")}</strong>
+    <small>${escapeHTML(item.body || "")}</small>
+    ${action}
+  </span>`;
 }
 
 function setRunStatus(root, runStatus, send, running, labelText = "") {
@@ -989,7 +1354,8 @@ function createRunState(messages, timelineJumpLatest, resultPreview, resultOutpu
     durableWorkflowActive: false,
     currentRunID: "",
     currentStage: "",
-    historyRefresh: null
+    historyRefresh: null,
+    syncContextGuide: null
   };
 }
 
@@ -1096,7 +1462,7 @@ function createWorkflowInputSubmitHandler(runState, messages, collaborationState
         workflowName: runState.currentWorkflowName,
         eventsURL: runEventsURLFromActionResponse(response)
       });
-      await loadCollaborationData(collaborationState);
+      markCollaborationStale(collaborationState);
     } catch (error) {
       const message = chatDisplayText(error.message || t("chat.resumeFailed"));
       showWorkflowInputError(runState, message);
@@ -1427,7 +1793,7 @@ async function pollAgentRunSnapshot(runState, collaborationState) {
     const key = agentRunSnapshotKey(run);
     if (key !== runState.lastSnapshotKey) {
       await renderAgentRunSnapshot(runState, collaborationState, run);
-      loadCollaborationData(collaborationState).catch(() => {});
+      markCollaborationStale(collaborationState);
       runState.historyRefresh?.();
     } else {
       setRunLiveStatus(runState, shouldPollAgentRunStatus(run.status) ? t("chat.realtimeLive") : t("chat.realtimeUpdated"), shouldPollAgentRunStatus(run.status) ? "live" : "idle");
@@ -1507,7 +1873,7 @@ async function pollWorkflowRunSnapshot(runState, collaborationState) {
     const key = workflowRunSnapshotKey(hydrated);
     if (key !== runState.lastSnapshotKey) {
       await renderWorkflowRunSnapshot(runState, collaborationState, hydrated);
-      loadCollaborationData(collaborationState).catch(() => {});
+      markCollaborationStale(collaborationState);
       runState.historyRefresh?.();
     } else {
       setRunLiveStatus(runState, shouldPollWorkflowRunStatus(hydrated.status) ? t("chat.realtimeLive") : t("chat.realtimeUpdated"), shouldPollWorkflowRunStatus(hydrated.status) ? "live" : "idle");
@@ -1577,9 +1943,7 @@ async function renderAgentRunSnapshot(runState, collaborationState, run) {
   if (output && !isInternalWorkflowPrompt(output)) {
     replaceResult(runState, output);
   }
-  renderRunTokenUsage(runState, run);
-  renderRunToolRisk(runState, run);
-  renderRunDiffs(runState, run);
+  renderRunSupplementalDetails(runState, run);
   if (run.error) {
     runState.hasError = true;
     showRunAttention(runState, t("chat.errorTitle"), run.error, "error");
@@ -1613,6 +1977,7 @@ async function renderAgentRunSnapshot(runState, collaborationState, run) {
     eventsURL: runState.eventsURL,
     lastEventSeq: runState.lastEventSeq
   });
+  runState.syncContextGuide?.();
   restoreRunViewState(runState, viewState);
 }
 
@@ -1632,13 +1997,13 @@ function agentRunSnapshotKey(run) {
   ].join("|");
 }
 
-async function hydrateAgentRunDetails(run) {
+async function hydrateAgentRunDetails(run, options = {}) {
   if (!run?.id) return run || {};
   const next = { ...run };
-  const [replay, diffs] = await Promise.allSettled([
-    fetchAgentRunReplay(run),
-    fetchAgentRunDiffs(run, { include_content: true })
-  ]);
+  const detailMode = options.details || "summary";
+  const requests = [fetchAgentRunReplay(run)];
+  if (detailMode === "full") requests.push(fetchAgentRunDiffs(run, { include_content: true }));
+  const [replay, diffs] = await Promise.allSettled(requests);
   if (replay.status === "fulfilled") {
     mergeAgentRunReplay(next, replay.value);
   }
@@ -1646,7 +2011,7 @@ async function hydrateAgentRunDetails(run) {
     const timeline = await fetchAgentRunTimeline(run, { limit: 80 }).catch(() => null);
     if (Array.isArray(timeline)) next.timeline = timeline;
   }
-  if (diffs.status === "fulfilled" && Array.isArray(diffs.value?.diffs)) next.diffs = diffs.value.diffs;
+  if (detailMode === "full" && diffs?.status === "fulfilled" && Array.isArray(diffs.value?.diffs)) next.diffs = diffs.value.diffs;
   return next;
 }
 
@@ -1827,7 +2192,7 @@ async function refreshAgentRunAfterAction(runState, collaborationState) {
   }
   await runState.refreshRuntime?.().catch(() => {});
   runState.historyRefresh?.();
-  await loadCollaborationData(collaborationState).catch(() => {});
+  markCollaborationStale(collaborationState);
 }
 
 async function renderWorkflowRunSnapshot(runState, collaborationState, run) {
@@ -1862,9 +2227,7 @@ async function renderWorkflowRunSnapshot(runState, collaborationState, run) {
   }
   const output = workflowRunResultText(run);
   if (output) replaceResult(runState, output);
-  renderRunTokenUsage(runState, run);
-  renderRunToolRisk(runState, run);
-  renderWorkflowRunEvidence(runState, run);
+  renderRunSupplementalDetails(runState, run);
   if (runState.awaitingInput) {
     runState.inputRequest = {
       runID: run.id || "",
@@ -1891,6 +2254,7 @@ async function renderWorkflowRunSnapshot(runState, collaborationState, run) {
     eventsURL: runState.eventsURL,
     lastEventSeq: runState.lastEventSeq
   });
+  runState.syncContextGuide?.();
   restoreRunViewState(runState, viewState);
 }
 
@@ -1902,7 +2266,7 @@ function workflowRunLatestEventSeq(run) {
 function workflowRunSnapshotKey(run) {
   const events = Array.isArray(run?.events) ? run.events.length : 0;
   const stages = Array.isArray(run?.completed_stages) ? run.completed_stages.length : 0;
-  const artifacts = Array.isArray(run?.artifacts) ? run.artifacts.length : 0;
+  const artifacts = Array.isArray(run?.artifacts) ? run.artifacts.length : run?.artifacts_count || 0;
   const diffs = Array.isArray(run?.diffs) ? run.diffs.length : 0;
   const risk = toolRiskSignature(runToolRiskContext(run).risk);
   return [
@@ -1918,15 +2282,16 @@ function workflowRunSnapshotKey(run) {
   ].join("|");
 }
 
-async function hydrateWorkflowRunDetails(run) {
+async function hydrateWorkflowRunDetails(run, options = {}) {
   if (!run?.id) return run || {};
   const next = { ...run };
+  const detailMode = options.details || "summary";
   const [replay, artifacts, stages, diffs, evidence] = await Promise.allSettled([
     fetchWorkflowRunReplay(run),
-    fetchWorkflowRunArtifacts(run),
-    fetchWorkflowRunStages(run),
-    fetchWorkflowRunDiffs(run, { include_content: true }),
-    fetchWorkflowRunEvidence(run)
+    fetchWorkflowRunArtifacts(run, { limit: 6 }),
+    fetchWorkflowRunStages(run, { limit: 6 }),
+    detailMode === "full" ? fetchWorkflowRunDiffs(run, { include_content: true }) : Promise.resolve(null),
+    detailMode === "full" ? fetchWorkflowRunEvidence(run) : Promise.resolve(null)
   ]);
   if (replay.status === "fulfilled") {
     mergeWorkflowRunReplay(next, replay.value);
@@ -1941,12 +2306,12 @@ async function hydrateWorkflowRunDetails(run) {
   if (stages.status === "fulfilled" && Array.isArray(stages.value)) {
     next.completed_stages = stages.value;
   }
-  if (diffs.status === "fulfilled" && Array.isArray(diffs.value?.diffs)) {
+  if (detailMode === "full" && diffs.status === "fulfilled" && Array.isArray(diffs.value?.diffs)) {
     next.diffs = diffs.value.diffs;
   } else if (!Array.isArray(next.diffs)) {
     next.diffs = [];
   }
-  if (evidence.status === "fulfilled") {
+  if (detailMode === "full" && evidence.status === "fulfilled") {
     const normalized = normalizeWorkflowRunEvidencePayload(evidence.value);
     if (normalized.items.length) next.evidence = normalized.items;
     if (Object.keys(normalized.quality).length) next.quality = normalized.quality;
@@ -2164,7 +2529,7 @@ async function refreshWorkflowRunAfterAction(runState, collaborationState) {
   }
   await runState.refreshRuntime?.().catch(() => {});
   runState.historyRefresh?.();
-  await loadCollaborationData(collaborationState).catch(() => {});
+  markCollaborationStale(collaborationState);
 }
 
 function syncWorkflowActionButtonsPending(container, runState) {
@@ -2257,6 +2622,31 @@ function createWorkflowHistoryState(root, runState, collaborationState, refreshR
     historyPollTimer: null,
     historyInFlight: false
   };
+}
+
+function bindRunEmptyStateActions(root, prompt) {
+  root.addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-run-empty-action]") : null;
+    if (!button) return;
+    event.preventDefault();
+    const action = button.dataset.runEmptyAction || "";
+    if (action === "focus-prompt") {
+      prompt?.focus();
+      prompt?.scrollIntoView({ block: "center", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+      return;
+    }
+    if (action === "open-workflows") {
+      location.hash = "workflows";
+      return;
+    }
+    if (action === "refresh-history") {
+      root.querySelector("#runHistoryRefresh")?.click();
+    }
+  });
+}
+
+function prefersReducedMotion() {
+  return window.matchMedia?.("(prefers-reduced-motion: reduce)")?.matches;
 }
 
 function bindWorkflowHistoryControls(state) {
@@ -2365,7 +2755,14 @@ async function loadWorkflowRunHistory(state, preferredRunID = "", options = {}) 
         summaryKey: detailSummaryKey
       });
     } else {
-      state.detail.innerHTML = `<div class="run-history-empty">${escapeHTML(t("chat.runHistoryEmptyHelp"))}</div>`;
+      state.detail.innerHTML = renderRunHistoryEmptyState({
+        title: t("chat.runHistoryEmpty"),
+        body: t("chat.runHistoryEmptyHelp"),
+        primaryLabel: t("chat.runHistoryStartTask"),
+        primaryAction: "focus-prompt",
+        secondaryLabel: t("chat.runHistoryOpenWorkflows"),
+        secondaryAction: "open-workflows"
+      });
       state.detailKey = "";
       state.detailSummaryKey = "";
       state.detailHydratedAt = 0;
@@ -2599,12 +2996,15 @@ function normalizeRunCollectionItem(run) {
     stages_url: run?.stages_url || run?.stagesURL || run?.stages_path || run?.stagesPath || "",
     evidence_path: run?.evidence_path || run?.evidencePath || run?.evidence_url || run?.evidenceURL || "",
     evidence_url: run?.evidence_url || run?.evidenceURL || run?.evidence_path || run?.evidencePath || "",
+    context_path: run?.context_path || run?.contextPath || run?.context_url || run?.contextURL || "",
+    context_url: run?.context_url || run?.contextURL || run?.context_path || run?.contextPath || "",
     actions_path: run?.actions_path || run?.actionsPath || run?.actions_url || run?.actionsURL || "",
     actions_url: run?.actions_url || run?.actionsURL || run?.actions_path || run?.actionsPath || "",
     diffs_path: run?.diffs_path || run?.diffsPath || run?.diffs_url || run?.diffsURL || "",
     diffs_url: run?.diffs_url || run?.diffsURL || run?.diffs_path || run?.diffsPath || "",
     export_url: run?.export_url || run?.exportURL || run?.export_path || run?.exportPath || "",
     cancel_url: run?.cancel_url || run?.cancelURL || run?.cancel_path || run?.cancelPath || "",
+    artifacts_count: runCollectionCount(run?.artifacts_count ?? run?.artifactsCount ?? (Array.isArray(run?.artifacts) ? run.artifacts.length : 0), 0),
     actions_summary: actionsSummary
   };
 }
@@ -2633,7 +3033,12 @@ function selectedWorkflowHistoryRunID(state, runs, preferredRunID = "") {
 
 function renderWorkflowHistoryError(state, message) {
   setRunHistoryStatus(state, t("chat.runHistoryLoadFailed"));
-  if (state.detail) state.detail.innerHTML = `<div class="run-history-empty">${escapeHTML(message)}</div>`;
+  if (state.detail) state.detail.innerHTML = renderRunHistoryEmptyState({
+    title: t("chat.runHistoryLoadFailed"),
+    body: message,
+    primaryLabel: t("chat.runHistoryRefresh"),
+    primaryAction: "refresh-history"
+  });
 }
 
 function setRunHistoryStatus(state, text) {
@@ -2645,7 +3050,12 @@ function setRunHistoryStatus(state, text) {
 function renderWorkflowRunHistoryList(state, selectedRunID, options = {}) {
   state.selectedRunID = selectedRunID || "";
   if (!state.runs.length) {
-    state.list.innerHTML = `<div class="run-history-empty">${escapeHTML(t("chat.runHistoryEmptyHelp"))}</div>`;
+    state.list.innerHTML = renderRunHistoryEmptyState({
+      title: t("chat.runHistoryEmpty"),
+      body: t("chat.runHistoryEmptyHelp"),
+      primaryLabel: t("chat.runHistoryStartTask"),
+      primaryAction: "focus-prompt"
+    });
     state.listKey = "";
     return;
   }
@@ -2822,7 +3232,7 @@ async function renderWorkflowRunHistoryDetail(state, runKey, options = {}) {
   if (!options.background) {
     state.detail.innerHTML = `<div class="run-history-empty">${escapeHTML(t("chat.runHistoryLoading"))}</div>`;
   }
-  const run = await hydrateHistoryRun(listed);
+  const run = await hydrateHistoryRun(listed, { summary: true });
   const actions = await historyRunActions(run);
   const detailKey = workflowRunHistoryDetailKey(run, actions);
   if (!options.force && state.detailRunID === state.selectedRunID && state.detailKey === detailKey) {
@@ -2857,6 +3267,21 @@ async function renderWorkflowRunHistoryDetail(state, runKey, options = {}) {
       });
     });
   });
+  bindRunHistoryLazyPanels(state, run);
+}
+
+function renderRunHistoryEmptyState(options = {}) {
+  const primary = options.primaryLabel
+    ? `<button type="button" class="primary" data-run-empty-action="${escapeHTML(options.primaryAction || "")}">${escapeHTML(options.primaryLabel)}</button>`
+    : "";
+  const secondary = options.secondaryLabel
+    ? `<button type="button" data-run-empty-action="${escapeHTML(options.secondaryAction || "")}">${escapeHTML(options.secondaryLabel)}</button>`
+    : "";
+  return `<div class="run-history-empty run-history-action-empty">
+    <strong>${escapeHTML(options.title || t("chat.runHistoryEmpty"))}</strong>
+    <span>${escapeHTML(options.body || t("chat.runHistoryEmptyHelp"))}</span>
+    ${primary || secondary ? `<div class="run-history-empty-actions">${primary}${secondary}</div>` : ""}
+  </div>`;
 }
 
 function workflowRunHistoryDetailScrollNode(container) {
@@ -2911,12 +3336,15 @@ function normalizeRunContractPaths(run = {}) {
     stages_url: run?.stages_url || run?.stagesURL || run?.stages_path || run?.stagesPath || "",
     evidence_path: run?.evidence_path || run?.evidencePath || run?.evidence_url || run?.evidenceURL || "",
     evidence_url: run?.evidence_url || run?.evidenceURL || run?.evidence_path || run?.evidencePath || "",
+    context_path: run?.context_path || run?.contextPath || run?.context_url || run?.contextURL || "",
+    context_url: run?.context_url || run?.contextURL || run?.context_path || run?.contextPath || "",
     actions_path: run?.actions_path || run?.actionsPath || run?.actions_url || run?.actionsURL || "",
     actions_url: run?.actions_url || run?.actionsURL || run?.actions_path || run?.actionsPath || "",
     diffs_path: run?.diffs_path || run?.diffsPath || run?.diffs_url || run?.diffsURL || "",
     diffs_url: run?.diffs_url || run?.diffsURL || run?.diffs_path || run?.diffsPath || "",
     export_url: run?.export_url || run?.exportURL || run?.export_path || run?.exportPath || "",
-    cancel_url: run?.cancel_url || run?.cancelURL || run?.cancel_path || run?.cancelPath || ""
+    cancel_url: run?.cancel_url || run?.cancelURL || run?.cancel_path || run?.cancelPath || "",
+    artifacts_count: runCollectionCount(run?.artifacts_count ?? run?.artifactsCount ?? (Array.isArray(run?.artifacts) ? run.artifacts.length : 0), 0)
   };
 }
 
@@ -2951,13 +3379,15 @@ function historyRunTitle(run) {
   return [localizedText(run.name || t("chat.workflow")), `#${run.attempt || 1}`].filter(Boolean).join(" ");
 }
 
-async function hydrateHistoryRun(run) {
+async function hydrateHistoryRun(run, options = {}) {
   if (run?.run_type === "agent") {
-    const fresh = await fetchAgentRun(run.id);
-    return normalizeHistoryRun(await hydrateAgentRunDetails({ ...run, ...fresh }), "agent");
+    const fresh = await fetchAgentRun(run.id, options.summary ? { summary: true } : {});
+    const next = normalizeHistoryRun({ ...run, ...fresh }, "agent");
+    return options.summary ? next : normalizeHistoryRun(await hydrateAgentRunDetails(next), "agent");
   }
-  const fresh = await fetchWorkflowRun(run.id);
-  return normalizeHistoryRun(await hydrateWorkflowRunDetails({ ...run, ...fresh }), "workflow");
+  const fresh = await fetchWorkflowRun(run.id, options.summary ? { summary: true } : {});
+  const next = normalizeHistoryRun({ ...run, ...fresh }, "workflow");
+  return options.summary ? next : normalizeHistoryRun(await hydrateWorkflowRunDetails(next), "workflow");
 }
 
 async function historyRunActions(run) {
@@ -3003,13 +3433,17 @@ function workflowRunHistoryDetail(run, actions) {
   const events = Array.isArray(run.events) ? run.events : [];
   const diffs = Array.isArray(run.diffs) ? run.diffs : [];
   const isAgent = run.run_type === "agent";
+  const stageCount = stages.length || run.stages_count || 0;
+  const artifactCount = artifacts.length || run.artifacts_count || 0;
+  const eventCount = events.length || run.events_count || 0;
+  const diffCount = diffs.length || run.diffs_count || 0;
   const facts = [
     detailChipHTML(t("chat.runHistoryStatus"), workflowRunStatusLabel(run.status || "")),
     detailChipHTML(isAgent ? t("chat.runHistoryAgent") : t("chat.runHistoryStage"), isAgent ? localizedText(run.agent_id || run.agent || "-") : localizedText(run.next_stage || lastCompletedStageName(run) || "-")),
-    isAgent ? detailChipHTML(t("chat.runHistoryMode"), modeLabel(run.mode || "")) : detailChipHTML(t("chat.runHistoryStages"), String(stages.length)),
-    !isAgent ? detailChipHTML(t("chat.runHistoryArtifacts"), String(artifacts.length)) : "",
-    detailChipHTML(t("chat.runHistoryDiffs"), String(diffs.length)),
-    detailChipHTML(t("chat.runHistoryEvents"), String(events.length))
+    isAgent ? detailChipHTML(t("chat.runHistoryMode"), modeLabel(run.mode || "")) : detailChipHTML(t("chat.runHistoryStages"), String(stageCount)),
+    detailChipHTML(t("chat.runHistoryArtifacts"), String(artifactCount)),
+    detailChipHTML(t("chat.runHistoryDiffs"), String(diffCount)),
+    detailChipHTML(t("chat.runHistoryEvents"), String(eventCount))
   ].filter(Boolean).join("");
   const visibleActions = Array.isArray(actions) ? actions : [];
   const actionHTML = visibleActions.length
@@ -3020,12 +3454,9 @@ function workflowRunHistoryDetail(run, actions) {
   const summary = outputSummary || publicResultText(run.approval_prompt || run.request || "") || t("chat.runHistoryNoSummary");
   const nextStep = workflowRunHistoryNextStep(run, visibleActions);
   const delivery = workflowRunDeliveryHTML(run, { summary, hasOutput: Boolean(outputSummary) });
-  const skillScript = runSkillScriptContextHTML(run, { compact: true });
-  const toolRisk = runToolRiskMiniHTML(run, { compact: true });
-  const tokenUsage = runTokenUsageHTML(run, { compact: true });
-  const evidence = isAgent ? "" : workflowRunEvidenceHTML(run, { compact: true, maxArtifacts: 4, maxStages: 4 });
-  const diffsHTML = runDiffViewerHTML(diffs, { compact: true, maxDiffs: 4, maxLines: 80 });
-  const evidenceStack = [tokenUsage, skillScript, toolRisk, evidence, diffsHTML].filter(Boolean).join("");
+  const lazyPanels = runHistoryLazyPanelsHTML(run, { isAgent, stageCount, artifactCount, eventCount, diffCount });
+  const contextual = runHistoryContextualSummaryHTML(run, { isAgent, stageCount, artifactCount, eventCount, diffCount });
+  const evidenceStack = [contextual, lazyPanels].filter(Boolean).join("");
   const actionCount = visibleActions.length
     ? `<small>${escapeHTML(String(visibleActions.length))}</small>`
     : "";
@@ -3060,6 +3491,320 @@ function workflowRunHistoryDetail(run, actions) {
       </div>
     </div>
   </article>`;
+}
+
+function runHistoryLazyPanelsHTML(run, counts = {}) {
+  const panels = [
+    runHistoryLazyPanelHTML("context", t("chat.runHistoryLazyContext"), t("chat.runHistoryLazyContextHelp"), 1, t("chat.runContextTitle")),
+    runHistoryLazyPanelHTML("timeline", t("chat.runHistoryLazyTimeline"), t("chat.runHistoryLazyTimelineHelp"), counts.eventCount || 0, t("chat.runHistoryEvents")),
+    runHistoryLazyPanelHTML("artifacts", t("chat.runHistoryLazyArtifacts"), t("chat.runHistoryLazyArtifactsHelp"), counts.artifactCount || 0, t("chat.runArtifactsTitle")),
+    run?.run_type === "agent" ? "" : runHistoryLazyPanelHTML("evidence", t("chat.runHistoryLazyEvidence"), t("chat.runHistoryLazyEvidenceHelp"), (counts.artifactCount || 0) + (counts.stageCount || 0), t("chat.runEvidenceTitle")),
+    runHistoryLazyPanelHTML("diffs", t("chat.runHistoryLazyDiffs"), t("chat.runHistoryLazyDiffsHelp"), counts.diffCount || 0, t("chat.runHistoryDiffs"))
+  ].filter(Boolean).join("");
+  if (!panels) return "";
+  return `<section class="run-history-lazy-stack" data-history-lazy-stack data-run-kind="${escapeHTML(run?.run_type || "workflow")}" data-run-id="${escapeHTML(run?.id || "")}">
+    <div class="run-evidence-head">
+      <div>
+        <strong>${escapeHTML(t("chat.runHistoryLazyTitle"))}</strong>
+        <span>${escapeHTML(t("chat.runHistoryLazyHelp"))}</span>
+      </div>
+      <small>${escapeHTML(t("chat.runHistoryLazySummaryFirst"))}</small>
+    </div>
+    ${panels}
+  </section>`;
+}
+
+function runHistoryContextualSummaryHTML(run, counts = {}) {
+  const tokenSummary = runTokenUsageSummary(run);
+  const toolRisk = runToolRiskContext(run);
+  const items = [
+    tokenSummary ? {
+      tone: "cost",
+      label: t("chat.runContextualCostTitle"),
+      value: tokenCountText(tokenSummary.estimatedPrompt || tokenSummary.total || tokenSummary.prompt || 0),
+      help: t("chat.runContextualHistoryCostHelp")
+    } : null,
+    toolRisk?.risk ? {
+      tone: "tool",
+      label: t("chat.runContextualToolTitle"),
+      value: runToolRiskLevelLabel(toolRisk.risk.level || toolRisk.risk.risk_level || ""),
+      help: t("chat.runContextualHistoryToolHelp")
+    } : null,
+    (counts.artifactCount || counts.diffCount || counts.stageCount) ? {
+      tone: "evidence",
+      label: t("chat.runContextualEvidenceTitle"),
+      value: t("chat.runContextualHistoryEvidenceValue", {
+        artifacts: counts.artifactCount || 0,
+        diffs: counts.diffCount || 0
+      }),
+      help: t("chat.runContextualHistoryEvidenceHelp")
+    } : null
+  ].filter(Boolean);
+  if (!items.length) return "";
+  return `<section class="run-history-contextual-summary">
+    ${items.map(item => `<span class="${escapeHTML(item.tone)}">
+      <small>${escapeHTML(item.label)}</small>
+      <strong>${escapeHTML(item.value || "-")}</strong>
+      <em>${escapeHTML(item.help)}</em>
+    </span>`).join("")}
+  </section>`;
+}
+
+function runHistoryLazyPanelHTML(kind, title, help, count, fallbackLabel) {
+  const disabled = Number(count || 0) <= 0;
+  return `<section class="run-history-lazy-panel" data-history-lazy-panel="${escapeHTML(kind)}">
+    <div>
+      <strong class="run-history-lazy-panel-title">${escapeHTML(title || fallbackLabel)}</strong>
+      <span>${escapeHTML(help || "")}</span>
+    </div>
+    <button type="button" class="ghost-button" data-history-load="${escapeHTML(kind)}" ${disabled ? "disabled aria-disabled=\"true\"" : ""}>
+      <span class="run-history-load-icon" aria-hidden="true"></span>
+      <span class="run-history-load-copy">
+        <strong>${escapeHTML(disabled ? t("chat.runHistoryLazyEmpty") : t("chat.runHistoryLazyLoad", { count }))}</strong>
+        <small>${escapeHTML(title || fallbackLabel || kind)}</small>
+      </span>
+    </button>
+    <div class="run-history-lazy-content" data-history-lazy-content="${escapeHTML(kind)}"></div>
+  </section>`;
+}
+
+function bindRunHistoryLazyPanels(state, run) {
+  const stack = state.detail?.querySelector("[data-history-lazy-stack]");
+  if (!stack || !run?.id) return;
+  stack.querySelectorAll("[data-history-load]").forEach(button => {
+    button.addEventListener("click", async () => {
+      if (button.disabled) return;
+      const kind = button.dataset.historyLoad || "";
+      const panel = button.closest("[data-history-lazy-panel]");
+      const content = panel?.querySelector("[data-history-lazy-content]");
+      if (!panel || !content) return;
+      const label = button.querySelector(".run-history-load-copy strong");
+      const previousLabel = label?.textContent || "";
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      content.innerHTML = `<div class="run-history-lazy-loading">${escapeHTML(t("chat.runHistoryLazyLoading"))}</div>`;
+      try {
+        const html = await loadRunHistoryLazyPanel(run, kind);
+        content.innerHTML = html || `<div class="run-history-empty">${escapeHTML(t("chat.runHistoryLazyNoDetails"))}</div>`;
+        panel.classList.add("loaded");
+        if (label) label.textContent = t("chat.runHistoryLazyLoaded");
+      } catch (error) {
+        content.innerHTML = `<div class="run-history-empty">${escapeHTML(chatDisplayText(error.message || t("chat.runHistoryLoadFailed")))}</div>`;
+        if (label) label.textContent = previousLabel;
+        button.disabled = false;
+      } finally {
+        button.setAttribute("aria-busy", "false");
+      }
+    });
+  });
+}
+
+async function loadRunHistoryLazyPanel(run, kind) {
+  if (kind === "context") return runHistoryLazyContextHTML(run);
+  if (kind === "timeline") return runHistoryLazyTimelineHTML(run);
+  if (kind === "artifacts") return runHistoryLazyArtifactsHTML(run);
+  if (kind === "evidence") return runHistoryLazyEvidenceHTML(run);
+  if (kind === "diffs") return runHistoryLazyDiffsHTML(run);
+  return "";
+}
+
+async function runHistoryLazyContextHTML(run) {
+  const payload = run?.run_type === "agent"
+    ? await fetchAgentRunContext(run)
+    : await fetchWorkflowRunContext(run);
+  return runContextDiagnosticsHTML(payload);
+}
+
+function runContextDiagnosticsHTML(context = {}) {
+  if (!context || typeof context !== "object") return "";
+  const latest = context.latest?.budget || context.latest || {};
+  const counts = context.counts || {};
+  const memoryBlocks = Array.isArray(context.memory_blocks) ? context.memory_blocks : Array.isArray(latest.memory_blocks) ? latest.memory_blocks : [];
+  const omitted = Array.isArray(context.omitted_context) ? context.omitted_context : Array.isArray(latest.omitted_context) ? latest.omitted_context : [];
+  const artifacts = Array.isArray(context.artifact_refs) ? context.artifact_refs : Array.isArray(latest.artifact_refs) ? latest.artifact_refs : [];
+  const toolSchema = context.tool_schema && typeof context.tool_schema === "object" ? context.tool_schema : {};
+  const injected = Array.isArray(toolSchema.injected) ? toolSchema.injected : Array.isArray(latest.injected_tool_schemas) ? latest.injected_tool_schemas : [];
+  const filtered = Array.isArray(toolSchema.filtered) ? toolSchema.filtered : Array.isArray(latest.filtered_tool_schemas) ? latest.filtered_tool_schemas : [];
+  const filteredToolCount = toolSchema.filtered_tool_count ?? latest.filtered_tool_count ?? filtered.length ?? 0;
+  const totalToolCount = toolSchema.total_tool_count ?? latest.total_tool_count ?? "";
+  const estimatedTokens = latest.estimated_prompt_tokens || counts.latest_estimated_prompt_tokens || 0;
+  const memorySaved = latest.memory_estimated_saved_tokens || counts.memory_estimated_saved_tokens || 0;
+  const artifactSaved = latest.artifact_omitted_tokens || counts.artifact_omitted_tokens || 0;
+  const skillSaved = latest.skill_omitted_tokens || counts.skill_omitted_tokens || 0;
+  const historySaved = latest.history_estimated_saved_tokens || counts.history_estimated_saved_tokens || 0;
+  const savedTokens = memorySaved + artifactSaved + skillSaved + historySaved;
+  const omittedCount = counts.omitted_context || omitted.length || 0;
+  const lazyRefCount = latest.artifact_ref_count || counts.artifact_refs || artifacts.length || 0;
+  const flow = [
+    [t("chat.runContextInputBudget"), tokenCountText(estimatedTokens), t("chat.runContextInputBudgetHelp"), "input"],
+    [t("chat.runContextSavedBudget"), tokenCountText(savedTokens), t("chat.runContextSavedBudgetHelp"), "saved"],
+    [t("chat.runContextLazyRefs"), String(lazyRefCount), t("chat.runContextLazyRefsHelp"), "refs"],
+    [t("chat.runContextOmittedBudget"), String(omittedCount), t("chat.runContextOmittedBudgetHelp"), "omitted"]
+  ];
+  const stats = [
+    [t("chat.runContextEstimatedTokens"), tokenCountText(estimatedTokens)],
+    [t("chat.runContextCacheablePrefix"), tokenCountText(latest.cacheable_prefix_tokens || counts.cacheable_prefix_tokens || 0)],
+    [t("chat.runContextSamples"), String(counts.prompt_budget_samples || context.history?.length || 0)],
+    [t("chat.runContextMemorySaved"), tokenCountText(memorySaved)],
+    [t("chat.runContextArtifactRefs"), String(lazyRefCount)],
+    [t("chat.runContextFilteredTools"), `${filteredToolCount}/${totalToolCount}`.replace(/\/$/, "")]
+  ].filter(([, value]) => value && value !== "0" && value !== "-");
+  return `<section class="run-context-diagnostics">
+    <div class="run-evidence-head">
+      <div>
+        <strong>${escapeHTML(t("chat.runContextTitle"))}</strong>
+        <span>${escapeHTML(t("chat.runContextHelp"))}</span>
+      </div>
+      <small>${escapeHTML(context.run_type === "agent" ? t("chat.runHistoryTypeAgent") : t("chat.runHistoryTypeWorkflow"))}</small>
+    </div>
+    <div class="run-context-flow">
+      ${flow.map(([label, value, help, tone]) => `<span class="run-context-flow-card ${escapeHTML(tone)}"><small>${escapeHTML(label)}</small><strong>${escapeHTML(value)}</strong><em>${escapeHTML(help)}</em></span>`).join("")}
+    </div>
+    ${stats.length ? `<div class="run-context-stat-grid">${stats.map(([label, value]) => evidenceMetaItemHTML(label, value)).join("")}</div>` : ""}
+    <div class="run-context-grid">
+      <section>
+        <strong>${escapeHTML(t("chat.runContextMemoryBlocks"))}</strong>
+        <div class="run-context-list">
+          ${memoryBlocks.length ? memoryBlocks.slice(0, 8).map(runContextMemoryBlockHTML).join("") : runContextEmptyHTML(t("chat.runContextNoMemory"))}
+        </div>
+      </section>
+      <section>
+        <strong>${escapeHTML(t("chat.runContextRefsOmitted"))}</strong>
+        <div class="run-context-list">
+          ${artifacts.slice(0, 5).map(ref => runContextLineHTML(t("chat.runContextArtifactRef"), ref, "artifact")).join("")}
+          ${omitted.slice(0, 6).map(item => runContextLineHTML(t("chat.runContextOmitted"), item, "omitted")).join("")}
+          ${!artifacts.length && !omitted.length ? runContextEmptyHTML(t("chat.runContextNoOmitted")) : ""}
+        </div>
+      </section>
+      <section>
+        <strong>${escapeHTML(t("chat.runContextInjectedTools"))}</strong>
+        <div class="run-context-list">
+          ${injected.length ? injected.slice(0, 8).map(runContextToolSchemaHTML).join("") : runContextEmptyHTML(t("chat.runContextNoInjectedTools"))}
+        </div>
+      </section>
+      <section>
+        <strong>${escapeHTML(t("chat.runContextFilteredToolsList"))}</strong>
+        <div class="run-context-list">
+          ${filtered.length ? filtered.slice(0, 8).map(runContextToolSchemaHTML).join("") : runContextEmptyHTML(t("chat.runContextNoFilteredTools"))}
+        </div>
+      </section>
+    </div>
+  </section>`;
+}
+
+function runContextMemoryBlockHTML(block = {}) {
+  const title = [block.kind, block.title].filter(Boolean).map(localizedText).join(" / ") || t("chat.runContextMemoryBlock");
+  const reason = runContextMemoryBlockReason(block);
+  const meta = [
+    block.ref ? `ref=${block.ref}` : "",
+    block.hash ? `hash=${String(block.hash).slice(0, 12)}` : "",
+    block.language ? localizedText(block.language) : "",
+    block.size ? `${formatRunArtifactNumber(block.size)} B` : "",
+    block.content_mode ? localizedText(block.content_mode) : "",
+    block.tokens ? tokenCountText(block.tokens) : "",
+    block.estimated_saved_tokens ? `${t("chat.runContextSaved")} ${tokenCountText(block.estimated_saved_tokens)}` : "",
+    block.score ? `score=${block.score}` : ""
+  ].filter(Boolean).join(" | ");
+  const tone = block.kind === "file" ? "file" : "";
+  return `<article class="run-context-line ${escapeHTML(tone)}">
+    <span class="badge neutral">${escapeHTML(localizedText(block.kind || t("chat.runContextMemoryBlock")))}</span>
+    <strong>${escapeHTML(title)}</strong>
+    ${reason ? `<em>${escapeHTML(reason)}</em>` : ""}
+    ${meta ? `<small>${escapeHTML(meta)}</small>` : ""}
+  </article>`;
+}
+
+function runContextMemoryBlockReason(block = {}) {
+  const mode = String(block.content_mode || "").trim().toLowerCase();
+  if (mode === "summary") return t("chat.runContextIncludedSummary");
+  if (mode === "full") return t("chat.runContextIncludedFull");
+  if (String(block.kind || "").trim().toLowerCase() === "file") return t("chat.runContextIncludedFile");
+  if (block.ref) return t("chat.runContextIncludedRef");
+  return "";
+}
+
+function runContextToolSchemaHTML(item = {}) {
+  const status = String(item.status || "").trim();
+  const title = item.qualified_name || item.name || t("chat.runContextToolSchema");
+  const meta = [
+    item.kind ? localizedText(item.kind) : "",
+    item.tokens ? tokenCountText(item.tokens) : "",
+    item.schema_hash ? `hash=${item.schema_hash}` : ""
+  ].filter(Boolean).join(" | ");
+  const reason = item.reason ? localizedText(item.reason) : "";
+  return `<article class="run-context-line tool ${escapeHTML(status)}">
+    <span class="badge neutral">${escapeHTML(localizedText(status || t("chat.runContextToolSchema")))}</span>
+    <strong>${escapeHTML(localizedText(title))}</strong>
+    ${meta ? `<small>${escapeHTML(meta)}</small>` : ""}
+    ${reason ? `<small>${escapeHTML(reason)}</small>` : ""}
+  </article>`;
+}
+
+function runContextLineHTML(label, value, tone = "") {
+  const reason = tone === "artifact"
+    ? t("chat.runContextLazyLoadReason")
+    : tone === "omitted"
+      ? t("chat.runContextOmittedReason")
+      : "";
+  return `<article class="run-context-line ${escapeHTML(tone)}">
+    <span class="badge neutral">${escapeHTML(label)}</span>
+    <strong>${escapeHTML(localizedText(value))}</strong>
+    ${reason ? `<em>${escapeHTML(reason)}</em>` : ""}
+  </article>`;
+}
+
+function runContextEmptyHTML(text) {
+  return `<div class="run-context-empty">${escapeHTML(text)}</div>`;
+}
+
+async function runHistoryLazyTimelineHTML(run) {
+  const items = run?.run_type === "agent"
+    ? await fetchAgentRunTimeline(run, { limit: 120 })
+    : await fetchWorkflowRunTimeline(run, { limit: 120 });
+  const events = run?.run_type === "agent" ? timelineItemsForAgentRun(items, run) : timelineItemsForWorkflowRun(items, run);
+  if (!events.length) return "";
+  return `<div class="run-history-lazy-timeline">${events.map(runHistoryTimelineItemHTML).join("")}</div>`;
+}
+
+async function runHistoryLazyArtifactsHTML(run) {
+  const payload = run?.run_type === "agent"
+    ? await fetchAgentRunArtifacts(run, { include_content: true, limit: 12 })
+    : await fetchWorkflowRunArtifacts(run, { envelope: true, include_content: true, limit: 12 });
+  return runArtifactViewerHTML(payload, { compact: true });
+}
+
+function runHistoryTimelineItemHTML(item = {}) {
+  return `<article class="run-history-timeline-item ${escapeHTML(item.tone || "neutral")}">
+    <span aria-hidden="true"></span>
+    <div>
+      <strong>${escapeHTML(localizedText(item.title || t("chat.timelineIdle")))}</strong>
+      ${item.detail ? `<p>${escapeHTML(localizedText(item.detail))}</p>` : ""}
+    </div>
+  </article>`;
+}
+
+async function runHistoryLazyEvidenceHTML(run) {
+  const [artifacts, stages, evidence] = await Promise.allSettled([
+    fetchWorkflowRunArtifacts(run, { include_content: true, limit: 8 }),
+    fetchWorkflowRunStages(run, { include_content: true, limit: 8 }),
+    fetchWorkflowRunEvidence(run, { limit: 16 })
+  ]);
+  const next = { ...run };
+  if (artifacts.status === "fulfilled" && Array.isArray(artifacts.value)) next.artifacts = artifacts.value;
+  if (stages.status === "fulfilled" && Array.isArray(stages.value)) next.completed_stages = stages.value;
+  if (evidence.status === "fulfilled") {
+    const normalized = normalizeWorkflowRunEvidencePayload(evidence.value);
+    if (normalized.items.length) next.evidence = normalized.items;
+    if (Object.keys(normalized.quality).length) next.quality = normalized.quality;
+  }
+  return workflowRunEvidenceHTML(next, { compact: true, maxArtifacts: 8, maxStages: 8 });
+}
+
+async function runHistoryLazyDiffsHTML(run) {
+  const payload = run?.run_type === "agent"
+    ? await fetchAgentRunDiffs(run, { include_content: true, limit: 12 })
+    : await fetchWorkflowRunDiffs(run, { include_content: true, limit: 12 });
+  return runDiffViewerHTML(payload?.diffs || [], { compact: true, maxDiffs: 12, maxLines: 40 });
 }
 
 function historyRunExportButtons(run) {
@@ -3237,12 +3982,12 @@ async function executeWorkflowRunHistoryAction(state, run, action) {
   }
   if (action.name === "submit_input") {
     await renderWorkflowRunSnapshot(state.runState, state.collaborationState, run);
-    await loadCollaborationData(state.collaborationState).catch(() => {});
+    markCollaborationStale(state.collaborationState);
     return;
   }
   await executeWorkflowRunAction(state.runState, action, state.collaborationState);
   await state.refreshRuntime?.().catch(() => {});
-  await loadCollaborationData(state.collaborationState).catch(() => {});
+  markCollaborationStale(state.collaborationState);
   state.userSelectedRunID = currentHistoryRunKey(state.runState) || historyRunKey(run) || state.userSelectedRunID;
   await loadWorkflowRunHistory(state, state.userSelectedRunID, { forceDetail: true });
 }
@@ -3256,7 +4001,7 @@ async function executeAgentRunHistoryAction(state, run, action) {
   state.runState.lastWorkflowStatus = run.status || state.runState.lastWorkflowStatus;
   await executeAgentRunAction(state.runState, action, state.collaborationState);
   await state.refreshRuntime?.().catch(() => {});
-  await loadCollaborationData(state.collaborationState).catch(() => {});
+  markCollaborationStale(state.collaborationState);
   state.userSelectedRunID = currentHistoryRunKey(state.runState) || historyRunKey(run) || state.userSelectedRunID;
   await loadWorkflowRunHistory(state, state.userSelectedRunID, { forceDetail: true });
 }
@@ -3769,6 +4514,105 @@ function renderRunToolRisk(state, run) {
   updateResultEmptyState(state);
 }
 
+function renderRunSupplementalDetails(state, run) {
+  if (!state?.resultOutput) return;
+  state.resultOutput.querySelector("[data-result-supplemental]")?.remove();
+  const items = runSupplementalDetailItems(run);
+  if (!items.length) {
+    updateResultEmptyState(state);
+    return;
+  }
+  ensureResultOutputShell(state);
+  const wrapper = document.createElement("div");
+  wrapper.dataset.resultSupplemental = "true";
+  wrapper.innerHTML = `<section class="run-contextual-prompts">
+    <div class="run-contextual-prompts-head">
+      <strong>${escapeHTML(t("chat.runContextualTitle"))}</strong>
+      <span>${escapeHTML(t("chat.runContextualHelp"))}</span>
+    </div>
+    <div class="run-contextual-prompt-grid">
+      ${items.map(runSupplementalDetailItemHTML).join("")}
+    </div>
+  </section>`;
+  state.resultOutput.appendChild(wrapper);
+  state.resultOutput.classList.remove("hidden");
+  state.hasResult = true;
+  updateResultEmptyState(state);
+}
+
+function ensureResultOutputShell(state) {
+  if (!state?.resultOutput) return;
+  if (!state.resultOutput.querySelector(".result-section-label")) {
+    state.resultOutput.innerHTML = `<div class="result-section-label">${escapeHTML(t("chat.resultOutputTitle"))}</div>`;
+  }
+}
+
+function runSupplementalDetailItems(run) {
+  const items = [];
+  const tokenSummary = runTokenUsageSummary(run);
+  if (tokenSummary) {
+    const estimated = tokenSummary.estimatedPrompt || tokenSummary.total || tokenSummary.prompt || 0;
+    items.push({
+      kind: "cost",
+      title: t("chat.runContextualCostTitle"),
+      body: estimated ? t("chat.runContextualCostBody", { tokens: tokenCountText(estimated) }) : t("chat.tokenHelp"),
+      action: t("chat.runContextualOpenContext"),
+      detail: runTokenUsageHTML(run, { compact: true })
+    });
+  }
+  const toolRisk = `${runSkillScriptContextHTML(run, { compact: true })}${runToolRiskMiniHTML(run, { compact: true })}`;
+  if (toolRisk) {
+    items.push({
+      kind: "tool",
+      title: t("chat.runContextualToolTitle"),
+      body: t("chat.runContextualToolBody"),
+      action: t("chat.runContextualOpenTool"),
+      detail: toolRisk
+    });
+  }
+  const diffCount = Array.isArray(run?.diffs) ? run.diffs.length : run?.diffs_count || 0;
+  const artifactCount = workflowRunArtifacts(run).length || run?.artifacts_count || 0;
+  const stageCount = workflowRunStages(run).length || run?.stages_count || 0;
+  if (diffCount || artifactCount || stageCount || workflowRunQualitySummary(run)) {
+    items.push({
+      kind: "evidence",
+      title: t("chat.runContextualEvidenceTitle"),
+      body: t("chat.runContextualEvidenceBody", { artifacts: artifactCount, diffs: diffCount }),
+      action: t("chat.runContextualOpenEvidence"),
+      detail: runEvidenceSummaryHTML(run)
+    });
+  }
+  return items;
+}
+
+function runSupplementalDetailItemHTML(item) {
+  return `<details class="run-contextual-prompt ${escapeHTML(item.kind || "")}">
+    <summary>
+      <span>
+        <strong>${escapeHTML(item.title)}</strong>
+        <small>${escapeHTML(item.body)}</small>
+      </span>
+      <em>${escapeHTML(item.action)}</em>
+    </summary>
+    <div class="run-contextual-prompt-body">${item.detail || ""}</div>
+  </details>`;
+}
+
+function runEvidenceSummaryHTML(run) {
+  const isAgent = run?.run_type === "agent" || !workflowRunStages(run).length && Array.isArray(run?.diffs);
+  const evidenceHTML = isAgent ? "" : workflowRunEvidenceHTML(run, { compact: true, maxArtifacts: 4, maxStages: 4 });
+  const diffHTML = runDiffViewerHTML(run?.diffs || [], { compact: true, maxDiffs: 4, maxLines: 60 });
+  if (evidenceHTML || diffHTML) return `${evidenceHTML}${diffHTML}`;
+  const facts = [
+    [t("chat.runHistoryArtifacts"), String(run?.artifacts_count || 0)],
+    [t("chat.runHistoryDiffs"), String(run?.diffs_count || 0)],
+    [t("chat.runHistoryStages"), String(run?.stages_count || 0)]
+  ].filter(([, value]) => value && value !== "0");
+  return facts.length
+    ? `<div class="run-contextual-facts">${facts.map(([label, value]) => evidenceMetaItemHTML(label, value)).join("")}</div>`
+    : `<div class="run-context-empty">${escapeHTML(t("chat.runHistoryLazyNoDetails"))}</div>`;
+}
+
 function runSkillScriptContextHTML(run, options = {}) {
   const info = extractSkillScriptContextFromRun(run);
   if (!info) return "";
@@ -4256,6 +5100,153 @@ function workflowRunEvidenceHTML(run, options = {}) {
       <div class="run-stage-list">${stages.map(runStageCard).join("")}</div>
     </div>` : ""}
   </section>`;
+}
+
+function runArtifactViewerHTML(payload, options = {}) {
+  const items = normalizeRunArtifactPayload(payload);
+  const counts = payload && typeof payload === "object" && !Array.isArray(payload) ? payload.counts || {} : {};
+  if (!items.length) {
+    return `<section class="run-artifact-viewer ${options.compact ? "compact" : ""}">
+      <div class="run-artifact-viewer-empty">
+        <strong>${escapeHTML(t("chat.artifactViewerEmpty"))}</strong>
+        <span>${escapeHTML(t("chat.artifactViewerEmptyHelp"))}</span>
+      </div>
+    </section>`;
+  }
+  const total = counts.total || items.length;
+  const withContent = counts.with_content || items.filter(item => String(item.content || "").trim()).length;
+  const externalRefs = counts.external_refs || items.filter(item => item.ref || item.artifact_ref || item.hash).length;
+  const selected = selectRunArtifact(items);
+  return `<section class="run-artifact-viewer ${options.compact ? "compact" : ""}">
+    <div class="run-artifact-viewer-head">
+      <div>
+        <strong>${escapeHTML(t("chat.artifactViewerTitle"))}</strong>
+        <span>${escapeHTML(t("chat.artifactViewerHelp"))}</span>
+      </div>
+      <small>${escapeHTML(t("chat.artifactViewerCount", { count: total }))}</small>
+    </div>
+    <div class="run-artifact-viewer-stats">
+      ${evidenceMetaItemHTML(t("chat.artifactViewerLoadedContent"), formatRunArtifactNumber(withContent))}
+      ${evidenceMetaItemHTML(t("chat.artifactViewerExternalRefs"), formatRunArtifactNumber(externalRefs))}
+      ${counts.content_omitted ? evidenceMetaItemHTML(t("chat.artifactViewerSummaryOnly"), formatRunArtifactNumber(counts.content_omitted)) : ""}
+    </div>
+    <div class="run-artifact-browser">
+      <div class="run-artifact-list" role="list">
+        ${items.map(item => runArtifactListItemHTML(item, item === selected)).join("")}
+      </div>
+      <article class="run-artifact-preview">
+        ${runArtifactPreviewHTML(selected)}
+      </article>
+    </div>
+  </section>`;
+}
+
+function normalizeRunArtifactPayload(payload) {
+  const raw = Array.isArray(payload)
+    ? payload
+    : Array.isArray(payload?.items)
+      ? payload.items
+      : Array.isArray(payload?.artifacts)
+        ? payload.artifacts
+        : [];
+  return raw.filter(item => item && typeof item === "object").map(normalizeRunArtifactItem);
+}
+
+function normalizeRunArtifactItem(item = {}) {
+  const ref = String(item.ref || item.artifact_ref || item.artifactRef || (item.hash ? `sha256:${item.hash}` : "") || "").trim();
+  let sizeValue = item.size;
+  if (sizeValue === null || sizeValue === undefined) sizeValue = item.content_bytes;
+  if (sizeValue === null || sizeValue === undefined) sizeValue = item.contentBytes;
+  if (sizeValue === null || sizeValue === undefined) sizeValue = String(item.content || item.summary || "").length;
+  let storedBytesValue = item.stored_bytes;
+  if (storedBytesValue === null || storedBytesValue === undefined) storedBytesValue = item.storedBytes;
+  if (storedBytesValue === null || storedBytesValue === undefined) storedBytesValue = 0;
+  return {
+    ...item,
+    id: item.id || item.name || ref || item.title || item.kind || "artifact",
+    kind: item.kind || item.type || "artifact",
+    title: item.title || item.name || item.id || item.kind || t("chat.runArtifact"),
+    summary: publicResultText(item.summary || item.description || ""),
+    content: item.content || item.body || "",
+    ref,
+    artifact_ref: item.artifact_ref || item.artifactRef || ref,
+    size: Number(sizeValue || 0),
+    stored_bytes: Number(storedBytesValue || 0),
+    metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {}
+  };
+}
+
+function selectRunArtifact(items) {
+  return items.find(item => String(item.content || "").trim()) || items[0];
+}
+
+function runArtifactListItemHTML(item, selected) {
+  const label = artifactKindLabel(item.kind) || localizedText(item.kind || t("chat.runArtifact"));
+  const summary = compactRunArtifactText(item.summary || item.content || t("chat.runArtifactNoSummary"), 150);
+  const meta = [
+    item.stage ? localizedText(item.stage) : "",
+    item.tool_name || item.toolName || "",
+    item.size ? `${formatRunArtifactNumber(item.size)} B` : ""
+  ].filter(Boolean);
+  return `<article class="run-artifact-list-item ${selected ? "active" : ""} ${item.is_error ? "error" : ""}" role="listitem">
+    <div class="run-artifact-list-main">
+      <span class="run-artifact-list-mark" aria-hidden="true"></span>
+      <span class="run-artifact-list-title">
+        <span class="badge neutral">${escapeHTML(label)}</span>
+        <strong>${escapeHTML(localizedText(item.title))}</strong>
+      </span>
+    </div>
+    <p>${escapeHTML(localizedText(summary))}</p>
+    ${meta.length ? `<div class="run-artifact-list-meta">${meta.map(value => `<span>${escapeHTML(localizedText(value))}</span>`).join("")}</div>` : ""}
+  </article>`;
+}
+
+function runArtifactPreviewHTML(item = {}) {
+  if (!item) return "";
+  const content = publicResultText(item.content || item.summary || "") || t("chat.runArtifactNoSummary");
+  const summary = publicResultText(item.summary || "");
+  const ref = item.ref || item.artifact_ref || (item.hash ? `sha256:${item.hash}` : "");
+  const metadata = item.metadata && typeof item.metadata === "object" ? item.metadata : {};
+  const meta = [
+    item.kind ? [t("chat.runArtifactKind"), artifactKindLabel(item.kind) || item.kind] : null,
+    item.stage ? [t("chat.runHistoryStage"), localizedText(item.stage)] : null,
+    item.tool_name ? [t("chat.tool"), item.tool_name] : null,
+    item.mime ? [t("chat.artifactViewerMime"), item.mime] : null,
+    item.size ? [t("chat.artifactViewerSize"), `${formatRunArtifactNumber(item.size)} B`] : null,
+    item.stored_bytes ? [t("chat.artifactViewerStored"), `${formatRunArtifactNumber(item.stored_bytes)} B`] : null,
+    metadata.status ? [t("chat.runHistoryStatus"), localizedText(metadata.status)] : null,
+    metadata.files ? [t("chat.deliveryChangedFiles"), metadata.files] : null
+  ].filter(Boolean);
+  return `<div class="run-artifact-preview-inner ${item.is_error ? "error" : ""}">
+    <div class="run-artifact-preview-head">
+      <div>
+        <span>${escapeHTML(artifactKindLabel(item.kind) || localizedText(item.kind || t("chat.runArtifact")))}</span>
+        <strong>${escapeHTML(localizedText(item.title || t("chat.runArtifact")))}</strong>
+      </div>
+      ${ref ? `<code>${escapeHTML(ref)}</code>` : ""}
+    </div>
+    ${summary && item.content ? `<p class="run-artifact-preview-summary">${escapeHTML(compactRunArtifactText(localizedText(summary), 260))}</p>` : ""}
+    ${meta.length ? `<div class="run-evidence-meta">${meta.map(([label, value]) => evidenceMetaItemHTML(label, value)).join("")}</div>` : ""}
+    <div class="run-artifact-content-shell">
+      <div class="run-artifact-content-head">
+        <span>${escapeHTML(item.content ? t("chat.artifactViewerContent") : t("chat.artifactViewerSummary"))}</span>
+        <span>${escapeHTML(item.content ? t("chat.artifactViewerLoaded") : t("chat.artifactViewerSummaryOnly"))}</span>
+      </div>
+      <div class="run-markdown run-artifact-content">${renderMarkdown(localizedRunMarkdownText(content))}</div>
+    </div>
+  </div>`;
+}
+
+function compactRunArtifactText(value, limit) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (text.length <= limit) return text;
+  return `${text.slice(0, Math.max(0, limit - 3))}...`;
+}
+
+function formatRunArtifactNumber(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number)) return "0";
+  return new Intl.NumberFormat().format(number);
 }
 
 function workflowRunQualitySummary(run) {
@@ -4800,6 +5791,9 @@ function createCollaborationState(root, runtime, runState) {
     },
     pendingRecordSave: false,
     pendingBlackboardAction: "",
+    loaded: false,
+    loading: false,
+    stale: false,
     fields: {
       runID: root.querySelector("#collabRunId"),
       team: root.querySelector("#collabTeam"),
@@ -4833,6 +5827,16 @@ function bindCollaborationControls(state) {
   });
 }
 
+function bindCollaborationLazyLoad(panel, state) {
+  if (!panel || !state) return;
+  const load = () => {
+    if (!panel.open || state.loaded || state.loading) return;
+    loadCollaborationData(state).catch(() => {});
+  };
+  panel.addEventListener("toggle", load);
+  load();
+}
+
 function resetCollaborationState(state, target) {
   if (state.fields.runID) state.fields.runID.value = state.runState.currentRunID || "";
   if (state.fields.stage) state.fields.stage.value = state.runState.currentStage || "";
@@ -4841,6 +5845,7 @@ function resetCollaborationState(state, target) {
   }
   if (state.feedback) state.feedback.textContent = "";
   setCollaborationStatus(state, t("chat.collabWaiting"));
+  if (state.loaded) state.stale = true;
 }
 
 async function saveCollaborationRecord(state) {
@@ -4948,10 +5953,14 @@ function setBlackboardActionPending(state, id, action, pending) {
 }
 
 async function loadCollaborationData(state, manual = false) {
+  if (!state) return;
+  if (!manual && state.loading) return;
+  if (!manual && state.loaded && !state.stale) return;
   const filters = collaborationFilters(state);
   const scrollState = captureCollaborationScrollState(state);
   if (manual) state.feedback.textContent = t("chat.collabRefreshing");
   setCollaborationStatus(state, t("chat.collabLoading"));
+  state.loading = true;
   try {
     const [messages, blackboard, teamState] = await Promise.all([
       fetchCollaborationMessages(filters),
@@ -4965,6 +5974,8 @@ async function loadCollaborationData(state, manual = false) {
     const hasContext = Boolean(filters.run_id || filters.team || filters.stage || filters.agent || filters.kind || filters.scope || filters.status);
     setCollaborationStatus(state, hasContext ? t("chat.collabScoped") : t("chat.collabIdle"));
     state.feedback.textContent = manual ? t("chat.collabRefreshed") : "";
+    state.loaded = true;
+    state.stale = false;
   } catch (error) {
     const message = chatDisplayText(error.message || t("chat.collabLoadFailed"));
     state.messages.innerHTML = renderEmptyCard(t("chat.collabLoadFailed"), message);
@@ -4973,6 +5984,8 @@ async function loadCollaborationData(state, manual = false) {
     state.blackboardCount.textContent = "0";
     setCollaborationStatus(state, t("chat.collabError"));
     state.feedback.textContent = message;
+  } finally {
+    state.loading = false;
   }
 }
 
@@ -5229,6 +6242,12 @@ function setCollaborationStatus(state, text) {
   if (state.status) state.status.textContent = text;
 }
 
+function markCollaborationStale(state) {
+  if (!state) return;
+  state.stale = true;
+  if (state.status && !state.loading) state.status.textContent = t("chat.collabStale");
+}
+
 function detectRunContext(event, runState, collaborationState) {
   const previousRunID = runState.currentRunID;
   const previousStage = runState.currentStage;
@@ -5275,6 +6294,7 @@ function resetRunState(state) {
   state.eventsURL = "";
   state.lastEventSeq = 0;
   state.durableWorkflowActive = false;
+  state.syncContextGuide?.();
 }
 
 async function handleWorkflowResponse(response, messages, runState, collaborationState, workflowName, resumed) {
@@ -5901,6 +6921,7 @@ function showWorkflowInputWorkspaceRequirement(state, message) {
 function clearRunAttention(state) {
   state.runAttention.innerHTML = "";
   state.runAttention.className = "run-attention hidden";
+  state.syncContextGuide?.();
 }
 
 function syncCollaborationContext(runState, collaborationState) {
@@ -5921,7 +6942,7 @@ function cssEscape(value) {
 function handleRunEvent(event, messages, runState, collaborationState) {
   const contextChanged = detectRunContext(event, runState, collaborationState);
   if (contextChanged && collaborationState && runState.currentRunID) {
-    loadCollaborationData(collaborationState).catch(() => {});
+    markCollaborationStale(collaborationState);
   }
   if (event.type === "text") {
     updateStreamingResult(runState, event.content || "");
@@ -5962,6 +6983,7 @@ function handleRunEvent(event, messages, runState, collaborationState) {
       setTimelineHint(runState, t("chat.timelineSubWorkflow"));
       setResultStatus(runState, t("chat.resultBlocked"));
     }
+    runState.syncContextGuide?.();
     return;
   }
   if (event.type === "tool_call") {
@@ -5980,8 +7002,9 @@ function handleRunEvent(event, messages, runState, collaborationState) {
     setResultStatus(runState, t("chat.resultBlocked"));
     if (collaborationState) {
       setCollaborationStatus(collaborationState, t("chat.collabScoped"));
-      loadCollaborationData(collaborationState).catch(() => {});
+      markCollaborationStale(collaborationState);
     }
+    runState.syncContextGuide?.();
     return;
   }
   if (event.type === "task_stage") {
@@ -6321,7 +7344,7 @@ function finalResultNode(state) {
 }
 
 function updateResultEmptyState(state) {
-  const hasSupplement = state.resultOutput?.querySelector("[data-result-evidence], [data-result-diffs]");
+  const hasSupplement = state.resultOutput?.querySelector("[data-result-evidence], [data-result-diffs], [data-result-supplemental]");
   const hasVisibleResult = Boolean(previewResultNode(state) || finalResultNode(state) || hasSupplement);
   state.resultEmpty.classList.toggle("hidden", hasVisibleResult);
   state.resultPreview.classList.toggle("hidden", !previewResultNode(state));
@@ -6374,6 +7397,7 @@ function showRunAttention(state, title, body, tone, withLink = false) {
   state.runAttention.querySelector("[data-open-approvals]")?.addEventListener("click", () => {
     location.hash = "approvals";
   });
+  state.syncContextGuide?.();
 }
 
 function showWorkspaceRequirementAttention(state, requirement) {
@@ -6389,6 +7413,7 @@ function showWorkspaceRequirementAttention(state, requirement) {
   state.runAttention.querySelector("[data-open-workspace]")?.addEventListener("click", () => {
     location.hash = "workspace";
   });
+  state.syncContextGuide?.();
 }
 
 function workspaceRequirementBody(requirement = {}) {

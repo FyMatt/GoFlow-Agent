@@ -302,7 +302,12 @@ Create a model provider config snippet:
 /new-provider deepseek
 ```
 
-The generated file is stored under `configs/providers/<name>.yaml`. GoFlow loads `configs/providers/*.yaml` on startup and merges those provider definitions over the top-level `providers:` map. Fill in `base_url`, `api_key`, and `model`, then restart GoFlow so the provider registry is rebuilt.
+The generated file is stored under `configs/providers/<name>.yaml`. GoFlow loads
+`configs/providers/*.yaml` on startup and merges those provider definitions over
+the top-level `providers:` map. GoFlow can start while `base_url`, `api_key`, or
+`model` are still blank so Web Studio can guide first-time setup. Complete those
+fields before running an Agent that uses this Provider, then restart GoFlow if
+the active runtime already loaded the old Provider registry.
 
 The default Provider scaffold is also file-backed. The embedded template is
 `internal/scaffold/templates/config/providers/default.yaml.tmpl`, and runtime
@@ -358,6 +363,7 @@ GET /api/workflow-templates/{name}
 
 Current built-in templates:
 
+- `complex-project-delivery`
 - `task-decomposition-plan`
 - `multi-domain-intake-router`
 - `agent-framework-extension`
@@ -372,6 +378,12 @@ Current built-in templates:
 - `customer-support-triage`
 - `human-input-security-review`
 - `software-team-review-gate`
+
+Use `complex-project-delivery` for large implementation requests that need to
+stay stable across many iterations. It analyzes the user's requirement,
+extracts functional requirements, builds a user-confirmed project plan, runs an
+implementation/verification/review/plan-update loop until the plan is complete,
+then performs final validation and writes a completion report.
 
 Use `task-decomposition-plan` before high-risk or broad tasks when you want the
 agent to produce a reviewable workflow draft with node contracts, data flow,

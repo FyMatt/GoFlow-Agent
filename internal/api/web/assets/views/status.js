@@ -58,20 +58,7 @@ export async function renderStatus(root, runtime) {
         </div>
       </section>
 
-      <section class="panel span-7 status-runtime" data-tour-id="status-logs">
-        <div class="panel-head">
-          <div>
-            <h2>${t("status.runtime")}</h2>
-            <p class="muted">${t("status.runtimeHelp")}</p>
-          </div>
-          <span id="statusRuntimeBadge" class="badge ${statusLines.length ? "good" : "warn"}">${statusLines.length ? t("status.runtimeActive") : t("status.runtimeIdle")}</span>
-        </div>
-        <div class="status-log-card">
-          <pre id="statusLog" class="log status-log">${escapeHTML(statusLines.length ? statusLines.join("\n") : t("status.noRuntimeLines"))}</pre>
-        </div>
-      </section>
-
-      <section class="panel span-12 status-run-focus" data-tour-id="status-run-focus">
+      <section class="panel span-7 status-run-focus" data-tour-id="status-run-focus">
         <div class="panel-head">
           <div>
             <h2>${t("status.runFocusTitle")}</h2>
@@ -93,43 +80,68 @@ export async function renderStatus(root, runtime) {
         <div id="statusTeamBody">${renderStatusTeamState(teamState)}</div>
       </section>
 
-      <section class="panel span-12 status-mcp" data-tour-id="status-mcp">
-        <div class="panel-head">
-          <div>
-            <h2>${t("status.mcpTitle")}</h2>
-            <p class="muted">${t("status.mcpHelp")}</p>
-          </div>
-          <span id="statusMCPBadge" class="badge ${mcpPressure.tone}">${escapeHTML(mcpPressure.badge)}</span>
-        </div>
-        <div id="statusMCPBody">${renderMCPPressure(mcpPressure)}</div>
-      </section>
+      <details class="panel span-12 status-advanced" data-tour-id="status-advanced" data-status-detail-key="advanced-diagnostics">
+        <summary class="status-advanced-summary">
+          <span>
+            <strong>${t("status.advancedTitle")}</strong>
+            <small>${t("status.advancedHelp")}</small>
+          </span>
+          <span class="status-advanced-badges">
+            <span id="statusMCPBadge" class="badge ${mcpPressure.tone}">${escapeHTML(mcpPressure.badge)}</span>
+            <span id="statusCostBadge" class="badge ${costAttentionCount(cost) ? "warn" : "neutral"}">${costAttentionCount(cost) ? t("status.costRecommendationsCount", { count: costAttentionCount(cost) }) : t("status.costNoRecommendations")}</span>
+            <span id="statusRuntimeBadge" class="badge ${statusLines.length ? "good" : "warn"}">${statusLines.length ? t("status.runtimeActive") : t("status.runtimeIdle")}</span>
+          </span>
+        </summary>
+        <div class="status-advanced-body">
+          <section class="status-runtime" data-tour-id="status-logs">
+            <div class="panel-head compact">
+              <div>
+                <h2>${t("status.runtime")}</h2>
+                <p class="muted">${t("status.runtimeHelp")}</p>
+              </div>
+            </div>
+            <div class="status-log-card">
+              <pre id="statusLog" class="log status-log">${escapeHTML(statusLines.length ? statusLines.join("\n") : t("status.noRuntimeLines"))}</pre>
+            </div>
+          </section>
 
-      <section class="panel span-12 status-cost" data-tour-id="status-cost">
-        <div class="panel-head">
-          <div>
-            <h2>${t("status.costTitle")}</h2>
-            <p class="muted">${t("status.costHelp")}</p>
-          </div>
-          <span id="statusCostBadge" class="badge ${costAttentionCount(cost) ? "warn" : "neutral"}">${costAttentionCount(cost) ? t("status.costRecommendationsCount", { count: costAttentionCount(cost) }) : t("status.costNoRecommendations")}</span>
-        </div>
-        <div id="statusCostBody">${renderCostDiagnostics(cost, auxiliaryModels)}</div>
-      </section>
+          <section class="status-mcp" data-tour-id="status-mcp">
+            <div class="panel-head compact">
+              <div>
+                <h2>${t("status.mcpTitle")}</h2>
+                <p class="muted">${t("status.mcpHelp")}</p>
+              </div>
+            </div>
+            <div id="statusMCPBody">${renderMCPPressure(mcpPressure)}</div>
+          </section>
 
-      <section class="panel span-12 status-session" data-tour-id="status-session">
-        <div class="panel-head">
-          <div>
-            <h2>${t("status.session")}</h2>
-            <p class="muted">${t("status.sessionHelp")}</p>
-          </div>
+          <section class="status-cost" data-tour-id="status-cost">
+            <div class="panel-head compact">
+              <div>
+                <h2>${t("status.costTitle")}</h2>
+                <p class="muted">${t("status.costHelp")}</p>
+              </div>
+            </div>
+            <div id="statusCostBody">${renderCostDiagnostics(cost, auxiliaryModels)}</div>
+          </section>
+
+          <section class="status-session" data-tour-id="status-session">
+            <div class="panel-head compact">
+              <div>
+                <h2>${t("status.session")}</h2>
+                <p class="muted">${t("status.sessionHelp")}</p>
+              </div>
+            </div>
+            <div class="status-json-card">
+              <div id="statusSessionSummary">${renderStatusSessionSummary(session, runtime)}</div>
+              <details class="status-json-toggle" data-status-detail-key="session-json">
+                <summary>${t("status.showSessionJson")}</summary>
+                <pre id="statusSessionJson" class="log status-json">${escapeHTML(t("status.sessionJsonDeferred"))}</pre>
+              </details>
+            </div>
+          </section>
         </div>
-        <div class="status-json-card">
-          <div id="statusSessionSummary">${renderStatusSessionSummary(session, runtime)}</div>
-          <details class="status-json-toggle" data-status-detail-key="session-json">
-            <summary>${t("status.showSessionJson")}</summary>
-            <pre id="statusSessionJson" class="log status-json">${escapeHTML(t("status.sessionJsonDeferred"))}</pre>
-          </details>
-        </div>
-    </section>
+      </details>
     </div>`;
 
   primeStatusHTMLCache(root);
@@ -697,6 +709,10 @@ function renderStatusSessionEmpty() {
   return `<article class="status-session-empty">
     <strong>${escapeHTML(t("status.sessionNoRunTitle"))}</strong>
     <span>${escapeHTML(t("status.sessionNoRunHelp"))}</span>
+    <div class="status-empty-actions">
+      <button type="button" data-status-link="playground">${escapeHTML(t("status.openRun"))}</button>
+      <button type="button" data-status-link="workflows">${escapeHTML(t("status.openWorkflows"))}</button>
+    </div>
   </article>`;
 }
 
@@ -726,6 +742,10 @@ function renderStatusRunFocus(focus) {
     return `<div class="status-run-empty">
       <strong>${escapeHTML(t("status.runFocusEmptyTitle"))}</strong>
       <span>${escapeHTML(t("status.runFocusEmptyHelp"))}</span>
+      <div class="status-empty-actions">
+        <button type="button" data-status-link="playground">${escapeHTML(t("status.openRun"))}</button>
+        <button type="button" data-status-link="workspace">${escapeHTML(t("status.openWorkspace"))}</button>
+      </div>
     </div>`;
   }
   const isAgent = focus.runType === "agent";
@@ -1093,6 +1113,10 @@ function renderStatusTeamState(teamState) {
     return `<div class="status-team-card status-team-empty">
       <strong>${escapeHTML(t("status.teamEmptyTitle"))}</strong>
       <span>${escapeHTML(t("status.teamEmptyHelp"))}</span>
+      <div class="status-empty-actions">
+        <button type="button" data-status-link="workflows">${escapeHTML(t("status.openWorkflows"))}</button>
+        <button type="button" data-status-link="approvals">${escapeHTML(t("status.openApprovals"))}</button>
+      </div>
     </div>`;
   }
   return `<div class="status-team-card">
@@ -1234,6 +1258,9 @@ function renderMCPPressure(summary) {
     return `<div class="status-mcp-shell status-mcp-empty">
       <strong>${escapeHTML(t("status.mcpEmptyTitle"))}</strong>
       <span>${escapeHTML(t("status.mcpEmptyHelp"))}</span>
+      <div class="status-empty-actions">
+        <button type="button" data-status-link="settings">${escapeHTML(t("status.openSettings"))}</button>
+      </div>
     </div>`;
   }
   return `<div class="status-mcp-shell">
@@ -1336,17 +1363,25 @@ function statusTeamRecordID(item) {
 function renderCostDiagnostics(cost = {}, auxiliaryModels = []) {
   const recommendations = Array.isArray(cost.recommendations) ? cost.recommendations : [];
   const tuning = Array.isArray(cost.tuning) ? cost.tuning : [];
+  const toolDiagnostics = renderToolSchemaDiagnostics(cost);
+  const contextDiagnostics = renderPromptContextDiagnostics(cost);
   return `<div class="status-cost-shell">
-    <div class="status-cost-summary">
-      ${costStat(t("status.cost.samples"), numberText(cost.samples), t("status.cost.samplesHelp"))}
-      ${costStat(t("status.cost.avgPrompt"), numberText(cost.average_estimated_prompt_tokens), t("status.cost.avgPromptHelp"))}
-      ${costStat(t("status.cost.nonCacheable"), numberText(cost.average_non_cacheable_tokens), t("status.cost.nonCacheableHelp"))}
-      ${costStat(t("status.cost.promptPrefixes"), numberText(cost.unique_prompt_prefixes), t("status.cost.promptPrefixesHelp"))}
+    <div class="status-cost-overview">
+      <div class="status-cost-summary">
+        ${costStat(t("status.cost.samples"), numberText(cost.samples), t("status.cost.samplesHelp"), "samples")}
+        ${costStat(t("status.cost.avgPrompt"), numberText(cost.average_estimated_prompt_tokens), t("status.cost.avgPromptHelp"), "prompt")}
+        ${costStat(t("status.cost.nonCacheable"), numberText(cost.average_non_cacheable_tokens), t("status.cost.nonCacheableHelp"), "cache")}
+        ${costStat(t("status.cost.promptPrefixes"), numberText(cost.unique_prompt_prefixes), t("status.cost.promptPrefixesHelp"), "prefix")}
+      </div>
     </div>
+    ${toolDiagnostics || contextDiagnostics ? `<div class="status-cost-diagnostics-grid">${contextDiagnostics}${toolDiagnostics}</div>` : ""}
     ${renderCostTuning(tuning)}
     <div class="status-cost-columns">
       <section>
-        <strong>${t("status.cost.recommendations")}</strong>
+        <div class="status-cost-copy">
+          <strong>${t("status.cost.recommendations")}</strong>
+          <p class="muted">${escapeHTML(t("status.cost.recommendationsHelp"))}</p>
+        </div>
         <div class="status-recommendation-list">
           ${recommendations.length ? recommendations.slice(0, 4).map(renderCostRecommendation).join("") : `<div class="status-cost-empty">${escapeHTML(t("status.cost.noAdvice"))}</div>`}
         </div>
@@ -1366,6 +1401,114 @@ function renderCostDiagnostics(cost = {}, auxiliaryModels = []) {
   </div>`;
 }
 
+function renderPromptContextDiagnostics(cost = {}) {
+  const latest = cost.latest && typeof cost.latest === "object" ? cost.latest : {};
+  const memoryBlocks = Array.isArray(latest.memory_blocks) ? latest.memory_blocks : [];
+  const omitted = Array.isArray(latest.omitted_context) ? latest.omitted_context : [];
+  const artifactRefs = Array.isArray(latest.artifact_refs) ? latest.artifact_refs : [];
+  const hasData = memoryBlocks.length || omitted.length || artifactRefs.length || latest.skill_instruction_mode || cost.memory_block_samples || cost.artifact_ref_samples || cost.skill_omitted_tokens;
+  if (!hasData) return "";
+  const savedTokens = (latest.memory_estimated_saved_tokens || cost.memory_estimated_saved_tokens || 0)
+    + (latest.artifact_omitted_tokens || cost.artifact_omitted_tokens || 0)
+    + (latest.skill_omitted_tokens || cost.skill_omitted_tokens || 0)
+    + (latest.history_estimated_saved_tokens || cost.history_estimated_saved_tokens || 0);
+  const omittedCount = omitted.length || cost.omitted_context_count || 0;
+  const refCount = latest.artifact_ref_count || cost.artifact_ref_samples || artifactRefs.length || 0;
+  const flow = [
+    [t("status.cost.contextInputBudget"), numberText(latest.estimated_prompt_tokens || cost.average_estimated_prompt_tokens), t("status.cost.contextInputBudgetHelp"), "input"],
+    [t("status.cost.contextSavedBudget"), numberText(savedTokens), t("status.cost.contextSavedBudgetHelp"), "saved"],
+    [t("status.cost.contextLazyRefs"), numberText(refCount), t("status.cost.contextLazyRefsHelp"), "refs"],
+    [t("status.cost.contextOmitted"), numberText(omittedCount), t("status.cost.contextOmittedHelp"), "omitted"]
+  ];
+  const stats = [
+    [t("status.cost.memoryBlocks"), numberText(latest.memory_block_count || cost.memory_block_samples)],
+    [t("status.cost.memorySaved"), numberText(latest.memory_estimated_saved_tokens || cost.memory_estimated_saved_tokens)],
+    [t("status.cost.artifactRefs"), numberText(latest.artifact_ref_count || cost.artifact_ref_samples)],
+    [t("status.cost.artifactOmitted"), numberText(latest.artifact_omitted_tokens || cost.artifact_omitted_tokens)],
+    [t("status.cost.skillMode"), statusDisplayValue(latest.skill_instruction_mode || "")],
+    [t("status.cost.skillSaved"), numberText(latest.skill_omitted_tokens || cost.skill_omitted_tokens)]
+  ].filter(([, value]) => value && value !== "0");
+  return `<section class="status-context-diagnostics">
+    <div class="status-cost-section-head">
+      <div>
+        <strong>${escapeHTML(t("status.cost.contextTitle"))}</strong>
+        <span>${escapeHTML(t("status.cost.contextHelp"))}</span>
+      </div>
+      <small>${escapeHTML(t("status.cost.contextOmittedCount", { count: omitted.length || cost.omitted_context_count || 0 }))}</small>
+    </div>
+    <div class="status-context-flow">
+      ${flow.map(([label, value, help, tone]) => `<span class="status-context-flow-card ${escapeHTML(tone)}"><small>${escapeHTML(label)}</small><strong>${escapeHTML(statusDisplayValue(value))}</strong><em>${escapeHTML(help)}</em></span>`).join("")}
+    </div>
+    ${stats.length ? `<div class="status-context-stats">${stats.map(([label, value]) => costTuningFactHTML(label, value)).join("")}</div>` : ""}
+    <div class="status-context-columns">
+      <section>
+        <strong>${escapeHTML(t("status.cost.injectedMemory"))}</strong>
+        <div class="status-context-list">
+          ${memoryBlocks.length ? memoryBlocks.slice(0, 5).map(renderPromptMemoryBlock).join("") : `<div class="status-cost-empty">${escapeHTML(t("status.cost.noMemoryBlocks"))}</div>`}
+        </div>
+      </section>
+      <section>
+        <strong>${escapeHTML(t("status.cost.refsAndOmitted"))}</strong>
+        <div class="status-context-list">
+          ${artifactRefs.slice(0, 3).map(ref => renderPromptContextLine(t("status.cost.artifactRef"), ref, "artifact")).join("")}
+          ${omitted.slice(0, 4).map(item => renderPromptContextLine(t("status.cost.omitted"), item, "omitted")).join("")}
+          ${!artifactRefs.length && !omitted.length ? `<div class="status-cost-empty">${escapeHTML(t("status.cost.noOmittedContext"))}</div>` : ""}
+        </div>
+      </section>
+    </div>
+  </section>`;
+}
+
+function renderPromptMemoryBlock(block = {}) {
+  const label = [statusDisplayValue(block.kind), statusDisplayValue(block.title)].filter(Boolean).join(" / ") || t("status.cost.memoryBlock");
+  const reason = promptMemoryBlockReason(block);
+  const meta = [
+    block.ref ? `ref=${block.ref}` : "",
+    block.hash ? `hash=${String(block.hash).slice(0, 12)}` : "",
+    block.language ? statusDisplayValue(block.language) : "",
+    block.size ? `${numberText(block.size)} B` : "",
+    block.content_mode ? statusDisplayValue(block.content_mode) : "",
+    block.tokens ? `${numberText(block.tokens)} ${t("chat.tokens")}` : "",
+    block.estimated_saved_tokens ? `${t("status.cost.memorySaved")} ${numberText(block.estimated_saved_tokens)}` : "",
+    block.score ? `score=${numberText(block.score)}` : ""
+  ].filter(Boolean).join(" | ");
+  const tone = block.kind === "file" ? "file" : "";
+  return `<article class="status-context-line ${escapeHTML(tone)}">
+    <span class="status-context-mark" aria-hidden="true"></span>
+    <div class="status-context-line-body">
+      <span class="badge neutral">${escapeHTML(statusDisplayValue(block.kind || t("status.cost.memoryBlock")))}</span>
+      <strong>${escapeHTML(label)}</strong>
+      ${reason ? `<em>${escapeHTML(reason)}</em>` : ""}
+      ${meta ? `<small>${escapeHTML(meta)}</small>` : ""}
+    </div>
+  </article>`;
+}
+
+function promptMemoryBlockReason(block = {}) {
+  const mode = String(block.content_mode || "").trim().toLowerCase();
+  if (mode === "summary") return t("status.cost.contextReasonSummary");
+  if (mode === "full") return t("status.cost.contextReasonFull");
+  if (String(block.kind || "").trim().toLowerCase() === "file") return t("status.cost.contextReasonFile");
+  if (block.ref) return t("status.cost.contextReasonRef");
+  return "";
+}
+
+function renderPromptContextLine(label, value, tone) {
+  const reason = tone === "artifact"
+    ? t("status.cost.contextReasonLazyRef")
+    : tone === "omitted"
+      ? t("status.cost.contextReasonOmitted")
+      : "";
+  return `<article class="status-context-line ${escapeHTML(tone || "")}">
+    <span class="status-context-mark" aria-hidden="true"></span>
+    <div class="status-context-line-body">
+      <span class="badge neutral">${escapeHTML(label)}</span>
+      <strong>${escapeHTML(statusDisplayValue(value))}</strong>
+      ${reason ? `<em>${escapeHTML(reason)}</em>` : ""}
+    </div>
+  </article>`;
+}
+
 function costAttentionCount(cost = {}) {
   const recommendations = Array.isArray(cost.recommendations) ? cost.recommendations.length : 0;
   const tuning = Array.isArray(cost.tuning) ? cost.tuning.filter(item => costTuningNeedsAttention(item)).length : 0;
@@ -1376,6 +1519,63 @@ function costTuningNeedsAttention(item = {}) {
   const state = String(item.state || "").toLowerCase();
   if (state === "candidate" || state === "observed_costly") return true;
   return Boolean(item.recommendation || item.action) && state !== "observed_saving";
+}
+
+function renderToolSchemaDiagnostics(cost = {}) {
+  const latest = cost.latest && typeof cost.latest === "object" ? cost.latest : {};
+  const injected = Array.isArray(latest.injected_tool_schemas) ? latest.injected_tool_schemas : [];
+  const filtered = Array.isArray(latest.filtered_tool_schemas) ? latest.filtered_tool_schemas : [];
+  const hasData = injected.length || filtered.length || latest.exposed_tool_count || latest.filtered_tool_count || latest.tool_schema_tokens;
+  if (!hasData) return "";
+  const stats = [
+    [t("status.cost.injectedTools"), numberText(latest.exposed_tool_count || injected.length)],
+    [t("status.cost.filteredTools"), numberText(latest.filtered_tool_count || filtered.length)],
+    [t("status.cost.toolSchemaTokens"), numberText(latest.tool_schema_tokens)],
+    [t("status.cost.toolSelection"), statusDisplayValue(latest.tool_schema_selection || "")]
+  ].filter(([, value]) => value && value !== "0");
+  return `<section class="status-tool-schema-diagnostics">
+    <div class="status-cost-section-head">
+      <div>
+        <strong>${escapeHTML(t("status.cost.toolSchemaTitle"))}</strong>
+        <span>${escapeHTML(t("status.cost.toolSchemaHelp"))}</span>
+      </div>
+      <small>${escapeHTML(t("status.cost.toolSchemaOmittedCount", { count: latest.tool_schema_diagnostic_omitted || cost.tool_schema_diagnostic_omitted || 0 }))}</small>
+    </div>
+    ${stats.length ? `<div class="status-context-stats">${stats.map(([label, value]) => costTuningFactHTML(label, value)).join("")}</div>` : ""}
+    <div class="status-context-columns">
+      <section>
+        <strong>${escapeHTML(t("status.cost.injectedToolSchemas"))}</strong>
+        <div class="status-context-list">
+          ${injected.length ? injected.slice(0, 6).map(renderToolSchemaLine).join("") : `<div class="status-cost-empty">${escapeHTML(t("status.cost.noInjectedToolSchemas"))}</div>`}
+        </div>
+      </section>
+      <section>
+        <strong>${escapeHTML(t("status.cost.filteredToolSchemas"))}</strong>
+        <div class="status-context-list">
+          ${filtered.length ? filtered.slice(0, 6).map(renderToolSchemaLine).join("") : `<div class="status-cost-empty">${escapeHTML(t("status.cost.noFilteredToolSchemas"))}</div>`}
+        </div>
+      </section>
+    </div>
+  </section>`;
+}
+
+function renderToolSchemaLine(item = {}) {
+  const label = statusDisplayValue(item.qualified_name || item.name || t("status.cost.toolSchema"));
+  const meta = [
+    item.kind ? statusDisplayValue(item.kind) : "",
+    item.tokens ? `${numberText(item.tokens)} ${t("chat.tokens")}` : "",
+    item.schema_hash ? `hash=${item.schema_hash}` : ""
+  ].filter(Boolean).join(" | ");
+  const reason = statusDisplayValue(item.reason || "");
+  return `<article class="status-context-line tool-schema ${escapeHTML(item.status || "")}">
+    <span class="status-context-mark" aria-hidden="true"></span>
+    <div class="status-context-line-body">
+      <span class="badge neutral">${escapeHTML(statusDisplayValue(item.status || t("status.cost.toolSchema")))}</span>
+      <strong>${escapeHTML(label)}</strong>
+      ${meta ? `<small>${escapeHTML(meta)}</small>` : ""}
+      ${reason ? `<small>${escapeHTML(reason)}</small>` : ""}
+    </div>
+  </article>`;
 }
 
 function renderCostTuning(items = []) {
@@ -1430,7 +1630,7 @@ function renderCostTuningCard(item = {}) {
 }
 
 function costTuningFactHTML(label, value) {
-  return `<span><small>${escapeHTML(label)}</small><strong>${escapeHTML(statusDisplayValue(value))}</strong></span>`;
+  return `<span class="status-cost-fact"><small>${escapeHTML(label)}</small><strong>${escapeHTML(statusDisplayValue(value))}</strong></span>`;
 }
 
 function costTuningTone(item = {}) {
@@ -1455,8 +1655,8 @@ function costTuningStateHelp(state) {
   return translated === key ? t("status.cost.tuningStateHelp.not_enough_data") : translated;
 }
 
-function costStat(label, value, help) {
-  return `<div class="status-cost-stat">
+function costStat(label, value, help, tone = "") {
+  return `<div class="status-cost-stat ${escapeHTML(tone)}">
     <span>${escapeHTML(label)}</span>
     <strong>${escapeHTML(value)}</strong>
     <small>${escapeHTML(help)}</small>
@@ -1611,40 +1811,51 @@ function workflowHealthDetail(workflow = {}) {
 }
 
 function buildHealthItems(runtime, workflow, pending, statusCount) {
+  const workspaceReady = !!runtime.workspace?.confirmed;
+  const workflowActive = !!workflow.status;
+  const hasLogs = !!statusCount;
   return [
     {
       title: t("status.health.workspace"),
-      body: runtime.workspace?.confirmed ? t("status.workspaceReady") : t("status.workspaceNeedsConfirmation"),
+      body: workspaceReady ? t("status.workspaceReady") : t("status.workspaceNeedsConfirmation"),
       detail: escapeHTML(runtime.workspace?.display || t("common.none")),
-      tone: runtime.workspace?.confirmed ? "good" : "warn"
+      tone: workspaceReady ? "good" : "warn",
+      action: workspaceReady ? null : { view: "workspace", label: t("status.fixWorkspace"), tone: "primary" }
     },
     {
       title: t("status.health.workflow"),
       body: escapeHTML(localizedText(workflow.name || t("status.workflowIdle"))),
       detail: workflowHealthDetail(workflow),
-      tone: workflow.status ? "good" : "neutral"
+      tone: workflowActive ? "good" : "neutral",
+      action: workflowActive ? { view: "playground", label: t("status.inspectRun"), tone: "" } : { view: "playground", label: t("status.startRun"), tone: "" }
     },
     {
       title: t("status.health.approvals"),
       body: pending ? t("status.pendingApprovals", { count: pending }) : t("status.noPendingApprovals"),
       detail: pending ? t("status.pendingApprovalsHelp") : t("status.noPendingApprovalsHelp"),
-      tone: pending ? "warn" : "good"
+      tone: pending ? "warn" : "good",
+      action: pending ? { view: "approvals", label: t("status.fixApprovals"), tone: "primary" } : null
     },
     {
       title: t("status.health.logs"),
-      body: statusCount ? t("status.runtimeLines", { count: statusCount }) : t("status.runtimeLinesEmpty"),
+      body: hasLogs ? t("status.runtimeLines", { count: statusCount }) : t("status.runtimeLinesEmpty"),
       detail: t("status.runtimeLinesHelp"),
-      tone: statusCount ? "good" : "neutral"
+      tone: hasLogs ? "good" : "neutral",
+      action: hasLogs ? null : { view: "playground", label: t("status.startRun"), tone: "" }
     }
   ];
 }
 
 function renderHealthItem(item) {
+  const action = item.action?.view
+    ? `<button type="button" class="status-health-action ${escapeHTML(item.action.tone || "")}" data-status-link="${escapeHTML(item.action.view)}">${escapeHTML(item.action.label || t("status.inspectIssue"))}</button>`
+    : "";
   return `<div class="status-health-row">
     <div>
       <strong>${item.title}</strong>
       <span>${item.body}</span>
       <small>${item.detail}</small>
+      ${action}
     </div>
     <span class="badge ${item.tone}">${t(`status.tone.${item.tone}`)}</span>
   </div>`;

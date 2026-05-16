@@ -47,12 +47,14 @@ type runCollectionItem struct {
 	Quality     *workflowRunQualitySummary  `json:"quality,omitempty"`
 	Actions     *runCollectionActionSummary `json:"actions_summary,omitempty"`
 
-	EventsURL    string `json:"events_url,omitempty"`
-	ReplayPath   string `json:"replay_path,omitempty"`
-	EvidencePath string `json:"evidence_path,omitempty"`
-	ActionsPath  string `json:"actions_path,omitempty"`
-	DiffsPath    string `json:"diffs_path,omitempty"`
-	Source       string `json:"source,omitempty"`
+	EventsURL     string `json:"events_url,omitempty"`
+	ReplayPath    string `json:"replay_path,omitempty"`
+	EvidencePath  string `json:"evidence_path,omitempty"`
+	ArtifactsPath string `json:"artifacts_path,omitempty"`
+	ContextPath   string `json:"context_path,omitempty"`
+	ActionsPath   string `json:"actions_path,omitempty"`
+	DiffsPath     string `json:"diffs_path,omitempty"`
+	Source        string `json:"source,omitempty"`
 }
 
 type runCollectionQuery struct {
@@ -298,27 +300,29 @@ func (s *Server) runCollectionItemForAgent(run session.AgentRunSnapshot) runColl
 	}
 	base := "/api/agent-runs/" + strings.TrimSpace(run.ID)
 	return runCollectionItem{
-		ID:          run.ID,
-		Type:        "agent",
-		Name:        name,
-		Status:      run.Status,
-		Request:     run.Request,
-		Summary:     agentRunSnapshotSummary(run),
-		AgentID:     agentID,
-		Mode:        run.Mode,
-		StartedAt:   run.StartedAt,
-		UpdatedAt:   run.UpdatedAt,
-		CompletedAt: run.CompletedAt,
-		RetryOf:     run.RetryOf,
-		Attempt:     run.Attempt,
-		NeedsAction: agentRunCollectionRunNeedsAction(run),
-		HasError:    agentRunCollectionRunHasError(run),
-		Actions:     s.runCollectionAgentActionSummary(run),
-		EventsURL:   base + "/events/stream",
-		ReplayPath:  base + "/replay",
-		ActionsPath: base + "/actions",
-		DiffsPath:   base + "/diffs",
-		Source:      "agent_run",
+		ID:            run.ID,
+		Type:          "agent",
+		Name:          name,
+		Status:        run.Status,
+		Request:       run.Request,
+		Summary:       agentRunSnapshotSummary(run),
+		AgentID:       agentID,
+		Mode:          run.Mode,
+		StartedAt:     run.StartedAt,
+		UpdatedAt:     run.UpdatedAt,
+		CompletedAt:   run.CompletedAt,
+		RetryOf:       run.RetryOf,
+		Attempt:       run.Attempt,
+		NeedsAction:   agentRunCollectionRunNeedsAction(run),
+		HasError:      agentRunCollectionRunHasError(run),
+		Actions:       s.runCollectionAgentActionSummary(run),
+		EventsURL:     base + "/events/stream",
+		ReplayPath:    base + "/replay",
+		ArtifactsPath: base + "/artifacts",
+		ContextPath:   base + "/context",
+		ActionsPath:   base + "/actions",
+		DiffsPath:     base + "/diffs",
+		Source:        "agent_run",
 	}
 }
 
@@ -326,30 +330,32 @@ func (s *Server) runCollectionItemForWorkflow(run session.WorkflowRunSnapshot) r
 	base := "/api/workflow-runs/" + strings.TrimSpace(run.ID)
 	quality := workflowRunQualitySummaryFor(run)
 	return runCollectionItem{
-		ID:           run.ID,
-		Type:         "workflow",
-		Name:         run.Name,
-		Status:       run.Status,
-		Request:      run.Request,
-		Summary:      runCollectionWorkflowSummary(run),
-		AgentID:      runCollectionWorkflowPrimaryAgent(run),
-		Mode:         runCollectionWorkflowPrimaryMode(run),
-		Workflow:     run.Name,
-		StartedAt:    run.StartedAt,
-		UpdatedAt:    run.UpdatedAt,
-		CompletedAt:  run.CompletedAt,
-		RetryOf:      run.RetryOf,
-		Attempt:      run.Attempt,
-		NeedsAction:  workflowRunCollectionRunNeedsAction(run),
-		HasError:     workflowRunCollectionRunHasError(run),
-		Quality:      &quality,
-		Actions:      s.runCollectionWorkflowActionSummary(run),
-		EventsURL:    base + "/events/stream",
-		ReplayPath:   base + "/replay",
-		EvidencePath: base + "/evidence",
-		ActionsPath:  base + "/actions",
-		DiffsPath:    base + "/diffs",
-		Source:       "workflow_run",
+		ID:            run.ID,
+		Type:          "workflow",
+		Name:          run.Name,
+		Status:        run.Status,
+		Request:       run.Request,
+		Summary:       runCollectionWorkflowSummary(run),
+		AgentID:       runCollectionWorkflowPrimaryAgent(run),
+		Mode:          runCollectionWorkflowPrimaryMode(run),
+		Workflow:      run.Name,
+		StartedAt:     run.StartedAt,
+		UpdatedAt:     run.UpdatedAt,
+		CompletedAt:   run.CompletedAt,
+		RetryOf:       run.RetryOf,
+		Attempt:       run.Attempt,
+		NeedsAction:   workflowRunCollectionRunNeedsAction(run),
+		HasError:      workflowRunCollectionRunHasError(run),
+		Quality:       &quality,
+		Actions:       s.runCollectionWorkflowActionSummary(run),
+		EventsURL:     base + "/events/stream",
+		ReplayPath:    base + "/replay",
+		EvidencePath:  base + "/evidence",
+		ArtifactsPath: base + "/artifacts",
+		ContextPath:   base + "/context",
+		ActionsPath:   base + "/actions",
+		DiffsPath:     base + "/diffs",
+		Source:        "workflow_run",
 	}
 }
 

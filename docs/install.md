@@ -13,14 +13,21 @@ Use one of these paths:
 
 ## Configure Provider Credentials
 
-GoFlow talks to an OpenAI-compatible model endpoint. Copy the environment
-template and fill in your provider values:
+GoFlow can start before Provider credentials are configured. This is intentional:
+new users can launch CLI or Web Studio first, then fill Provider settings from
+the Resources or Settings pages. Agent/model runs require `base_url`, `api_key`,
+and `model`; until then they return a setup-required message instead of making
+startup fail.
+
+You can configure the Provider directly in Web Studio, edit
+`configs/providers/*.yaml`, or use environment variables. For environment-based
+setup, copy the template and fill in your provider values:
 
 ```bash
 cp .env.example .env
 ```
 
-Required values:
+Model run values:
 
 ```env
 GOFLOW_BASE_URL=https://api.deepseek.com/v1
@@ -32,7 +39,8 @@ GOFLOW_BACKUP_MODEL=deepseek-chat
 ```
 
 For local model servers, set `GOFLOW_BASE_URL` to the server's OpenAI-compatible
-`/v1` endpoint.
+`/v1` endpoint. If you only want to open Web Studio and configure later, these
+values may be left blank at startup.
 
 ## Run A Release Archive
 
@@ -112,6 +120,9 @@ docker run --rm -it \
   ghcr.io/fymatt/goflow-agent:<version>
 ```
 
+If you have not created `.env` yet, omit `--env-file .env`; the container can
+still start Web Studio, and model calls will ask you to complete Provider setup.
+
 PowerShell:
 
 ```powershell
@@ -180,6 +191,9 @@ export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
 go run ./cmd/goflow --workspace /path/to/workspace
 ```
 
+The environment exports are optional for startup. They are only required before
+you expect Agent runs to call a model.
+
 HTTP mode:
 
 ```bash
@@ -200,6 +214,10 @@ Session state is stored inside the workspace:
 ```text
 <workspace>/.goflow/session.json
 ```
+
+GoFlow keeps this JSON file as a compact index. Complete run details are kept
+in `<workspace>/.goflow/session.full.json.gz` and are loaded on demand by the
+runtime, so Web Studio can poll lightweight state without losing full history.
 
 All built-in file-oriented tools are expected to stay under the active workspace
 root.

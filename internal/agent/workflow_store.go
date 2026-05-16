@@ -40,6 +40,7 @@ type WorkflowGraphStageDocument struct {
 	Retry              WorkflowGraphRetry                         `json:"retry,omitempty" yaml:"retry,omitempty"`
 	OnError            []string                                   `json:"on_error,omitempty" yaml:"on_error,omitempty"`
 	Approval           bool                                       `json:"approval,omitempty" yaml:"approval,omitempty"`
+	Context            WorkflowGraphStageContextDocument          `json:"context,omitempty" yaml:"context,omitempty"`
 	NextStrategy       string                                     `json:"next_strategy,omitempty" yaml:"next_strategy,omitempty"`
 	Next               []string                                   `json:"next,omitempty" yaml:"next,omitempty"`
 	Position           WorkflowGraphPosition                      `json:"position,omitempty" yaml:"position,omitempty"`
@@ -48,6 +49,20 @@ type WorkflowGraphStageDocument struct {
 // WorkflowGraphRetry configures retry behavior for an executable stage.
 type WorkflowGraphRetry struct {
 	MaxAttempts int `json:"max_attempts,omitempty" yaml:"max_attempts,omitempty"`
+}
+
+// WorkflowGraphStageContextDocument controls which context a stage receives.
+type WorkflowGraphStageContextDocument struct {
+	Include   []string                              `json:"include,omitempty" yaml:"include,omitempty"`
+	Exclude   []string                              `json:"exclude,omitempty" yaml:"exclude,omitempty"`
+	MaxTokens int                                   `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+	Retrieval WorkflowGraphContextRetrievalDocument `json:"retrieval,omitempty" yaml:"retrieval,omitempty"`
+}
+
+// WorkflowGraphContextRetrievalDocument reserves retrieval settings for a stage context contract.
+type WorkflowGraphContextRetrievalDocument struct {
+	Enabled bool   `json:"enabled,omitempty" yaml:"enabled,omitempty"`
+	Query   string `json:"query,omitempty" yaml:"query,omitempty"`
 }
 
 // WorkflowGraphArtifactDocument declares a replay artifact emitted from a stage result.
@@ -595,11 +610,24 @@ func (d WorkflowGraphDocument) toInternalGraph() workflowGraph {
 			Retry:              workflowGraphRetry{MaxAttempts: stage.Retry.MaxAttempts},
 			OnError:            append([]string(nil), stage.OnError...),
 			Approval:           stage.Approval,
+			Context:            workflowGraphContextToInternal(stage.Context),
 			NextStrategy:       stage.NextStrategy,
 			Next:               append([]string(nil), stage.Next...),
 		})
 	}
 	return workflowGraph{Name: d.Name, Description: d.Description, Stages: stages}
+}
+
+func workflowGraphContextToInternal(context WorkflowGraphStageContextDocument) workflowGraphStageContext {
+	return workflowGraphStageContext{
+		Include:   trimWorkflowGraphStringList(context.Include),
+		Exclude:   trimWorkflowGraphStringList(context.Exclude),
+		MaxTokens: context.MaxTokens,
+		Retrieval: workflowGraphContextRetrieval{
+			Enabled: context.Retrieval.Enabled,
+			Query:   strings.TrimSpace(context.Retrieval.Query),
+		},
+	}
 }
 
 func workflowGraphAcceptanceCriteriaToInternal(criteria []WorkflowGraphAcceptanceCriterionDocument) []workflowGraphAcceptanceCriterion {
@@ -736,6 +764,9 @@ func (w *WorkflowRunner) validateWorkflowGraphDocumentIssues(name string, doc Wo
 		}
 		if stage.Retry.MaxAttempts < 0 {
 			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "retry.max_attempts", Message: fmt.Sprintf("workflow graph %s stage %s retry.max_attempts must not be negative", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
+		}
+		if stage.Context.MaxTokens < 0 {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "context.max_tokens", Message: fmt.Sprintf("workflow graph %s stage %s context.max_tokens must not be negative", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
 		}
 	}
 	for _, stage := range doc.Stages {

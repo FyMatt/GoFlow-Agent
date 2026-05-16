@@ -78,6 +78,11 @@ GOFLOW_BACKUP_MODEL=deepseek-chat
 
 Web Studio 可通过资源 API 创建、编辑、删除 Provider，并同步到配置文件。
 
+`base_url`、`api_key` 和 `model` 是实际模型调用所需字段，但不再是启动硬性前置条件。
+GoFlow 可以先加载未完整配置的 Provider，让 Web Studio 正常打开并展示配置诊断。
+如果某次运行真的要使用这个 Provider，才会返回明确的配置缺失提示。`fallback_provider`
+引用不存在或引用自身仍然属于配置错误，因为这会让路由关系不明确。
+
 ## MCP server 配置
 
 MCP server 建议放在 `configs/mcp_servers/<name>.yaml`。
@@ -179,6 +184,26 @@ Workflow Node 的内置编辑器 metadata 也已经文件化：内置节点 cata
 Workflow Policy Rule 的内置编辑器 metadata 也已经文件化：`/api/workflow-options` 返回的内置规则说明、operator 和参数定义来自 `internal/agent/templates/policy_rules/*.yaml`。运行目录下真正可执行的自定义规则仍然存放在 `policies/workflow_rules/*.yaml`。
 
 Expression helper 的内置编辑器 metadata 也已经文件化：内置资源位于 `internal/agent/templates/expression_helpers/*.yaml`，运行目录可以通过 `templates/expression_helpers/*.yaml`、`templates/workflow_expressions/*.yaml`、`metadata/expression_helpers/*.yaml` 或 `metadata/workflow_expressions/*.yaml` 覆盖展示说明、签名、参数、示例和提示。
+
+## Durable run 与运行成本
+
+## 会话持久化
+
+默认会话路径为：
+
+```text
+<workspace>/.goflow/session.json
+```
+
+`session.json` 只作为轻量索引，用于快速启动状态和 Web Studio 轮询。大的运行结果、
+工具输出、阶段输出和会话产物会完整保存在同目录的压缩归档中：
+
+```text
+<workspace>/.goflow/session.full.json.gz
+```
+
+加载时 GoFlow 会优先读取压缩归档，保证运行详情仍然完整。如果检测到旧版的大
+`session.json`，会自动迁移：写入完整压缩归档，并把 `session.json` 改写为轻量索引。
 
 ## Durable run 与运行成本
 

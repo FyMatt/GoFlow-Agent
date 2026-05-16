@@ -1,6 +1,7 @@
 package session
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -65,6 +66,557 @@ func TestStateArtifactsFilterAndPersist(t *testing.T) {
 	}
 	if got, ok := loaded.Artifact(artifact.ID); !ok || got.Ref != artifact.Ref {
 		t.Fatalf("expected persisted artifact, got %#v ok=%t", got, ok)
+	}
+}
+
+func TestStateArtifactsUseContentAddressedStore(t *testing.T) {
+	root := t.TempDir()
+	store := NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	state := New(3)
+	state.SetArtifactObjectStore(store)
+	first := state.AddArtifact(SessionArtifactSnapshot{Kind: "tool_result", ToolName: "read_file", Content: strings.Repeat("x", 2048)})
+	second := state.AddArtifact(SessionArtifactSnapshot{Kind: "tool_result", ToolName: "read_file", Content: strings.Repeat("x", 2048)})
+	if first.ArtifactRef == "" || first.Hash == "" || first.Content != "" {
+		t.Fatalf("expected externalized first artifact, got %#v", first)
+	}
+	if second.Hash != first.Hash || !second.Deduplicated {
+		t.Fatalf("expected second artifact to deduplicate by hash, first=%#v second=%#v", first, second)
+	}
+	if got, ok := state.Artifact(first.Ref); !ok || got.Content != strings.Repeat("x", 2048) {
+		t.Fatalf("expected hydrated artifact by session ref, got %#v ok=%t", got, ok)
+	}
+	if got, ok := state.Artifact(first.ArtifactRef); !ok || got.Content != strings.Repeat("x", 2048) {
+		t.Fatalf("expected hydrated artifact by hash ref, got %#v ok=%t", got, ok)
+	}
+	object, ok, err := store.Get(first.Hash)
+	if err != nil || !ok || object.Content != strings.Repeat("x", 2048) {
+		t.Fatalf("expected stored object, got %#v ok=%t err=%v", object, ok, err)
+	}
+}
+
+func TestStateWorkflowRunArtifactsUseContentAddressedStore(t *testing.T) {
+	root := t.TempDir()
+	store := NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	state := New(3)
+	state.SetArtifactObjectStore(store)
+	content := strings.Repeat("workflow artifact body ", 180)
+	runID := state.StartWorkflowRun("artifact-flow", "collect workflow artifacts")
+	state.CompleteWorkflowRun(runID, "completed", "done", "", "", nil, []WorkflowRunStageSnapshot{{
+		Stage:   "collect",
+		AgentID: "planner",
+		Result: schema.AgentResult{
+			Output: "stage summary",
+		},
+		Artifacts: []WorkflowRunArtifact{{
+			ID:       "declared-report",
+			Stage:    "collect",
+			Kind:     "report",
+			Title:    "Report",
+			Summary:  "report summary",
+			Content:  content,
+			Metadata: map[string]string{"declared": "true"},
+		}},
+	}})
+	snapshot := state.Snapshot()
+	if len(snapshot.WorkflowRuns) != 1 || len(snapshot.WorkflowRuns[0].Artifacts) == 0 {
+		t.Fatalf("expected workflow artifacts, got %#v", snapshot.WorkflowRuns)
+	}
+	artifact := snapshot.WorkflowRuns[0].Artifacts[0]
+	if artifact.Content != "" || artifact.ArtifactRef == "" || artifact.Hash == "" || !artifact.Externalized || artifact.ContentBytes != len([]byte(content)) {
+		t.Fatalf("expected externalized workflow artifact, got %#v", artifact)
+	}
+	if artifact.Metadata["artifact_ref"] != artifact.ArtifactRef || artifact.Metadata["hash"] != artifact.Hash || artifact.Metadata["externalized"] != "true" {
+		t.Fatalf("expected workflow artifact ref metadata, got %#v", artifact.Metadata)
+	}
+	stageArtifact := snapshot.WorkflowRuns[0].CompletedStages[0].Artifacts[0]
+	if stageArtifact.ArtifactRef != artifact.ArtifactRef || stageArtifact.Content != "" {
+		t.Fatalf("expected stage artifact to share externalized ref, got %#v", stageArtifact)
+	}
+	object, ok, err := store.Get(artifact.Hash)
+	if err != nil || !ok || object.Content != content {
+		t.Fatalf("expected stored workflow artifact object, got %#v ok=%t err=%v", object, ok, err)
+	}
+}
+
+func TestStateWorkflowToolResultArtifactsPreserveFullExternalizedContent(t *testing.T) {
+	root := t.TempDir()
+	store := NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	state := New(3)
+	state.SetArtifactObjectStore(store)
+	content := strings.Repeat("workflow tool artifact body ", 480)
+	runID := state.StartWorkflowRun("tool-artifact-flow", "collect externalized tool artifacts")
+	state.CompleteWorkflowRun(runID, "completed", "done", "", "", nil, []WorkflowRunStageSnapshot{{
+		Stage:   "collect",
+		AgentID: "researcher",
+		Result: schema.AgentResult{
+			ToolResults: []schema.ToolResult{{
+				CallID:   "call-fetch-1",
+				ToolName: "fetch_url",
+				Content:  content,
+			}},
+		},
+	}})
+	snapshot := state.Snapshot()
+	if len(snapshot.WorkflowRuns) != 1 || len(snapshot.WorkflowRuns[0].CompletedStages) != 1 {
+		t.Fatalf("expected persisted workflow stage, got %#v", snapshot.WorkflowRuns)
+	}
+	var toolArtifact WorkflowRunArtifact
+	for _, artifact := range snapshot.WorkflowRuns[0].CompletedStages[0].Artifacts {
+		if artifact.Kind == "tool_result" {
+			toolArtifact = artifact
+			break
+		}
+	}
+	if toolArtifact.Content != "" || toolArtifact.ArtifactRef == "" || toolArtifact.Hash == "" || !toolArtifact.Externalized || toolArtifact.ContentBytes != len([]byte(content)) {
+		t.Fatalf("expected externalized workflow tool artifact, got %#v", toolArtifact)
+	}
+	object, ok, err := store.Get(toolArtifact.Hash)
+	if err != nil || !ok || object.Content != content {
+		t.Fatalf("expected stored workflow tool artifact body, got %#v ok=%t err=%v", object, ok, err)
+	}
+}
+
+func TestStateWorkflowStageValuesUseContentAddressedStore(t *testing.T) {
+	root := t.TempDir()
+	store := NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	state := New(3)
+	state.SetArtifactObjectStore(store)
+	large := strings.Repeat("workflow stage payload ", 640)
+	runID := state.StartWorkflowRun("value-flow", "collect typed stage values")
+	state.CompleteWorkflowRun(runID, "completed", "done", "", "", nil, []WorkflowRunStageSnapshot{{
+		Stage: "collect",
+		InputValues: map[string]any{
+			"target": "auth",
+			"notes":  large,
+			"meta":   map[string]any{"priority": "high"},
+		},
+		OutputValues: map[string]any{
+			"report":  large,
+			"metrics": map[string]any{"score": 7, "status": "ok"},
+		},
+		Result: schema.AgentResult{Output: "done"},
+	}})
+
+	snapshot := state.Snapshot()
+	if len(snapshot.WorkflowRuns) != 1 || len(snapshot.WorkflowRuns[0].CompletedStages) != 1 {
+		t.Fatalf("expected one persisted workflow stage, got %#v", snapshot.WorkflowRuns)
+	}
+	stage := snapshot.WorkflowRuns[0].CompletedStages[0]
+	if len(stage.InputValues) != 0 || stage.InputValuesArtifactRef == "" || stage.InputValuesHash == "" || !stage.InputValuesExternalized || stage.InputValueCount != 3 || stage.InputValuesBytes <= maxWorkflowStageValuesInlineBytes {
+		t.Fatalf("expected externalized input values metadata, got %#v", stage)
+	}
+	if len(stage.OutputValues) != 0 || stage.OutputValuesArtifactRef == "" || stage.OutputValuesHash == "" || !stage.OutputValuesExternalized || stage.OutputValueCount != 2 || stage.OutputValuesBytes <= maxWorkflowStageValuesInlineBytes {
+		t.Fatalf("expected externalized output values metadata, got %#v", stage)
+	}
+	if object, ok, err := store.Get(stage.OutputValuesHash); err != nil || !ok || !strings.Contains(object.Content, large) {
+		t.Fatalf("expected stored stage output object, got %#v ok=%t err=%v", object, ok, err)
+	}
+
+	hydrated := state.HydrateWorkflowRun(snapshot.WorkflowRuns[0])
+	if len(hydrated.CompletedStages) != 1 {
+		t.Fatalf("expected hydrated stage, got %#v", hydrated.CompletedStages)
+	}
+	hydratedStage := hydrated.CompletedStages[0]
+	if got := hydratedStage.InputValues["notes"]; got != large {
+		t.Fatalf("expected hydrated input notes, got %#v", got)
+	}
+	if got := hydratedStage.OutputValues["report"]; got != large {
+		t.Fatalf("expected hydrated output report, got %#v", got)
+	}
+	metrics, ok := hydratedStage.OutputValues["metrics"].(map[string]any)
+	if !ok || metrics["score"] != float64(7) || metrics["status"] != "ok" {
+		t.Fatalf("expected hydrated metrics map, got %#v", hydratedStage.OutputValues["metrics"])
+	}
+
+	sessionPath := filepath.Join(root, "session.json")
+	if err := state.Save(sessionPath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	loaded := New(3)
+	loaded.SetArtifactObjectStore(store)
+	if err := loaded.Load(sessionPath); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	restored, ok := loaded.WorkflowRun(runID)
+	if !ok || len(restored.CompletedStages) != 1 {
+		t.Fatalf("expected loaded workflow run, got %#v ok=%t", restored, ok)
+	}
+	if got := restored.CompletedStages[0].InputValues["notes"]; got != large {
+		t.Fatalf("expected restored input notes, got %#v", got)
+	}
+	if got := restored.CompletedStages[0].OutputValues["report"]; got != large {
+		t.Fatalf("expected restored output report, got %#v", got)
+	}
+}
+
+func TestStateRunEventContentUsesContentAddressedStore(t *testing.T) {
+	root := t.TempDir()
+	store := NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	state := New(3)
+	state.SetArtifactObjectStore(store)
+	large := strings.Repeat("event payload ", 900)
+
+	agentRunID := state.StartAgentRun("collect agent events")
+	state.AppendAgentRunEvent(agentRunID, AgentRunEventSnapshot{
+		Type:    string(schema.StreamEventToolResult),
+		Content: large,
+	})
+
+	workflowRunID := state.StartWorkflowRun("event-flow", "collect workflow events")
+	state.AppendWorkflowRunEvent(workflowRunID, WorkflowRunEventSnapshot{
+		Type:    string(schema.StreamEventToolResult),
+		Stage:   "collect",
+		Content: large,
+	})
+
+	snapshot := state.Snapshot()
+	if len(snapshot.AgentRuns) != 1 || len(snapshot.AgentRuns[0].Events) < 2 {
+		t.Fatalf("expected persisted agent events, got %#v", snapshot.AgentRuns)
+	}
+	agentEvent := snapshot.AgentRuns[0].Events[len(snapshot.AgentRuns[0].Events)-1]
+	if agentEvent.ContentArtifactRef == "" || agentEvent.ContentHash == "" || !agentEvent.ContentExternalized || agentEvent.ContentBytes <= maxRunEventContentInlineBytes {
+		t.Fatalf("expected externalized agent event content metadata, got %#v", agentEvent)
+	}
+	if agentEvent.Content == large {
+		t.Fatalf("expected compact agent event content summary, got full payload")
+	}
+
+	if len(snapshot.WorkflowRuns) != 1 || len(snapshot.WorkflowRuns[0].Events) < 2 {
+		t.Fatalf("expected persisted workflow events, got %#v", snapshot.WorkflowRuns)
+	}
+	workflowEvent := snapshot.WorkflowRuns[0].Events[len(snapshot.WorkflowRuns[0].Events)-1]
+	if workflowEvent.ContentArtifactRef == "" || workflowEvent.ContentHash == "" || !workflowEvent.ContentExternalized || workflowEvent.ContentBytes <= maxRunEventContentInlineBytes {
+		t.Fatalf("expected externalized workflow event content metadata, got %#v", workflowEvent)
+	}
+	if workflowEvent.Content == large {
+		t.Fatalf("expected compact workflow event content summary, got full payload")
+	}
+
+	agentRun, ok := state.AgentRun(agentRunID)
+	if !ok || len(agentRun.Events) < 2 || agentRun.Events[len(agentRun.Events)-1].Content != large {
+		t.Fatalf("expected hydrated agent event content, got %#v ok=%t", agentRun.Events, ok)
+	}
+	workflowRun, ok := state.WorkflowRun(workflowRunID)
+	if !ok || len(workflowRun.Events) < 2 || workflowRun.Events[len(workflowRun.Events)-1].Content != large {
+		t.Fatalf("expected hydrated workflow event content, got %#v ok=%t", workflowRun.Events, ok)
+	}
+}
+
+func TestStatePendingApprovalArgumentsUseContentAddressedStore(t *testing.T) {
+	root := t.TempDir()
+	store := NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	state := New(3)
+	state.SetArtifactObjectStore(store)
+	content := strings.Repeat("externalized approval payload ", 420)
+	args := `{"path":"demo.txt","content":"` + content + `"}`
+
+	state.SetPendingApprovals([]PendingApprovalSnapshot{{
+		CallID:           "call-1",
+		ToolName:         "write_file",
+		AgentID:          "fixer",
+		ArgumentsSummary: "write demo file",
+		Arguments:        args,
+		AgentRunID:       "agent-run-1",
+	}})
+	state.SetWorkflow(WorkflowSnapshot{
+		RunID:            "workflow-run-1",
+		Name:             "plan-fix-audit",
+		Status:           "awaiting_tool_approval",
+		NextStage:        "fix",
+		PendingCallID:    "call-1",
+		PendingToolName:  "write_file",
+		PendingAgentID:   "fixer",
+		PendingArguments: args,
+	})
+
+	snapshot := state.Snapshot()
+	if len(snapshot.PendingApprovals) != 1 {
+		t.Fatalf("expected one pending approval, got %#v", snapshot.PendingApprovals)
+	}
+	pending := snapshot.PendingApprovals[0]
+	if pending.Arguments != "" || pending.ArgumentsArtifactRef == "" || pending.ArgumentsHash == "" || !pending.ArgumentsExternalized || pending.ArgumentsBytes != len([]byte(args)) {
+		t.Fatalf("expected externalized pending approval arguments, got %#v", pending)
+	}
+	if snapshot.Workflow.PendingArguments != "" || snapshot.Workflow.PendingArgumentsArtifactRef == "" || snapshot.Workflow.PendingArgumentsHash == "" || !snapshot.Workflow.PendingArgumentsExternalized {
+		t.Fatalf("expected workflow pending arguments to externalize, got %#v", snapshot.Workflow)
+	}
+	hydrated := state.HydratePendingApproval(pending)
+	if hydrated.Arguments != args {
+		t.Fatalf("expected hydrated pending approval arguments, got %d bytes", len([]byte(hydrated.Arguments)))
+	}
+	hydratedWorkflow := state.HydrateWorkflowPendingArguments(snapshot.Workflow)
+	if hydratedWorkflow.PendingArguments != args {
+		t.Fatalf("expected hydrated workflow pending arguments, got %d bytes", len([]byte(hydratedWorkflow.PendingArguments)))
+	}
+	object, ok, err := store.Get(pending.ArgumentsHash)
+	if err != nil || !ok || object.Content != args {
+		t.Fatalf("expected stored pending approval object, got %#v ok=%t err=%v", object, ok, err)
+	}
+
+	path := filepath.Join(root, "session.json")
+	if err := state.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), content) {
+		t.Fatalf("expected compact session index to omit raw pending approval arguments")
+	}
+}
+
+func TestStateAgentRunResumeContextUsesContentAddressedStore(t *testing.T) {
+	root := t.TempDir()
+	store := NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	state := New(3)
+	state.SetArtifactObjectStore(store)
+	runID := state.StartAgentRun("resume large approval context")
+	messageContent := strings.Repeat("resume message body ", 700)
+	resultContent := strings.Repeat("resume tool result ", 700)
+	callContent := strings.Repeat("resume suspended call ", 500)
+	args := `{"path":"demo.txt","content":"` + callContent + `"}`
+
+	_, ok := state.SetAgentRunResumeContext(runID, AgentRunResumeContextSnapshot{
+		AgentID:      "chat",
+		Mode:         "chat",
+		SystemPrompt: "system",
+		Messages: []schema.Message{{
+			Role:    "user",
+			Content: messageContent,
+		}},
+		SuspendedCalls: []schema.ToolCall{{
+			ID:        "call-1",
+			Name:      "write_file",
+			Arguments: json.RawMessage(args),
+		}},
+		CollectedResults: []schema.ToolResult{{
+			CallID:   "call-read-1",
+			ToolName: "read_file",
+			Content:  resultContent,
+		}},
+	})
+	if !ok {
+		t.Fatalf("expected resume context to persist")
+	}
+	snapshot := state.Snapshot()
+	if len(snapshot.AgentRuns) != 1 || snapshot.AgentRuns[0].ResumeContext == nil {
+		t.Fatalf("expected persisted run resume context, got %#v", snapshot.AgentRuns)
+	}
+	context := *snapshot.AgentRuns[0].ResumeContext
+	if len(context.Messages) != 0 || context.MessagesArtifactRef == "" || context.MessagesHash == "" || !context.MessagesExternalized || context.MessagesCount != 1 {
+		t.Fatalf("expected externalized resume messages, got %#v", context)
+	}
+	if len(context.SuspendedCalls) != 0 || context.SuspendedCallsArtifactRef == "" || context.SuspendedCallsHash == "" || !context.SuspendedCallsExternalized || context.SuspendedCallCount != 1 {
+		t.Fatalf("expected externalized suspended calls, got %#v", context)
+	}
+	if len(context.CollectedResults) != 0 || context.CollectedResultsArtifactRef == "" || context.CollectedResultsHash == "" || !context.CollectedResultsExternalized || context.CollectedResultCount != 1 {
+		t.Fatalf("expected externalized collected results, got %#v", context)
+	}
+	run, ok := state.AgentRun(runID)
+	if !ok || run.ResumeContext == nil {
+		t.Fatalf("expected hydrated run resume context, got %#v ok=%t", run, ok)
+	}
+	hydrated := *run.ResumeContext
+	if len(hydrated.Messages) != 1 || hydrated.Messages[0].Content != messageContent {
+		t.Fatalf("expected hydrated resume messages, got %#v", hydrated.Messages)
+	}
+	if len(hydrated.SuspendedCalls) != 1 || string(hydrated.SuspendedCalls[0].Arguments) != args {
+		t.Fatalf("expected hydrated suspended calls, got %#v", hydrated.SuspendedCalls)
+	}
+	if len(hydrated.CollectedResults) != 1 || hydrated.CollectedResults[0].Content != resultContent {
+		t.Fatalf("expected hydrated collected results, got %#v", hydrated.CollectedResults)
+	}
+
+	path := filepath.Join(root, "session.json")
+	if err := state.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	text := string(data)
+	if strings.Contains(text, messageContent) || strings.Contains(text, resultContent) || strings.Contains(text, callContent) {
+		t.Fatalf("expected compact session index to omit raw resume context payloads")
+	}
+}
+
+func TestStateAgentRunArtifactsUseContentAddressedStore(t *testing.T) {
+	root := t.TempDir()
+	store := NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	state := New(3)
+	state.SetArtifactObjectStore(store)
+	content := strings.Repeat("agent artifact body ", 180)
+	runID := state.StartAgentRun("collect agent artifacts")
+	state.CompleteAgentRun(runID, "completed", schema.AgentResult{
+		Output:  "final summary",
+		AgentID: "fixer",
+		Mode:    "fix",
+		ToolResults: []schema.ToolResult{{
+			CallID:   "call-1",
+			ToolName: "read_file",
+			Content:  content,
+		}},
+		Findings: []schema.Finding{{
+			Severity: "high",
+			Summary:  "finding summary",
+			Files:    []string{"src/app.go"},
+		}},
+	})
+	snapshot := state.Snapshot()
+	if len(snapshot.AgentRuns) != 1 || len(snapshot.AgentRuns[0].Artifacts) < 3 {
+		t.Fatalf("expected agent artifacts, got %#v", snapshot.AgentRuns)
+	}
+	var toolArtifact AgentRunArtifactSnapshot
+	for _, artifact := range snapshot.AgentRuns[0].Artifacts {
+		if artifact.Kind == "tool_result" {
+			toolArtifact = artifact
+			break
+		}
+	}
+	if toolArtifact.Content != "" || toolArtifact.ArtifactRef == "" || toolArtifact.Hash == "" || toolArtifact.ContentBytes != len([]byte(content)) {
+		t.Fatalf("expected externalized agent tool artifact, got %#v", toolArtifact)
+	}
+	if toolArtifact.Metadata["artifact_ref"] != toolArtifact.ArtifactRef || toolArtifact.Metadata["hash"] != toolArtifact.Hash || toolArtifact.Metadata["externalized"] != "true" {
+		t.Fatalf("expected agent artifact ref metadata, got %#v", toolArtifact.Metadata)
+	}
+	object, ok, err := store.Get(toolArtifact.Hash)
+	if err != nil || !ok || object.Content != content {
+		t.Fatalf("expected stored agent artifact object, got %#v ok=%t err=%v", object, ok, err)
+	}
+}
+
+func TestStateStoresLargeRunPayloadsInCompressedArchive(t *testing.T) {
+	state := New(3)
+	large := strings.Repeat("x", maxWorkflowRunText*3)
+
+	agentRunID := state.StartAgentRun("inspect large output")
+	state.CompleteAgentRun(agentRunID, "completed", schema.AgentResult{
+		Output: large,
+		ToolResults: []schema.ToolResult{{
+			CallID:   "call-1",
+			ToolName: "read_file",
+			Content:  large,
+		}},
+	})
+	workflowRunID := state.StartWorkflowRun("large-flow", "inspect large output")
+	state.CompleteWorkflowRun(workflowRunID, "completed", large, "", "", nil, []WorkflowRunStageSnapshot{{
+		Stage: "inspect",
+		Result: schema.AgentResult{
+			Output: large,
+			ToolResults: []schema.ToolResult{{
+				CallID:   "call-2",
+				ToolName: "read_file",
+				Content:  large,
+			}},
+		},
+	}})
+	state.AddArtifact(SessionArtifactSnapshot{Kind: "tool_result", ToolName: "read_file", Content: large})
+
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := state.Save(path); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(data) > 220_000 {
+		t.Fatalf("expected compact session index, got %d bytes", len(data))
+	}
+	archiveInfo, err := os.Stat(fullSessionArchivePath(path))
+	if err != nil {
+		t.Fatalf("expected full compressed session archive: %v", err)
+	}
+	if archiveInfo.Size() <= 0 || archiveInfo.Size() >= int64(len(data)) {
+		t.Fatalf("expected compressed archive to be smaller than JSON index for repeated content, archive=%d index=%d", archiveInfo.Size(), len(data))
+	}
+
+	loaded := New(3)
+	if err := loaded.Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	snapshot := loaded.Snapshot()
+	if got := snapshot.AgentRuns[0].Result.ToolResults[0].Content; got != large {
+		t.Fatalf("expected complete agent tool result after archive load, got %d bytes", len([]byte(got)))
+	}
+	if got := snapshot.WorkflowRuns[0].CompletedStages[0].Result.ToolResults[0].Content; got != large {
+		t.Fatalf("expected complete workflow tool result after archive load, got %d bytes", len([]byte(got)))
+	}
+	if got := snapshot.Artifacts[0].Content; got != large {
+		t.Fatalf("expected complete session artifact after archive load, got %d bytes", len([]byte(got)))
+	}
+}
+
+func TestStateLoadMigratesOversizedSessionIntoCompressedArchive(t *testing.T) {
+	large := strings.Repeat("x", maxWorkflowRunText*3)
+	raw := Snapshot{
+		AgentRuns: []AgentRunSnapshot{{
+			ID:     "agent-1",
+			Status: "completed",
+			Result: &schema.AgentResult{ToolResults: []schema.ToolResult{{
+				CallID:   "call-1",
+				ToolName: "read_file",
+				Content:  large,
+			}}},
+			Events: []AgentRunEventSnapshot{{Content: large}},
+		}},
+		Artifacts: []SessionArtifactSnapshot{{ID: "artifact-1", Content: large, Summary: large}},
+	}
+	data, err := json.MarshalIndent(raw, "", "  ")
+	if err != nil {
+		t.Fatalf("MarshalIndent: %v", err)
+	}
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := os.WriteFile(path, data, 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+
+	state := New(3)
+	if err := state.Load(path); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	rewritten, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if len(rewritten) >= len(data) {
+		t.Fatalf("expected session load to rewrite compacted file, before=%d after=%d", len(data), len(rewritten))
+	}
+	if _, err := os.Stat(fullSessionArchivePath(path)); err != nil {
+		t.Fatalf("expected full compressed session archive after migration: %v", err)
+	}
+	snapshot := state.Snapshot()
+	if got := snapshot.AgentRuns[0].Result.ToolResults[0].Content; got != large {
+		t.Fatalf("expected complete loaded tool result, got %d bytes", len([]byte(got)))
+	}
+	if got := snapshot.Artifacts[0].Content; got != large {
+		t.Fatalf("expected complete loaded artifact content, got %d bytes", len([]byte(got)))
 	}
 }
 
@@ -244,6 +796,70 @@ func TestStateCollaborationMessagesFilterAndPersist(t *testing.T) {
 	}
 	if got := loaded.CollaborationMessages(CollaborationFilter{RunID: "wf-1"}); len(got) != 1 || got[0].Content != "implement this" {
 		t.Fatalf("expected persisted collaboration message, got %#v", got)
+	}
+}
+
+func TestStateCollaborationContentUsesContentAddressedStore(t *testing.T) {
+	root := t.TempDir()
+	store := NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	state := New(3)
+	state.SetArtifactObjectStore(store)
+	largeMessage := strings.Repeat("collaboration message payload ", 480)
+	largeEntry := strings.Repeat("blackboard entry payload ", 480)
+
+	message := state.AddCollaborationMessage(CollaborationMessageSnapshot{RunID: "wf-1", Stage: "plan", FromAgent: "planner", ToAgent: "fixer", Kind: "handoff", Subject: "Large handoff", Content: largeMessage})
+	if message.ContentArtifactRef == "" || message.ContentHash == "" || !message.ContentExternalized || message.ContentBytes != len([]byte(largeMessage)) || message.Content == largeMessage {
+		t.Fatalf("expected externalized collaboration message, got %#v", message)
+	}
+	entry := state.UpsertBlackboardEntry(BlackboardEntrySnapshot{Scope: "workflow", RunID: "wf-1", Stage: "plan", AgentID: "planner", Kind: "decision", Title: "Large decision", Content: largeEntry})
+	if entry.ContentArtifactRef == "" || entry.ContentHash == "" || !entry.ContentExternalized || entry.ContentBytes != len([]byte(largeEntry)) || entry.Content == largeEntry {
+		t.Fatalf("expected externalized blackboard entry, got %#v", entry)
+	}
+
+	summaryMessages := state.CollaborationMessages(CollaborationFilter{RunID: "wf-1"})
+	if len(summaryMessages) != 1 || summaryMessages[0].Content == largeMessage || summaryMessages[0].ContentArtifactRef == "" {
+		t.Fatalf("expected summary-first collaboration messages, got %#v", summaryMessages)
+	}
+	fullMessages := state.CollaborationMessages(CollaborationFilter{RunID: "wf-1", Content: true})
+	if len(fullMessages) != 1 || fullMessages[0].Content != largeMessage {
+		t.Fatalf("expected hydrated collaboration message content, got %#v", fullMessages)
+	}
+	summaryEntries := state.BlackboardEntries(CollaborationFilter{RunID: "wf-1"})
+	if len(summaryEntries) != 1 || summaryEntries[0].Content == largeEntry || summaryEntries[0].ContentArtifactRef == "" {
+		t.Fatalf("expected summary-first blackboard entries, got %#v", summaryEntries)
+	}
+	fullEntry, ok := state.BlackboardEntry(entry.ID)
+	if !ok || fullEntry.Content != largeEntry {
+		t.Fatalf("expected hydrated blackboard entry content, got %#v ok=%t", fullEntry, ok)
+	}
+
+	sessionPath := filepath.Join(root, "session.json")
+	if err := state.Save(sessionPath); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	data, err := os.ReadFile(sessionPath)
+	if err != nil {
+		t.Fatalf("ReadFile: %v", err)
+	}
+	if strings.Contains(string(data), largeMessage) || strings.Contains(string(data), largeEntry) {
+		t.Fatalf("expected compact session index to omit raw collaboration payloads")
+	}
+
+	loaded := New(3)
+	loaded.SetArtifactObjectStore(store)
+	if err := loaded.Load(sessionPath); err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	restoredMessages := loaded.CollaborationMessages(CollaborationFilter{RunID: "wf-1", Content: true})
+	if len(restoredMessages) != 1 || restoredMessages[0].Content != largeMessage {
+		t.Fatalf("expected loaded collaboration message content, got %#v", restoredMessages)
+	}
+	restoredEntry, ok := loaded.BlackboardEntry(entry.ID)
+	if !ok || restoredEntry.Content != largeEntry {
+		t.Fatalf("expected loaded blackboard content, got %#v ok=%t", restoredEntry, ok)
 	}
 }
 

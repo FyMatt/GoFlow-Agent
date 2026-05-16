@@ -166,6 +166,8 @@ GoFlow 读取工作区文本文件时统一按 UTF-8 处理，允许 UTF-8 BOM �
 
 用于模型接入。
 
+`base_url`、`api_key` 和 `model` 是 Provider 真正服务 Agent 运行前所需字段，但首次启动时可以暂时留空，这样 Web Studio 可以正常打开并引导配置。设置了 `fallback_provider` 时，它仍必须指向已存在的 Provider。
+
 常见字段：
 
 - `provider`

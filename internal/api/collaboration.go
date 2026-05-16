@@ -294,12 +294,13 @@ func collaborationFilterFromRequest(r *http.Request) session.CollaborationFilter
 		limit = 0
 	}
 	return session.CollaborationFilter{
-		RunID:  query.Get("run_id"),
-		Stage:  query.Get("stage"),
-		Agent:  query.Get("agent"),
-		Kind:   query.Get("kind"),
-		Scope:  query.Get("scope"),
-		Status: query.Get("status"),
-		Limit:  limit,
+		RunID:   query.Get("run_id"),
+		Stage:   query.Get("stage"),
+		Agent:   query.Get("agent"),
+		Kind:    query.Get("kind"),
+		Scope:   query.Get("scope"),
+		Status:  query.Get("status"),
+		Limit:   limit,
+		Content: workflowRunQueryBool(query.Get("include_content")) || workflowRunQueryBool(query.Get("content")),
 	}
 }

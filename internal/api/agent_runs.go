@@ -51,17 +51,25 @@ func (s *Server) handleAgentRunItem(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case len(parts) == 1:
-		writeJSON(w, run)
+		if workflowRunQueryBool(firstWorkflowRunQueryValue(r.URL.Query().Get("summary"), r.URL.Query().Get("compact"))) {
+			writeJSON(w, summarizeAgentRunForAPI(run))
+			return
+		}
+		writeJSON(w, s.runtime.HydrateAgentRun(run))
 	case len(parts) == 2 && parts[1] == "events":
-		writeJSON(w, agentRunEventsForQuery(run.Events, agentRunQueryFromRequest(r)))
+		writeJSON(w, s.agentRunEventsForQuery(run.Events, agentRunQueryFromRequest(r)))
 	case len(parts) == 2 && parts[1] == "timeline":
-		writeJSON(w, agentRunTimeline(run, agentRunQueryFromRequest(r)))
+		writeJSON(w, s.agentRunTimeline(run, agentRunQueryFromRequest(r)))
+	case len(parts) == 2 && parts[1] == "context":
+		writeJSON(w, agentRunContext(run))
+	case len(parts) == 2 && parts[1] == "artifacts":
+		writeJSON(w, s.agentRunArtifactsResponse(run, workflowRunArtifactQueryFromRequest(r)))
 	case len(parts) == 3 && parts[1] == "events" && parts[2] == "stream":
 		s.handleAgentRunEventsStream(w, r, run.ID)
 	case len(parts) == 2 && parts[1] == "replay":
 		writeJSON(w, s.agentRunReplay(run, agentRunQueryFromRequest(r)))
 	case len(parts) == 2 && parts[1] == "diffs":
-		writeJSON(w, agentRunDiffResponse(run, agentRunQueryFromRequest(r)))
+		writeJSON(w, s.agentRunDiffResponse(run, agentRunQueryFromRequest(r)))
 	case len(parts) == 2 && parts[1] == "export":
 		s.handleAgentRunExport(w, r, run)
 	case len(parts) == 2 && parts[1] == "actions":
@@ -202,6 +210,7 @@ type agentRunCollectionQuery struct {
 	TerminalOnly    bool   `json:"terminal_only,omitempty"`
 	NeedsActionOnly bool   `json:"needs_action_only,omitempty"`
 	ErrorsOnly      bool   `json:"errors_only,omitempty"`
+	Summary         bool   `json:"summary,omitempty"`
 }
 
 type agentRunCollectionRunCounts struct {
@@ -215,11 +224,14 @@ type agentRunCollectionRunCounts struct {
 }
 
 func (s *Server) agentRunReplay(run session.AgentRunSnapshot, query agentRunQuery) agentRunReplay {
+	if query.IncludeContent {
+		run = s.runtime.HydrateAgentRun(run)
+	}
 	return agentRunReplay{
 		Run:      run,
-		Events:   agentRunEventsForQuery(run.Events, query),
-		Timeline: agentRunTimeline(run, query),
-		Diffs:    agentRunDiffs(run, query),
+		Events:   s.agentRunEventsForQuery(run.Events, query),
+		Timeline: s.agentRunTimeline(run, query),
+		Diffs:    s.agentRunDiffs(run, query),
 		Actions:  s.agentRunActions(run),
 		Filters:  query,
 	}
@@ -251,6 +263,9 @@ func agentRunCollectionResponseFor(runs []session.AgentRunSnapshot, query agentR
 		matched = append(matched, run)
 	}
 	counts.Returned = len(matched)
+	if query.Summary {
+		matched = summarizeAgentRunsForAPI(matched)
+	}
 	return agentRunCollectionResponse{Runs: matched, Filters: query, Counts: counts}
 }
 
@@ -278,6 +293,7 @@ func agentRunCollectionQueryFromRequest(r *http.Request) agentRunCollectionQuery
 		TerminalOnly:    workflowRunQueryBool(firstWorkflowRunQueryValue(values.Get("terminal"), values.Get("done"))),
 		NeedsActionOnly: workflowRunQueryBool(values.Get("needs_action")) || workflowRunQueryBool(values.Get("pending")),
 		ErrorsOnly:      workflowRunQueryBool(values.Get("errors_only")) || workflowRunQueryBool(values.Get("error")),
+		Summary:         workflowRunQueryBool(values.Get("summary")),
 	}
 }
 
@@ -289,6 +305,7 @@ func agentRunCollectionWantsEnvelope(r *http.Request, query agentRunCollectionQu
 	if workflowRunQueryBool(firstWorkflowRunQueryValue(values.Get("envelope"), values.Get("summary"), values.Get("counts"))) {
 		return true
 	}
+	query.Summary = false
 	return query != (agentRunCollectionQuery{})
 }
 
@@ -1606,6 +1623,14 @@ func agentRunEventsForQuery(events []session.AgentRunEventSnapshot, query agentR
 	return filtered
 }
 
+func (s *Server) agentRunEventsForQuery(events []session.AgentRunEventSnapshot, query agentRunQuery) []session.AgentRunEventSnapshot {
+	filtered := agentRunEventsForQuery(events, query)
+	if len(filtered) == 0 || !query.IncludeContent {
+		return filtered
+	}
+	return s.runtime.HydrateAgentRunEvents(filtered)
+}
+
 func agentRunTimeline(run session.AgentRunSnapshot, query agentRunQuery) []agentRunTimelineItem {
 	withoutLimit := query
 	withoutLimit.Limit = 0
@@ -1657,6 +1682,13 @@ func agentRunTimeline(run session.AgentRunSnapshot, query agentRunQuery) []agent
 		return append([]agentRunTimelineItem(nil), items[:query.Limit]...)
 	}
 	return items
+}
+
+func (s *Server) agentRunTimeline(run session.AgentRunSnapshot, query agentRunQuery) []agentRunTimelineItem {
+	if query.IncludeContent {
+		run = s.runtime.HydrateAgentRun(run)
+	}
+	return agentRunTimeline(run, query)
 }
 
 func agentRunEventMatchesQuery(event session.AgentRunEventSnapshot, query agentRunQuery) bool {

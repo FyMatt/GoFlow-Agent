@@ -7,12 +7,15 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"unicode/utf8"
 
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 	"gopkg.in/yaml.v3"
@@ -44,12 +47,25 @@ type workflowGraphStage struct {
 	Retry              workflowGraphRetry                 `yaml:"retry"`
 	OnError            []string                           `yaml:"on_error"`
 	Approval           bool                               `yaml:"approval"`
+	Context            workflowGraphStageContext          `yaml:"context"`
 	NextStrategy       string                             `yaml:"next_strategy"`
 	Next               []string                           `yaml:"next"`
 }
 
 type workflowGraphRetry struct {
 	MaxAttempts int `yaml:"max_attempts"`
+}
+
+type workflowGraphStageContext struct {
+	Include   []string                      `yaml:"include"`
+	Exclude   []string                      `yaml:"exclude"`
+	MaxTokens int                           `yaml:"max_tokens"`
+	Retrieval workflowGraphContextRetrieval `yaml:"retrieval"`
+}
+
+type workflowGraphContextRetrieval struct {
+	Enabled bool   `yaml:"enabled"`
+	Query   string `yaml:"query"`
 }
 
 type workflowGraphArtifact struct {
@@ -486,7 +502,7 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 		}
 		inputs := resolveWorkflowGraphStageInputs(stage, request, completed)
 		inputValues := resolveWorkflowGraphStageInputValues(stage, request, completed)
-		prompt := buildWorkflowGraphStagePrompt(graph, stage, request, completed)
+		prompt := w.buildWorkflowGraphStagePrompt(ctx, graph, stage, request, completed)
 		w.persistWorkflowState(graph.Name, "running", WorkflowStage(stage.Name), request, summarizeWorkflow(completed), "")
 		if err := w.runtime.SetActiveAgent(stage.Agent); err != nil {
 			return WorkflowResult{}, err
@@ -555,7 +571,7 @@ func (w *WorkflowRunner) resumeWorkflowGraph(ctx context.Context, graph workflow
 	}
 	prompt := pending.stagePrompt
 	if strings.TrimSpace(prompt) == "" {
-		prompt = buildWorkflowGraphStagePrompt(graph, stage, pending.request, completed)
+		prompt = w.buildWorkflowGraphStagePrompt(ctx, graph, stage, pending.request, completed)
 	}
 	if err := w.ensureWorkflowAgent(stage.Agent); err != nil {
 		return WorkflowResult{}, err
@@ -1082,7 +1098,7 @@ func (w *WorkflowRunner) runWorkflowGraphConcurrentBranchPlan(ctx context.Contex
 		}
 		inputs := resolveWorkflowGraphStageInputs(stage, request, branchCompleted)
 		inputValues := resolveWorkflowGraphStageInputValues(stage, request, branchCompleted)
-		prompt := buildWorkflowGraphStagePrompt(graph, stage, request, branchCompleted)
+		prompt := w.buildWorkflowGraphStagePrompt(ctx, graph, stage, request, branchCompleted)
 		w.persistWorkflowState(graph.Name, "running", WorkflowStage(stage.Name), request, summarizeWorkflow(branchCompleted), "")
 		stageResult, attempts, err := w.runWorkflowGraphExecutableStage(ctx, stage, prompt, skill, handler)
 		result.Result = stageResult
@@ -1686,7 +1702,7 @@ func (w *WorkflowRunner) resumeWorkflowGraphRepeatStage(ctx context.Context, gra
 	}
 	prompt := pending.stagePrompt
 	if strings.TrimSpace(prompt) == "" {
-		prompt = buildWorkflowGraphStagePrompt(graph, iterationStage, pending.request, completed)
+		prompt = w.buildWorkflowGraphStagePrompt(ctx, graph, iterationStage, pending.request, completed)
 	}
 	if err := w.ensureWorkflowAgent(iterationStage.Agent); err != nil {
 		return WorkflowResult{}, err
@@ -1749,7 +1765,7 @@ func (w *WorkflowRunner) runWorkflowGraphRepeatIterations(ctx context.Context, g
 		}
 		inputs := workflowGraphRepeatIterationInputs(iterationStage, context, iteration, request, completed)
 		inputValues := workflowGraphRepeatIterationInputValues(iterationStage, context, iteration, request, completed)
-		prompt := buildWorkflowGraphStagePrompt(graph, iterationStage, request, completed)
+		prompt := w.buildWorkflowGraphStagePrompt(ctx, graph, iterationStage, request, completed)
 		w.persistWorkflowState(graph.Name, "running", WorkflowStage(iterationStage.Name), request, summarizeWorkflow(completed), "")
 		if err := w.runtime.SetActiveAgent(iterationStage.Agent); err != nil {
 			return workflowGraphRepeatOutcome{}, err
@@ -4318,6 +4334,7 @@ func workflowStageResultsFromRunSnapshots(snapshots []session.WorkflowRunStageSn
 			Changes:      append([]schema.Change(nil), snapshot.Result.Changes...),
 			Verification: append([]schema.Verification(nil), snapshot.Result.Verification...),
 		}
+		applyWorkflowStageCanonicalOutputFields(&output)
 		results = append(results, WorkflowStageResult{
 			Stage:       WorkflowStage(snapshot.Stage),
 			Agent:       snapshot.AgentID,
@@ -4551,7 +4568,22 @@ func resolveWorkflowGraphStageInputValues(stage workflowGraphStage, request stri
 	return inputs
 }
 
+func (w *WorkflowRunner) buildWorkflowGraphStagePrompt(ctx context.Context, graph workflowGraph, stage workflowGraphStage, request string, completed []WorkflowStageResult) string {
+	return buildWorkflowGraphStagePromptWithMemory(ctx, graph, stage, request, completed, w.workflowGraphMemoryStore())
+}
+
+func (w *WorkflowRunner) workflowGraphMemoryStore() *memory.Store {
+	if w == nil || w.runtime == nil {
+		return nil
+	}
+	return w.runtime.MemoryStore()
+}
+
 func buildWorkflowGraphStagePrompt(graph workflowGraph, stage workflowGraphStage, request string, completed []WorkflowStageResult) string {
+	return buildWorkflowGraphStagePromptWithMemory(context.Background(), graph, stage, request, completed, nil)
+}
+
+func buildWorkflowGraphStagePromptWithMemory(ctx context.Context, graph workflowGraph, stage workflowGraphStage, request string, completed []WorkflowStageResult, store *memory.Store) string {
 	var builder strings.Builder
 	fmt.Fprintf(&builder, "Run workflow %q stage %q for the following request.\n\nOriginal request:\n%s\n", graph.Name, stage.Name, request)
 	if graph.Description != "" {
@@ -4586,21 +4618,28 @@ func buildWorkflowGraphStagePrompt(graph workflowGraph, stage workflowGraphStage
 		}
 	}
 	if len(completed) > 0 {
-		builder.WriteString("\nCompleted prior stages:\n")
-		for _, prior := range completed {
-			summary := prior.Output.Summary
-			if strings.TrimSpace(summary) == "" {
-				summary = prior.Result.Output
+		if workflowGraphContextConfigured(stage.Context) {
+			contextText := buildWorkflowGraphContractContext(ctx, store, stage, request, completed)
+			if strings.TrimSpace(contextText) != "" {
+				builder.WriteString(contextText)
 			}
-			fmt.Fprintf(&builder, "- %s/%s: %s\n", prior.Stage, prior.Agent, truncateSummary(summary))
-			if len(prior.Output.Variables) > 0 {
-				keys := make([]string, 0, len(prior.Output.Variables))
-				for key := range prior.Output.Variables {
-					keys = append(keys, key)
+		} else {
+			builder.WriteString("\nCompleted prior stages:\n")
+			for _, prior := range completed {
+				summary := prior.Output.Summary
+				if strings.TrimSpace(summary) == "" {
+					summary = prior.Result.Output
 				}
-				sort.Strings(keys)
-				for _, key := range keys {
-					fmt.Fprintf(&builder, "  - output.%s: %s\n", key, truncateSummary(prior.Output.Variables[key]))
+				fmt.Fprintf(&builder, "- %s/%s: %s\n", prior.Stage, prior.Agent, truncateSummary(summary))
+				if len(prior.Output.Variables) > 0 {
+					keys := make([]string, 0, len(prior.Output.Variables))
+					for key := range prior.Output.Variables {
+						keys = append(keys, key)
+					}
+					sort.Strings(keys)
+					for _, key := range keys {
+						fmt.Fprintf(&builder, "  - output.%s: %s\n", key, truncateSummary(prior.Output.Variables[key]))
+					}
 				}
 			}
 		}
@@ -4612,7 +4651,759 @@ func buildWorkflowGraphStagePrompt(graph workflowGraph, stage workflowGraphStage
 		}
 	}
 	builder.WriteString("\nUse the configured stage skill instructions. Produce a concise stage result.")
+	builder.WriteString("\nReturn structured fields when applicable: summary, evidence, artifacts, decision, next_actions.")
 	return builder.String()
+}
+
+func workflowGraphContextConfigured(context workflowGraphStageContext) bool {
+	return len(context.Include) > 0 || len(context.Exclude) > 0 || context.MaxTokens > 0 || context.Retrieval.Enabled || strings.TrimSpace(context.Retrieval.Query) != ""
+}
+
+func workflowGraphContextMetadata(context workflowGraphStageContext) map[string]string {
+	if !workflowGraphContextConfigured(context) {
+		return nil
+	}
+	metadata := map[string]string{}
+	if len(context.Include) > 0 {
+		metadata["context.include"] = strings.Join(trimWorkflowGraphStringList(context.Include), ",")
+	}
+	if len(context.Exclude) > 0 {
+		metadata["context.exclude"] = strings.Join(trimWorkflowGraphStringList(context.Exclude), ",")
+	}
+	if context.MaxTokens > 0 {
+		metadata["context.max_tokens"] = strconv.Itoa(context.MaxTokens)
+	}
+	if context.Retrieval.Enabled {
+		metadata["context.retrieval.enabled"] = "true"
+	}
+	if query := strings.TrimSpace(context.Retrieval.Query); query != "" {
+		metadata["context.retrieval.query"] = query
+	}
+	return metadata
+}
+
+func buildWorkflowGraphContractContext(ctx context.Context, store *memory.Store, stage workflowGraphStage, request string, completed []WorkflowStageResult) string {
+	entries := workflowGraphContextEntries(ctx, store, stage, request, completed)
+	if len(entries) == 0 {
+		return "\nSelected context:\n- No prior context selected by this stage contract.\n"
+	}
+	var builder strings.Builder
+	builder.WriteString("\nSelected context:\n")
+	for _, entry := range entries {
+		if strings.TrimSpace(entry.Value) == "" {
+			continue
+		}
+		fmt.Fprintf(&builder, "- %s: %s\n", entry.Ref, truncateSummary(entry.Value))
+	}
+	return builder.String()
+}
+
+type workflowGraphContextEntry struct {
+	Ref   string
+	Value string
+}
+
+func workflowGraphContextEntries(ctx context.Context, store *memory.Store, stage workflowGraphStage, request string, completed []WorkflowStageResult) []workflowGraphContextEntry {
+	include := trimWorkflowGraphStringList(stage.Context.Include)
+	exclude := trimWorkflowGraphStringList(stage.Context.Exclude)
+	maxTokens := stage.Context.MaxTokens
+	if maxTokens <= 0 {
+		maxTokens = 4000
+	}
+	entries := make([]workflowGraphContextEntry, 0, len(include)+len(stage.Input))
+	if len(include) == 0 {
+		for _, prior := range completed {
+			entries = append(entries, workflowGraphPriorSummaryContextEntry(prior))
+		}
+	} else {
+		for _, ref := range include {
+			entries = append(entries, workflowGraphContextEntriesForRef(ctx, store, ref, request, completed)...)
+		}
+	}
+	entries = append(entries, workflowGraphContextEntriesFromStageInputs(stage, request, completed)...)
+	entries = append(entries, workflowGraphRetrievalContextEntries(ctx, store, stage, request, completed)...)
+	entries = dedupeWorkflowGraphContextEntries(entries)
+	entries = filterWorkflowGraphContextEntries(entries, exclude)
+	return limitWorkflowGraphContextEntries(entries, maxTokens)
+}
+
+func workflowGraphContextEntriesFromStageInputs(stage workflowGraphStage, request string, completed []WorkflowStageResult) []workflowGraphContextEntry {
+	if len(stage.Input) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(stage.Input))
+	for key := range stage.Input {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	entries := make([]workflowGraphContextEntry, 0, len(keys))
+	for _, key := range keys {
+		ref := strings.TrimSpace(stage.Input[key])
+		value := resolveWorkflowGraphReference(ref, request, completed)
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		entries = append(entries, workflowGraphContextEntry{
+			Ref:   "input." + key + " (" + ref + ")",
+			Value: limitWorkflowGraphText(value),
+		})
+	}
+	return entries
+}
+
+func workflowGraphRetrievalContextEntries(ctx context.Context, store *memory.Store, stage workflowGraphStage, request string, completed []WorkflowStageResult) []workflowGraphContextEntry {
+	if store == nil || !stage.Context.Retrieval.Enabled {
+		return nil
+	}
+	query := strings.TrimSpace(stage.Context.Retrieval.Query)
+	if query == "" {
+		query = request
+	} else {
+		query = renderWorkflowGraphContextQuery(query, request, completed)
+	}
+	if strings.TrimSpace(query) == "" {
+		return nil
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	memoryContext, err := store.PromptContextFresh(ctx, query, "")
+	if err != nil || len(memoryContext.Blocks) == 0 {
+		return nil
+	}
+	entries := make([]workflowGraphContextEntry, 0, len(memoryContext.Blocks))
+	for _, block := range memoryContext.Blocks {
+		ref := strings.TrimSpace(block.Ref)
+		if ref == "" {
+			ref = strings.TrimSpace(block.Title)
+		}
+		if ref == "" {
+			ref = strings.TrimSpace(block.Kind)
+		}
+		if ref == "" || strings.TrimSpace(block.Summary) == "" {
+			continue
+		}
+		entries = append(entries, workflowGraphContextEntry{
+			Ref:   "memory.search." + strings.TrimSpace(block.Kind) + "." + ref,
+			Value: workflowGraphMemoryBlockContextValue(block),
+		})
+		if len(entries) >= 4 {
+			break
+		}
+	}
+	return entries
+}
+
+func renderWorkflowGraphContextQuery(query, request string, completed []WorkflowStageResult) string {
+	replacements := map[string]string{
+		"{{input.goal}}":       request,
+		"{{input}}":            request,
+		"{{request}}":          request,
+		"{{workflow.input}}":   request,
+		"{{workflow.request}}": request,
+	}
+	if len(completed) > 0 {
+		previous := completed[len(completed)-1]
+		replacements["{{previous.summary}}"] = workflowGraphPriorSummaryContextEntry(previous).Value
+		replacements["{{previous.output}}"] = previous.Output.Summary
+		replacements["{{previous.raw_output}}"] = previous.Output.RawOutput
+		replacements["{{previous.decision}}"] = previous.Output.Decision
+		replacements["{{previous.next_actions}}"] = workflowGraphValueString(previous.Output.NextActions)
+	}
+	rendered := query
+	for placeholder, value := range replacements {
+		rendered = strings.ReplaceAll(rendered, placeholder, value)
+	}
+	return rendered
+}
+
+func workflowGraphMemoryBlockContextValue(block memory.PromptBlock) string {
+	parts := make([]string, 0, 7)
+	if strings.TrimSpace(block.ContentMode) != "" {
+		parts = append(parts, "content_mode="+strings.TrimSpace(block.ContentMode))
+	}
+	if strings.TrimSpace(block.Hash) != "" {
+		parts = append(parts, "hash="+strings.TrimSpace(block.Hash))
+	}
+	if strings.TrimSpace(block.Language) != "" {
+		parts = append(parts, "language="+strings.TrimSpace(block.Language))
+	}
+	if block.Size > 0 {
+		parts = append(parts, "size="+strconv.FormatInt(block.Size, 10))
+	}
+	if strings.TrimSpace(block.Summary) != "" {
+		parts = append(parts, "summary="+strings.TrimSpace(block.Summary))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func workflowGraphProjectMemoryContextEntries(store *memory.Store, ref string) []workflowGraphContextEntry {
+	if store == nil {
+		return nil
+	}
+	project, err := store.Project()
+	if err != nil || strings.TrimSpace(project.Summary) == "" {
+		return nil
+	}
+	return []workflowGraphContextEntry{{Ref: ref, Value: project.Summary}}
+}
+
+func workflowGraphChangedFileContextEntries(ctx context.Context, store *memory.Store, ref string, completed []WorkflowStageResult) []workflowGraphContextEntry {
+	paths := workflowGraphChangedFilePaths(completed)
+	if len(paths) == 0 {
+		return nil
+	}
+	if store == nil {
+		return []workflowGraphContextEntry{{Ref: ref, Value: strings.Join(paths, ", ")}}
+	}
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	index, _, err := store.EnsureFreshFileIndex(ctx)
+	if err != nil {
+		return []workflowGraphContextEntry{{Ref: ref, Value: strings.Join(paths, ", ")}}
+	}
+	files := workflowGraphFileSummariesForPaths(index, paths)
+	if len(files) == 0 {
+		return []workflowGraphContextEntry{{Ref: ref, Value: strings.Join(paths, ", ")}}
+	}
+	entries := make([]workflowGraphContextEntry, 0, len(files))
+	for _, file := range files {
+		entries = append(entries, workflowGraphContextEntry{
+			Ref:   ref + "." + file.Path,
+			Value: workflowGraphFileSummaryContextValue(file),
+		})
+	}
+	return entries
+}
+
+func workflowGraphChangedFilePaths(completed []WorkflowStageResult) []string {
+	seen := map[string]struct{}{}
+	paths := make([]string, 0)
+	add := func(path string) {
+		path = filepath.ToSlash(strings.TrimSpace(path))
+		path = strings.TrimPrefix(path, "./")
+		if path == "" || path == "." || path == "/" || strings.HasPrefix(path, "../") || strings.Contains(path, "/../") {
+			return
+		}
+		key := strings.ToLower(path)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		paths = append(paths, path)
+	}
+	for _, stage := range completed {
+		for _, change := range stage.Result.Changes {
+			for _, path := range change.Files {
+				add(path)
+			}
+		}
+		for _, finding := range stage.Result.Findings {
+			for _, path := range finding.Files {
+				add(path)
+			}
+		}
+		for _, artifact := range stage.Output.Artifacts {
+			if workflowGraphArtifactLooksLikeChange(artifact) {
+				add(artifact.Metadata["path"])
+				add(artifact.Title)
+			}
+		}
+		for _, result := range stage.Result.ToolResults {
+			add(workflowGraphChangedFilePathFromToolResult(result))
+		}
+	}
+	sort.Strings(paths)
+	return paths
+}
+
+func workflowGraphArtifactLooksLikeChange(artifact session.WorkflowRunArtifact) bool {
+	kind := normalizeWorkflowArtifactKind(artifact.Kind)
+	switch kind {
+	case "diff", "patch", "change", "file_change", "write":
+		return true
+	default:
+		return strings.TrimSpace(artifact.Metadata["path"]) != ""
+	}
+}
+
+func workflowGraphChangedFilePathFromToolResult(result schema.ToolResult) string {
+	if strings.TrimSpace(result.Content) == "" {
+		return ""
+	}
+	var payload map[string]any
+	if err := json.Unmarshal([]byte(result.Content), &payload); err != nil {
+		return ""
+	}
+	for _, key := range []string{"relative_path", "path", "file", "filename"} {
+		if value := strings.TrimSpace(workflowGraphValueString(payload[key])); value != "" {
+			return value
+		}
+	}
+	return ""
+}
+
+func workflowGraphFileSummariesForPaths(index memory.FileIndex, paths []string) []memory.FileSummary {
+	if len(index.Files) == 0 || len(paths) == 0 {
+		return nil
+	}
+	targets := make(map[string]struct{}, len(paths))
+	for _, path := range paths {
+		path = filepath.ToSlash(strings.TrimSpace(path))
+		path = strings.TrimPrefix(path, "./")
+		if path != "" {
+			targets[strings.ToLower(path)] = struct{}{}
+		}
+	}
+	out := make([]memory.FileSummary, 0, len(targets))
+	for _, file := range index.Files {
+		if _, ok := targets[strings.ToLower(filepath.ToSlash(strings.TrimSpace(file.Path)))]; ok {
+			out = append(out, file)
+		}
+	}
+	sort.Slice(out, func(i, j int) bool {
+		return strings.ToLower(out[i].Path) < strings.ToLower(out[j].Path)
+	})
+	return out
+}
+
+func workflowGraphFileSummaryContextValue(file memory.FileSummary) string {
+	parts := make([]string, 0, 6)
+	parts = append(parts, "content_mode=summary")
+	if strings.TrimSpace(file.Hash) != "" {
+		parts = append(parts, "hash="+strings.TrimSpace(file.Hash))
+	}
+	if strings.TrimSpace(file.Language) != "" {
+		parts = append(parts, "language="+strings.TrimSpace(file.Language))
+	}
+	if file.Size > 0 {
+		parts = append(parts, "size="+strconv.FormatInt(file.Size, 10))
+	}
+	if strings.TrimSpace(file.Summary) != "" {
+		parts = append(parts, "summary="+strings.TrimSpace(file.Summary))
+	}
+	if len(file.Symbols) > 0 {
+		parts = append(parts, "symbols="+strings.Join(file.Symbols, ", "))
+	}
+	return strings.Join(parts, "; ")
+}
+
+func workflowGraphContextEntriesForRef(ctx context.Context, store *memory.Store, ref, request string, completed []WorkflowStageResult) []workflowGraphContextEntry {
+	ref = strings.TrimSpace(ref)
+	if ref == "" {
+		return nil
+	}
+	switch strings.ToLower(ref) {
+	case "workflow.input", "workflow.request", "input", "request":
+		return []workflowGraphContextEntry{{Ref: ref, Value: request}}
+	case "memory.project":
+		return workflowGraphProjectMemoryContextEntries(store, ref)
+	case "files.changed":
+		return workflowGraphChangedFileContextEntries(ctx, store, ref, completed)
+	case "previous", "previous.summary":
+		if len(completed) == 0 {
+			return nil
+		}
+		return []workflowGraphContextEntry{workflowGraphPriorSummaryContextEntry(completed[len(completed)-1])}
+	case "previous.raw_output", "previous.output":
+		if len(completed) == 0 {
+			return nil
+		}
+		prior := completed[len(completed)-1]
+		return []workflowGraphContextEntry{{Ref: ref, Value: firstWorkflowGraphContextValue(prior.Output.RawOutput, prior.Result.Output)}}
+	case "previous.artifacts":
+		if len(completed) == 0 {
+			return nil
+		}
+		return workflowGraphArtifactContextEntries(ref, completed[len(completed)-1].Output.Artifacts)
+	case "previous.evidence":
+		if len(completed) == 0 {
+			return nil
+		}
+		return workflowGraphEvidenceContextEntries(ref, completed[len(completed)-1].Output.Evidence)
+	case "previous.decision":
+		if len(completed) == 0 {
+			return nil
+		}
+		return workflowGraphScalarContextEntry(ref, completed[len(completed)-1].Output.Decision)
+	case "previous.next_actions":
+		if len(completed) == 0 {
+			return nil
+		}
+		return workflowGraphAnyContextEntry(ref, completed[len(completed)-1].Output.NextActions)
+	}
+	if artifactEntries := workflowGraphArtifactObjectContextEntries(ref); len(artifactEntries) > 0 {
+		return artifactEntries
+	}
+	if strings.HasPrefix(strings.ToLower(ref), "previous.artifacts.") {
+		if len(completed) == 0 {
+			return nil
+		}
+		name := strings.TrimSpace(ref[len("previous.artifacts."):])
+		return workflowGraphNamedArtifactContextEntries(ref, name, completed[len(completed)-1].Output.Artifacts)
+	}
+	if strings.HasPrefix(strings.ToLower(ref), "previous.") {
+		if len(completed) == 0 {
+			return nil
+		}
+		priorRef := "stages." + string(completed[len(completed)-1].Stage) + "." + strings.TrimPrefix(ref, "previous.")
+		return workflowGraphContextEntriesForRef(ctx, store, priorRef, request, completed)
+	}
+	if strings.HasPrefix(strings.ToLower(ref), "stages.") {
+		return workflowGraphStageContextEntriesForRef(ref, completed)
+	}
+	value := resolveWorkflowGraphReference(ref, request, completed)
+	if strings.TrimSpace(value) == "" || value == ref {
+		return nil
+	}
+	return []workflowGraphContextEntry{{Ref: ref, Value: value}}
+}
+
+func workflowGraphArtifactObjectContextEntries(ref string) []workflowGraphContextEntry {
+	displayRef := strings.TrimSpace(ref)
+	value := strings.TrimPrefix(displayRef, "artifact:")
+	if !strings.HasPrefix(value, "sha256:") {
+		return nil
+	}
+	hash := strings.TrimPrefix(value, "sha256:")
+	if len(hash) != 64 {
+		return nil
+	}
+	for _, r := range hash {
+		if !((r >= '0' && r <= '9') || (r >= 'a' && r <= 'f') || (r >= 'A' && r <= 'F')) {
+			return nil
+		}
+	}
+	return []workflowGraphContextEntry{{
+		Ref:   displayRef,
+		Value: "content_mode=artifact_ref; artifact_ref=" + strings.ToLower(value) + "; full content is stored externally and should be opened only when exact evidence is needed",
+	}}
+}
+
+func workflowGraphStageContextEntriesForRef(ref string, completed []WorkflowStageResult) []workflowGraphContextEntry {
+	parts := strings.Split(ref, ".")
+	if len(parts) < 3 || !strings.EqualFold(parts[0], "stages") {
+		return nil
+	}
+	stage, ok := workflowGraphCompletedStageByName(completed, parts[1])
+	if !ok {
+		return nil
+	}
+	if len(parts) == 3 && strings.EqualFold(parts[2], "outputs") {
+		return workflowGraphOutputVariableContextEntries(ref, stage)
+	}
+	if len(parts) >= 4 && strings.EqualFold(parts[2], "artifacts") {
+		name := strings.Join(parts[3:], ".")
+		if name == "" {
+			return workflowGraphArtifactContextEntries(ref, stage.Output.Artifacts)
+		}
+		return workflowGraphNamedArtifactContextEntries(ref, name, stage.Output.Artifacts)
+	}
+	if len(parts) >= 4 && strings.EqualFold(parts[2], "evidence") {
+		name := strings.Join(parts[3:], ".")
+		if name == "" {
+			return workflowGraphEvidenceContextEntries(ref, stage.Output.Evidence)
+		}
+		return workflowGraphNamedArtifactContextEntries(ref, name, stage.Output.Evidence)
+	}
+	value := resolveWorkflowStageReference(ref, completed)
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return []workflowGraphContextEntry{{Ref: ref, Value: value}}
+}
+
+func workflowGraphScalarContextEntry(ref, value string) []workflowGraphContextEntry {
+	if strings.TrimSpace(value) == "" {
+		return nil
+	}
+	return []workflowGraphContextEntry{{Ref: ref, Value: value}}
+}
+
+func workflowGraphAnyContextEntry(ref string, value any) []workflowGraphContextEntry {
+	text := workflowGraphValueString(value)
+	if strings.TrimSpace(text) == "" {
+		return nil
+	}
+	return []workflowGraphContextEntry{{Ref: ref, Value: text}}
+}
+
+func workflowGraphPriorSummaryContextEntry(stage WorkflowStageResult) workflowGraphContextEntry {
+	summary := stage.Output.Summary
+	if strings.TrimSpace(summary) == "" {
+		summary = stage.Result.Output
+	}
+	return workflowGraphContextEntry{
+		Ref:   fmt.Sprintf("stages.%s.outputs.summary", stage.Stage),
+		Value: summary,
+	}
+}
+
+func workflowGraphOutputVariableContextEntries(ref string, stage WorkflowStageResult) []workflowGraphContextEntry {
+	if len(stage.Output.Variables) == 0 && len(stage.Output.Values) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(stage.Output.Variables)+len(stage.Output.Values))
+	seen := map[string]struct{}{}
+	for key := range stage.Output.Variables {
+		keys = append(keys, key)
+		seen[key] = struct{}{}
+	}
+	for key := range stage.Output.Values {
+		if _, ok := seen[key]; !ok {
+			keys = append(keys, key)
+		}
+	}
+	sort.Strings(keys)
+	entries := make([]workflowGraphContextEntry, 0, len(keys))
+	for _, key := range keys {
+		value := stage.Output.Variables[key]
+		if strings.TrimSpace(value) == "" {
+			value = workflowGraphValueString(stage.Output.Values[key])
+		}
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		entries = append(entries, workflowGraphContextEntry{Ref: ref + "." + key, Value: value})
+	}
+	return entries
+}
+
+func workflowGraphArtifactContextEntries(ref string, artifacts []session.WorkflowRunArtifact) []workflowGraphContextEntry {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	entries := make([]workflowGraphContextEntry, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		value := workflowGraphArtifactContextValue(artifact)
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		entries = append(entries, workflowGraphContextEntry{
+			Ref:   ref + "." + workflowGraphArtifactContextName(artifact),
+			Value: value,
+		})
+	}
+	return entries
+}
+
+func workflowGraphEvidenceContextEntries(ref string, artifacts []session.WorkflowRunArtifact) []workflowGraphContextEntry {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	entries := make([]workflowGraphContextEntry, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if !workflowGraphArtifactLooksLikeEvidence(artifact) {
+			continue
+		}
+		value := workflowGraphArtifactContextValue(artifact)
+		if strings.TrimSpace(value) == "" {
+			continue
+		}
+		entries = append(entries, workflowGraphContextEntry{
+			Ref:   ref + "." + workflowGraphArtifactContextName(artifact),
+			Value: value,
+		})
+	}
+	return entries
+}
+
+func workflowGraphNamedArtifactContextEntries(ref, name string, artifacts []session.WorkflowRunArtifact) []workflowGraphContextEntry {
+	name = normalizeWorkflowArtifactName(name)
+	if name == "" || len(artifacts) == 0 {
+		return nil
+	}
+	for _, artifact := range artifacts {
+		if normalizeWorkflowArtifactName(artifact.Metadata["name"]) != name &&
+			normalizeWorkflowArtifactName(artifact.ID) != name &&
+			normalizeWorkflowArtifactName(artifact.Title) != name &&
+			normalizeWorkflowArtifactName(artifact.Kind) != name {
+			continue
+		}
+		value := workflowGraphArtifactContextValue(artifact)
+		if strings.TrimSpace(value) == "" {
+			return nil
+		}
+		return []workflowGraphContextEntry{{Ref: ref, Value: value}}
+	}
+	return nil
+}
+
+func workflowGraphArtifactContextValue(artifact session.WorkflowRunArtifact) string {
+	parts := make([]string, 0, 5)
+	if strings.TrimSpace(artifact.Title) != "" {
+		parts = append(parts, "title="+strings.TrimSpace(artifact.Title))
+	}
+	if strings.TrimSpace(artifact.Kind) != "" {
+		parts = append(parts, "kind="+strings.TrimSpace(artifact.Kind))
+	}
+	if strings.TrimSpace(artifact.Summary) != "" {
+		parts = append(parts, "summary="+strings.TrimSpace(artifact.Summary))
+	}
+	if strings.TrimSpace(artifact.ID) != "" {
+		parts = append(parts, "artifact_ref="+strings.TrimSpace(artifact.ID))
+	}
+	if len(artifact.Metadata) > 0 {
+		if ref := strings.TrimSpace(artifact.Metadata["ref"]); ref != "" {
+			parts = append(parts, "source_ref="+ref)
+		}
+	}
+	return strings.Join(parts, "; ")
+}
+
+func workflowGraphArtifactContextName(artifact session.WorkflowRunArtifact) string {
+	for _, value := range []string{artifact.Metadata["name"], artifact.ID, artifact.Title, artifact.Kind} {
+		if name := normalizeWorkflowArtifactName(value); name != "" {
+			return name
+		}
+	}
+	return "artifact"
+}
+
+func workflowGraphArtifactLooksLikeEvidence(artifact session.WorkflowRunArtifact) bool {
+	kind := normalizeWorkflowArtifactKind(artifact.Kind)
+	switch kind {
+	case "evidence", "report", "finding", "verification", "acceptance", "audit", "structured", "output":
+		return true
+	default:
+		return strings.EqualFold(strings.TrimSpace(artifact.Metadata["evidence_category"]), "evidence")
+	}
+}
+
+func workflowGraphCompletedStageByName(completed []WorkflowStageResult, name string) (WorkflowStageResult, bool) {
+	target := normalizeWorkflowSkillName(name)
+	for _, stage := range completed {
+		if normalizeWorkflowSkillName(string(stage.Stage)) == target {
+			return stage, true
+		}
+		if normalizeWorkflowSkillName(stage.Metadata["original_stage"]) == target {
+			return stage, true
+		}
+	}
+	return WorkflowStageResult{}, false
+}
+
+func dedupeWorkflowGraphContextEntries(entries []workflowGraphContextEntry) []workflowGraphContextEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	out := make([]workflowGraphContextEntry, 0, len(entries))
+	for _, entry := range entries {
+		entry.Ref = strings.TrimSpace(entry.Ref)
+		entry.Value = strings.TrimSpace(entry.Value)
+		if entry.Ref == "" || entry.Value == "" {
+			continue
+		}
+		key := strings.ToLower(entry.Ref)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func filterWorkflowGraphContextEntries(entries []workflowGraphContextEntry, exclude []string) []workflowGraphContextEntry {
+	if len(entries) == 0 || len(exclude) == 0 {
+		return entries
+	}
+	out := make([]workflowGraphContextEntry, 0, len(entries))
+	for _, entry := range entries {
+		if workflowGraphContextRefExcluded(entry.Ref, exclude) {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return out
+}
+
+func workflowGraphContextRefExcluded(ref string, exclude []string) bool {
+	ref = strings.ToLower(strings.TrimSpace(ref))
+	for _, pattern := range exclude {
+		pattern = strings.ToLower(strings.TrimSpace(pattern))
+		if pattern == "" {
+			continue
+		}
+		switch pattern {
+		case "raw_tool_logs", "tool_logs":
+			if strings.Contains(ref, "tool_results") {
+				return true
+			}
+		case "large_file_contents":
+			if strings.Contains(ref, "raw_output") || strings.Contains(ref, "result.output") {
+				return true
+			}
+		}
+		if ref == pattern || strings.HasPrefix(ref, pattern+".") || strings.Contains(ref, pattern) {
+			return true
+		}
+	}
+	return false
+}
+
+func limitWorkflowGraphContextEntries(entries []workflowGraphContextEntry, maxTokens int) []workflowGraphContextEntry {
+	if len(entries) == 0 {
+		return nil
+	}
+	if maxTokens <= 0 {
+		return entries
+	}
+	maxBytes := maxTokens * 4
+	used := 0
+	out := make([]workflowGraphContextEntry, 0, len(entries))
+	for _, entry := range entries {
+		entryBytes := len([]byte(entry.Ref)) + len([]byte(entry.Value)) + 4
+		if used+entryBytes <= maxBytes {
+			out = append(out, entry)
+			used += entryBytes
+			continue
+		}
+		remaining := maxBytes - used - len([]byte(entry.Ref)) - 12
+		if remaining <= 32 {
+			break
+		}
+		entry.Value = trimWorkflowGraphContextValue(entry.Value, remaining) + " [context truncated by max_tokens]"
+		out = append(out, entry)
+		break
+	}
+	return out
+}
+
+func trimWorkflowGraphContextValue(value string, maxBytes int) string {
+	if maxBytes <= 0 || len([]byte(value)) <= maxBytes {
+		return value
+	}
+	trimmed := value[:maxBytes]
+	for len(trimmed) > 0 && !utf8.ValidString(trimmed) {
+		trimmed = trimmed[:len(trimmed)-1]
+	}
+	return strings.TrimRight(trimmed, "\r\n\t ")
+}
+
+func trimWorkflowGraphStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
+}
+
+func firstWorkflowGraphContextValue(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return value
+		}
+	}
+	return ""
 }
 
 func isWorkflowGraphSelectStrategy(strategy string) bool {
@@ -4652,6 +5443,14 @@ func workflowGraphStageResult(stage workflowGraphStage, result schema.AgentResul
 			if metadata == nil {
 				metadata = make(map[string]string)
 			}
+			metadata[key] = value
+		}
+	}
+	if contextMetadata := workflowGraphContextMetadata(stage.Context); len(contextMetadata) > 0 {
+		if metadata == nil {
+			metadata = make(map[string]string)
+		}
+		for key, value := range contextMetadata {
 			metadata[key] = value
 		}
 	}
@@ -4873,6 +5672,7 @@ func workflowGraphControlStageResult(stage workflowGraphStage, graph workflowGra
 		}
 		output.Variables[key] = value
 	}
+	applyWorkflowStageCanonicalOutputFields(&output)
 	status := fallbackWorkflowGraphValue(decision.Status, "completed")
 	return WorkflowStageResult{
 		Stage:    WorkflowStage(stage.Name),
@@ -4932,6 +5732,8 @@ func copyWorkflowAnyValue(value any) any {
 		return append([]string(nil), typed...)
 	case map[string]string:
 		return copyStringMap(typed)
+	case []session.WorkflowRunArtifact:
+		return append([]session.WorkflowRunArtifact(nil), typed...)
 	default:
 		return typed
 	}
@@ -5052,7 +5854,187 @@ func buildWorkflowStageOutput(stage workflowGraphStage, result schema.AgentResul
 			output.Values = nil
 		}
 	}
+	applyWorkflowStageCanonicalOutputFields(&output)
 	return output
+}
+
+func applyWorkflowStageCanonicalOutputFields(output *WorkflowStageOutput) {
+	if output == nil {
+		return
+	}
+	applyWorkflowStageJSONOutputFields(output)
+	if strings.TrimSpace(output.Summary) != "" {
+		workflowStageSetOutputValue(output, "summary", output.Summary)
+	}
+	output.Evidence = workflowStageEvidenceArtifacts(output.Artifacts)
+	output.Decision = workflowStageCanonicalDecision(output)
+	if strings.TrimSpace(output.Decision) != "" {
+		workflowStageSetOutputValue(output, "decision", output.Decision)
+	}
+	output.NextActions = workflowStageCanonicalNextActions(output)
+	if len(output.NextActions) > 0 {
+		workflowStageSetOutputValue(output, "next_actions", append([]string(nil), output.NextActions...))
+	}
+}
+
+func applyWorkflowStageJSONOutputFields(output *WorkflowStageOutput) {
+	if output == nil || strings.TrimSpace(output.RawOutput) == "" {
+		return
+	}
+	decoded, ok := workflowStageJSONOutputObject(output.RawOutput)
+	if !ok {
+		return
+	}
+	for _, key := range []string{"summary", "evidence", "artifacts", "decision", "next_actions"} {
+		value, exists := workflowStageOutputJSONValue(decoded, key)
+		if !exists {
+			continue
+		}
+		workflowStageSetOutputValue(output, key, value)
+	}
+	if strings.TrimSpace(output.Summary) == "" {
+		if value, ok := workflowStageOutputJSONValue(decoded, "summary"); ok {
+			output.Summary = truncateSummary(workflowGraphValueString(value))
+		}
+	}
+}
+
+func workflowStageJSONOutputObject(value string) (map[string]any, bool) {
+	for _, candidate := range workflowTeamRoleJSONCandidates(value) {
+		var decoded map[string]any
+		if err := json.Unmarshal([]byte(candidate), &decoded); err == nil && len(decoded) > 0 {
+			return decoded, true
+		}
+	}
+	return nil, false
+}
+
+func workflowStageOutputJSONValue(decoded map[string]any, key string) (any, bool) {
+	if len(decoded) == 0 {
+		return nil, false
+	}
+	if value, ok := decoded[key]; ok {
+		return value, true
+	}
+	normalized := normalizeWorkflowSkillName(key)
+	for candidate, value := range decoded {
+		if normalizeWorkflowSkillName(candidate) == normalized {
+			return value, true
+		}
+	}
+	return nil, false
+}
+
+func workflowStageSetOutputValue(output *WorkflowStageOutput, key string, value any) {
+	if output.Values == nil {
+		output.Values = map[string]any{}
+	}
+	if _, ok := output.Values[key]; !ok {
+		output.Values[key] = copyWorkflowAnyValue(value)
+	}
+	if output.Variables == nil {
+		output.Variables = map[string]string{}
+	}
+	if strings.TrimSpace(output.Variables[key]) == "" {
+		output.Variables[key] = limitWorkflowGraphText(workflowGraphValueString(value))
+	}
+}
+
+func workflowStageEvidenceArtifacts(artifacts []session.WorkflowRunArtifact) []session.WorkflowRunArtifact {
+	if len(artifacts) == 0 {
+		return nil
+	}
+	out := make([]session.WorkflowRunArtifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if workflowGraphArtifactLooksLikeEvidence(artifact) {
+			out = append(out, artifact)
+		}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func workflowStageCanonicalDecision(output *WorkflowStageOutput) string {
+	for _, key := range []string{"decision", "route", "target", "passed", "quality_status", "status"} {
+		if value := strings.TrimSpace(output.Variables[key]); value != "" {
+			return value
+		}
+		if value, ok := output.Values[key]; ok {
+			if text := strings.TrimSpace(workflowGraphValueString(value)); text != "" {
+				return text
+			}
+		}
+	}
+	for _, section := range output.ToolResults {
+		if section.IsError || section.Denied {
+			return "failed"
+		}
+	}
+	return ""
+}
+
+func workflowStageCanonicalNextActions(output *WorkflowStageOutput) []string {
+	for _, key := range []string{"next_actions", "next_action", "next_steps", "actions"} {
+		if value, ok := output.Values[key]; ok {
+			if actions := workflowStageNextActionList(value); len(actions) > 0 {
+				return actions
+			}
+		}
+		if value := output.Variables[key]; strings.TrimSpace(value) != "" {
+			if actions := workflowStageNextActionList(value); len(actions) > 0 {
+				return actions
+			}
+		}
+	}
+	return nil
+}
+
+func workflowStageNextActionList(value any) []string {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case []string:
+		return trimWorkflowGraphStringList(typed)
+	case []any:
+		out := make([]string, 0, len(typed))
+		for _, item := range typed {
+			if text := strings.TrimSpace(workflowGraphValueString(item)); text != "" {
+				out = append(out, text)
+			}
+		}
+		return out
+	case string:
+		text := strings.TrimSpace(typed)
+		if text == "" {
+			return nil
+		}
+		var array []any
+		if json.Unmarshal([]byte(text), &array) == nil {
+			return workflowStageNextActionList(array)
+		}
+		parts := strings.FieldsFunc(text, func(r rune) bool {
+			return r == '\n' || r == ';'
+		})
+		if len(parts) <= 1 && strings.Contains(text, ",") {
+			parts = strings.Split(text, ",")
+		}
+		out := make([]string, 0, len(parts))
+		for _, part := range parts {
+			part = strings.Trim(strings.TrimSpace(part), "-* ")
+			if part != "" {
+				out = append(out, part)
+			}
+		}
+		return out
+	default:
+		text := strings.TrimSpace(workflowGraphValueString(value))
+		if text == "" {
+			return nil
+		}
+		return []string{text}
+	}
 }
 
 func workflowGraphDeclaredArtifacts(stage workflowGraphStage, result schema.AgentResult) []session.WorkflowRunArtifact {
@@ -5317,6 +6299,14 @@ func resolveWorkflowStageReferenceValue(expr string, completed []WorkflowStageRe
 	}
 	if len(parts) >= 4 && strings.EqualFold(parts[2], "outputs") {
 		key := strings.Join(parts[3:], ".")
+		if strings.HasPrefix(strings.ToLower(key), "artifacts.") {
+			name := strings.TrimSpace(key[len("artifacts."):])
+			return workflowGraphWorkflowRunArtifactsValue(workflowGraphNamedArtifacts(stage.Output.Artifacts, name)), true
+		}
+		if strings.HasPrefix(strings.ToLower(key), "evidence.") {
+			name := strings.TrimSpace(key[len("evidence."):])
+			return workflowGraphWorkflowRunArtifactsValue(workflowGraphNamedArtifacts(stage.Output.Evidence, name)), true
+		}
 		switch strings.ToLower(key) {
 		case "summary":
 			return stage.Output.Summary, true
@@ -5330,6 +6320,14 @@ func resolveWorkflowStageReferenceValue(expr string, completed []WorkflowStageRe
 			return append([]schema.Change(nil), stage.Output.Changes...), true
 		case "verification":
 			return append([]schema.Verification(nil), stage.Output.Verification...), true
+		case "artifacts":
+			return append([]session.WorkflowRunArtifact(nil), stage.Output.Artifacts...), true
+		case "evidence":
+			return append([]session.WorkflowRunArtifact(nil), stage.Output.Evidence...), true
+		case "decision":
+			return stage.Output.Decision, true
+		case "next_actions":
+			return append([]string(nil), stage.Output.NextActions...), true
 		default:
 			if value, ok := stage.Output.Values[key]; ok {
 				return copyWorkflowAnyValue(value), true
@@ -5365,6 +6363,34 @@ func resolveWorkflowStageReferenceValue(expr string, completed []WorkflowStageRe
 	return nil, false
 }
 
+func workflowGraphNamedArtifacts(artifacts []session.WorkflowRunArtifact, name string) []session.WorkflowRunArtifact {
+	name = normalizeWorkflowArtifactName(name)
+	if name == "" {
+		return nil
+	}
+	out := make([]session.WorkflowRunArtifact, 0, len(artifacts))
+	for _, artifact := range artifacts {
+		if normalizeWorkflowArtifactName(artifact.Metadata["name"]) == name ||
+			normalizeWorkflowArtifactName(artifact.ID) == name ||
+			normalizeWorkflowArtifactName(artifact.Title) == name ||
+			normalizeWorkflowArtifactName(artifact.Kind) == name {
+			out = append(out, artifact)
+		}
+	}
+	return out
+}
+
+func workflowGraphWorkflowRunArtifactsValue(artifacts []session.WorkflowRunArtifact) any {
+	switch len(artifacts) {
+	case 0:
+		return nil
+	case 1:
+		return artifacts[0]
+	default:
+		return append([]session.WorkflowRunArtifact(nil), artifacts...)
+	}
+}
+
 func resolveWorkflowStageReference(expr string, completed []WorkflowStageResult) string {
 	parts := strings.Split(expr, ".")
 	if len(parts) < 3 || !strings.EqualFold(parts[0], "stages") {
@@ -5396,7 +6422,20 @@ func resolveWorkflowStageReference(expr string, completed []WorkflowStageResult)
 			return workflowGraphJSON(stage.Output.Changes)
 		case "verification":
 			return workflowGraphJSON(stage.Output.Verification)
+		case "artifacts":
+			return workflowGraphJSON(stage.Output.Artifacts)
+		case "evidence":
+			return workflowGraphJSON(stage.Output.Evidence)
+		case "decision":
+			return stage.Output.Decision
+		case "next_actions":
+			return workflowGraphJSON(stage.Output.NextActions)
 		default:
+			if strings.HasPrefix(strings.ToLower(key), "artifacts.") || strings.HasPrefix(strings.ToLower(key), "evidence.") {
+				if value, ok := resolveWorkflowStageReferenceValue(expr, completed); ok {
+					return workflowGraphValueString(value)
+				}
+			}
 			if value, ok := resolveWorkflowStageReferenceValue(expr, completed); ok {
 				return workflowGraphValueString(value)
 			}

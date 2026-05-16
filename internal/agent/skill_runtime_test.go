@@ -3,6 +3,8 @@ package agent
 import (
 	"context"
 	"fmt"
+	"os"
+	"path/filepath"
 	"slices"
 	"strings"
 	"testing"
@@ -10,6 +12,7 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
@@ -228,10 +231,11 @@ func TestRunStreamPersistsSkillMatchDiagnostic(t *testing.T) {
 }
 
 type stubRuntimeMCP struct {
-	tools  []schema.Tool
-	calls  int
-	result schema.ToolResult
-	err    error
+	tools       []schema.Tool
+	calls       int
+	result      schema.ToolResult
+	err         error
+	callResults map[string]schema.ToolResult
 }
 
 func toolNamesForTest(tools []schema.Tool) []string {
@@ -250,10 +254,15 @@ func (s *stubRuntimeMCP) RefreshTools(context.Context) ([]schema.Tool, error) {
 	return s.tools, nil
 }
 
-func (s *stubRuntimeMCP) CallTool(context.Context, string, []byte) (schema.ToolResult, error) {
+func (s *stubRuntimeMCP) CallTool(_ context.Context, name string, _ []byte) (schema.ToolResult, error) {
 	s.calls++
 	if s.err != nil {
 		return schema.ToolResult{}, s.err
+	}
+	if s.callResults != nil {
+		if result, ok := s.callResults[name]; ok {
+			return result, nil
+		}
 	}
 	if s.result.Content != "" || s.result.ToolName != "" || s.result.IsError || s.result.Denied || s.result.Suspended {
 		return s.result, nil
@@ -332,6 +341,15 @@ func TestRunStreamOnlyExposesPolicyAllowedToolsToLLM(t *testing.T) {
 	}
 	if budgets[0].ExposedToolCount != 1 || budgets[0].TotalToolCount != 3 || budgets[0].FilteredToolCount != 2 || budgets[0].EstimatedPromptTokens == 0 {
 		t.Fatalf("unexpected prompt budget: %#v", budgets[0])
+	}
+	if budgets[0].ToolSchemaSelection != "policy_filtered" || len(budgets[0].InjectedToolSchemas) != 1 || len(budgets[0].FilteredToolSchemas) != 2 {
+		t.Fatalf("expected tool schema visibility diagnostics, got %#v", budgets[0])
+	}
+	if budgets[0].InjectedToolSchemas[0].QualifiedName != "file_tools/read_file" || budgets[0].InjectedToolSchemas[0].Status != "injected" {
+		t.Fatalf("unexpected injected tool diagnostic: %#v", budgets[0].InjectedToolSchemas)
+	}
+	if !strings.Contains(budgets[0].FilteredToolSchemas[0].Reason, "not allowed") && !strings.Contains(budgets[0].FilteredToolSchemas[1].Reason, "not allowed") {
+		t.Fatalf("expected filtered tool reasons, got %#v", budgets[0].FilteredToolSchemas)
 	}
 	if budgets[0].CacheablePrefixTokens == 0 || budgets[0].PromptPrefixHash == "" || budgets[0].SystemHash == "" || budgets[0].ToolSchemaHash == "" {
 		t.Fatalf("expected prompt cache metadata in budget, got %#v", budgets[0])
@@ -432,6 +450,52 @@ func TestPromptBudgetToolSchemaHashIsStableAcrossToolOrder(t *testing.T) {
 	}
 }
 
+func TestPromptBudgetPrefixHashIgnoresDynamicMemoryMessages(t *testing.T) {
+	profile := config.AgentProfile{Name: "Chat", Mode: "chat"}
+	tools := []schema.Tool{
+		{Name: "read_file", Server: "file_tools", Kind: "read", Description: "read", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
+	}
+	system := BuildSystemPrompt(profile, nil, session.Snapshot{})
+	memoryOne := memory.PromptContext{Blocks: []memory.PromptBlock{{
+		Kind:        "project",
+		Title:       "Project memory",
+		Ref:         ".goflow/memory/project.md",
+		Summary:     "Use summary-first context.",
+		ContentMode: "summary",
+	}}}
+	memoryTwo := memory.PromptContext{Blocks: []memory.PromptBlock{{
+		Kind:        "project",
+		Title:       "Project memory",
+		Ref:         ".goflow/memory/project.md",
+		Summary:     "Use summary-first context. " + strings.Repeat("Dynamic task memory changes between runs. ", 24),
+		ContentMode: "summary",
+	}}}
+	baseMessages := []schema.Message{{Role: "user", Content: "inspect project"}}
+
+	left := estimatePromptBudgetWithContext("chat", "chat", schema.ChatRequest{
+		Model:    "m",
+		System:   system,
+		Messages: dynamicContextMessages(memoryOne.PromptText(), session.Snapshot{}, "inspect project", baseMessages),
+		Tools:    tools,
+	}, nil, len(tools), session.Snapshot{}, promptBudgetContext{Memory: &memoryOne})
+	right := estimatePromptBudgetWithContext("chat", "chat", schema.ChatRequest{
+		Model:    "m",
+		System:   system,
+		Messages: dynamicContextMessages(memoryTwo.PromptText(), session.Snapshot{}, "inspect project", baseMessages),
+		Tools:    tools,
+	}, nil, len(tools), session.Snapshot{}, promptBudgetContext{Memory: &memoryTwo})
+
+	if left.SystemHash == "" || left.PromptPrefixHash == "" {
+		t.Fatalf("expected stable prompt hashes, got %#v", left)
+	}
+	if left.SystemHash != right.SystemHash || left.ToolSchemaHash != right.ToolSchemaHash || left.PromptPrefixHash != right.PromptPrefixHash {
+		t.Fatalf("expected dynamic memory to leave cacheable hashes unchanged, left=%#v right=%#v", left, right)
+	}
+	if left.MessageTokens == right.MessageTokens || left.MemoryBlocks[0].Tokens == right.MemoryBlocks[0].Tokens {
+		t.Fatalf("expected dynamic memory to affect message/memory diagnostics, left=%#v right=%#v", left, right)
+	}
+}
+
 func TestPromptBudgetTracksSessionHistoryCompactionSavings(t *testing.T) {
 	budget := estimatePromptBudget("chat", "chat", schema.ChatRequest{
 		Model:    "m",
@@ -449,6 +513,58 @@ func TestPromptBudgetTracksSessionHistoryCompactionSavings(t *testing.T) {
 	}
 	if budget.HistoryEstimatedSavedTokens == 0 {
 		t.Fatalf("expected estimated saved tokens, got %#v", budget)
+	}
+}
+
+func TestPromptBudgetTracksMemorySkillAndArtifactDiagnostics(t *testing.T) {
+	largeResult := strings.Repeat("artifact-content\n", 2200)
+	artifactRef := "sha256:" + strings.Repeat("a", 64)
+	compacted := compactToolResultForPromptWithArtifact(schema.ToolResult{ToolName: "read_file", Content: largeResult}, artifactRef)
+	memoryContext := memory.PromptContext{
+		Blocks: []memory.PromptBlock{{
+			Kind:                 "file",
+			Title:                "prompt_budget.go",
+			Ref:                  "internal/agent/prompt_budget.go",
+			Summary:              "Prompt budget records memory and artifact diagnostics.",
+			Score:                4,
+			Hash:                 "abcdef1234567890",
+			Language:             "go",
+			Size:                 8192,
+			ContentMode:          "summary",
+			EstimatedSavedTokens: 2000,
+		}},
+		Omitted:              []string{"2 lower-scoring memory results omitted"},
+		EstimatedSavedTokens: 123,
+	}
+	skill := &schema.Skill{
+		Name:         "large-skill",
+		Description:  "Large skill",
+		Instructions: "## Role\n" + strings.Repeat("- Follow detailed process.\n", 120),
+		Path:         "skills/large-skill/SKILL.md",
+	}
+	budget := estimatePromptBudgetWithContext("chat", "chat", schema.ChatRequest{
+		Model:  "m",
+		System: BuildSystemPrompt(config.AgentProfile{Name: "Chat", Mode: "chat"}, skill, session.Snapshot{}),
+		Messages: []schema.Message{
+			{Role: "user", Content: memoryContext.PromptText()},
+			{Role: "user", Content: "inspect prompt budget"},
+			{Role: "tool", Name: "read_file", Content: compacted},
+		},
+	}, skill, 0, session.Snapshot{}, promptBudgetContext{Memory: &memoryContext})
+	if budget.MemoryBlockCount != 1 || budget.MemoryEstimatedSavedTokens != 123 || len(budget.MemoryBlocks) != 1 {
+		t.Fatalf("expected memory diagnostics, got %#v", budget)
+	}
+	if block := budget.MemoryBlocks[0]; block.Hash == "" || block.Language != "go" || block.ContentMode != "summary" || block.Size != 8192 || block.EstimatedSavedTokens != 2000 {
+		t.Fatalf("expected file summary diagnostics, got %#v", block)
+	}
+	if budget.ArtifactRefCount != 1 || budget.CompactedToolResultCount != 1 || budget.ArtifactOmittedTokens == 0 {
+		t.Fatalf("expected artifact diagnostics, got %#v", budget)
+	}
+	if budget.SkillInstructionMode != "summary" || budget.SkillOmittedTokens == 0 || budget.SkillSourceHash == "" {
+		t.Fatalf("expected skill summary diagnostics, got %#v", budget)
+	}
+	if len(budget.OmittedContext) < 3 {
+		t.Fatalf("expected memory, skill, and artifact omission diagnostics, got %#v", budget.OmittedContext)
 	}
 }
 
@@ -2112,6 +2228,145 @@ func TestRuntimeResumeApprovedOrdinaryToolCallContinuesConversation(t *testing.T
 	}
 	if resumedMessages[len(resumedMessages)-1].Role != "tool" || resumedMessages[len(resumedMessages)-1].ToolCallID != "call-1" {
 		t.Fatalf("expected approved tool result to be replayed into resumed conversation, got %#v", resumedMessages)
+	}
+}
+
+func TestRuntimeRunStreamUsesFileSummaryMemoryWithoutFullFileContent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "auth.go"), []byte("package auth\n\nfunc LoginValidator() string { return \"secret-full-content\" }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store := memory.NewStore(root)
+	if _, err := store.RebuildFiles(context.Background()); err != nil {
+		t.Fatalf("RebuildFiles: %v", err)
+	}
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{{
+		response: schema.ChatResponse{Message: schema.Message{Content: "done"}},
+	}}}
+	cfg := &config.Config{
+		WorkspaceRoot: root,
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:             "Chat",
+				Provider:         "chat",
+				Mode:             "chat",
+				Model:            "test-model",
+				MaxIterations:    1,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+			},
+		},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"chat": llm}, stubSkillManager{}, &stubRuntimeMCP{}, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+
+	result, err := runtimeRef.RunStream(WithAgentRunID(context.Background(), "run-file-summary"), "inspect LoginValidator auth.go", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Output != "done" || len(llm.requests) != 1 {
+		t.Fatalf("expected one completed request, result=%#v requests=%d", result, len(llm.requests))
+	}
+	system := llm.requests[0].System
+	if strings.Contains(system, "Memory context:") || strings.Contains(system, "auth.go") || strings.Contains(system, "secret-full-content") {
+		t.Fatalf("expected dynamic memory to stay out of stable system prompt, got %s", system)
+	}
+	messages := llm.requests[0].Messages
+	if len(messages) < 2 {
+		t.Fatalf("expected dynamic memory and user request messages, got %#v", messages)
+	}
+	if messages[0].Role != "user" || !strings.Contains(messages[0].Content, "Memory context:") || !strings.Contains(messages[0].Content, "auth.go") || !strings.Contains(messages[0].Content, "content=summary") {
+		t.Fatalf("expected file summary memory in first dynamic context message, got %#v", messages[0])
+	}
+	if strings.Contains(messages[0].Content, "secret-full-content") {
+		t.Fatalf("expected dynamic memory to omit full file content, got %#v", messages[0])
+	}
+	if messages[1].Role != "user" || messages[1].Content != "inspect LoginValidator auth.go" {
+		t.Fatalf("expected original request after dynamic context message, got %#v", messages[1])
+	}
+	snapshot := runtimeRef.SessionSnapshot()
+	if snapshot.PromptBudget == nil || len(snapshot.PromptBudget.MemoryBlocks) == 0 {
+		t.Fatalf("expected prompt budget memory diagnostics, got %#v", snapshot.PromptBudget)
+	}
+	found := false
+	for _, block := range snapshot.PromptBudget.MemoryBlocks {
+		if block.Kind == "file" && block.Ref == "auth.go" && block.ContentMode == "summary" && block.Hash != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected file summary diagnostic block, got %#v", snapshot.PromptBudget.MemoryBlocks)
+	}
+	index, err := store.FileIndex()
+	if err != nil {
+		t.Fatalf("FileIndex: %v", err)
+	}
+	if len(index.Files) != 1 || index.Files[0].LastUsedByTask != "run-file-summary" {
+		t.Fatalf("expected file index usage to record run id, got %#v", index.Files)
+	}
+}
+
+func TestRuntimeReadFileToolMarksFileIndexUsage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "auth.go"), []byte("package auth\n\nfunc LoginValidator() string { return \"secret-full-content\" }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store := memory.NewStore(root)
+	if _, err := store.RebuildFiles(context.Background()); err != nil {
+		t.Fatalf("RebuildFiles: %v", err)
+	}
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"auth.go"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "done"}}},
+	}}
+	mcpClient := &stubRuntimeMCP{
+		tools: []schema.Tool{{
+			Name:        "read_file",
+			Kind:        "read",
+			InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+		}},
+		callResults: map[string]schema.ToolResult{
+			"read_file": {ToolName: "read_file", Content: "package auth\n\nfunc LoginValidator() string { return \"secret-full-content\" }\n"},
+		},
+	}
+	cfg := &config.Config{
+		WorkspaceRoot: root,
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:             "Chat",
+				Provider:         "chat",
+				Mode:             "chat",
+				Model:            "test-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+			},
+		},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"chat": llm}, stubSkillManager{}, mcpClient, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+
+	result, err := runtimeRef.RunStream(WithAgentRunID(context.Background(), "run-read-file"), "read auth.go", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Output != "done" || mcpClient.calls != 1 {
+		t.Fatalf("expected one read_file call and final output, result=%#v calls=%d", result, mcpClient.calls)
+	}
+	index, err := store.FileIndex()
+	if err != nil {
+		t.Fatalf("FileIndex: %v", err)
+	}
+	if len(index.Files) != 1 || index.Files[0].LastReadAt == "" || index.Files[0].LastUsedByTask != "run-read-file" {
+		t.Fatalf("expected read_file tool execution to mark file usage, got %#v", index.Files)
 	}
 }
 

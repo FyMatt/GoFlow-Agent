@@ -64,6 +64,16 @@ type costDiagnostics struct {
 	HistoryEstimatedSavedTokens  int                       `json:"history_estimated_saved_tokens,omitempty"`
 	HistoryDeduplicatedItems     int                       `json:"history_deduplicated_items,omitempty"`
 	HistoryCompactedOlderItems   int                       `json:"history_compacted_older_items,omitempty"`
+	ToolSchemaDiagnosticSamples  int                       `json:"tool_schema_diagnostic_samples,omitempty"`
+	ToolSchemaDiagnosticOmitted  int                       `json:"tool_schema_diagnostic_omitted,omitempty"`
+	MemoryBlockSamples           int                       `json:"memory_block_samples,omitempty"`
+	MemoryOmittedCount           int                       `json:"memory_omitted_count,omitempty"`
+	MemoryEstimatedSavedTokens   int                       `json:"memory_estimated_saved_tokens,omitempty"`
+	ArtifactRefSamples           int                       `json:"artifact_ref_samples,omitempty"`
+	CompactedToolResultCount     int                       `json:"compacted_tool_result_count,omitempty"`
+	ArtifactOmittedTokens        int                       `json:"artifact_omitted_tokens,omitempty"`
+	SkillOmittedTokens           int                       `json:"skill_omitted_tokens,omitempty"`
+	OmittedContextCount          int                       `json:"omitted_context_count,omitempty"`
 	UniquePromptPrefixes         int                       `json:"unique_prompt_prefixes,omitempty"`
 	PromptPrefixReuseSamples     int                       `json:"prompt_prefix_reuse_samples,omitempty"`
 	PromptPrefixReuseRate        float64                   `json:"prompt_prefix_reuse_rate,omitempty"`
@@ -88,6 +98,10 @@ type costControlFeature struct {
 	EstimatedTokens int    `json:"estimated_tokens,omitempty"`
 	SavedTokens     int    `json:"saved_tokens,omitempty"`
 	FilteredTools   int    `json:"filtered_tools,omitempty"`
+	InjectedTools   int    `json:"injected_tools,omitempty"`
+	MemoryBlocks    int    `json:"memory_blocks,omitempty"`
+	ArtifactRefs    int    `json:"artifact_refs,omitempty"`
+	OmittedItems    int    `json:"omitted_items,omitempty"`
 	Provider        string `json:"provider,omitempty"`
 	Model           string `json:"model,omitempty"`
 	Description     string `json:"description,omitempty"`
@@ -110,6 +124,14 @@ type costTrend struct {
 	HistoryEstimatedSavedTokens  int     `json:"history_estimated_saved_tokens,omitempty"`
 	HistoryDeduplicatedItems     int     `json:"history_deduplicated_items,omitempty"`
 	HistoryCompactedOlderItems   int     `json:"history_compacted_older_items,omitempty"`
+	ToolSchemaDiagnosticSamples  int     `json:"tool_schema_diagnostic_samples,omitempty"`
+	ToolSchemaDiagnosticOmitted  int     `json:"tool_schema_diagnostic_omitted,omitempty"`
+	MemoryBlockSamples           int     `json:"memory_block_samples,omitempty"`
+	MemoryEstimatedSavedTokens   int     `json:"memory_estimated_saved_tokens,omitempty"`
+	ArtifactRefSamples           int     `json:"artifact_ref_samples,omitempty"`
+	ArtifactOmittedTokens        int     `json:"artifact_omitted_tokens,omitempty"`
+	SkillOmittedTokens           int     `json:"skill_omitted_tokens,omitempty"`
+	OmittedContextCount          int     `json:"omitted_context_count,omitempty"`
 	TotalPromptTokens            int     `json:"total_prompt_tokens,omitempty"`
 	TotalOutputTokens            int     `json:"total_output_tokens,omitempty"`
 	TotalCachedTokens            int     `json:"total_cached_tokens,omitempty"`
@@ -332,7 +354,10 @@ type mcpIsolationModeOption struct {
 }
 
 type setupStatus struct {
-	Env []envStatus `json:"env"`
+	Env                   []envStatus           `json:"env"`
+	Providers             []providerSetupStatus `json:"providers,omitempty"`
+	ModelReady            bool                  `json:"model_ready"`
+	MissingProviderFields []string              `json:"missing_provider_fields,omitempty"`
 }
 
 type envStatus struct {
@@ -340,6 +365,13 @@ type envStatus struct {
 	Required    bool   `json:"required"`
 	Set         bool   `json:"set"`
 	Description string `json:"description"`
+}
+
+type providerSetupStatus struct {
+	ID       string   `json:"id"`
+	Provider string   `json:"provider,omitempty"`
+	Ready    bool     `json:"ready"`
+	Missing  []string `json:"missing,omitempty"`
 }
 
 type updatePolicyResponse struct {
@@ -798,7 +830,8 @@ func updateNotesPreview(value string, limit int) string {
 }
 
 func (s *Server) runtimeStatus(r *http.Request) runtimeStatusResponse {
-	snapshot := session.Snapshot{}
+	fullSnapshot := session.Snapshot{}
+	apiSnapshot := session.Snapshot{}
 	workspaceSnapshot := workspace.Snapshot{Status: "confirmed", Source: "none", Display: "(none)"}
 	var (
 		active      string
@@ -820,12 +853,16 @@ func (s *Server) runtimeStatus(r *http.Request) runtimeStatusResponse {
 	}
 	if s != nil && s.runtime != nil {
 		ctx := r.Context()
+		fullDetails := requestWantsFullSession(r)
 		active = s.runtime.ActiveAgent()
 		mode = s.runtime.Mode()
 		trace = s.runtime.TraceEnabled()
 		runtimeHome = s.runtime.RuntimeHome()
-		snapshot = s.sessionSnapshotWithApprovalRisk()
-		stripSessionArtifactContent(&snapshot)
+		fullSnapshot = s.sessionSnapshotWithApprovalRisk()
+		if fullDetails {
+			fullSnapshot = s.runtime.HydrateSnapshot(fullSnapshot)
+		}
+		apiSnapshot = sessionSnapshotForAPI(fullSnapshot, fullDetails)
 		statusLines = s.runtime.StatusLines(ctx)
 		providers = s.providerSummaries()
 		agents = s.agentSummaries()
@@ -846,7 +883,7 @@ func (s *Server) runtimeStatus(r *http.Request) runtimeStatusResponse {
 		Workspace:             workspaceSnapshot,
 		WorkspaceCapabilities: workspaceCapabilitySummary(workspaceSnapshot, s.workspaceRebindSupported()),
 		WorkspaceActions:      workspaceActionHints(workspaceSnapshot, "", s.workspaceRebindSupported()),
-		Session:               snapshot,
+		Session:               apiSnapshot,
 		StatusLines:           statusLines,
 		Providers:             providers,
 		Agents:                agents,
@@ -855,8 +892,8 @@ func (s *Server) runtimeStatus(r *http.Request) runtimeStatusResponse {
 		MCPHealth:             mcpHealth,
 		MCPServers:            mcpServers,
 		MCPIsolationModes:     mcpIsolationModes(),
-		Setup:                 setupStatus{Env: environmentStatus()},
-		Cost:                  s.runtimeCostDiagnostics(snapshot),
+		Setup:                 buildSetupStatus(providers),
+		Cost:                  s.runtimeCostDiagnostics(fullSnapshot),
 		Verifier:              verifier,
 		Auxiliary:             auxiliary,
 		ToolRiskPolicy:        s.toolRiskPolicySummary(),
@@ -1203,6 +1240,13 @@ func promptCostDiagnostics(snapshot session.Snapshot) costDiagnostics {
 		copied := history[len(history)-1]
 		latest = &copied
 	}
+	diagnostics := summarizePromptCostSamples(history, tokenUsages, latest)
+	diagnostics.Recommendations = buildCostRecommendations(diagnostics)
+	diagnostics.Features = buildCostControlFeatures(diagnostics, snapshot, nil)
+	return diagnostics
+}
+
+func summarizePromptCostSamples(history []schema.PromptBudget, tokenUsages []schema.TokenUsageSample, latest *schema.PromptBudget) costDiagnostics {
 	diagnostics := costDiagnostics{
 		Latest:            latest,
 		History:           history,
@@ -1221,6 +1265,16 @@ func promptCostDiagnostics(snapshot session.Snapshot) costDiagnostics {
 		diagnostics.HistoryEstimatedSavedTokens += budget.HistoryEstimatedSavedTokens
 		diagnostics.HistoryDeduplicatedItems += budget.HistoryPromptDeduplicatedItems + budget.HistoryToolDeduplicatedItems
 		diagnostics.HistoryCompactedOlderItems += budget.HistoryPromptCompactedOlderItems + budget.HistoryToolCompactedOlderItems
+		diagnostics.ToolSchemaDiagnosticSamples += budget.ToolSchemaDiagnosticCount
+		diagnostics.ToolSchemaDiagnosticOmitted += budget.ToolSchemaDiagnosticOmitted
+		diagnostics.MemoryBlockSamples += budget.MemoryBlockCount
+		diagnostics.MemoryOmittedCount += budget.MemoryOmittedCount
+		diagnostics.MemoryEstimatedSavedTokens += budget.MemoryEstimatedSavedTokens
+		diagnostics.ArtifactRefSamples += budget.ArtifactRefCount
+		diagnostics.CompactedToolResultCount += budget.CompactedToolResultCount
+		diagnostics.ArtifactOmittedTokens += budget.ArtifactOmittedTokens
+		diagnostics.SkillOmittedTokens += budget.SkillOmittedTokens
+		diagnostics.OmittedContextCount += len(budget.OmittedContext)
 		if budget.EstimatedPromptTokens > diagnostics.MaxEstimatedPromptTokens {
 			diagnostics.MaxEstimatedPromptTokens = budget.EstimatedPromptTokens
 		}
@@ -1260,7 +1314,6 @@ func promptCostDiagnostics(snapshot session.Snapshot) costDiagnostics {
 	diagnostics.ByAgent = buildCostTrends(history, tokenUsages, "agent")
 	diagnostics.ByMode = buildCostTrends(history, tokenUsages, "mode")
 	diagnostics.ByStage = buildCostTrends(history, tokenUsages, "stage")
-	diagnostics.Recommendations = buildCostRecommendations(diagnostics)
 	return diagnostics
 }
 
@@ -1289,8 +1342,10 @@ func buildCostControlFeatures(diagnostics costDiagnostics, snapshot session.Snap
 			Samples:         diagnostics.Samples,
 			EstimatedTokens: latestToolSchemaTokens(diagnostics),
 			FilteredTools:   latestFilteredToolCount(diagnostics),
+			InjectedTools:   latestInjectedToolCount(diagnostics),
+			OmittedItems:    diagnostics.ToolSchemaDiagnosticOmitted,
 			Description:     "Only exposes tools allowed by the active agent and matched skill while executor policy still enforces hidden tools.",
-			Measurement:     "filtered_tools counts tool schemas omitted from the provider request by agent/skill policy.",
+			Measurement:     "injected_tools and filtered_tools summarize the tool schemas visible or hidden for the latest provider request.",
 			Recommendation:  "Use narrower agent allowed_tools or skill tool declarations when tool_schema_high appears.",
 		},
 		{
@@ -1310,13 +1365,47 @@ func buildCostControlFeatures(diagnostics costDiagnostics, snapshot session.Snap
 			Code:           "session_artifact_refs",
 			Name:           "Session artifact references",
 			Category:       "prompt_reduction",
-			State:          observedState(len(snapshot.Artifacts) > 0),
+			State:          observedState(len(snapshot.Artifacts) > 0 || diagnostics.ArtifactRefSamples > 0 || diagnostics.CompactedToolResultCount > 0),
 			Enabled:        true,
-			Observed:       len(snapshot.Artifacts) > 0,
-			Samples:        len(snapshot.Artifacts),
+			Observed:       len(snapshot.Artifacts) > 0 || diagnostics.ArtifactRefSamples > 0 || diagnostics.CompactedToolResultCount > 0,
+			Samples:        maxInt(len(snapshot.Artifacts), diagnostics.CompactedToolResultCount),
+			SavedTokens:    diagnostics.ArtifactOmittedTokens,
+			ArtifactRefs:   diagnostics.ArtifactRefSamples,
+			OmittedItems:   diagnostics.CompactedToolResultCount,
 			Description:    "Stores oversized observations as rehydratable goflow://session-artifacts/<id> refs instead of replaying full content every turn.",
-			Measurement:    "samples is the number of retained session artifacts.",
+			Measurement:    "artifact_refs counts refs visible to model requests; saved_tokens estimates omitted compacted tool-result content.",
 			Recommendation: "Use artifact refs when exact large tool output is needed again; otherwise keep downstream inputs compact.",
+		},
+		{
+			Code:            "retrieval_memory_blocks",
+			Name:            "Retrieval memory blocks",
+			Category:        "prompt_reduction",
+			State:           retrievalMemoryState(diagnostics),
+			Enabled:         true,
+			Observed:        diagnostics.MemoryBlockSamples > 0,
+			Samples:         diagnostics.Samples,
+			EstimatedTokens: latestMemoryTokens(diagnostics),
+			SavedTokens:     diagnostics.MemoryEstimatedSavedTokens,
+			MemoryBlocks:    diagnostics.MemoryBlockSamples,
+			OmittedItems:    diagnostics.MemoryOmittedCount,
+			Description:     "Injects selected project/task/file/error summaries and refs instead of loading full memory or session history.",
+			Measurement:     "memory_blocks counts summary refs injected into retained prompt-budget samples.",
+			Recommendation:  "Keep project and file summaries fresh so model requests can stay summary-first and retrieve detail only on demand.",
+		},
+		{
+			Code:            "skill_schema_slimming",
+			Name:            "Skill schema slimming",
+			Category:        "prompt_reduction",
+			State:           skillSchemaSlimmingState(diagnostics),
+			Enabled:         true,
+			Observed:        diagnostics.SkillOmittedTokens > 0,
+			Samples:         diagnostics.Samples,
+			EstimatedTokens: latestSkillTokens(diagnostics),
+			SavedTokens:     diagnostics.SkillOmittedTokens,
+			OmittedItems:    diagnostics.OmittedContextCount,
+			Description:     "Injects matched skill identity, description, scripts, resources, and bounded instruction summaries while tracking omitted full instructions by ref.",
+			Measurement:     "saved_tokens is the estimated full skill instruction text avoided by summary-first prompt injection.",
+			Recommendation:  "Keep large skills structured with concise headings and examples so the summary remains useful.",
 		},
 		{
 			Code:            "provider_prompt_cache_signals",
@@ -1354,6 +1443,29 @@ func toolSchemaMinimizationState(diagnostics costDiagnostics) string {
 		return "observed"
 	}
 	return "active_no_filtering_needed"
+}
+
+func retrievalMemoryState(diagnostics costDiagnostics) string {
+	if diagnostics.Samples == 0 {
+		return "ready"
+	}
+	if diagnostics.MemoryBlockSamples > 0 {
+		return "observed"
+	}
+	return "ready_no_matches"
+}
+
+func skillSchemaSlimmingState(diagnostics costDiagnostics) string {
+	if diagnostics.Samples == 0 {
+		return "ready"
+	}
+	if diagnostics.SkillOmittedTokens > 0 {
+		return "observed"
+	}
+	if diagnostics.Latest != nil && strings.TrimSpace(diagnostics.Latest.SkillName) != "" {
+		return "active_no_slimming_needed"
+	}
+	return "ready"
 }
 
 func providerPromptCacheState(diagnostics costDiagnostics) string {
@@ -1409,11 +1521,35 @@ func latestFilteredToolCount(diagnostics costDiagnostics) int {
 	return diagnostics.Latest.FilteredToolCount
 }
 
+func latestInjectedToolCount(diagnostics costDiagnostics) int {
+	if diagnostics.Latest == nil {
+		return 0
+	}
+	return diagnostics.Latest.ExposedToolCount
+}
+
 func latestToolSchemaTokens(diagnostics costDiagnostics) int {
 	if diagnostics.Latest == nil {
 		return 0
 	}
 	return diagnostics.Latest.ToolSchemaTokens
+}
+
+func latestMemoryTokens(diagnostics costDiagnostics) int {
+	if diagnostics.Latest == nil {
+		return 0
+	}
+	return diagnostics.Latest.MemoryTokens
+}
+
+func latestSkillTokens(diagnostics costDiagnostics) int {
+	if diagnostics.Latest == nil {
+		return 0
+	}
+	if diagnostics.Latest.SkillInjectedTokens > 0 {
+		return diagnostics.Latest.SkillInjectedTokens
+	}
+	return diagnostics.Latest.SkillTokens
 }
 
 func buildCostRouteTuning(diagnostics costDiagnostics, snapshot session.Snapshot, routes []auxiliarySummary) []costRouteTuning {
@@ -1618,6 +1754,10 @@ func buildCostRecommendations(diagnostics costDiagnostics) []costRecommendation 
 	if diagnostics.Latest == nil && len(diagnostics.ByAgent) == 0 {
 		return nil
 	}
+	window := recentCostRecommendationWindow(diagnostics, 8)
+	if window.Samples == 0 && window.TokenUsageSamples == 0 {
+		window = diagnostics
+	}
 	out := make([]costRecommendation, 0, 4)
 	if latest := diagnostics.Latest; latest != nil {
 		nonCacheable := nonCacheablePromptTokens(*latest)
@@ -1667,35 +1807,65 @@ func buildCostRecommendations(diagnostics costDiagnostics) []costRecommendation 
 				ExpectedSavingsKind: "cacheability",
 			})
 		}
+		if latest.MemoryBlockCount == 0 && latest.EstimatedPromptTokens >= 1500 {
+			out = append(out, costRecommendation{
+				Level:               "info",
+				Code:                "memory_not_injected",
+				Message:             "No memory blocks were injected for this prompt. Rebuild or update project/file memory so future runs can use summary refs instead of fresh context.",
+				AgentID:             latest.AgentID,
+				Mode:                latest.Mode,
+				WorkflowName:        latest.WorkflowName,
+				TaskStage:           latest.TaskStage,
+				EstimatedTokens:     latest.EstimatedPromptTokens,
+				Measurement:         fmt.Sprintf("latest prompt estimate is %d tokens with zero memory blocks", latest.EstimatedPromptTokens),
+				Action:              "run memory rebuild and keep project memory current for recurring work",
+				ExpectedSavingsKind: "retrieval_memory",
+			})
+		}
+		if latest.SkillOmittedTokens >= 500 {
+			out = append(out, costRecommendation{
+				Level:               "info",
+				Code:                "skill_summary_saving",
+				Message:             "Large skill instructions were summarized before prompt injection. Keep the full skill available by ref and make headings/examples concise.",
+				AgentID:             latest.AgentID,
+				Mode:                latest.Mode,
+				WorkflowName:        latest.WorkflowName,
+				TaskStage:           latest.TaskStage,
+				EstimatedTokens:     latest.SkillOmittedTokens,
+				Measurement:         fmt.Sprintf("latest skill summary omitted an estimated %d instruction tokens", latest.SkillOmittedTokens),
+				Action:              "keep skill instructions structured so summary-first injection preserves the useful contract",
+				ExpectedSavingsKind: "skill_schema_reduction",
+			})
+		}
 	}
-	if diagnostics.Samples >= 4 && diagnostics.UniquePromptPrefixes > diagnostics.Samples/2 {
+	if window.Samples >= 4 && window.UniquePromptPrefixes > window.Samples/2 {
 		out = append(out, costRecommendation{
 			Level:               "info",
 			Code:                "prompt_prefix_churn",
 			Message:             "Prompt prefixes are changing frequently. Stable agent prompts, skill context, and tool visibility improve provider prompt-cache hit rates.",
-			EstimatedTokens:     diagnostics.AverageCacheablePrefixTokens,
-			Measurement:         fmt.Sprintf("%d unique prompt prefixes across %d retained samples", diagnostics.UniquePromptPrefixes, diagnostics.Samples),
+			EstimatedTokens:     window.AverageCacheablePrefixTokens,
+			Measurement:         fmt.Sprintf("recent %d prompt samples contain %d unique prompt prefixes", window.Samples, window.UniquePromptPrefixes),
 			Action:              "avoid changing base prompts and tool visibility between similar workflow stages",
 			ExpectedSavingsKind: "provider_prompt_cache",
 		})
 	}
-	if diagnostics.TokenUsageSamples >= 3 &&
-		diagnostics.TotalCachedTokens == 0 &&
-		diagnostics.AverageCacheablePrefixTokens >= 1000 &&
-		diagnostics.PromptPrefixReuseSamples > 0 {
+	if window.TokenUsageSamples >= 3 &&
+		window.TotalCachedTokens == 0 &&
+		window.AverageCacheablePrefixTokens >= 1000 &&
+		window.PromptPrefixReuseSamples > 0 {
 		out = append(out, costRecommendation{
 			Level:               "info",
 			Code:                "provider_cache_not_observed",
 			Message:             "Prompt prefixes appear reusable, but provider-reported cached tokens are zero. Confirm the selected provider/model supports prompt caching and that stable-prefix hashes remain consistent.",
-			EstimatedTokens:     diagnostics.AverageCacheablePrefixTokens,
-			Measurement:         fmt.Sprintf("%d reusable prefix samples, zero provider-reported cached tokens", diagnostics.PromptPrefixReuseSamples),
+			EstimatedTokens:     window.AverageCacheablePrefixTokens,
+			Measurement:         fmt.Sprintf("recent %d samples show %d reusable prefixes with zero provider-reported cached tokens", window.Samples, window.PromptPrefixReuseSamples),
 			Action:              "verify provider/model prompt-cache support or use a model route that reports cached_tokens",
 			RequiresConfig:      true,
 			ExpectedSavingsKind: "provider_prompt_cache",
 		})
 	}
-	if len(diagnostics.ByAgent) > 0 {
-		top := diagnostics.ByAgent[0]
+	if len(window.ByAgent) > 0 {
+		top := window.ByAgent[0]
 		if top.AverageEstimatedPromptTokens >= 6000 {
 			out = append(out, costRecommendation{
 				Level:               "warning",
@@ -1703,34 +1873,34 @@ func buildCostRecommendations(diagnostics costDiagnostics) []costRecommendation 
 				Message:             "This agent has a high average estimated prompt size. Consider a narrower agent profile, fewer visible tools, or splitting the workflow into smaller stages.",
 				AgentID:             top.AgentID,
 				EstimatedTokens:     top.AverageEstimatedPromptTokens,
-				Measurement:         fmt.Sprintf("agent %s averages %d estimated prompt tokens across %d samples", top.AgentID, top.AverageEstimatedPromptTokens, top.PromptBudgetSamples),
+				Measurement:         fmt.Sprintf("agent %s averages %d estimated prompt tokens across the recent %d samples", top.AgentID, top.AverageEstimatedPromptTokens, top.PromptBudgetSamples),
 				Action:              "split this role into narrower agents or move repeated work into a workflow with compact handoffs",
 				RequiresConfig:      true,
 				ExpectedSavingsKind: "prompt_reduction",
 			})
 		}
 	}
-	if !auxiliaryRouteEnabled(diagnostics.AuxiliaryRoutes, "router") && diagnostics.Samples >= 3 && diagnostics.AverageEstimatedPromptTokens >= 1500 {
+	if !auxiliaryRouteEnabled(diagnostics.AuxiliaryRoutes, "router") && window.Samples >= 3 && window.AverageEstimatedPromptTokens >= 1500 {
 		out = append(out, costRecommendation{
 			Level:               "info",
 			Code:                "router_auxiliary_candidate",
 			Message:             "Routing samples are frequent enough to evaluate an optional low-cost router model. Enable only if it reduces main-model classification calls without hurting routing quality.",
-			EstimatedTokens:     diagnostics.AverageEstimatedPromptTokens,
-			Measurement:         fmt.Sprintf("%d prompt-budget samples average %d estimated prompt tokens and router route is disabled", diagnostics.Samples, diagnostics.AverageEstimatedPromptTokens),
+			EstimatedTokens:     window.AverageEstimatedPromptTokens,
+			Measurement:         fmt.Sprintf("recent %d prompt samples average %d estimated prompt tokens and router route is disabled", window.Samples, window.AverageEstimatedPromptTokens),
 			Action:              "configure cost_control.router with a cheaper model, compare route accuracy and token_usage before leaving it enabled",
 			RequiresConfig:      true,
 			ExpectedSavingsKind: "auxiliary_model_route",
 		})
 	}
 	if !auxiliaryRouteEnabled(diagnostics.AuxiliaryRoutes, "summarizer") {
-		if summary := costTrendByStageSubstring(diagnostics.ByStage, "summar"); summary != nil && summary.AverageEstimatedPromptTokens >= 800 {
+		if summary := costTrendByStageSubstring(window.ByStage, "summar"); summary != nil && summary.AverageEstimatedPromptTokens >= 800 {
 			out = append(out, costRecommendation{
 				Level:               "info",
 				Code:                "summarizer_auxiliary_candidate",
 				Message:             "Summary stages have measurable prompt cost. A cheaper summarizer model may reduce cost when iteration-budget summaries happen often.",
 				TaskStage:           summary.TaskStage,
 				EstimatedTokens:     summary.AverageEstimatedPromptTokens,
-				Measurement:         fmt.Sprintf("stage %s averages %d estimated prompt tokens across %d samples", summary.Key, summary.AverageEstimatedPromptTokens, summary.PromptBudgetSamples),
+				Measurement:         fmt.Sprintf("stage %s averages %d estimated prompt tokens across the recent %d samples", summary.Key, summary.AverageEstimatedPromptTokens, summary.PromptBudgetSamples),
 				Action:              "configure cost_control.summarizer with a cheap model and compare final-summary quality before enabling by default",
 				RequiresConfig:      true,
 				ExpectedSavingsKind: "auxiliary_model_route",
@@ -1738,6 +1908,32 @@ func buildCostRecommendations(diagnostics costDiagnostics) []costRecommendation 
 		}
 	}
 	return out
+}
+
+func recentCostRecommendationWindow(diagnostics costDiagnostics, limit int) costDiagnostics {
+	if limit <= 0 {
+		limit = 8
+	}
+	history := diagnostics.History
+	if len(history) > limit {
+		history = append([]schema.PromptBudget(nil), history[len(history)-limit:]...)
+	} else {
+		history = append([]schema.PromptBudget(nil), history...)
+	}
+	usages := diagnostics.TokenUsageHistory
+	if len(usages) > limit {
+		usages = append([]schema.TokenUsageSample(nil), usages[len(usages)-limit:]...)
+	} else {
+		usages = append([]schema.TokenUsageSample(nil), usages...)
+	}
+	latest := diagnostics.Latest
+	if latest == nil && len(history) > 0 {
+		copied := history[len(history)-1]
+		latest = &copied
+	}
+	window := summarizePromptCostSamples(history, usages, latest)
+	window.AuxiliaryRoutes = append([]auxiliarySummary(nil), diagnostics.AuxiliaryRoutes...)
+	return window
 }
 
 func auxiliaryRouteEnabled(routes []auxiliarySummary, kind string) bool {
@@ -1778,6 +1974,14 @@ func buildCostTrends(budgets []schema.PromptBudget, usages []schema.TokenUsageSa
 		item.HistoryEstimatedSavedTokens += budget.HistoryEstimatedSavedTokens
 		item.HistoryDeduplicatedItems += budget.HistoryPromptDeduplicatedItems + budget.HistoryToolDeduplicatedItems
 		item.HistoryCompactedOlderItems += budget.HistoryPromptCompactedOlderItems + budget.HistoryToolCompactedOlderItems
+		item.ToolSchemaDiagnosticSamples += budget.ToolSchemaDiagnosticCount
+		item.ToolSchemaDiagnosticOmitted += budget.ToolSchemaDiagnosticOmitted
+		item.MemoryBlockSamples += budget.MemoryBlockCount
+		item.MemoryEstimatedSavedTokens += budget.MemoryEstimatedSavedTokens
+		item.ArtifactRefSamples += budget.ArtifactRefCount
+		item.ArtifactOmittedTokens += budget.ArtifactOmittedTokens
+		item.SkillOmittedTokens += budget.SkillOmittedTokens
+		item.OmittedContextCount += len(budget.OmittedContext)
 		if budget.EstimatedPromptTokens > item.MaxEstimatedPromptTokens {
 			item.MaxEstimatedPromptTokens = budget.EstimatedPromptTokens
 		}
@@ -1826,7 +2030,10 @@ func buildCostTrends(budgets []schema.PromptBudget, usages []schema.TokenUsageSa
 	}
 	sort.Slice(out, func(i, j int) bool {
 		if out[i].TotalTokens == out[j].TotalTokens {
-			return out[i].Key < out[j].Key
+			if out[i].AverageEstimatedPromptTokens == out[j].AverageEstimatedPromptTokens {
+				return out[i].Key < out[j].Key
+			}
+			return out[i].AverageEstimatedPromptTokens > out[j].AverageEstimatedPromptTokens
 		}
 		return out[i].TotalTokens > out[j].TotalTokens
 	})
@@ -2363,13 +2570,62 @@ func optionEnabled(value string) bool {
 	return strings.EqualFold(strings.TrimSpace(value), "true")
 }
 
-func environmentStatus() []envStatus {
-	return []envStatus{
-		{Name: "GOFLOW_BASE_URL", Required: true, Set: strings.TrimSpace(os.Getenv("GOFLOW_BASE_URL")) != "", Description: "OpenAI-compatible model API base URL"},
-		{Name: "GOFLOW_API_KEY", Required: true, Set: strings.TrimSpace(os.Getenv("GOFLOW_API_KEY")) != "", Description: "primary model API key"},
-		{Name: "GOFLOW_MODEL", Required: false, Set: strings.TrimSpace(os.Getenv("GOFLOW_MODEL")) != "", Description: "primary model override"},
-		{Name: "GOFLOW_BACKUP_BASE_URL", Required: false, Set: strings.TrimSpace(os.Getenv("GOFLOW_BACKUP_BASE_URL")) != "", Description: "fallback model API base URL"},
-		{Name: "GOFLOW_BACKUP_API_KEY", Required: false, Set: strings.TrimSpace(os.Getenv("GOFLOW_BACKUP_API_KEY")) != "", Description: "fallback model API key"},
-		{Name: "GOFLOW_BACKUP_MODEL", Required: false, Set: strings.TrimSpace(os.Getenv("GOFLOW_BACKUP_MODEL")) != "", Description: "fallback model override"},
+func buildSetupStatus(providers []providerSummary) setupStatus {
+	env := providerEnvStatus(providers)
+	providerStatuses := providerSetupStatuses(providers)
+	missing := make([]string, 0)
+	for _, provider := range providerStatuses {
+		for _, field := range provider.Missing {
+			missing = append(missing, provider.ID+"."+field)
+		}
 	}
+	return setupStatus{
+		Env:                   env,
+		Providers:             providerStatuses,
+		ModelReady:            len(providers) > 0 && len(missing) == 0,
+		MissingProviderFields: missing,
+	}
+}
+
+func providerSetupStatuses(providers []providerSummary) []providerSetupStatus {
+	out := make([]providerSetupStatus, 0, len(providers))
+	for _, provider := range providers {
+		id := strings.TrimSpace(provider.ID)
+		if id == "" {
+			id = "provider"
+		}
+		missing := make([]string, 0, 3)
+		if strings.TrimSpace(provider.BaseURL) == "" {
+			missing = append(missing, "base_url")
+		}
+		if !provider.APIKeySet {
+			missing = append(missing, "api_key")
+		}
+		if strings.TrimSpace(provider.Model) == "" {
+			missing = append(missing, "model")
+		}
+		out = append(out, providerSetupStatus{
+			ID:       id,
+			Provider: provider.Provider,
+			Ready:    len(missing) == 0,
+			Missing:  missing,
+		})
+	}
+	return out
+}
+
+func providerEnvStatus(providers []providerSummary) []envStatus {
+	out := make([]envStatus, 0, len(providers)*3)
+	for _, provider := range providers {
+		id := strings.TrimSpace(provider.ID)
+		if id == "" {
+			id = "provider"
+		}
+		out = append(out,
+			envStatus{Name: id + ".base_url", Required: true, Set: strings.TrimSpace(provider.BaseURL) != "", Description: "Provider " + id + " OpenAI-compatible API base URL"},
+			envStatus{Name: id + ".api_key", Required: true, Set: provider.APIKeySet, Description: "Provider " + id + " API Key"},
+			envStatus{Name: id + ".model", Required: true, Set: strings.TrimSpace(provider.Model) != "", Description: "Provider " + id + " model id"},
+		)
+	}
+	return out
 }

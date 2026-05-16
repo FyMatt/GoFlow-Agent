@@ -107,6 +107,8 @@ Tool scaffold preset 已经文件化。内置 preset 从 `internal/scaffold/temp
 
 Agent 会写入 `configs/agents/`，Provider 会写入 `configs/providers/`。这种模块化结构避免 `configs/goflow.yaml` 变得过大。
 
+Provider 里的 `base_url`、`api_key` 和 `model` 可以在首次启动时暂时留空，GoFlow 仍会启动并让 Web Studio 展示配置诊断。真正运行使用该 Provider 的 Agent 前需要补全这些字段；如果运行时已经加载过旧 Provider 配置，补全后需要重启 GoFlow。
+
 Agent 默认脚手架已经文件化。内置模板位于
 `internal/scaffold/templates/config/agents/default.yaml.tmpl`，运行目录可以用
 `templates/config/agents/default.yaml.tmpl` 覆盖。模板是 Go
@@ -187,6 +189,8 @@ Team 模板用于多 Agent 协作组合，Kit 用于打包领域资源。它们�
 `agent-framework` preset 专门用于二开 GoFlow 本身。它会引用 `agent-framework-extension` 工作流模板和 `framework-extension-team` 团队模板，用来设计、审查并生成新的垂直 Agent、Skill、Tool、Workflow、Team、Policy 或 Kit。
 
 Workflow Template 已经从 Go 代码硬编码迁移为文件化资源。发布二进制会内嵌 `internal/agent/templates/workflows/*.yaml` 作为默认模板目录；运行目录可以通过 `templates/workflows/*.yaml` 添加或覆盖工作流模板。例如 `templates/workflows/plan-fix-audit.yaml` 会覆盖内置 `plan-fix-audit` 模板，并同时影响 `/workflow-templates`、Workflow 创建、校验、fork 和 Studio 模板选择。
+
+复杂实现任务优先使用 `complex-project-delivery` 工作流模板。它会先分析用户需求、整理功能需求和验收标准，生成项目计划并等待用户确认；确认后循环执行“实现一个计划切片 -> 验证 -> 审查 -> 更新计划”，直到计划全部完成，再执行整体验证并输出最终完成报告。
 
 Team Template 已经从 Go 代码硬编码迁移为文件化资源。发布二进制会内嵌 `internal/agent/templates/teams/*.yaml` 作为默认团队目录；运行目录可以通过 `templates/teams/*.yaml` 添加或覆盖团队模板。例如 `templates/teams/web-research-team.yaml` 会覆盖内置 `web-research-team`，并同时影响 `/teams`、Workflow 选项、校验、执行、TeamState 和 Studio 表单。
 

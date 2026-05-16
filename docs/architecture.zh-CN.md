@@ -89,6 +89,10 @@ MCP server 管理层，负责：
 - Workflow durable run。
 - artifacts、diffs、协作和 team 状态。
 
+`.goflow/session.json` 是轻量索引，服务于快速启动状态和 Web Studio 轮询。
+完整运行详情、工具输出和阶段结果保存在 `.goflow/session.full.json.gz` 压缩归档中。
+加载时优先读取完整归档；旧版大 `session.json` 会自动迁移为“轻量索引 + 完整压缩归档”。
+
 ## 运行时数据流
 
 1. 用户通过 CLI 或 HTTP 发送请求。

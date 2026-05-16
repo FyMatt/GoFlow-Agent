@@ -23,41 +23,49 @@
     <aside class="sidebar" data-tour-id="shell-sidebar">
       <div class="brand" data-tour-id="shell-brand">
         <div class="brand-mark">GF</div>
-        <div>
+        <div class="brand-copy">
           <strong>GoFlow</strong>
-          <span data-i18n="brand.subtitle">Agent Studio</span>
+          <span data-i18n="brand.subtitle">Agent Workbench</span>
         </div>
+        <button id="sidebarToggle" class="ghost-button sidebar-toggle" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">
+          <span class="sidebar-toggle-icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M15 6l-6 6 6 6"></path>
+            </svg>
+          </span>
+        </button>
       </div>
 
       <div class="nav-group">
-        <p class="nav-group-label" data-i18n="nav.group.discover">Discover</p>
+        <p class="nav-group-label" data-i18n="nav.group.discover">Start</p>
         <nav class="nav" aria-label="Console sections" data-i18n-aria-label="nav.sections.console">
-          <button data-view="overview" class="active" data-i18n="nav.overview" data-tour-id="nav-overview">Overview</button>
+          <button data-view="overview" data-label-key="nav.overview" data-icon="overview" class="active" data-tour-id="nav-overview">Overview</button>
         </nav>
       </div>
 
       <div class="nav-group">
         <p class="nav-group-label" data-i18n="nav.group.build">Build</p>
         <nav class="nav" aria-label="Build sections" data-i18n-aria-label="nav.sections.build">
-          <button data-view="workflows" data-i18n="nav.workflows" data-tour-id="nav-workflows">Workflow Studio</button>
-          <button data-view="catalog" data-i18n="nav.catalog" data-tour-id="nav-catalog">Resources</button>
+          <button data-view="workflows" data-label-key="nav.workflows" data-icon="workflows" data-tour-id="nav-workflows">Workflows</button>
+          <button data-view="catalog" data-label-key="nav.catalog" data-icon="catalog" data-tour-id="nav-catalog">Resources</button>
         </nav>
       </div>
 
       <div class="nav-group">
         <p class="nav-group-label" data-i18n="nav.group.run">Run</p>
         <nav class="nav" aria-label="Run sections" data-i18n-aria-label="nav.sections.run">
-          <button data-view="playground" data-i18n="nav.playground" data-tour-id="nav-playground">Playground</button>
-          <button data-view="approvals" data-i18n="nav.approvals" data-tour-id="nav-approvals">Approvals</button>
+          <button data-view="playground" data-label-key="nav.playground" data-icon="playground" data-tour-id="nav-playground">Run</button>
+          <button data-view="approvals" data-label-key="nav.approvals" data-icon="approvals" data-tour-id="nav-approvals">Approvals</button>
         </nav>
       </div>
 
       <div class="nav-group">
-        <p class="nav-group-label" data-i18n="nav.group.observe">Observe & Setup</p>
+        <p class="nav-group-label" data-i18n="nav.group.observe">Manage</p>
         <nav class="nav" aria-label="Observe and setup sections" data-i18n-aria-label="nav.sections.observe">
-          <button data-view="status" data-i18n="nav.status" data-tour-id="nav-status">Observability</button>
-          <button data-view="workspace" data-i18n="nav.workspace" data-tour-id="nav-workspace">Workspace</button>
-          <button data-view="settings" data-i18n="nav.settings" data-tour-id="nav-settings">Settings</button>
+          <button data-view="status" data-label-key="nav.status" data-icon="status" data-tour-id="nav-status">Status</button>
+          <button data-view="memory" data-label-key="nav.memory" data-icon="memory" data-tour-id="nav-memory">Memory</button>
+          <button data-view="workspace" data-label-key="nav.workspace" data-icon="workspace" data-tour-id="nav-workspace">Workspace</button>
+          <button data-view="settings" data-label-key="nav.settings" data-icon="settings" data-tour-id="nav-settings">Settings</button>
         </nav>
       </div>
 
@@ -69,8 +77,8 @@
     <main id="mainContent" class="main" tabindex="-1">
       <header class="topbar" data-tour-id="shell-topbar">
         <div class="topbar-copy">
-          <p class="eyebrow" id="sectionEyebrow">Visual orchestration</p>
-          <h1 id="sectionTitle">Workflow Studio</h1>
+          <p class="eyebrow" id="sectionEyebrow">Build reusable flows</p>
+          <h1 id="sectionTitle">Workflows</h1>
         </div>
         <div class="top-actions">
           <button id="tourToggle" class="ghost-button" data-tour-id="tour-toggle" data-i18n="tour.start">Start tour</button>

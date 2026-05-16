@@ -1,0 +1,363 @@
+name: multi-domain-intake-router
+description: A practical entry workflow that links reusable team templates with a common intake, routing, synthesis, and quality gate.
+stages:
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next:
+        - intake
+      position:
+        x: 180
+        "y": 1272
+    - name: intake
+      node_type: input_gate
+      agent: ""
+      skill: ""
+      params:
+        fields_json: '{"fields":[{"name":"domain","type":"select","label":"Task domain","required":true,"options":["software","web_security","security","binary","documentation","operations","support","platform","general"],"default":"general"},{"name":"goal","type":"textarea","label":"Goal","required":true},{"name":"target","type":"text","label":"Target file, URL, binary, system, or customer context"},{"name":"desired_output","type":"select","label":"Desired output","options":["implementation","review_report","runbook","customer_reply","extension_kit","plan"],"default":"plan"},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","options":["low","medium","high"],"default":"medium"}]}'
+        manual: "true"
+        prompt: Confirm the domain, goal, target, desired output, and risk tolerance before routing to a domain team.
+      outputs:
+        desired_output: params.desired_output
+        domain: params.domain
+        goal: params.goal
+        intake_summary: result.summary
+        recommended_kit: params.domain
+        risk_tolerance: params.risk_tolerance
+        target: params.target
+      next:
+        - domain-router
+      position:
+        x: 732
+        "y": 1254
+    - name: domain-router
+      node_type: switch
+      agent: ""
+      skill: ""
+      switch_on: stages.intake.outputs.domain
+      cases:
+        binary: binary-team
+        default: general-plan
+        documentation: docs-team
+        general: general-plan
+        operations: ops-team
+        platform: platform-team
+        security: security-team
+        software: software-team
+        support: support-team
+        web_security: web-security-team
+      position:
+        x: 1344
+        "y": 1254
+    - name: software-team
+      node_type: team
+      agent: planner
+      skill: ""
+      params:
+        approval_preset: software-review
+        execute: "true"
+        team: software-task-team
+      input:
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        risk_tolerance: stages.intake.outputs.risk_tolerance
+        target: stages.intake.outputs.target
+      outputs:
+        summary: result.summary
+        team: result.structured
+      next:
+        - synthesize
+      position:
+        x: 1956
+        "y": 150
+    - name: web-security-team
+      node_type: team
+      agent: planner
+      skill: ""
+      params:
+        approval_preset: security-review
+        execute: "true"
+        team: web-research-team
+      input:
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        risk_tolerance: stages.intake.outputs.risk_tolerance
+        target: stages.intake.outputs.target
+      outputs:
+        summary: result.summary
+        team: result.structured
+      next:
+        - synthesize
+      position:
+        x: 1956
+        "y": 426
+    - name: security-team
+      node_type: team
+      agent: planner
+      skill: ""
+      params:
+        approval_preset: security-review
+        execute: "true"
+        team: audit-security-team
+      input:
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        risk_tolerance: stages.intake.outputs.risk_tolerance
+        target: stages.intake.outputs.target
+      outputs:
+        summary: result.summary
+        team: result.structured
+      next:
+        - synthesize
+      position:
+        x: 1956
+        "y": 702
+    - name: binary-team
+      node_type: team
+      agent: planner
+      skill: ""
+      params:
+        approval_preset: security-review
+        execute: "true"
+        team: binary-triage-team
+      input:
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        risk_tolerance: stages.intake.outputs.risk_tolerance
+        target: stages.intake.outputs.target
+      outputs:
+        summary: result.summary
+        team: result.structured
+      next:
+        - synthesize
+      position:
+        x: 1956
+        "y": 978
+    - name: docs-team
+      node_type: team
+      agent: planner
+      skill: ""
+      params:
+        approval_preset: docs-review
+        execute: "true"
+        team: documentation-team
+      input:
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        risk_tolerance: stages.intake.outputs.risk_tolerance
+        target: stages.intake.outputs.target
+      outputs:
+        summary: result.summary
+        team: result.structured
+      next:
+        - synthesize
+      position:
+        x: 1956
+        "y": 1254
+    - name: ops-team
+      node_type: team
+      agent: planner
+      skill: ""
+      params:
+        approval_preset: ops-review
+        execute: "true"
+        team: operations-runbook-team
+      input:
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        risk_tolerance: stages.intake.outputs.risk_tolerance
+        target: stages.intake.outputs.target
+      outputs:
+        summary: result.summary
+        team: result.structured
+      next:
+        - synthesize
+      position:
+        x: 1956
+        "y": 1530
+    - name: support-team
+      node_type: team
+      agent: planner
+      skill: ""
+      params:
+        approval_preset: support-review
+        execute: "true"
+        team: customer-support-team
+      input:
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        risk_tolerance: stages.intake.outputs.risk_tolerance
+        target: stages.intake.outputs.target
+      outputs:
+        summary: result.summary
+        team: result.structured
+      next:
+        - synthesize
+      position:
+        x: 1956
+        "y": 1806
+    - name: platform-team
+      node_type: team
+      agent: planner
+      skill: ""
+      params:
+        approval_preset: extension-review
+        execute: "true"
+        team: framework-extension-team
+      input:
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        risk_tolerance: stages.intake.outputs.risk_tolerance
+        target: stages.intake.outputs.target
+      outputs:
+        summary: result.summary
+        team: result.structured
+      next:
+        - synthesize
+      position:
+        x: 1956
+        "y": 2082
+    - name: general-plan
+      node_type: agent
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Summary, Recommended Agent, Recommended Skill, Required Tools, Suggested Workflow, Risks, Acceptance Criteria, and Next Steps.
+        purpose: Plan a general task when no specialized domain team was selected.
+      input:
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        risk_tolerance: stages.intake.outputs.risk_tolerance
+        target: stages.intake.outputs.target
+      outputs:
+        output: result.output
+        summary: result.summary
+      artifacts:
+        - name: general-domain-plan
+          kind: plan
+          title: General domain plan
+          ref: result.output
+      next:
+        - synthesize
+      position:
+        x: 1956
+        "y": 2358
+    - name: synthesize
+      node_type: skill
+      agent: chat
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Domain Routed, Team Output Summary, Recommended Workflow Template, Required Agent/Skill/Tool Resources, Risks, Acceptance Criteria, and Final Handoff.
+        purpose: Convert the selected domain team's output into a user-facing handoff and a reusable next-step plan.
+        quality_bar: The handoff must name the routed domain, the team/template used, what artifact was produced, and what the user should run next.
+      input:
+        branch_summary: previous.summary
+        desired_output: stages.intake.outputs.desired_output
+        domain: stages.intake.outputs.domain
+        goal: stages.intake.outputs.goal
+        target: stages.intake.outputs.target
+      outputs:
+        handoff: result.output
+        recommended_workflow: result.findings
+        summary: result.summary
+      artifacts:
+        - name: multi-domain-handoff
+          kind: report
+          title: Multi-domain handoff
+          ref: result.output
+          summary: Routed domain output and recommended next workflow.
+      acceptance_criteria:
+        - name: has-domain
+          ref: result.output
+          contains: Domain Routed
+          expected: handoff names the routed domain
+        - name: has-template
+          ref: result.output
+          contains: Recommended Workflow Template
+          expected: handoff recommends a concrete template
+        - name: has-acceptance
+          ref: result.output
+          contains: Acceptance Criteria
+          expected: handoff includes acceptance criteria
+      next:
+        - quality
+      position:
+        x: 2568
+        "y": 1254
+    - name: quality
+      node_type: quality_gate
+      agent: ""
+      skill: ""
+      params:
+        min_score: "75"
+        reason: multi-domain handoff is missing domain routing evidence or acceptance criteria
+        require_acceptance: "true"
+        require_evidence: "true"
+      routes:
+        fail: revise
+        pass: handoff
+        warning: operator-check
+      position:
+        x: 3180
+        "y": 1254
+    - name: operator-check
+      node_type: checkpoint
+      agent: ""
+      skill: ""
+      params:
+        prompt: Review the routed team output and final handoff before continuing.
+      next:
+        - handoff
+      position:
+        x: 3792
+        "y": 1116
+    - name: handoff
+      node_type: skill
+      agent: chat
+      skill: execution-plan
+      input:
+        handoff: stages.synthesize.outputs.handoff
+        quality: stages.quality.outputs.quality_status
+      outputs:
+        final: result.output
+      artifacts:
+        - name: multi-domain-final
+          kind: report
+          title: Final multi-domain response
+          ref: result.output
+      next:
+        - end
+      position:
+        x: 4404
+        "y": 1254
+    - name: revise
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      input:
+        failures: stages.quality.outputs.failures
+        handoff: stages.synthesize.outputs.handoff
+      outputs:
+        revision_plan: result.output
+      next:
+        - end
+      position:
+        x: 3792
+        "y": 1392
+    - name: end
+      node_type: end
+      agent: ""
+      skill: ""
+      position:
+        x: 5016
+        "y": 1272

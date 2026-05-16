@@ -28,6 +28,9 @@ type agentConversationState struct {
 	Profile          config.AgentProfile
 	MatchedSkill     *schema.Skill
 	SystemPrompt     string
+	MemoryText       string
+	SessionSnapshot  session.Snapshot
+	PromptContext    promptBudgetContext
 	Mode             string
 	Input            string
 	Messages         []schema.Message
@@ -103,6 +106,14 @@ func (r *AgentRunner) RunStream(ctx context.Context, input string, skills interf
 	if mode == "" {
 		mode = profile.Mode
 	}
+	memoryText := ""
+	promptContext := promptBudgetContext{}
+	if runtimeRef != nil && runtimeRef.MemoryStore() != nil {
+		if memoryContext, err := runtimeRef.MemoryStore().PromptContextFresh(ctx, input, agentRunIDFromContext(ctx)); err == nil {
+			memoryText = memoryContext.PromptText()
+			promptContext.Memory = &memoryContext
+		}
+	}
 	systemPrompt := BuildSystemPrompt(profile, matchedSkill, snapshot)
 	startedAt := time.Now()
 	fallbackUsed := effectiveFallbackUsed(r.llm, r.fallbackUsed)
@@ -114,15 +125,18 @@ func (r *AgentRunner) RunStream(ctx context.Context, input string, skills interf
 	}
 	emitTaskStage(handler, state, r.id, mode, initialTaskStageForMode(mode), "starting request")
 	return r.continueConversation(ctx, agentConversationState{
-		Profile:      profile,
-		MatchedSkill: matchedSkill,
-		SystemPrompt: systemPrompt,
-		Mode:         mode,
-		Input:        input,
-		Messages:     []schema.Message{{Role: "user", Content: input}},
-		Tools:        tools,
-		StartedAt:    startedAt,
-		FallbackUsed: fallbackUsed,
+		Profile:         profile,
+		MatchedSkill:    matchedSkill,
+		SystemPrompt:    systemPrompt,
+		MemoryText:      memoryText,
+		SessionSnapshot: snapshot,
+		PromptContext:   promptContext,
+		Mode:            mode,
+		Input:           input,
+		Messages:        []schema.Message{{Role: "user", Content: input}},
+		Tools:           tools,
+		StartedAt:       startedAt,
+		FallbackUsed:    fallbackUsed,
 	}, skills, mcp, state, audit, runtimeRef, handler)
 }
 
@@ -372,18 +386,21 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 	if mode == "" {
 		mode = profile.Mode
 	}
-	messages := append([]schema.Message(nil), state.Messages...)
+	messages := dynamicContextMessages(state.MemoryText, state.SessionSnapshot, state.Input, state.Messages)
 	collectedResults := append([]schema.ToolResult(nil), state.CollectedResults...)
 	streamedText := state.StreamedText
 	fallbackUsed := effectiveFallbackUsed(r.llm, state.FallbackUsed)
 	execCtx := newExecutionContext(r.id, profile, state.Tools, audit, workspaceRoot(runtimeRef))
 	execCtx.AgentRunID = agentRunIDFromContext(ctx)
 	if runtimeRef != nil {
+		execCtx.MemoryStore = runtimeRef.MemoryStore()
+		execCtx.MemoryTaskID = fallbackText(execCtx.AgentRunID, runtimeRef.currentWorkflowRunID())
 		execCtx.RiskPolicy = runtimeRef.toolRiskPolicy()
 		execCtx.MCPServers = runtimeRef.MCPServerRefs()
 		runtimeRef.applySessionApprovedTools(&execCtx)
 	}
 	promptTools := filterPromptTools(profile, state.Tools)
+	promptToolContext := promptBudgetContextWithTools(state.PromptContext, profile, state.Tools)
 	actionNudge := newActionNudgeTracker(profile, mode, state.MatchedSkill, state.Input)
 
 	for i := 0; i <= profile.MaxIterations; i++ {
@@ -401,7 +418,7 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 			Temperature: profile.Temperature,
 			MaxTokens:   profile.MaxTokens,
 		}
-		emitPromptBudget(handler, sessionState, r.id, mode, request, state.MatchedSkill, len(state.Tools))
+		emitPromptBudget(handler, sessionState, r.id, mode, request, state.MatchedSkill, len(state.Tools), promptToolContext)
 
 		resp, err := runAgentChatWithRecovery(ctx, r.llm, request, r.id, mode, handler, &streamedText, &messages)
 		if err != nil {
@@ -535,7 +552,7 @@ func (r *AgentRunner) finalizeAfterIterationBudget(ctx context.Context, state ag
 		Temperature: summaryTemperature,
 		MaxTokens:   summaryMaxTokens,
 	}
-	emitPromptBudget(handler, sessionState, r.id, mode, request, state.MatchedSkill, len(state.Tools))
+	emitPromptBudget(handler, sessionState, r.id, mode, request, state.MatchedSkill, len(state.Tools), promptBudgetContextWithTools(state.PromptContext, state.Profile, state.Tools))
 	emitModelWaitStatus(handler, r.id, mode, modelWaitStatusContext{FinalSummary: true})
 	resp, err := runAgentChatWithRecovery(ctx, summaryLLM, request, r.id, mode, handler, &streamedText, &finalMessages)
 	if err != nil {
@@ -607,6 +624,25 @@ func (r *AgentRunner) finalizeWithInvalidToolArguments(state agentConversationSt
 	structured := buildStructuredSections(output, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 	findings, changes, verification := buildStructuredArtifacts(output, collectedResults, mode)
 	return schema.AgentResult{Output: output, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
+}
+
+func dynamicContextMessages(memoryText string, snapshot session.Snapshot, currentInput string, messages []schema.Message) []schema.Message {
+	blocks := make([]string, 0, 2)
+	if text := strings.TrimSpace(memoryText); text != "" {
+		blocks = append(blocks, text)
+	}
+	if text := sessionContextPromptText(snapshot, currentInput); text != "" {
+		blocks = append(blocks, text)
+	}
+	out := make([]schema.Message, 0, len(messages)+1)
+	if len(blocks) > 0 {
+		out = append(out, schema.Message{
+			Role:    "user",
+			Content: strings.Join(blocks, "\n\n") + "\nUse this dynamic context only when it is relevant to the current request.",
+		})
+	}
+	out = append(out, messages...)
+	return out
 }
 
 func buildLocalBudgetSummary(results []schema.ToolResult) string {

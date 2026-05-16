@@ -16,6 +16,7 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/internal/version"
@@ -1127,14 +1128,25 @@ func TestPromptCostDiagnosticsBuildsRecommendations(t *testing.T) {
 			MessageTokens:                  3200,
 			ToolSchemaTokens:               1400,
 			CacheablePrefixTokens:          2000,
+			ExposedToolCount:               2,
 			FilteredToolCount:              3,
+			ToolSchemaDiagnosticCount:      4,
+			ToolSchemaDiagnosticOmitted:    1,
 			HistoryEstimatedSavedTokens:    40,
 			HistoryPromptDeduplicatedItems: 1,
 			HistoryToolCompactedOlderItems: 2,
+			MemoryBlockCount:               2,
+			MemoryEstimatedSavedTokens:     60,
+			ArtifactRefCount:               1,
+			CompactedToolResultCount:       1,
+			ArtifactOmittedTokens:          700,
+			SkillName:                      "large-skill",
+			SkillOmittedTokens:             650,
+			OmittedContext:                 []string{"memory omitted", "skill omitted", "artifact omitted"},
 			PromptPrefixHash:               "latest",
 		},
 		PromptBudgets: []schema.PromptBudget{
-			{AgentID: "fixer", Mode: "fix", EstimatedPromptTokens: 9000, MessageTokens: 3200, ToolSchemaTokens: 1400, CacheablePrefixTokens: 2000, FilteredToolCount: 3, HistoryEstimatedSavedTokens: 40, HistoryPromptDeduplicatedItems: 1, HistoryToolCompactedOlderItems: 2, PromptPrefixHash: "a"},
+			{AgentID: "fixer", Mode: "fix", EstimatedPromptTokens: 9000, MessageTokens: 3200, ToolSchemaTokens: 1400, CacheablePrefixTokens: 2000, ExposedToolCount: 2, FilteredToolCount: 3, ToolSchemaDiagnosticCount: 4, ToolSchemaDiagnosticOmitted: 1, HistoryEstimatedSavedTokens: 40, HistoryPromptDeduplicatedItems: 1, HistoryToolCompactedOlderItems: 2, MemoryBlockCount: 2, MemoryEstimatedSavedTokens: 60, ArtifactRefCount: 1, CompactedToolResultCount: 1, ArtifactOmittedTokens: 700, SkillName: "large-skill", SkillOmittedTokens: 650, OmittedContext: []string{"memory omitted", "skill omitted", "artifact omitted"}, PromptPrefixHash: "a"},
 			{AgentID: "fixer", Mode: "fix", EstimatedPromptTokens: 8000, CacheablePrefixTokens: 2000, PromptPrefixHash: "b"},
 			{AgentID: "fixer", Mode: "fix", EstimatedPromptTokens: 7000, CacheablePrefixTokens: 2000, PromptPrefixHash: "c"},
 			{AgentID: "fixer", Mode: "fix", EstimatedPromptTokens: 6000, CacheablePrefixTokens: 2000, PromptPrefixHash: "d"},
@@ -1144,7 +1156,7 @@ func TestPromptCostDiagnosticsBuildsRecommendations(t *testing.T) {
 	for _, item := range diagnostics.Recommendations {
 		codes[item.Code] = true
 	}
-	for _, code := range []string{"message_context_high", "tool_schema_high", "non_cacheable_context_high", "prompt_prefix_churn", "agent_prompt_high"} {
+	for _, code := range []string{"message_context_high", "tool_schema_high", "non_cacheable_context_high", "skill_summary_saving", "prompt_prefix_churn", "agent_prompt_high"} {
 		if !codes[code] {
 			t.Fatalf("expected recommendation %s, got %#v", code, diagnostics.Recommendations)
 		}
@@ -1154,6 +1166,14 @@ func TestPromptCostDiagnosticsBuildsRecommendations(t *testing.T) {
 	}
 	if len(diagnostics.ByAgent) == 0 || diagnostics.ByAgent[0].HistoryEstimatedSavedTokens != 40 || diagnostics.ByAgent[0].HistoryDeduplicatedItems != 1 {
 		t.Fatalf("expected trend history compaction diagnostics, got %#v", diagnostics.ByAgent)
+	}
+	if diagnostics.ToolSchemaDiagnosticSamples != 4 || diagnostics.ToolSchemaDiagnosticOmitted != 1 || diagnostics.MemoryBlockSamples != 2 || diagnostics.MemoryEstimatedSavedTokens != 60 || diagnostics.ArtifactRefSamples != 1 || diagnostics.ArtifactOmittedTokens != 700 || diagnostics.SkillOmittedTokens != 650 || diagnostics.OmittedContextCount != 3 {
+		t.Fatalf("expected context diagnostics, got %#v", diagnostics)
+	}
+	if !costFeatureExists(diagnostics.Features, "retrieval_memory_blocks", "observed") ||
+		!costFeatureExists(diagnostics.Features, "skill_schema_slimming", "observed") ||
+		!costFeatureExists(diagnostics.Features, "session_artifact_refs", "observed") {
+		t.Fatalf("expected context feature diagnostics, got %#v", diagnostics.Features)
 	}
 }
 
@@ -1344,12 +1364,229 @@ func TestServerSessionArtifactEndpointsAndExpansion(t *testing.T) {
 	}
 }
 
+func TestServerMemoryEndpoints(t *testing.T) {
+	root := t.TempDir()
+	runtimeRef := newAPITestRuntime(t)
+	store := memory.NewStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure memory store: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+	if _, err := store.RecordTask(memory.TaskSummary{
+		UserGoal:      "fix login validation",
+		KeyDecisions:  []string{"validate email before saving"},
+		ModifiedFiles: []string{"internal/auth/login.go"},
+		TestResults:   []string{"go test ./internal/auth passed"},
+	}); err != nil {
+		t.Fatalf("RecordTask: %v", err)
+	}
+	server := NewServer(runtimeRef)
+
+	updateReq := httptest.NewRequest(http.MethodPut, "/api/memory/project", strings.NewReader(`{"content":"# Project Memory\n\n## Project Goal\n- Ship login flow\n"}`))
+	updateReq.Header.Set("Content-Type", "application/json")
+	updateResp := httptest.NewRecorder()
+	server.ServeHTTP(updateResp, updateReq)
+	if updateResp.Code != http.StatusOK || !strings.Contains(updateResp.Body.String(), "Ship login flow") {
+		t.Fatalf("expected project update, got %d body=%s", updateResp.Code, updateResp.Body.String())
+	}
+
+	searchReq := httptest.NewRequest(http.MethodGet, "/api/memory/search?q=login", nil)
+	searchResp := httptest.NewRecorder()
+	server.ServeHTTP(searchResp, searchReq)
+	if searchResp.Code != http.StatusOK || !strings.Contains(searchResp.Body.String(), `"kind":"task"`) {
+		t.Fatalf("expected memory search hit, got %d body=%s", searchResp.Code, searchResp.Body.String())
+	}
+
+	dashboardReq := httptest.NewRequest(http.MethodGet, "/api/memory", nil)
+	dashboardResp := httptest.NewRecorder()
+	server.ServeHTTP(dashboardResp, dashboardReq)
+	if dashboardResp.Code != http.StatusOK || !strings.Contains(dashboardResp.Body.String(), `"project"`) || !strings.Contains(dashboardResp.Body.String(), `"file_index"`) {
+		t.Fatalf("expected memory dashboard, got %d body=%s", dashboardResp.Code, dashboardResp.Body.String())
+	}
+}
+
+func TestServerSessionCompactEndpoint(t *testing.T) {
+	root := t.TempDir()
+	state := session.New(8)
+	state.AddPrompt("reduce token cost by compacting current context")
+	state.SetPromptBudget(schema.PromptBudget{
+		AgentID:                    "chat",
+		Mode:                       "chat",
+		EstimatedPromptTokens:      13000,
+		MemoryEstimatedSavedTokens: 900,
+		ArtifactRefCount:           1,
+		ArtifactRefs:               []string{"sha256:abc"},
+	})
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	store := memory.NewStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure memory store: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+	server := NewServer(runtimeRef)
+
+	req := httptest.NewRequest(http.MethodPost, "/api/session/compact", strings.NewReader(`{"reason":"manual test"}`))
+	req.Header.Set("Content-Type", "application/json")
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected compact 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var summary memory.ContextSummary
+	if err := json.NewDecoder(resp.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode compact summary: %v", err)
+	}
+	if summary.ID == "" || !strings.Contains(summary.Reason, "manual test") || summary.PromptBudget.EstimatedPromptTokens != 13000 {
+		t.Fatalf("unexpected compact summary: %#v", summary)
+	}
+	dashboard, err := store.Dashboard(5)
+	if err != nil {
+		t.Fatalf("Dashboard: %v", err)
+	}
+	if dashboard.Context.ID != summary.ID {
+		t.Fatalf("expected dashboard context %q, got %#v", summary.ID, dashboard.Context)
+	}
+}
+
+func TestServerMemoryDashboardBackfillsWorkflowTaskMemory(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# GoFlow Agent\n\nWorkflow memory dashboard.\n"), 0o644); err != nil {
+		t.Fatalf("write README: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "main.go"), []byte("package main\n\nfunc main() {}\n"), 0o644); err != nil {
+		t.Fatalf("write main.go: %v", err)
+	}
+	state := session.New(8)
+	completedID := state.StartWorkflowRun("audit-flow", "review auth module")
+	state.CompleteWorkflowRun(completedID, "completed", "audit complete", "", "", nil, []session.WorkflowRunStageSnapshot{{
+		Stage:   "review",
+		AgentID: "auditor",
+		Status:  "completed",
+		Summary: "reviewed auth changes",
+		Result: schema.AgentResult{
+			Output: "auth review complete",
+			Changes: []schema.Change{{
+				Summary: "updated login validation",
+				Files:   []string{"internal/auth/login.go"},
+			}},
+			Verification: []schema.Verification{{
+				Kind:   "test",
+				Status: "passed",
+				Detail: "go test ./internal/auth passed",
+			}},
+		},
+	}})
+	failedID := state.StartWorkflowRun("deploy-flow", "ship release")
+	state.CompleteWorkflowRun(failedID, "failed", "deployment failed", "", "", nil, []session.WorkflowRunStageSnapshot{{
+		Stage:   "deploy",
+		AgentID: "fixer",
+		Status:  "failed",
+		Summary: "deploy error",
+		Result: schema.AgentResult{
+			Output: "release failed",
+			Findings: []schema.Finding{{
+				Summary: "missing environment guard",
+				Files:   []string{"internal/deploy/release.go"},
+			}},
+			Verification: []schema.Verification{{
+				Kind:   "test",
+				Status: "failed",
+				Detail: "go test ./internal/deploy failed",
+			}},
+		},
+	}})
+
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	store := memory.NewStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure memory store: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+	server := NewServer(runtimeRef)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/memory?tasks=10", nil)
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected memory dashboard 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	var dashboard memory.Dashboard
+	if err := json.NewDecoder(resp.Body).Decode(&dashboard); err != nil {
+		t.Fatalf("decode dashboard: %v", err)
+	}
+	if len(dashboard.Tasks) < 2 {
+		t.Fatalf("expected workflow task backfill, got %#v", dashboard.Tasks)
+	}
+	taskIDs := make([]string, 0, len(dashboard.Tasks))
+	for _, task := range dashboard.Tasks {
+		taskIDs = append(taskIDs, task.ID)
+	}
+	if !testStringSliceContains(taskIDs, "workflow-"+completedID) || !testStringSliceContains(taskIDs, "workflow-"+failedID) {
+		t.Fatalf("expected workflow task IDs in backfilled tasks, got %#v", taskIDs)
+	}
+	if len(dashboard.Errors.Errors) == 0 {
+		t.Fatalf("expected failed workflow to populate error knowledge, got %#v", dashboard.Errors)
+	}
+	if !strings.Contains(dashboard.Project.Content, "GoFlow Agent") {
+		t.Fatalf("expected seeded project profile in dashboard, got %q", dashboard.Project.Content)
+	}
+	if dashboard.FileIndex.TotalFiles == 0 {
+		t.Fatalf("expected project profile generation to refresh file index, got %#v", dashboard.FileIndex)
+	}
+}
+
+func TestServerArtifactObjectEndpoint(t *testing.T) {
+	root := t.TempDir()
+	state := session.New(8)
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure artifact store: %v", err)
+	}
+	state.SetArtifactObjectStore(store)
+	artifact := state.AddArtifact(session.SessionArtifactSnapshot{Kind: "tool_result", ToolName: "fetch_url", Summary: "summary only", Content: "full artifact body"})
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	server := NewServer(runtimeRef)
+
+	req := httptest.NewRequest(http.MethodGet, "/api/artifacts/"+artifact.Hash, nil)
+	resp := httptest.NewRecorder()
+	server.ServeHTTP(resp, req)
+	if resp.Code != http.StatusOK {
+		t.Fatalf("expected artifact metadata 200, got %d body=%s", resp.Code, resp.Body.String())
+	}
+	if strings.Contains(resp.Body.String(), "full artifact body") {
+		t.Fatalf("metadata endpoint should omit content by default, got %s", resp.Body.String())
+	}
+
+	listReq := httptest.NewRequest(http.MethodGet, "/api/artifacts?limit=1", nil)
+	listResp := httptest.NewRecorder()
+	server.ServeHTTP(listResp, listReq)
+	if listResp.Code != http.StatusOK {
+		t.Fatalf("expected artifact list 200, got %d body=%s", listResp.Code, listResp.Body.String())
+	}
+	if !strings.Contains(listResp.Body.String(), artifact.Hash) || strings.Contains(listResp.Body.String(), "full artifact body") {
+		t.Fatalf("expected artifact list metadata only, got %s", listResp.Body.String())
+	}
+
+	detailReq := httptest.NewRequest(http.MethodGet, "/api/artifacts/"+artifact.Hash+"?content=1", nil)
+	detailResp := httptest.NewRecorder()
+	server.ServeHTTP(detailResp, detailReq)
+	if detailResp.Code != http.StatusOK || !strings.Contains(detailResp.Body.String(), "full artifact body") {
+		t.Fatalf("expected artifact object content, got %d body=%s", detailResp.Code, detailResp.Body.String())
+	}
+}
+
 func TestServerExpandAtFileReferencesUsesWorkspaceSafety(t *testing.T) {
 	root := t.TempDir()
 	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("http file context\n"), 0o644); err != nil {
 		t.Fatalf("write notes: %v", err)
 	}
-	server := NewServerWithWorkspace(newAPITestRuntime(t), workspace.New(root, true))
+	runtimeRef := newAPITestRuntime(t)
+	store := memory.NewStore(root)
+	if _, err := store.RebuildFiles(context.Background()); err != nil {
+		t.Fatalf("RebuildFiles: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+	server := NewServerWithWorkspace(runtimeRef, workspace.New(root, true))
 	expanded, err := server.expandAtReferences(context.Background(), "summarize @notes.txt", nil)
 	if err != nil {
 		t.Fatalf("expand http @file: %v", err)
@@ -1357,9 +1594,49 @@ func TestServerExpandAtFileReferencesUsesWorkspaceSafety(t *testing.T) {
 	if !strings.Contains(expanded, "Referenced workspace files") || !strings.Contains(expanded, "http file context") {
 		t.Fatalf("expected HTTP @file content in prompt, got %q", expanded)
 	}
+	index, err := store.FileIndex()
+	if err != nil {
+		t.Fatalf("FileIndex: %v", err)
+	}
+	if len(index.Files) != 1 || index.Files[0].LastReadAt == "" {
+		t.Fatalf("expected HTTP @file expansion to mark file usage, got %#v", index.Files)
+	}
 
 	if _, err := server.expandAtReferences(context.Background(), "summarize @../outside.txt", nil); err == nil || !strings.Contains(err.Error(), "escapes workspace root") {
 		t.Fatalf("expected HTTP @file traversal rejection, got %v", err)
+	}
+}
+
+func TestServerExpandAtLargeFileReferenceUsesSummary(t *testing.T) {
+	root := t.TempDir()
+	largeContent := strings.Repeat("large http file context\n", 4200) + "SECRET_FULL_CONTENT_SHOULD_NOT_APPEAR\n"
+	if err := os.WriteFile(filepath.Join(root, "large.txt"), []byte(largeContent), 0o644); err != nil {
+		t.Fatalf("write large file: %v", err)
+	}
+	runtimeRef := newAPITestRuntime(t)
+	store := memory.NewStore(root)
+	if _, err := store.RebuildFiles(context.Background()); err != nil {
+		t.Fatalf("RebuildFiles: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+	server := NewServerWithWorkspace(runtimeRef, workspace.New(root, true))
+
+	expanded, err := server.expandAtReferences(context.Background(), "summarize @large.txt", nil)
+	if err != nil {
+		t.Fatalf("expand large http @file: %v", err)
+	}
+	if !strings.Contains(expanded, "summary-only") || !strings.Contains(expanded, "hash=") || !strings.Contains(expanded, "summary:") {
+		t.Fatalf("expected summary-only large @file expansion, got %q", expanded)
+	}
+	if strings.Contains(expanded, "SECRET_FULL_CONTENT_SHOULD_NOT_APPEAR") || strings.Contains(expanded, strings.Repeat("large http file context\n", 20)) {
+		t.Fatalf("expected large @file expansion to omit full content, got %q", expanded)
+	}
+	index, err := store.FileIndex()
+	if err != nil {
+		t.Fatalf("FileIndex: %v", err)
+	}
+	if len(index.Files) != 1 || index.Files[0].LastReadAt == "" {
+		t.Fatalf("expected large HTTP @file expansion to mark file usage, got %#v", index.Files)
 	}
 }
 
@@ -1400,7 +1677,8 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 	if pageResponse.Code != http.StatusOK {
 		t.Fatalf("expected editor 200, got %d", pageResponse.Code)
 	}
-	if !strings.Contains(pageResponse.Body.String(), "GoFlow Console") || !strings.Contains(pageResponse.Body.String(), "Agent Studio") || !strings.Contains(pageResponse.Body.String(), "/assets/app.js") {
+	if !strings.Contains(pageResponse.Body.String(), "GoFlow Console") || !strings.Contains(pageResponse.Body.String(), "data-app-shell") ||
+		!strings.Contains(pageResponse.Body.String(), `data-view="workflows"`) || !strings.Contains(pageResponse.Body.String(), "/assets/app.js") {
 		t.Fatalf("expected GoFlow Studio HTML, got %s", pageResponse.Body.String())
 	}
 
@@ -2523,7 +2801,8 @@ func TestServerConsolePageAndAssets(t *testing.T) {
 	if pageResponse.Code != http.StatusOK {
 		t.Fatalf("expected console 200, got %d", pageResponse.Code)
 	}
-	if !strings.Contains(pageResponse.Body.String(), "Agent Studio") || !strings.Contains(pageResponse.Body.String(), "Workflow Studio") {
+	if !strings.Contains(pageResponse.Body.String(), "GoFlow Console") || !strings.Contains(pageResponse.Body.String(), "data-app-shell") ||
+		!strings.Contains(pageResponse.Body.String(), `data-view="workflows"`) || !strings.Contains(pageResponse.Body.String(), `data-view="memory"`) {
 		t.Fatalf("expected modern Studio shell, got %s", pageResponse.Body.String())
 	}
 
@@ -4351,6 +4630,81 @@ func TestServerAgentProviderToolResourceValidateEndpoints(t *testing.T) {
 	}
 }
 
+func TestServerProviderResourceTestEndpoint(t *testing.T) {
+	var captured map[string]any
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/chat/completions" {
+			t.Fatalf("unexpected provider path: %s", r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
+			t.Fatalf("decode provider request: %v", err)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"choices": []map[string]any{{
+				"finish_reason": "stop",
+				"message": map[string]any{
+					"role":    "assistant",
+					"content": "pong",
+				},
+			}},
+		})
+	}))
+	defer modelServer.Close()
+
+	runtimeRef := newAPITestRuntime(t)
+	server := NewServer(runtimeRef)
+	body := fmt.Sprintf(`{
+		"provider":"openai-compatible",
+		"base_url":%q,
+		"api_key":"test-key",
+		"model":"test-model",
+		"timeout":"5s"
+	}`, modelServer.URL)
+	request := httptest.NewRequest(http.MethodPost, "/api/resources/providers/mock/test", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var result providerTestResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !result.Valid || result.Status != "ok" || result.Name != "mock" || result.LatencyMS < 0 {
+		t.Fatalf("unexpected test result: %#v", result)
+	}
+	if captured["model"] != "test-model" {
+		t.Fatalf("expected model test-model, got %#v", captured["model"])
+	}
+	if _, err := os.Stat(filepath.Join(runtimeRef.RuntimeHome(), "configs", "providers", "mock.yaml")); !os.IsNotExist(err) {
+		t.Fatalf("expected provider test not to write module, stat err=%v", err)
+	}
+
+	invalidRequest := httptest.NewRequest(http.MethodPost, "/api/resources/providers/mock/test", strings.NewReader(`{
+		"provider":"openai-compatible",
+		"base_url":"https://api.example.com/v1",
+		"model":"test-model"
+	}`))
+	invalidRequest.Header.Set("Content-Type", "application/json")
+	invalidResponse := httptest.NewRecorder()
+	server.ServeHTTP(invalidResponse, invalidRequest)
+	if invalidResponse.Code != http.StatusOK {
+		t.Fatalf("expected invalid test status 200, got %d body=%s", invalidResponse.Code, invalidResponse.Body.String())
+	}
+	var invalid providerTestResult
+	if err := json.NewDecoder(invalidResponse.Body).Decode(&invalid); err != nil {
+		t.Fatalf("decode invalid response: %v", err)
+	}
+	if invalid.Valid || invalid.Status != "error" || len(invalid.Issues) == 0 || invalid.Issues[0].Field != "api_key" {
+		t.Fatalf("expected structured api_key failure, got %#v", invalid)
+	}
+}
+
 func TestServerAgentResourceGetMarksMatchingModuleActive(t *testing.T) {
 	runtimeRef := newAPITestRuntime(t)
 	server := NewServer(runtimeRef)
@@ -6019,6 +6373,7 @@ func TestServerConfigDiagnosticsTargetsAdditionalConfigLoadFailures(t *testing.T
 		name           string
 		config         string
 		code           string
+		status         string
 		targetKind     string
 		targetName     string
 		field          string
@@ -6046,6 +6401,7 @@ skill:
   directory: ./skills
 `,
 			code:           "provider_model_required",
+			status:         "warning",
 			targetKind:     "provider",
 			targetName:     "primary",
 			field:          "model",
@@ -6073,6 +6429,7 @@ skill:
   directory: ./skills
 `,
 			code:           "provider_base_url_required",
+			status:         "warning",
 			targetKind:     "provider",
 			targetName:     "primary",
 			field:          "base_url",
@@ -6523,12 +6880,78 @@ mcp_servers:
 			if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
 				t.Fatalf("decode diagnostics response: %v", err)
 			}
-			if diagnostics.Status != "error" || diagnostics.Diagnostics.Errors == 0 {
+			expectedStatus := tc.status
+			if expectedStatus == "" {
+				expectedStatus = "error"
+			}
+			if diagnostics.Status != expectedStatus {
+				t.Fatalf("expected %s diagnostics, got %#v", expectedStatus, diagnostics)
+			}
+			if expectedStatus == "error" && diagnostics.Diagnostics.Errors == 0 {
 				t.Fatalf("expected error diagnostics, got %#v", diagnostics)
+			}
+			if expectedStatus == "warning" && diagnostics.Diagnostics.Warnings == 0 {
+				t.Fatalf("expected warning diagnostics, got %#v", diagnostics)
 			}
 			assertConfigDiagnosticTarget(t, diagnostics.Items, tc.code, tc.targetKind, tc.targetName, tc.field, tc.recommendation)
 		})
 	}
+}
+
+func TestServerConfigDiagnosticsWarnsForIncompleteProviderSetup(t *testing.T) {
+	runtimeHome := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(runtimeHome, "configs"), 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	configPath := filepath.Join(runtimeHome, "configs", "goflow.yaml")
+	if err := os.WriteFile(configPath, []byte(`agent:
+  name: GoFlow Agent
+  max_iterations: 8
+default_agent: chat
+providers:
+  primary:
+    provider: openai-compatible
+agents:
+  chat:
+    name: Chat
+    provider: primary
+    mode: chat
+    max_iterations: 2
+    allowed_tool_kinds: [read]
+    tool_policy: confirm
+skill:
+  directory: ./skills
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	runtimeRef, err := agent.NewRuntime(&config.Config{
+		RuntimeHome:   runtimeHome,
+		WorkspaceRoot: t.TempDir(),
+		ConfigPath:    configPath,
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Providers:     map[string]config.LLMConfig{"primary": {Provider: "openai-compatible"}},
+		Agents:        map[string]config.AgentProfile{"chat": {Name: "Chat", Provider: "primary", Mode: "chat", Model: "", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyConfirm}},
+	}, map[string]interfaces.LLMClient{"primary": &apiTestLLM{}}, apiTestSkillManager{}, &apiTestMCP{}, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	server := NewServer(runtimeRef)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodGet, "/api/config/diagnostics", nil))
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected diagnostics 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var diagnostics configDiagnosticsResponse
+	if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
+		t.Fatalf("decode diagnostics: %v", err)
+	}
+	if diagnostics.Status != "warning" || diagnostics.Diagnostics.Warnings < 3 {
+		t.Fatalf("expected provider setup warnings, got %#v", diagnostics)
+	}
+	assertConfigDiagnosticTarget(t, diagnostics.Items, "provider_base_url_required", "provider", "primary", "base_url", "OpenAI-compatible")
+	assertConfigDiagnosticTarget(t, diagnostics.Items, "provider_model_required", "provider", "primary", "model", "model id")
+	assertConfigDiagnosticTarget(t, diagnostics.Items, "provider_api_key_missing", "provider", "primary", "api_key", "Web Studio")
 }
 
 func configDiagnosticRecommendationContains(items []configDiagnosticItem, code, want string) bool {
@@ -8087,6 +8510,172 @@ func TestServerSessionEndpointReturnsSnapshot(t *testing.T) {
 	}
 }
 
+func TestSessionSnapshotForAPIStripsHeavyRunDetailsByDefault(t *testing.T) {
+	large := strings.Repeat("x", sessionSummaryTextBytes+200)
+	snapshot := session.Snapshot{
+		ActiveAgent: "fixer",
+		Workflow: session.WorkflowSnapshot{
+			RunID:                   "wf-1",
+			Name:                    "plan-fix-audit",
+			Status:                  "awaiting_tool_approval",
+			PendingCallID:           "call-3",
+			PendingToolName:         "write_file",
+			PendingArguments:        large,
+			PendingArgumentsSummary: large,
+		},
+		AgentRuns: []session.AgentRunSnapshot{{
+			ID:      "agent-1",
+			Status:  "completed",
+			Output:  large,
+			Events:  []session.AgentRunEventSnapshot{{Seq: 1, Content: large}},
+			Result:  &schema.AgentResult{Output: large, ToolResults: []schema.ToolResult{{CallID: "call-1", ToolName: "read_file", Content: large}}},
+			Mode:    "fix",
+			AgentID: "fixer",
+		}},
+		WorkflowRuns: []session.WorkflowRunSnapshot{{
+			ID:              "wf-1",
+			Name:            "plan-fix-audit",
+			Status:          "completed",
+			Summary:         large,
+			PendingCallID:   "call-4",
+			PendingToolName: "write_file",
+			PendingArgs:     large,
+			CompletedStages: []session.WorkflowRunStageSnapshot{{
+				Stage:  "plan",
+				Result: schema.AgentResult{Output: large, ToolResults: []schema.ToolResult{{CallID: "call-2", ToolName: "read_file", Content: large}}},
+			}},
+			Artifacts: []session.WorkflowRunArtifact{{ID: "artifact-1", Content: large}},
+			Events:    []session.WorkflowRunEventSnapshot{{Seq: 3, Content: large}},
+		}},
+		PendingApprovals: []session.PendingApprovalSnapshot{{
+			CallID:           "call-5",
+			ToolName:         "write_file",
+			Arguments:        large,
+			ArgumentsSummary: large,
+		}},
+		Artifacts: []session.SessionArtifactSnapshot{{ID: "artifact-2", Content: large, Summary: large}},
+	}
+
+	summary := sessionSnapshotForAPI(snapshot, false)
+	if len(summary.AgentRuns[0].Events) != 0 || summary.AgentRuns[0].Result != nil {
+		t.Fatalf("expected agent run details stripped, got %#v", summary.AgentRuns[0])
+	}
+	if summary.AgentRuns[0].EventsCount != 1 || !strings.HasSuffix(summary.AgentRuns[0].Output, "...") {
+		t.Fatalf("expected agent summary counts and truncated output, got %#v", summary.AgentRuns[0])
+	}
+	if len(summary.WorkflowRuns[0].CompletedStages) != 0 || len(summary.WorkflowRuns[0].Artifacts) != 0 || len(summary.WorkflowRuns[0].Events) != 0 {
+		t.Fatalf("expected workflow run details stripped, got %#v", summary.WorkflowRuns[0])
+	}
+	if summary.WorkflowRuns[0].PendingArgs != "" || !strings.HasSuffix(summary.WorkflowRuns[0].PendingArgsSummary, "...") {
+		t.Fatalf("expected workflow pending args summarized, got %#v", summary.WorkflowRuns[0])
+	}
+	if summary.WorkflowRuns[0].StagesCount != 1 || summary.WorkflowRuns[0].ArtifactsCount != 1 || summary.WorkflowRuns[0].EventsCount != 1 {
+		t.Fatalf("expected workflow summary counts, got %#v", summary.WorkflowRuns[0])
+	}
+	if summary.Artifacts[0].Content != "" || !strings.HasSuffix(summary.Artifacts[0].Summary, "...") {
+		t.Fatalf("expected session artifact summary only, got %#v", summary.Artifacts[0])
+	}
+	if summary.Workflow.PendingArguments != "" || !strings.HasSuffix(summary.Workflow.PendingArgumentsSummary, "...") {
+		t.Fatalf("expected top-level workflow pending args summarized, got %#v", summary.Workflow)
+	}
+	if len(summary.PendingApprovals) != 1 || summary.PendingApprovals[0].Arguments != "" || !strings.HasSuffix(summary.PendingApprovals[0].ArgumentsSummary, "...") {
+		t.Fatalf("expected pending approvals summarized, got %#v", summary.PendingApprovals)
+	}
+
+	full := sessionSnapshotForAPI(snapshot, true)
+	if len(full.AgentRuns[0].Events) != 1 || full.AgentRuns[0].Result == nil || len(full.WorkflowRuns[0].CompletedStages) != 1 {
+		t.Fatalf("expected full session details when requested, got %#v", full)
+	}
+	if full.Artifacts[0].Content != "" {
+		t.Fatalf("expected top-level session artifact content hidden even in full runtime snapshot")
+	}
+}
+
+func TestRequestWantsFullSessionSupportsFullQuery(t *testing.T) {
+	if !requestWantsFullSession(httptest.NewRequest(http.MethodGet, "/api/session?full=1", nil)) {
+		t.Fatal("expected full=1 to request full session details")
+	}
+	if requestWantsFullSession(httptest.NewRequest(http.MethodGet, "/api/session?summary=1", nil)) {
+		t.Fatal("expected summary=1 to keep compact session details")
+	}
+}
+
+func TestHandleSessionSummaryIsSmallerThanFullAndOmitsLargeDetails(t *testing.T) {
+	state := session.New(8)
+	large := strings.Repeat("summary first payload ", 1200)
+	runID := state.StartAgentRun("inspect summary-first session")
+	state.AppendAgentRunEvent(runID, session.AgentRunEventSnapshot{
+		Seq:      1,
+		Type:     "tool_result",
+		ToolName: "read_file",
+		Content:  large,
+	})
+	state.CompleteAgentRun(runID, "completed", schema.AgentResult{
+		Output: large,
+		ToolResults: []schema.ToolResult{{
+			CallID:   "call-large",
+			ToolName: "read_file",
+			Content:  large,
+		}},
+	})
+	state.SetWorkflow(session.WorkflowSnapshot{
+		RunID:                   "wf-large",
+		Name:                    "plan-fix-audit",
+		Status:                  "awaiting_tool_approval",
+		NextStage:               "fix",
+		PendingCallID:           "call-workflow-large",
+		PendingToolName:         "write_file",
+		PendingArguments:        large,
+		PendingArgumentsSummary: large,
+	})
+	state.SetPendingApprovals([]session.PendingApprovalSnapshot{{
+		CallID:           "call-pending-large",
+		ToolName:         "write_file",
+		Arguments:        large,
+		ArgumentsSummary: large,
+		AgentRunID:       runID,
+	}})
+	state.AddArtifact(session.SessionArtifactSnapshot{
+		Kind:     "tool_result",
+		ToolName: "read_file",
+		Content:  large,
+		Summary:  large,
+	})
+	server := NewServer(newAPITestRuntimeWithStateAndResponses(t, state, nil))
+
+	summaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(summaryResponse, httptest.NewRequest(http.MethodGet, "/api/session?summary=1", nil))
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected summary session 200, got %d body=%s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	fullResponse := httptest.NewRecorder()
+	server.ServeHTTP(fullResponse, httptest.NewRequest(http.MethodGet, "/api/session?full=1", nil))
+	if fullResponse.Code != http.StatusOK {
+		t.Fatalf("expected full session 200, got %d body=%s", fullResponse.Code, fullResponse.Body.String())
+	}
+	summaryBody := summaryResponse.Body.String()
+	fullBody := fullResponse.Body.String()
+	if strings.Contains(summaryBody, large) {
+		t.Fatalf("summary session should omit full large payload")
+	}
+	if !strings.Contains(fullBody, large) {
+		t.Fatalf("full session should hydrate large payload")
+	}
+	if len(summaryBody) >= len(fullBody)/2 {
+		t.Fatalf("summary session should be substantially smaller, summary=%d full=%d", len(summaryBody), len(fullBody))
+	}
+	var summary session.Snapshot
+	if err := json.NewDecoder(strings.NewReader(summaryBody)).Decode(&summary); err != nil {
+		t.Fatalf("decode summary session: %v", err)
+	}
+	if len(summary.AgentRuns) != 1 || len(summary.AgentRuns[0].Events) != 0 || summary.AgentRuns[0].Result != nil {
+		t.Fatalf("summary session should omit agent run details, got %#v", summary.AgentRuns)
+	}
+	if len(summary.PendingApprovals) != 1 || summary.PendingApprovals[0].Arguments != "" || summary.PendingApprovals[0].ArgumentsSummary == "" {
+		t.Fatalf("summary session should keep pending approval metadata without raw arguments, got %#v", summary.PendingApprovals)
+	}
+}
+
 func TestServerCollaborationMessageEndpoints(t *testing.T) {
 	server := NewServer(newAPITestRuntime(t))
 	body := strings.NewReader(`{
@@ -8184,6 +8773,102 @@ func TestServerBlackboardEndpoints(t *testing.T) {
 	server.ServeHTTP(deleteResponse, deleteRequest)
 	if deleteResponse.Code != http.StatusNoContent {
 		t.Fatalf("expected blackboard delete 204, got %d body=%s", deleteResponse.Code, deleteResponse.Body.String())
+	}
+}
+
+func TestServerCollaborationEndpointsAreSummaryFirstWithLazyContent(t *testing.T) {
+	root := t.TempDir()
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure artifact store: %v", err)
+	}
+	state := session.New(8)
+	state.SetArtifactObjectStore(store)
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	server := NewServer(runtimeRef)
+	largeMessage := strings.Repeat("collaboration endpoint payload ", 480)
+	largeEntry := strings.Repeat("blackboard endpoint payload ", 480)
+
+	savedMessage := runtimeRef.AddCollaborationMessage(session.CollaborationMessageSnapshot{
+		RunID:     "wf-1",
+		Stage:     "plan",
+		FromAgent: "planner",
+		ToAgent:   "auditor",
+		Kind:      "handoff",
+		Subject:   "Review large payload",
+		Content:   largeMessage,
+	})
+	if savedMessage.ContentArtifactRef == "" || savedMessage.Content == largeMessage {
+		t.Fatalf("expected externalized saved message, got %#v", savedMessage)
+	}
+	savedEntry := runtimeRef.UpsertBlackboardEntry(session.BlackboardEntrySnapshot{
+		Scope:   "workflow",
+		RunID:   "wf-1",
+		Stage:   "plan",
+		AgentID: "planner",
+		Kind:    "decision",
+		Title:   "Large decision",
+		Content: largeEntry,
+		Status:  "open",
+	})
+	if savedEntry.ContentArtifactRef == "" || savedEntry.Content == largeEntry {
+		t.Fatalf("expected externalized saved blackboard entry, got %#v", savedEntry)
+	}
+
+	messageListRequest := httptest.NewRequest(http.MethodGet, "/api/collaboration/messages?run_id=wf-1", nil)
+	messageListResponse := httptest.NewRecorder()
+	server.ServeHTTP(messageListResponse, messageListRequest)
+	if messageListResponse.Code != http.StatusOK {
+		t.Fatalf("expected message list 200, got %d body=%s", messageListResponse.Code, messageListResponse.Body.String())
+	}
+	var messages []session.CollaborationMessageSnapshot
+	if err := json.NewDecoder(messageListResponse.Body).Decode(&messages); err != nil {
+		t.Fatalf("decode messages: %v", err)
+	}
+	if len(messages) != 1 || messages[0].Content == largeMessage || messages[0].ContentArtifactRef == "" {
+		t.Fatalf("expected summary-first message list, got %#v", messages)
+	}
+
+	messageFullRequest := httptest.NewRequest(http.MethodGet, "/api/collaboration/messages?run_id=wf-1&include_content=1", nil)
+	messageFullResponse := httptest.NewRecorder()
+	server.ServeHTTP(messageFullResponse, messageFullRequest)
+	if messageFullResponse.Code != http.StatusOK {
+		t.Fatalf("expected full message list 200, got %d body=%s", messageFullResponse.Code, messageFullResponse.Body.String())
+	}
+	var fullMessages []session.CollaborationMessageSnapshot
+	if err := json.NewDecoder(messageFullResponse.Body).Decode(&fullMessages); err != nil {
+		t.Fatalf("decode full messages: %v", err)
+	}
+	if len(fullMessages) != 1 || fullMessages[0].Content != largeMessage {
+		t.Fatalf("expected hydrated message content, got %#v", fullMessages)
+	}
+
+	entryListRequest := httptest.NewRequest(http.MethodGet, "/api/collaboration/blackboard?run_id=wf-1", nil)
+	entryListResponse := httptest.NewRecorder()
+	server.ServeHTTP(entryListResponse, entryListRequest)
+	if entryListResponse.Code != http.StatusOK {
+		t.Fatalf("expected blackboard list 200, got %d body=%s", entryListResponse.Code, entryListResponse.Body.String())
+	}
+	var entries []session.BlackboardEntrySnapshot
+	if err := json.NewDecoder(entryListResponse.Body).Decode(&entries); err != nil {
+		t.Fatalf("decode blackboard entries: %v", err)
+	}
+	if len(entries) != 1 || entries[0].Content == largeEntry || entries[0].ContentArtifactRef == "" {
+		t.Fatalf("expected summary-first blackboard list, got %#v", entries)
+	}
+
+	entryFullRequest := httptest.NewRequest(http.MethodGet, "/api/collaboration/blackboard?run_id=wf-1&include_content=1", nil)
+	entryFullResponse := httptest.NewRecorder()
+	server.ServeHTTP(entryFullResponse, entryFullRequest)
+	if entryFullResponse.Code != http.StatusOK {
+		t.Fatalf("expected full blackboard list 200, got %d body=%s", entryFullResponse.Code, entryFullResponse.Body.String())
+	}
+	var fullEntries []session.BlackboardEntrySnapshot
+	if err := json.NewDecoder(entryFullResponse.Body).Decode(&fullEntries); err != nil {
+		t.Fatalf("decode full blackboard entries: %v", err)
+	}
+	if len(fullEntries) != 1 || fullEntries[0].Content != largeEntry {
+		t.Fatalf("expected hydrated blackboard content, got %#v", fullEntries)
 	}
 }
 
@@ -8754,6 +9439,137 @@ stages:
 	}
 	if !inputEvent {
 		t.Fatalf("expected input submission event after reload resume, got %#v", run.Events)
+	}
+}
+
+func TestServerWorkflowRunInputEndpointResumesAfterSessionLoadWithExternalizedStageValues(t *testing.T) {
+	root := t.TempDir()
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure artifact store: %v", err)
+	}
+	firstState := session.New(8)
+	firstState.SetArtifactObjectStore(store)
+	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, nil)
+	dir := filepath.Join(firstRuntime.RuntimeHome(), "workflows", "manual-input-reload-large")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir workflow: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`name: manual-input-reload-large
+stages:
+  - name: collect
+    node_type: input_gate
+    params:
+      manual: true
+      fields_json: |
+        {"fields":[
+          {"name":"notes","type":"textarea","required":true},
+          {"name":"payload","type":"object","required":true}
+        ]}
+    next: [review]
+  - name: review
+    node_type: input_gate
+    params:
+      manual: true
+      fields_json: |
+        {"fields":[
+          {"name":"depth","type":"integer","required":true}
+        ]}
+    next: [plan]
+  - name: plan
+    agent: planner
+    skill: execution-plan
+    input:
+      notes: stages.collect.outputs.notes
+      payload: stages.collect.outputs.payload
+      depth: stages.review.outputs.depth
+`), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	firstServer := NewServer(firstRuntime)
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/workflows/manual-input-reload-large", strings.NewReader(`{"input":"plan with large manual input after reload"}`))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startResponse := httptest.NewRecorder()
+	firstServer.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow start 200, got %d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var firstPaused agent.WorkflowResult
+	if err := json.NewDecoder(startResponse.Body).Decode(&firstPaused); err != nil {
+		t.Fatalf("decode first paused workflow: %v", err)
+	}
+	if firstPaused.Status != "awaiting_input" || firstPaused.RunID == "" || len(firstPaused.PendingFields) != 2 {
+		t.Fatalf("expected initial input pause, got %#v", firstPaused)
+	}
+
+	large := strings.Repeat("workflow stage payload ", 640)
+	firstBody, err := json.Marshal(map[string]any{
+		"inputs": map[string]any{
+			"notes":   large,
+			"payload": map[string]any{"risk": "low", "scope": "auth"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("marshal first input body: %v", err)
+	}
+	firstInputRequest := httptest.NewRequest(http.MethodPost, "/api/workflow-runs/"+firstPaused.RunID+"/input", strings.NewReader(string(firstBody)))
+	firstInputRequest.Header.Set("Content-Type", "application/json")
+	firstInputResponse := httptest.NewRecorder()
+	firstServer.ServeHTTP(firstInputResponse, firstInputRequest)
+	if firstInputResponse.Code != http.StatusOK {
+		t.Fatalf("expected first input resume 200, got %d body=%s", firstInputResponse.Code, firstInputResponse.Body.String())
+	}
+	var secondPaused agent.WorkflowResult
+	if err := json.NewDecoder(firstInputResponse.Body).Decode(&secondPaused); err != nil {
+		t.Fatalf("decode second paused workflow: %v", err)
+	}
+	if secondPaused.Status != "awaiting_input" || secondPaused.RunID != firstPaused.RunID || len(secondPaused.CompletedStages) != 1 || secondPaused.NextStage != "review" {
+		t.Fatalf("expected review stage pause after first input, got %#v", secondPaused)
+	}
+	storedBeforeSave := workflowRunSnapshotByID(t, firstRuntime, secondPaused.RunID)
+	if len(storedBeforeSave.CompletedStages) != 1 || len(storedBeforeSave.CompletedStages[0].OutputValues) != 0 || storedBeforeSave.CompletedStages[0].OutputValuesArtifactRef == "" || !storedBeforeSave.CompletedStages[0].OutputValuesExternalized {
+		t.Fatalf("expected first stage output values to externalize before save, got %#v", storedBeforeSave.CompletedStages)
+	}
+
+	sessionPath := filepath.Join(root, "session.json")
+	if err := firstState.Save(sessionPath); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	loadedState := session.New(8)
+	loadedState.SetArtifactObjectStore(store)
+	if err := loadedState.Load(sessionPath); err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	loadedSnapshot := loadedState.Snapshot()
+	run, ok := workflowRunByID(loadedSnapshot.WorkflowRuns, secondPaused.RunID)
+	if !ok || len(run.CompletedStages) != 1 || len(run.CompletedStages[0].OutputValues) != 0 || run.CompletedStages[0].OutputValuesArtifactRef == "" {
+		t.Fatalf("expected loaded session to keep externalized stage value refs, got %#v ok=%t", run, ok)
+	}
+
+	secondRuntime := newAPITestRuntimeWithStateHomeAndResponses(t, loadedState, firstRuntime.RuntimeHome(), []schema.ChatResponse{
+		{Message: schema.Message{Content: "manual input resumed after reload"}},
+	})
+	secondServer := NewServer(secondRuntime)
+	secondInputRequest := httptest.NewRequest(http.MethodPost, "/api/workflow-runs/"+secondPaused.RunID+"/input", strings.NewReader(`{"inputs":{"depth":3}}`))
+	secondInputRequest.Header.Set("Content-Type", "application/json")
+	secondInputResponse := httptest.NewRecorder()
+	secondServer.ServeHTTP(secondInputResponse, secondInputRequest)
+	if secondInputResponse.Code != http.StatusOK {
+		t.Fatalf("expected second input resume 200, got %d body=%s", secondInputResponse.Code, secondInputResponse.Body.String())
+	}
+	var resumed agent.WorkflowResult
+	if err := json.NewDecoder(secondInputResponse.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode resumed workflow: %v", err)
+	}
+	if resumed.Status != "completed" || resumed.RunID != secondPaused.RunID || len(resumed.CompletedStages) != 3 {
+		t.Fatalf("expected resumed workflow completion, got %#v", resumed)
+	}
+	if strings.TrimSpace(fmt.Sprint(resumed.CompletedStages[2].InputValues["notes"])) != strings.TrimSpace(large) || fmt.Sprint(resumed.CompletedStages[2].InputValues["depth"]) != "3" {
+		t.Fatalf("expected downstream plan inputs to include hydrated stage values, got %#v", resumed.CompletedStages[2].InputValues)
+	}
+	payload, ok := resumed.CompletedStages[2].InputValues["payload"].(map[string]any)
+	if !ok || payload["risk"] != "low" || payload["scope"] != "auth" {
+		t.Fatalf("expected hydrated payload object in downstream plan inputs, got %#v", resumed.CompletedStages[2].InputValues["payload"])
 	}
 }
 
@@ -9917,7 +10733,7 @@ func TestServerUnifiedRunCollectionSupportsMixedHistoryFilters(t *testing.T) {
 		t.Fatalf("expected four unified runs, got %#v", all.Runs)
 	}
 	for _, run := range all.Runs {
-		if run.EventsURL == "" || run.ReplayPath == "" || run.ActionsPath == "" || run.DiffsPath == "" {
+		if run.EventsURL == "" || run.ReplayPath == "" || run.ContextPath == "" || run.ActionsPath == "" || run.DiffsPath == "" {
 			t.Fatalf("expected run paths for %#v", run)
 		}
 	}
@@ -10162,6 +10978,625 @@ func TestServerAgentRunEventsEndpointSupportsSinceAndStreamReplay(t *testing.T) 
 	}
 }
 
+func TestServerRunEventsHydrateExternalizedContentAndDiffsStillWork(t *testing.T) {
+	root := t.TempDir()
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure artifact store: %v", err)
+	}
+	agentState := session.New(8)
+	agentState.SetArtifactObjectStore(store)
+	agentRuntime := newAPITestRuntimeWithStateAndResponses(t, agentState, nil)
+	agentServer := NewServer(agentRuntime)
+
+	largeDiffPayload := func() string {
+		payload := map[string]any{
+			"path":           "src/app.py",
+			"relative_path":  "src/app.py",
+			"status":         "modified",
+			"line_summary":   "changed old lines 1-2 -> new lines 1-3 (+2 -1)",
+			"old_range":      "1-2",
+			"new_range":      "1-3",
+			"added_lines":    2,
+			"deleted_lines":  1,
+			"bytes_written":  42,
+			"old_line_count": 2,
+			"new_line_count": 3,
+			"diff_preview":   strings.Repeat("@@ -1,2 +1,3 @@\n- old\n+ new\n+ more\n", 260),
+		}
+		data, err := json.Marshal(payload)
+		if err != nil {
+			t.Fatalf("marshal large diff payload: %v", err)
+		}
+		return string(data)
+	}()
+
+	agentRunID := agentState.StartAgentRun("collect agent event content")
+	agentState.AppendAgentRunEvent(agentRunID, session.AgentRunEventSnapshot{
+		Type:       string(schema.StreamEventToolResult),
+		Content:    largeDiffPayload,
+		ToolName:   "write_file",
+		ToolCallID: "call-agent-diff",
+		AgentID:    "fixer",
+		Mode:       "fix",
+	})
+	agentStored := agentRunSnapshotByID(t, agentRuntime, agentRunID)
+	agentEvent := agentStored.Events[len(agentStored.Events)-1]
+	if agentEvent.ContentArtifactRef == "" || !agentEvent.ContentExternalized || agentEvent.Content == largeDiffPayload {
+		t.Fatalf("expected externalized agent event content, got %#v", agentEvent)
+	}
+
+	agentEventsRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+agentRunID+"/events", nil)
+	agentEventsResponse := httptest.NewRecorder()
+	agentServer.ServeHTTP(agentEventsResponse, agentEventsRequest)
+	if agentEventsResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent events 200, got %d body=%s", agentEventsResponse.Code, agentEventsResponse.Body.String())
+	}
+	var agentEvents []session.AgentRunEventSnapshot
+	if err := json.NewDecoder(agentEventsResponse.Body).Decode(&agentEvents); err != nil {
+		t.Fatalf("decode agent events: %v", err)
+	}
+	if len(agentEvents) < 2 || agentEvents[len(agentEvents)-1].Content == largeDiffPayload || agentEvents[len(agentEvents)-1].ContentArtifactRef == "" {
+		t.Fatalf("expected summarized agent event content by default, got %#v", agentEvents)
+	}
+
+	agentFullEventsRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+agentRunID+"/events?include_content=1", nil)
+	agentFullEventsResponse := httptest.NewRecorder()
+	agentServer.ServeHTTP(agentFullEventsResponse, agentFullEventsRequest)
+	if agentFullEventsResponse.Code != http.StatusOK {
+		t.Fatalf("expected full agent events 200, got %d body=%s", agentFullEventsResponse.Code, agentFullEventsResponse.Body.String())
+	}
+	var agentFullEvents []session.AgentRunEventSnapshot
+	if err := json.NewDecoder(agentFullEventsResponse.Body).Decode(&agentFullEvents); err != nil {
+		t.Fatalf("decode full agent events: %v", err)
+	}
+	if len(agentFullEvents) < 2 || agentFullEvents[len(agentFullEvents)-1].Content != largeDiffPayload {
+		t.Fatalf("expected hydrated agent event content, got %#v", agentFullEvents)
+	}
+
+	agentRunRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+agentRunID, nil)
+	agentRunResponse := httptest.NewRecorder()
+	agentServer.ServeHTTP(agentRunResponse, agentRunRequest)
+	if agentRunResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent run detail 200, got %d body=%s", agentRunResponse.Code, agentRunResponse.Body.String())
+	}
+	var hydratedAgentRun session.AgentRunSnapshot
+	if err := json.NewDecoder(agentRunResponse.Body).Decode(&hydratedAgentRun); err != nil {
+		t.Fatalf("decode agent run detail: %v", err)
+	}
+	if len(hydratedAgentRun.Events) < 2 || hydratedAgentRun.Events[len(hydratedAgentRun.Events)-1].Content != largeDiffPayload {
+		t.Fatalf("expected agent run detail to hydrate event content, got %#v", hydratedAgentRun.Events)
+	}
+
+	agentDiffRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+agentRunID+"/diffs", nil)
+	agentDiffResponse := httptest.NewRecorder()
+	agentServer.ServeHTTP(agentDiffResponse, agentDiffRequest)
+	if agentDiffResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent diff summary 200, got %d body=%s", agentDiffResponse.Code, agentDiffResponse.Body.String())
+	}
+	var agentDiffs runDiffResponse
+	if err := json.NewDecoder(agentDiffResponse.Body).Decode(&agentDiffs); err != nil {
+		t.Fatalf("decode agent diff summary: %v", err)
+	}
+	if len(agentDiffs.Diffs) != 1 || agentDiffs.Diffs[0].Path != "src/app.py" || agentDiffs.Diffs[0].Patch != "" {
+		t.Fatalf("expected summarized agent diff parsed from externalized event content, got %#v", agentDiffs)
+	}
+
+	workflowState := session.New(8)
+	workflowState.SetArtifactObjectStore(store)
+	workflowRuntime := newAPITestRuntimeWithStateAndResponses(t, workflowState, nil)
+	workflowServer := NewServer(workflowRuntime)
+	workflowRunID := workflowState.StartWorkflowRun("event-flow", "collect workflow event content")
+	workflowState.AppendWorkflowRunEvent(workflowRunID, session.WorkflowRunEventSnapshot{
+		Type:       string(schema.StreamEventToolResult),
+		Stage:      "fix",
+		Content:    largeDiffPayload,
+		ToolName:   "write_file",
+		ToolCallID: "call-workflow-diff",
+		AgentID:    "fixer",
+		Mode:       "fix",
+	})
+	workflowStored := workflowRunSnapshotByID(t, workflowRuntime, workflowRunID)
+	workflowEvent := workflowStored.Events[len(workflowStored.Events)-1]
+	if workflowEvent.ContentArtifactRef == "" || !workflowEvent.ContentExternalized || workflowEvent.Content == largeDiffPayload {
+		t.Fatalf("expected externalized workflow event content, got %#v", workflowEvent)
+	}
+
+	workflowEventsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+workflowRunID+"/events", nil)
+	workflowEventsResponse := httptest.NewRecorder()
+	workflowServer.ServeHTTP(workflowEventsResponse, workflowEventsRequest)
+	if workflowEventsResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow events 200, got %d body=%s", workflowEventsResponse.Code, workflowEventsResponse.Body.String())
+	}
+	var workflowEvents []session.WorkflowRunEventSnapshot
+	if err := json.NewDecoder(workflowEventsResponse.Body).Decode(&workflowEvents); err != nil {
+		t.Fatalf("decode workflow events: %v", err)
+	}
+	if len(workflowEvents) < 2 || workflowEvents[len(workflowEvents)-1].Content == largeDiffPayload || workflowEvents[len(workflowEvents)-1].ContentArtifactRef == "" {
+		t.Fatalf("expected summarized workflow event content by default, got %#v", workflowEvents)
+	}
+
+	workflowFullEventsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+workflowRunID+"/events?include_content=1", nil)
+	workflowFullEventsResponse := httptest.NewRecorder()
+	workflowServer.ServeHTTP(workflowFullEventsResponse, workflowFullEventsRequest)
+	if workflowFullEventsResponse.Code != http.StatusOK {
+		t.Fatalf("expected full workflow events 200, got %d body=%s", workflowFullEventsResponse.Code, workflowFullEventsResponse.Body.String())
+	}
+	var workflowFullEvents []session.WorkflowRunEventSnapshot
+	if err := json.NewDecoder(workflowFullEventsResponse.Body).Decode(&workflowFullEvents); err != nil {
+		t.Fatalf("decode full workflow events: %v", err)
+	}
+	if len(workflowFullEvents) < 2 || workflowFullEvents[len(workflowFullEvents)-1].Content != largeDiffPayload {
+		t.Fatalf("expected hydrated workflow event content, got %#v", workflowFullEvents)
+	}
+
+	workflowDiffRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+workflowRunID+"/diffs", nil)
+	workflowDiffResponse := httptest.NewRecorder()
+	workflowServer.ServeHTTP(workflowDiffResponse, workflowDiffRequest)
+	if workflowDiffResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow diff summary 200, got %d body=%s", workflowDiffResponse.Code, workflowDiffResponse.Body.String())
+	}
+	var workflowDiffs runDiffResponse
+	if err := json.NewDecoder(workflowDiffResponse.Body).Decode(&workflowDiffs); err != nil {
+		t.Fatalf("decode workflow diff summary: %v", err)
+	}
+	if len(workflowDiffs.Diffs) != 1 || workflowDiffs.Diffs[0].Path != "src/app.py" || workflowDiffs.Diffs[0].Patch != "" {
+		t.Fatalf("expected summarized workflow diff parsed from externalized event content, got %#v", workflowDiffs)
+	}
+
+	fullSessionRequest := httptest.NewRequest(http.MethodGet, "/api/session?full=1", nil)
+	fullSessionResponse := httptest.NewRecorder()
+	workflowServer.ServeHTTP(fullSessionResponse, fullSessionRequest)
+	if fullSessionResponse.Code != http.StatusOK {
+		t.Fatalf("expected full session 200, got %d body=%s", fullSessionResponse.Code, fullSessionResponse.Body.String())
+	}
+	var fullSnapshot session.Snapshot
+	if err := json.NewDecoder(fullSessionResponse.Body).Decode(&fullSnapshot); err != nil {
+		t.Fatalf("decode full session: %v", err)
+	}
+	if len(fullSnapshot.WorkflowRuns) != 1 || len(fullSnapshot.WorkflowRuns[0].Events) < 2 || fullSnapshot.WorkflowRuns[0].Events[len(fullSnapshot.WorkflowRuns[0].Events)-1].Content != largeDiffPayload {
+		t.Fatalf("expected full session to hydrate workflow event content, got %#v", fullSnapshot.WorkflowRuns)
+	}
+}
+
+func TestServerRunContextEndpointsReturnCompactPromptDiagnostics(t *testing.T) {
+	state := session.New(8)
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, []schema.ChatResponse{{Message: schema.Message{Content: "unused"}}})
+	agentRunID := runtimeRef.StartAgentRun("inspect token budget")
+	agentBudget := schema.PromptBudget{
+		EstimatedPromptTokens:       120,
+		CacheablePrefixTokens:       50,
+		AgentID:                     "planner",
+		Mode:                        "plan",
+		ToolSchemaSelection:         "policy_filtered",
+		ExposedToolCount:            1,
+		TotalToolCount:              2,
+		FilteredToolCount:           1,
+		ToolSchemaDiagnosticCount:   2,
+		MemoryBlockCount:            1,
+		MemoryOmittedCount:          1,
+		MemoryEstimatedSavedTokens:  400,
+		ArtifactRefCount:            1,
+		CompactedToolResultCount:    1,
+		ArtifactOmittedTokens:       30,
+		SkillOmittedTokens:          50,
+		HistoryEstimatedSavedTokens: 60,
+		MemoryBlocks: []schema.PromptContextBlock{{
+			Kind: "project", Title: "Project memory", Ref: ".goflow/memory/project.md", Tokens: 12, Score: 80,
+		}, {
+			Kind: "file", Title: "auth.go", Ref: "auth.go", Tokens: 8, Score: 90, Hash: "abcdef1234567890", Language: "go", Size: 2048, ContentMode: "summary", EstimatedSavedTokens: 500,
+		}},
+		OmittedContext: []string{"tool result compacted; ref=sha256:agent-object"},
+		ArtifactRefs:   []string{"sha256:agent-object"},
+		InjectedToolSchemas: []schema.PromptToolSchema{{
+			Name: "read_file", Status: "injected", SchemaHash: "read-hash", Tokens: 10,
+		}},
+		FilteredToolSchemas: []schema.PromptToolSchema{{
+			Name: "write_file", Status: "filtered", Reason: "read-only policy", SchemaHash: "write-hash", Tokens: 20,
+		}},
+	}
+	runtimeRef.AppendAgentRunEvent(agentRunID, session.AgentRunEventSnapshot{
+		Type:         string(schema.StreamEventPromptBudget),
+		Content:      "FULL_SYSTEM_PROMPT_SHOULD_NOT_LEAK secret_schema_property",
+		AgentID:      "planner",
+		Mode:         "plan",
+		PromptBudget: &agentBudget,
+	})
+	runtimeRef.CompleteAgentRun(agentRunID, "completed", schema.AgentResult{Output: "done", AgentID: "planner", Mode: "plan"})
+
+	workflowRunID := state.StartWorkflowRun("review-flow", "audit memory context")
+	workflowBudget := schema.PromptBudget{
+		EstimatedPromptTokens:      240,
+		CacheablePrefixTokens:      90,
+		AgentID:                    "auditor",
+		Mode:                       "audit",
+		WorkflowName:               "review-flow",
+		TaskStage:                  "review",
+		ToolSchemaSelection:        "all_visible",
+		ExposedToolCount:           1,
+		TotalToolCount:             1,
+		ToolSchemaDiagnosticCount:  1,
+		MemoryBlockCount:           1,
+		MemoryEstimatedSavedTokens: 220,
+		ArtifactRefCount:           1,
+		MemoryBlocks: []schema.PromptContextBlock{{
+			Kind: "task", Title: "Task summary", Ref: ".goflow/memory/tasks/task-1.json", Tokens: 20, Score: 70,
+		}},
+		ArtifactRefs: []string{"sha256:workflow-object"},
+		InjectedToolSchemas: []schema.PromptToolSchema{{
+			Name: "search_files", Status: "injected", SchemaHash: "search-hash", Tokens: 18,
+		}},
+	}
+	state.AppendWorkflowRunEvent(workflowRunID, session.WorkflowRunEventSnapshot{
+		Type:         string(schema.StreamEventPromptBudget),
+		Stage:        "review",
+		Content:      "WORKFLOW_FULL_PROMPT_SHOULD_NOT_LEAK",
+		AgentID:      "auditor",
+		Mode:         "audit",
+		WorkflowName: "review-flow",
+		PromptBudget: &workflowBudget,
+	})
+
+	server := NewServer(runtimeRef)
+	agentRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+agentRunID+"/context", nil)
+	agentResponse := httptest.NewRecorder()
+	server.ServeHTTP(agentResponse, agentRequest)
+	if agentResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent context 200, got %d body=%s", agentResponse.Code, agentResponse.Body.String())
+	}
+	if strings.Contains(agentResponse.Body.String(), "FULL_SYSTEM_PROMPT_SHOULD_NOT_LEAK") || strings.Contains(agentResponse.Body.String(), "secret_schema_property") {
+		t.Fatalf("expected agent context to omit raw event/prompt content, got %s", agentResponse.Body.String())
+	}
+	var agentContext runContextResponse
+	if err := json.NewDecoder(agentResponse.Body).Decode(&agentContext); err != nil {
+		t.Fatalf("decode agent context: %v", err)
+	}
+	if agentContext.RunID != agentRunID || agentContext.RunType != "agent" || agentContext.Latest == nil || agentContext.Latest.Budget.EstimatedPromptTokens != 120 {
+		t.Fatalf("expected latest agent budget, got %#v", agentContext)
+	}
+	if agentContext.Counts.PromptBudgetSamples != 1 || agentContext.Counts.MemoryEstimatedSavedTokens != 400 || agentContext.Counts.ArtifactRefs != 1 {
+		t.Fatalf("expected agent context counts, got %#v", agentContext.Counts)
+	}
+	if len(agentContext.MemoryBlocks) != 2 || agentContext.MemoryBlocks[0].Ref != ".goflow/memory/project.md" || len(agentContext.Artifacts) != 1 {
+		t.Fatalf("expected compact memory/artifact diagnostics, got %#v", agentContext)
+	}
+	if agentContext.MemoryBlocks[1].Ref != "auth.go" || agentContext.MemoryBlocks[1].ContentMode != "summary" || agentContext.MemoryBlocks[1].Hash == "" || agentContext.MemoryBlocks[1].EstimatedSavedTokens != 500 {
+		t.Fatalf("expected file summary context diagnostics, got %#v", agentContext.MemoryBlocks[1])
+	}
+	if agentContext.ToolSchema.Selection != "policy_filtered" || len(agentContext.ToolSchema.Injected) != 1 || len(agentContext.ToolSchema.Filtered) != 1 {
+		t.Fatalf("expected agent tool schema visibility, got %#v", agentContext.ToolSchema)
+	}
+
+	unifiedRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+agentRunID+"/context", nil)
+	unifiedResponse := httptest.NewRecorder()
+	server.ServeHTTP(unifiedResponse, unifiedRequest)
+	if unifiedResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified agent context 200, got %d body=%s", unifiedResponse.Code, unifiedResponse.Body.String())
+	}
+	var unifiedContext runContextResponse
+	if err := json.NewDecoder(unifiedResponse.Body).Decode(&unifiedContext); err != nil {
+		t.Fatalf("decode unified context: %v", err)
+	}
+	if unifiedContext.RunID != agentRunID || unifiedContext.RunType != "agent" || unifiedContext.Latest == nil {
+		t.Fatalf("expected unified context to resolve agent run, got %#v", unifiedContext)
+	}
+
+	workflowRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+workflowRunID+"/context", nil)
+	workflowResponse := httptest.NewRecorder()
+	server.ServeHTTP(workflowResponse, workflowRequest)
+	if workflowResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow context 200, got %d body=%s", workflowResponse.Code, workflowResponse.Body.String())
+	}
+	if strings.Contains(workflowResponse.Body.String(), "WORKFLOW_FULL_PROMPT_SHOULD_NOT_LEAK") {
+		t.Fatalf("expected workflow context to omit raw event content, got %s", workflowResponse.Body.String())
+	}
+	var workflowContext runContextResponse
+	if err := json.NewDecoder(workflowResponse.Body).Decode(&workflowContext); err != nil {
+		t.Fatalf("decode workflow context: %v", err)
+	}
+	if workflowContext.RunID != workflowRunID || workflowContext.RunType != "workflow" || workflowContext.WorkflowName != "review-flow" || workflowContext.Latest == nil {
+		t.Fatalf("expected workflow context metadata, got %#v", workflowContext)
+	}
+	if workflowContext.Latest.Stage != "review" || workflowContext.Latest.Budget.EstimatedPromptTokens != 240 || workflowContext.ToolSchema.Selection != "all_visible" {
+		t.Fatalf("expected workflow latest budget and tool visibility, got %#v", workflowContext)
+	}
+}
+
+func TestServerAgentRunSummaryEndpointOmitsReplayContent(t *testing.T) {
+	diffContent := testWriteDiffToolContent(t)
+	runtimeRef := newAPITestRuntime(t)
+	runID := runtimeRef.StartAgentRun(strings.Repeat("inspect api response ", 120))
+	runtimeRef.AppendAgentRunEvent(runID, session.AgentRunEventSnapshot{
+		Type:       string(schema.StreamEventToolResult),
+		Content:    diffContent,
+		ToolName:   "write_file",
+		ToolCallID: "call-summary",
+		AgentID:    "fixer",
+		Mode:       "fix",
+	})
+	runtimeRef.CompleteAgentRun(runID, "completed", schema.AgentResult{
+		Output:  strings.Repeat("large final output ", 120),
+		AgentID: "fixer",
+		Mode:    "fix",
+		ToolResults: []schema.ToolResult{{
+			CallID:   "call-summary",
+			ToolName: "write_file",
+			Content:  diffContent,
+		}},
+	})
+	server := NewServer(runtimeRef)
+
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"?summary=1", nil)
+	summaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent summary 200, got %d body=%s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	var summary session.AgentRunSnapshot
+	if err := json.NewDecoder(summaryResponse.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode agent summary: %v", err)
+	}
+	if summary.ID != runID || summary.EventsCount == 0 || summary.DiffsCount == 0 {
+		t.Fatalf("expected agent summary counts, got %#v", summary)
+	}
+	if len(summary.Events) != 0 || summary.Result != nil || summary.ResumeContext != nil {
+		t.Fatalf("expected agent summary to omit replay content, got events=%d result=%#v resume=%#v", len(summary.Events), summary.Result, summary.ResumeContext)
+	}
+	if len(summary.Request) > sessionSummaryTextBytes+8 || len(summary.Output) > sessionSummaryTextBytes+8 {
+		t.Fatalf("expected agent summary text to be compact, request=%d output=%d", len(summary.Request), len(summary.Output))
+	}
+
+	diffSummaryRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"/diffs", nil)
+	diffSummaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(diffSummaryResponse, diffSummaryRequest)
+	if diffSummaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent diff summary 200, got %d body=%s", diffSummaryResponse.Code, diffSummaryResponse.Body.String())
+	}
+	var diffSummary runDiffResponse
+	if err := json.NewDecoder(diffSummaryResponse.Body).Decode(&diffSummary); err != nil {
+		t.Fatalf("decode agent diff summary: %v", err)
+	}
+	if len(diffSummary.Diffs) != 1 || diffSummary.Diffs[0].Path != "src/app.py" {
+		t.Fatalf("expected one summarized agent diff, got %#v", diffSummary)
+	}
+	if diffSummary.Diffs[0].Patch != "" || diffSummary.Diffs[0].DiffPreview != "" {
+		t.Fatalf("expected agent diff summary to omit patch content, got %#v", diffSummary.Diffs[0])
+	}
+
+	diffFullRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"/diffs?include_content=1", nil)
+	diffFullResponse := httptest.NewRecorder()
+	server.ServeHTTP(diffFullResponse, diffFullRequest)
+	if diffFullResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent diff full 200, got %d body=%s", diffFullResponse.Code, diffFullResponse.Body.String())
+	}
+	var diffFull runDiffResponse
+	if err := json.NewDecoder(diffFullResponse.Body).Decode(&diffFull); err != nil {
+		t.Fatalf("decode agent diff full: %v", err)
+	}
+	if len(diffFull.Diffs) != 1 || diffFull.Diffs[0].Patch == "" || diffFull.Diffs[0].DiffPreview == "" {
+		t.Fatalf("expected include_content agent diff to include patch content, got %#v", diffFull)
+	}
+}
+
+func TestServerAgentRunArtifactsEndpointIsSummaryFirst(t *testing.T) {
+	largeToolResult := strings.Repeat("agent artifact body ", 160)
+	runtimeRef := newAPITestRuntime(t)
+	runID := runtimeRef.StartAgentRun("collect artifacts")
+	runtimeRef.AppendAgentRunEvent(runID, session.AgentRunEventSnapshot{
+		Type:    string(schema.StreamEventPromptBudget),
+		AgentID: "fixer",
+		Mode:    "fix",
+		PromptBudget: &schema.PromptBudget{
+			ArtifactRefs:     []string{"sha256:agent-ref"},
+			ArtifactRefCount: 1,
+		},
+	})
+	runtimeRef.CompleteAgentRun(runID, "completed", schema.AgentResult{
+		Output:  strings.Repeat("final answer ", 120),
+		AgentID: "fixer",
+		Mode:    "fix",
+		ToolResults: []schema.ToolResult{{
+			CallID:   "call-artifact",
+			ToolName: "read_file",
+			Content:  largeToolResult,
+		}},
+		Findings: []schema.Finding{{
+			Severity: "high",
+			Summary:  "important finding",
+			Files:    []string{"src/app.go"},
+		}},
+	})
+	server := NewServer(runtimeRef)
+
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"/artifacts", nil)
+	summaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent artifacts 200, got %d body=%s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	if strings.Contains(summaryResponse.Body.String(), largeToolResult) {
+		t.Fatalf("agent artifact summary should omit full content, got %s", summaryResponse.Body.String())
+	}
+	var summary runArtifactsResponse
+	if err := json.NewDecoder(summaryResponse.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode agent artifacts summary: %v", err)
+	}
+	if summary.RunID != runID || summary.RunType != "agent" || summary.Counts.Total < 3 || len(summary.Items) == 0 {
+		t.Fatalf("expected agent artifact envelope, got %#v", summary)
+	}
+	if summary.Counts.ContentOmitted == 0 || summary.Counts.ExternalRefs == 0 || summary.Counts.ToolResults == 0 {
+		t.Fatalf("expected summary-first artifact counts, got %#v", summary.Counts)
+	}
+	for _, item := range summary.Items {
+		if item.Content != "" {
+			t.Fatalf("expected summarized agent artifact to omit content, got %#v", item)
+		}
+	}
+
+	fullRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"/artifacts?include_content=1&artifact_kind=tool_result", nil)
+	fullResponse := httptest.NewRecorder()
+	server.ServeHTTP(fullResponse, fullRequest)
+	if fullResponse.Code != http.StatusOK {
+		t.Fatalf("expected full agent artifacts 200, got %d body=%s", fullResponse.Code, fullResponse.Body.String())
+	}
+	var full runArtifactsResponse
+	if err := json.NewDecoder(fullResponse.Body).Decode(&full); err != nil {
+		t.Fatalf("decode full agent artifacts: %v", err)
+	}
+	if len(full.Items) != 1 || !strings.Contains(full.Items[0].Content, "agent artifact body") {
+		t.Fatalf("expected include_content agent artifact to include tool result, got %#v", full)
+	}
+
+	unifiedRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+runID+"/artifacts?artifact_kind=finding", nil)
+	unifiedResponse := httptest.NewRecorder()
+	server.ServeHTTP(unifiedResponse, unifiedRequest)
+	if unifiedResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified agent artifacts 200, got %d body=%s", unifiedResponse.Code, unifiedResponse.Body.String())
+	}
+	var unified runArtifactsResponse
+	if err := json.NewDecoder(unifiedResponse.Body).Decode(&unified); err != nil {
+		t.Fatalf("decode unified agent artifacts: %v", err)
+	}
+	if unified.RunType != "agent" || len(unified.Items) != 1 || unified.Items[0].Kind != "finding" || unified.Items[0].Content != "" {
+		t.Fatalf("expected unified artifact summary filter, got %#v", unified)
+	}
+}
+
+func TestServerAgentRunArtifactsHydrateExternalizedContent(t *testing.T) {
+	root := t.TempDir()
+	state := session.New(8)
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure artifact store: %v", err)
+	}
+	state.SetArtifactObjectStore(store)
+	largeToolResult := strings.Repeat("externalized agent artifact body ", 120)
+	runID := state.StartAgentRun("collect externalized agent artifacts")
+	state.CompleteAgentRun(runID, "completed", schema.AgentResult{
+		Output:  "done",
+		AgentID: "fixer",
+		Mode:    "fix",
+		ToolResults: []schema.ToolResult{{
+			CallID:   "call-external",
+			ToolName: "read_file",
+			Content:  largeToolResult,
+		}},
+	})
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	server := NewServer(runtimeRef)
+	snapshot := state.Snapshot()
+	if len(snapshot.AgentRuns) != 1 || len(snapshot.AgentRuns[0].Artifacts) == 0 {
+		t.Fatalf("expected persisted agent artifacts, got %#v", snapshot.AgentRuns)
+	}
+	var stored session.AgentRunArtifactSnapshot
+	for _, artifact := range snapshot.AgentRuns[0].Artifacts {
+		if artifact.Kind == "tool_result" {
+			stored = artifact
+			break
+		}
+	}
+	if stored.Content != "" || stored.ArtifactRef == "" || stored.Hash == "" {
+		t.Fatalf("expected persisted agent artifact to be externalized, got %#v", stored)
+	}
+
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"/artifacts?artifact_kind=tool_result", nil)
+	summaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent artifacts summary 200, got %d body=%s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	var summary runArtifactsResponse
+	if err := json.NewDecoder(summaryResponse.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode agent artifact summary: %v", err)
+	}
+	if len(summary.Items) != 1 || summary.Items[0].Content != "" || summary.Items[0].ArtifactRef == "" || !summary.Items[0].Externalized {
+		t.Fatalf("expected summary-only externalized agent artifact, got %#v", summary)
+	}
+
+	fullRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"/artifacts?include_content=1&artifact_kind=tool_result", nil)
+	fullResponse := httptest.NewRecorder()
+	server.ServeHTTP(fullResponse, fullRequest)
+	if fullResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent artifacts full 200, got %d body=%s", fullResponse.Code, fullResponse.Body.String())
+	}
+	var full runArtifactsResponse
+	if err := json.NewDecoder(fullResponse.Body).Decode(&full); err != nil {
+		t.Fatalf("decode agent artifact full: %v", err)
+	}
+	if len(full.Items) != 1 || full.Items[0].Content != largeToolResult || full.Items[0].Hash != stored.Hash {
+		t.Fatalf("expected hydrated agent artifact content, got %#v", full)
+	}
+
+	unifiedRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+runID+"/artifacts?include_content=1&artifact_kind=tool_result", nil)
+	unifiedResponse := httptest.NewRecorder()
+	server.ServeHTTP(unifiedResponse, unifiedRequest)
+	if unifiedResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified agent artifacts full 200, got %d body=%s", unifiedResponse.Code, unifiedResponse.Body.String())
+	}
+	var unified runArtifactsResponse
+	if err := json.NewDecoder(unifiedResponse.Body).Decode(&unified); err != nil {
+		t.Fatalf("decode unified agent artifact full: %v", err)
+	}
+	if len(unified.Items) != 1 || unified.Items[0].Content != largeToolResult || !unified.Items[0].Externalized {
+		t.Fatalf("expected unified hydrated agent artifact, got %#v", unified)
+	}
+}
+
+func TestServerAgentRunDiffsHydrateExternalizedArtifactContent(t *testing.T) {
+	root := t.TempDir()
+	state := session.New(8)
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure artifact store: %v", err)
+	}
+	state.SetArtifactObjectStore(store)
+	diffContent := testWriteDiffToolContent(t)
+	runID := state.StartAgentRun("collect externalized agent diff")
+	state.CompleteAgentRun(runID, "completed", schema.AgentResult{
+		Output:  "done",
+		AgentID: "fixer",
+		Mode:    "fix",
+		ToolResults: []schema.ToolResult{{
+			CallID:   "call-diff",
+			ToolName: "write_file",
+			Content:  diffContent,
+		}},
+	})
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	server := NewServer(runtimeRef)
+
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"/diffs", nil)
+	summaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent diff summary 200, got %d body=%s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	var summary runDiffResponse
+	if err := json.NewDecoder(summaryResponse.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode agent diff summary: %v", err)
+	}
+	if len(summary.Diffs) != 1 || summary.Diffs[0].Path != "src/app.py" || summary.Diffs[0].Patch != "" || summary.Diffs[0].DiffPreview != "" {
+		t.Fatalf("expected summary-only externalized agent diff, got %#v", summary)
+	}
+	if strings.Contains(summaryResponse.Body.String(), `"diff_preview"`) || strings.Contains(summaryResponse.Body.String(), "new line") {
+		t.Fatalf("expected agent diff summary to omit diff body, got %s", summaryResponse.Body.String())
+	}
+
+	fullRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"/diffs?include_content=1", nil)
+	fullResponse := httptest.NewRecorder()
+	server.ServeHTTP(fullResponse, fullRequest)
+	if fullResponse.Code != http.StatusOK {
+		t.Fatalf("expected agent diff full 200, got %d body=%s", fullResponse.Code, fullResponse.Body.String())
+	}
+	var full runDiffResponse
+	if err := json.NewDecoder(fullResponse.Body).Decode(&full); err != nil {
+		t.Fatalf("decode agent diff full: %v", err)
+	}
+	if len(full.Diffs) != 1 || full.Diffs[0].Path != "src/app.py" || !strings.Contains(full.Diffs[0].Patch, "+ new") {
+		t.Fatalf("expected hydrated externalized agent diff content, got %#v", full)
+	}
+}
+
 func TestServerAgentRunRetryWorksAfterSessionLoad(t *testing.T) {
 	firstState := session.New(8)
 	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, []schema.ChatResponse{
@@ -10343,6 +11778,482 @@ func TestServerRunDiffEndpointsParseAgentAndWorkflowWrites(t *testing.T) {
 	if workflowReplayResponse.Code != http.StatusOK || !strings.Contains(workflowReplayResponse.Body.String(), `"diffs"`) || !strings.Contains(workflowReplayResponse.Body.String(), `"src/app.py"`) {
 		t.Fatalf("expected workflow replay to include diffs, got %d body=%s", workflowReplayResponse.Code, workflowReplayResponse.Body.String())
 	}
+}
+
+func TestServerWorkflowRunSummaryAndChildEndpointsOmitContentByDefault(t *testing.T) {
+	diffContent := testWriteDiffToolContent(t)
+	state := session.New(8)
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	runID := state.StartWorkflowRun("summary-flow", strings.Repeat("inspect workflow api ", 120))
+	state.AppendWorkflowRunEvent(runID, session.WorkflowRunEventSnapshot{
+		Stage:      "fix",
+		Type:       string(schema.StreamEventToolResult),
+		Content:    diffContent,
+		ToolName:   "write_file",
+		ToolCallID: "call-summary",
+		AgentID:    "fixer",
+		Mode:       "fix",
+	})
+	state.CompleteWorkflowRun(runID, "completed", strings.Repeat("workflow final summary ", 120), "", "", nil, []session.WorkflowRunStageSnapshot{{
+		Stage:    "fix",
+		AgentID:  "fixer",
+		NodeType: "agent",
+		Status:   "completed",
+		Summary:  "fixed app",
+		Result: schema.AgentResult{
+			Output:  strings.Repeat("stage output ", 120),
+			AgentID: "fixer",
+			Mode:    "fix",
+			ToolResults: []schema.ToolResult{{
+				CallID:   "call-summary",
+				ToolName: "write_file",
+				Content:  diffContent,
+			}},
+		},
+		Artifacts: []session.WorkflowRunArtifact{{
+			ID:         "artifact-diff",
+			Stage:      "fix",
+			Kind:       "diff",
+			Title:      "src/app.py",
+			Summary:    "patched app",
+			Content:    diffContent,
+			ToolName:   "write_file",
+			ToolCallID: "call-summary",
+			Metadata:   map[string]string{"path": "src/app.py", "status": "modified"},
+		}},
+	}})
+	server := NewServer(runtimeRef)
+
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"?summary=1", nil)
+	summaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow summary 200, got %d body=%s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	var summary session.WorkflowRunSnapshot
+	if err := json.NewDecoder(summaryResponse.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode workflow summary: %v", err)
+	}
+	if summary.ID != runID || summary.StagesCount != 1 || summary.ArtifactsCount == 0 || summary.EventsCount == 0 || summary.DiffsCount == 0 {
+		t.Fatalf("expected workflow summary counts, got %#v", summary)
+	}
+	if len(summary.CompletedStages) != 0 || len(summary.Artifacts) != 0 || len(summary.Events) != 0 {
+		t.Fatalf("expected workflow summary to omit child collections, got stages=%d artifacts=%d events=%d", len(summary.CompletedStages), len(summary.Artifacts), len(summary.Events))
+	}
+	if len(summary.Request) > sessionSummaryTextBytes+8 || len(summary.Summary) > sessionSummaryTextBytes+8 {
+		t.Fatalf("expected workflow summary text to be compact, request=%d summary=%d", len(summary.Request), len(summary.Summary))
+	}
+
+	artifactsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/artifacts", nil)
+	artifactsResponse := httptest.NewRecorder()
+	server.ServeHTTP(artifactsResponse, artifactsRequest)
+	if artifactsResponse.Code != http.StatusOK {
+		t.Fatalf("expected artifact summary 200, got %d body=%s", artifactsResponse.Code, artifactsResponse.Body.String())
+	}
+	var artifacts []session.WorkflowRunArtifact
+	if err := json.NewDecoder(artifactsResponse.Body).Decode(&artifacts); err != nil {
+		t.Fatalf("decode artifact summary: %v", err)
+	}
+	if len(artifacts) == 0 || artifacts[0].ID == "" {
+		t.Fatalf("expected one artifact summary, got %#v", artifacts)
+	}
+	for _, artifact := range artifacts {
+		if artifact.Content != "" {
+			t.Fatalf("expected artifact summary to omit content, got %#v", artifact)
+		}
+	}
+
+	artifactFullRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/artifacts?include_content=1", nil)
+	artifactFullResponse := httptest.NewRecorder()
+	server.ServeHTTP(artifactFullResponse, artifactFullRequest)
+	if artifactFullResponse.Code != http.StatusOK {
+		t.Fatalf("expected artifact full 200, got %d body=%s", artifactFullResponse.Code, artifactFullResponse.Body.String())
+	}
+	var fullArtifacts []session.WorkflowRunArtifact
+	if err := json.NewDecoder(artifactFullResponse.Body).Decode(&fullArtifacts); err != nil {
+		t.Fatalf("decode artifact full: %v", err)
+	}
+	if len(fullArtifacts) == 0 || !workflowRunArtifactsContainContent(fullArtifacts) {
+		t.Fatalf("expected include_content artifact to include content, got %#v", fullArtifacts)
+	}
+
+	unifiedArtifactsRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+runID+"/artifacts", nil)
+	unifiedArtifactsResponse := httptest.NewRecorder()
+	server.ServeHTTP(unifiedArtifactsResponse, unifiedArtifactsRequest)
+	if unifiedArtifactsResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified workflow artifacts 200, got %d body=%s", unifiedArtifactsResponse.Code, unifiedArtifactsResponse.Body.String())
+	}
+	var unifiedArtifacts runArtifactsResponse
+	if err := json.NewDecoder(unifiedArtifactsResponse.Body).Decode(&unifiedArtifacts); err != nil {
+		t.Fatalf("decode unified workflow artifacts: %v", err)
+	}
+	if unifiedArtifacts.RunID != runID || unifiedArtifacts.RunType != "workflow" || unifiedArtifacts.WorkflowName != "summary-flow" || len(unifiedArtifacts.Items) == 0 {
+		t.Fatalf("expected unified workflow artifact envelope, got %#v", unifiedArtifacts)
+	}
+	if unifiedArtifacts.Items[0].Content != "" || unifiedArtifacts.Counts.ContentOmitted == 0 {
+		t.Fatalf("expected unified workflow artifact summary to omit content, got %#v", unifiedArtifacts)
+	}
+
+	unifiedFullRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+runID+"/artifacts?include_content=1", nil)
+	unifiedFullResponse := httptest.NewRecorder()
+	server.ServeHTTP(unifiedFullResponse, unifiedFullRequest)
+	if unifiedFullResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified workflow full artifacts 200, got %d body=%s", unifiedFullResponse.Code, unifiedFullResponse.Body.String())
+	}
+	var unifiedFull runArtifactsResponse
+	if err := json.NewDecoder(unifiedFullResponse.Body).Decode(&unifiedFull); err != nil {
+		t.Fatalf("decode unified workflow full artifacts: %v", err)
+	}
+	if len(unifiedFull.Items) == 0 || unifiedFull.Items[0].Content == "" {
+		t.Fatalf("expected unified include_content workflow artifact to include content, got %#v", unifiedFull)
+	}
+
+	stagesRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/stages", nil)
+	stagesResponse := httptest.NewRecorder()
+	server.ServeHTTP(stagesResponse, stagesRequest)
+	if stagesResponse.Code != http.StatusOK {
+		t.Fatalf("expected stage summary 200, got %d body=%s", stagesResponse.Code, stagesResponse.Body.String())
+	}
+	var stages []session.WorkflowRunStageSnapshot
+	if err := json.NewDecoder(stagesResponse.Body).Decode(&stages); err != nil {
+		t.Fatalf("decode stage summary: %v", err)
+	}
+	if len(stages) != 1 || stages[0].Stage != "fix" {
+		t.Fatalf("expected one stage summary, got %#v", stages)
+	}
+	if stages[0].Result.Output != "" || len(stages[0].Result.ToolResults) != 0 || len(stages[0].Artifacts) == 0 || workflowRunArtifactsContainContent(stages[0].Artifacts) {
+		t.Fatalf("expected stage summary to omit heavy result content, got %#v", stages[0])
+	}
+
+	stageFullRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/stages?include_content=1", nil)
+	stageFullResponse := httptest.NewRecorder()
+	server.ServeHTTP(stageFullResponse, stageFullRequest)
+	if stageFullResponse.Code != http.StatusOK {
+		t.Fatalf("expected stage full 200, got %d body=%s", stageFullResponse.Code, stageFullResponse.Body.String())
+	}
+	var fullStages []session.WorkflowRunStageSnapshot
+	if err := json.NewDecoder(stageFullResponse.Body).Decode(&fullStages); err != nil {
+		t.Fatalf("decode stage full: %v", err)
+	}
+	if len(fullStages) != 1 || fullStages[0].Result.Output == "" || len(fullStages[0].Artifacts) == 0 || !workflowRunArtifactsContainContent(fullStages[0].Artifacts) {
+		t.Fatalf("expected include_content stage to include result and artifact content, got %#v", fullStages)
+	}
+
+	diffSummaryRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/diffs", nil)
+	diffSummaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(diffSummaryResponse, diffSummaryRequest)
+	if diffSummaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow diff summary 200, got %d body=%s", diffSummaryResponse.Code, diffSummaryResponse.Body.String())
+	}
+	var diffSummary runDiffResponse
+	if err := json.NewDecoder(diffSummaryResponse.Body).Decode(&diffSummary); err != nil {
+		t.Fatalf("decode workflow diff summary: %v", err)
+	}
+	if len(diffSummary.Diffs) != 1 || diffSummary.Diffs[0].Path != "src/app.py" {
+		t.Fatalf("expected one summarized workflow diff, got %#v", diffSummary)
+	}
+	if diffSummary.Diffs[0].Patch != "" || diffSummary.Diffs[0].DiffPreview != "" {
+		t.Fatalf("expected workflow diff summary to omit patch content, got %#v", diffSummary.Diffs[0])
+	}
+
+	diffFullRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/diffs?include_content=1", nil)
+	diffFullResponse := httptest.NewRecorder()
+	server.ServeHTTP(diffFullResponse, diffFullRequest)
+	if diffFullResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow diff full 200, got %d body=%s", diffFullResponse.Code, diffFullResponse.Body.String())
+	}
+	var diffFull runDiffResponse
+	if err := json.NewDecoder(diffFullResponse.Body).Decode(&diffFull); err != nil {
+		t.Fatalf("decode workflow diff full: %v", err)
+	}
+	if len(diffFull.Diffs) != 1 || diffFull.Diffs[0].Patch == "" || diffFull.Diffs[0].DiffPreview == "" {
+		t.Fatalf("expected include_content workflow diff to include patch content, got %#v", diffFull)
+	}
+}
+
+func TestServerWorkflowRunArtifactsHydrateExternalizedContent(t *testing.T) {
+	root := t.TempDir()
+	state := session.New(8)
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure artifact store: %v", err)
+	}
+	state.SetArtifactObjectStore(store)
+	diffContent := testWriteDiffToolContent(t)
+	runID := state.StartWorkflowRun("external-artifacts", "collect external artifacts")
+	state.CompleteWorkflowRun(runID, "completed", "done", "", "", nil, []session.WorkflowRunStageSnapshot{{
+		Stage:  "fix",
+		Status: "completed",
+		Result: schema.AgentResult{Output: "fixed"},
+		Artifacts: []session.WorkflowRunArtifact{{
+			ID:         "artifact-diff",
+			Stage:      "fix",
+			Kind:       "diff",
+			Title:      "src/app.py",
+			Summary:    "patched app",
+			Content:    diffContent,
+			ToolName:   "write_file",
+			ToolCallID: "call-external",
+			Metadata: map[string]string{
+				"declared": "true",
+				"path":     "src/app.py",
+				"status":   "modified",
+			},
+		}},
+	}})
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	server := NewServer(runtimeRef)
+
+	snapshot := state.Snapshot()
+	if len(snapshot.WorkflowRuns) != 1 || len(snapshot.WorkflowRuns[0].Artifacts) == 0 {
+		t.Fatalf("expected workflow artifact snapshot, got %#v", snapshot.WorkflowRuns)
+	}
+	stored := snapshot.WorkflowRuns[0].Artifacts[0]
+	if stored.Content != "" || stored.ArtifactRef == "" || !stored.Externalized {
+		t.Fatalf("expected persisted workflow artifact to be externalized, got %#v", stored)
+	}
+
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/artifacts?artifact_kind=diff", nil)
+	summaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow artifacts summary 200, got %d body=%s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	var summary []session.WorkflowRunArtifact
+	if err := json.NewDecoder(summaryResponse.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode workflow artifact summary: %v", err)
+	}
+	if len(summary) != 1 || summary[0].Content != "" || summary[0].ArtifactRef == "" {
+		t.Fatalf("expected summary-only externalized artifact, got %#v", summary)
+	}
+
+	fullRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/artifacts?include_content=1&artifact_kind=diff", nil)
+	fullResponse := httptest.NewRecorder()
+	server.ServeHTTP(fullResponse, fullRequest)
+	if fullResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow artifacts full 200, got %d body=%s", fullResponse.Code, fullResponse.Body.String())
+	}
+	var full []session.WorkflowRunArtifact
+	if err := json.NewDecoder(fullResponse.Body).Decode(&full); err != nil {
+		t.Fatalf("decode workflow artifact full: %v", err)
+	}
+	if len(full) != 1 || !strings.Contains(full[0].Content, `"diff_preview"`) || full[0].Hash != stored.Hash {
+		t.Fatalf("expected hydrated workflow artifact content, got %#v", full)
+	}
+
+	stageRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/stages?include_content=1", nil)
+	stageResponse := httptest.NewRecorder()
+	server.ServeHTTP(stageResponse, stageRequest)
+	if stageResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow stages full 200, got %d body=%s", stageResponse.Code, stageResponse.Body.String())
+	}
+	var stages []session.WorkflowRunStageSnapshot
+	if err := json.NewDecoder(stageResponse.Body).Decode(&stages); err != nil {
+		t.Fatalf("decode workflow stages full: %v", err)
+	}
+	if len(stages) != 1 || len(stages[0].Artifacts) == 0 || !workflowRunArtifactsContainContent(stages[0].Artifacts) {
+		t.Fatalf("expected hydrated stage artifact content, got %#v", stages)
+	}
+
+	unifiedRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+runID+"/artifacts?include_content=1&artifact_kind=diff", nil)
+	unifiedResponse := httptest.NewRecorder()
+	server.ServeHTTP(unifiedResponse, unifiedRequest)
+	if unifiedResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified workflow artifacts full 200, got %d body=%s", unifiedResponse.Code, unifiedResponse.Body.String())
+	}
+	var unified runArtifactsResponse
+	if err := json.NewDecoder(unifiedResponse.Body).Decode(&unified); err != nil {
+		t.Fatalf("decode unified workflow artifacts full: %v", err)
+	}
+	if len(unified.Items) != 1 || !strings.Contains(unified.Items[0].Content, `"diff_preview"`) || !unified.Items[0].Externalized || unified.Items[0].Hash != stored.Hash {
+		t.Fatalf("expected unified hydrated externalized artifact, got %#v", unified)
+	}
+
+	diffRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/diffs?include_content=1", nil)
+	diffResponse := httptest.NewRecorder()
+	server.ServeHTTP(diffResponse, diffRequest)
+	if diffResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow diffs full 200, got %d body=%s", diffResponse.Code, diffResponse.Body.String())
+	}
+	var diffs runDiffResponse
+	if err := json.NewDecoder(diffResponse.Body).Decode(&diffs); err != nil {
+		t.Fatalf("decode workflow diffs full: %v", err)
+	}
+	if len(diffs.Diffs) != 1 || !strings.Contains(diffs.Diffs[0].Patch, `"diff_preview"`) {
+		t.Fatalf("expected hydrated workflow artifact diff content, got %#v", diffs)
+	}
+}
+
+func TestServerWorkflowRunToolResultArtifactsHydrateExternalizedContent(t *testing.T) {
+	root := t.TempDir()
+	state := session.New(8)
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure artifact store: %v", err)
+	}
+	state.SetArtifactObjectStore(store)
+	content := strings.Repeat("fetched page body ", 900)
+	runID := state.StartWorkflowRun("external-tool-results", "collect external tool results")
+	state.CompleteWorkflowRun(runID, "completed", "done", "", "", nil, []session.WorkflowRunStageSnapshot{{
+		Stage:  "research",
+		Status: "completed",
+		Result: schema.AgentResult{
+			ToolResults: []schema.ToolResult{{
+				CallID:   "call-fetch-1",
+				ToolName: "fetch_url",
+				Content:  content,
+			}},
+		},
+	}})
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	server := NewServer(runtimeRef)
+
+	snapshot := state.Snapshot()
+	if len(snapshot.WorkflowRuns) != 1 || len(snapshot.WorkflowRuns[0].Artifacts) == 0 {
+		t.Fatalf("expected workflow tool artifact snapshot, got %#v", snapshot.WorkflowRuns)
+	}
+	var stored session.WorkflowRunArtifact
+	for _, artifact := range snapshot.WorkflowRuns[0].Artifacts {
+		if artifact.Kind == "tool_result" {
+			stored = artifact
+			break
+		}
+	}
+	if stored.Content != "" || stored.ArtifactRef == "" || !stored.Externalized || stored.ContentBytes != len([]byte(content)) {
+		t.Fatalf("expected persisted workflow tool artifact to be externalized, got %#v", stored)
+	}
+
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/artifacts?artifact_kind=tool_result", nil)
+	summaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow tool artifact summary 200, got %d body=%s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	var summary []session.WorkflowRunArtifact
+	if err := json.NewDecoder(summaryResponse.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode workflow tool artifact summary: %v", err)
+	}
+	if len(summary) != 1 || summary[0].Content != "" || summary[0].ArtifactRef == "" {
+		t.Fatalf("expected summary-only workflow tool artifact, got %#v", summary)
+	}
+
+	fullRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/artifacts?include_content=1&artifact_kind=tool_result", nil)
+	fullResponse := httptest.NewRecorder()
+	server.ServeHTTP(fullResponse, fullRequest)
+	if fullResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow tool artifact full 200, got %d body=%s", fullResponse.Code, fullResponse.Body.String())
+	}
+	var full []session.WorkflowRunArtifact
+	if err := json.NewDecoder(fullResponse.Body).Decode(&full); err != nil {
+		t.Fatalf("decode workflow tool artifact full: %v", err)
+	}
+	if len(full) != 1 || full[0].Content != content || full[0].Hash != stored.Hash || !full[0].Externalized {
+		t.Fatalf("expected hydrated workflow tool artifact content, got %#v", full)
+	}
+}
+
+func TestServerWorkflowRunStagesHydrateExternalizedTypedValues(t *testing.T) {
+	root := t.TempDir()
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure artifact store: %v", err)
+	}
+	state := session.New(8)
+	state.SetArtifactObjectStore(store)
+	large := strings.Repeat("workflow stage payload ", 640)
+	runID := state.StartWorkflowRun("external-stage-values", "collect large stage payloads")
+	state.CompleteWorkflowRun(runID, "completed", "done", "", "", nil, []session.WorkflowRunStageSnapshot{{
+		Stage:  "collect",
+		Status: "completed",
+		InputValues: map[string]any{
+			"target": "auth",
+		},
+		OutputValues: map[string]any{
+			"report":  large,
+			"payload": map[string]any{"risk": "low", "scope": "auth"},
+		},
+		Result: schema.AgentResult{Output: "collect complete"},
+	}, {
+		Stage:  "plan",
+		Status: "completed",
+		InputValues: map[string]any{
+			"report":  large,
+			"payload": map[string]any{"risk": "low", "scope": "auth"},
+		},
+		Result: schema.AgentResult{Output: "plan complete"},
+	}})
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	server := NewServer(runtimeRef)
+
+	stored := workflowRunSnapshotByID(t, runtimeRef, runID)
+	if len(stored.CompletedStages) != 2 || len(stored.CompletedStages[0].OutputValues) != 0 || stored.CompletedStages[0].OutputValuesArtifactRef == "" || len(stored.CompletedStages[1].InputValues) != 0 || stored.CompletedStages[1].InputValuesArtifactRef == "" {
+		t.Fatalf("expected persisted stage values to be externalized, got %#v", stored.CompletedStages)
+	}
+
+	runRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID, nil)
+	runResponse := httptest.NewRecorder()
+	server.ServeHTTP(runResponse, runRequest)
+	if runResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow run detail 200, got %d body=%s", runResponse.Code, runResponse.Body.String())
+	}
+	var hydratedRun session.WorkflowRunSnapshot
+	if err := json.NewDecoder(runResponse.Body).Decode(&hydratedRun); err != nil {
+		t.Fatalf("decode workflow run detail: %v", err)
+	}
+	if len(hydratedRun.CompletedStages) != 2 || hydratedRun.CompletedStages[0].OutputValues["report"] != large || hydratedRun.CompletedStages[1].InputValues["report"] != large {
+		t.Fatalf("expected workflow run detail to hydrate stage values, got %#v", hydratedRun.CompletedStages)
+	}
+
+	summaryRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/stages", nil)
+	summaryResponse := httptest.NewRecorder()
+	server.ServeHTTP(summaryResponse, summaryRequest)
+	if summaryResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow stages summary 200, got %d body=%s", summaryResponse.Code, summaryResponse.Body.String())
+	}
+	var summary []session.WorkflowRunStageSnapshot
+	if err := json.NewDecoder(summaryResponse.Body).Decode(&summary); err != nil {
+		t.Fatalf("decode workflow stages summary: %v", err)
+	}
+	if len(summary) != 2 || len(summary[0].OutputValues) != 0 || summary[0].OutputValuesArtifactRef == "" || len(summary[1].InputValues) != 0 || summary[1].InputValuesArtifactRef == "" {
+		t.Fatalf("expected workflow stages summary to keep refs without hydrating, got %#v", summary)
+	}
+
+	fullRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/stages?include_content=1", nil)
+	fullResponse := httptest.NewRecorder()
+	server.ServeHTTP(fullResponse, fullRequest)
+	if fullResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow stages full 200, got %d body=%s", fullResponse.Code, fullResponse.Body.String())
+	}
+	var full []session.WorkflowRunStageSnapshot
+	if err := json.NewDecoder(fullResponse.Body).Decode(&full); err != nil {
+		t.Fatalf("decode workflow stages full: %v", err)
+	}
+	if len(full) != 2 || full[0].OutputValues["report"] != large || full[1].InputValues["report"] != large {
+		t.Fatalf("expected workflow stages include_content to hydrate typed values, got %#v", full)
+	}
+
+	replayRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/replay?include_content=1", nil)
+	replayResponse := httptest.NewRecorder()
+	server.ServeHTTP(replayResponse, replayRequest)
+	if replayResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow replay 200, got %d body=%s", replayResponse.Code, replayResponse.Body.String())
+	}
+	var replay workflowRunReplay
+	if err := json.NewDecoder(replayResponse.Body).Decode(&replay); err != nil {
+		t.Fatalf("decode workflow replay: %v", err)
+	}
+	if len(replay.Stages) != 2 || replay.Stages[0].OutputValues["report"] != large || replay.Stages[1].InputValues["report"] != large {
+		t.Fatalf("expected workflow replay stages to hydrate typed values, got %#v", replay.Stages)
+	}
+}
+
+func workflowRunArtifactsContainContent(artifacts []session.WorkflowRunArtifact) bool {
+	for _, artifact := range artifacts {
+		if strings.TrimSpace(artifact.Content) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func TestServerWorkflowRunReplayIncludesNavigationAndCounts(t *testing.T) {
@@ -10720,6 +12631,88 @@ func TestServerAgentRunToolApprovalResumesAfterSessionLoad(t *testing.T) {
 	run := agentRunSnapshotByID(t, secondRuntime, accepted.RunID)
 	if run.ResumeContext != nil || len(run.PendingApprovals) != 0 {
 		t.Fatalf("expected resume context and approvals cleared after completion, got %#v", run)
+	}
+}
+
+func TestServerAgentRunToolApprovalResumesAfterSessionLoadWithExternalizedLargeArguments(t *testing.T) {
+	root := t.TempDir()
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	content := strings.Repeat("externalized ordinary approval payload ", 420)
+	args := `{"path":"note.txt","content":"` + content + `"}`
+
+	firstState := session.New(8)
+	firstState.SetArtifactObjectStore(store)
+	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, []schema.ChatResponse{
+		{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(args)}}},
+	})
+	firstServer := NewServer(firstRuntime)
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"write a large note file","background":true}`))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startResponse := httptest.NewRecorder()
+	firstServer.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusAccepted {
+		t.Fatalf("expected background agent 202, got %d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var accepted agentRunBackgroundResponse
+	if err := json.NewDecoder(startResponse.Body).Decode(&accepted); err != nil {
+		t.Fatalf("decode accepted agent run: %v", err)
+	}
+	paused := waitAgentRunActionAvailable(t, firstServer, firstRuntime, accepted.RunID, "approve_tool", true)
+	if len(paused.PendingApprovals) != 1 {
+		t.Fatalf("expected one pending approval, got %#v", paused.PendingApprovals)
+	}
+	pending := firstState.Snapshot().PendingApprovals[0]
+	if pending.Arguments != "" || pending.ArgumentsArtifactRef == "" || pending.ArgumentsHash == "" || !pending.ArgumentsExternalized {
+		t.Fatalf("expected externalized pending approval arguments, got %#v", pending)
+	}
+	runBeforeSave := agentRunSnapshotByID(t, firstRuntime, accepted.RunID)
+	if len(runBeforeSave.PendingApprovals) != 1 || runBeforeSave.PendingApprovals[0].Arguments != "" || runBeforeSave.PendingApprovals[0].ArgumentsArtifactRef == "" {
+		t.Fatalf("expected agent run pending approval to store ref metadata, got %#v", runBeforeSave.PendingApprovals)
+	}
+	if runBeforeSave.ResumeContext == nil || len(runBeforeSave.ResumeContext.SuspendedCalls) != 0 || runBeforeSave.ResumeContext.SuspendedCallsArtifactRef == "" || !runBeforeSave.ResumeContext.SuspendedCallsExternalized {
+		t.Fatalf("expected resume context suspended calls to externalize, got %#v", runBeforeSave.ResumeContext)
+	}
+
+	sessionPath := filepath.Join(root, "session.json")
+	if err := firstState.Save(sessionPath); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	loadedState := session.New(8)
+	loadedState.SetArtifactObjectStore(store)
+	if err := loadedState.Load(sessionPath); err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	loadedPending := loadedState.Snapshot().PendingApprovals
+	if len(loadedPending) != 1 || loadedPending[0].Arguments != "" || loadedPending[0].ArgumentsArtifactRef == "" {
+		t.Fatalf("expected loaded session to keep externalized pending approval metadata, got %#v", loadedPending)
+	}
+	loadedRun, ok := agentRunByID(loadedState.Snapshot().AgentRuns, accepted.RunID)
+	if !ok || loadedRun.ResumeContext == nil || len(loadedRun.ResumeContext.SuspendedCalls) != 0 || loadedRun.ResumeContext.SuspendedCallsArtifactRef == "" {
+		t.Fatalf("expected loaded run to keep externalized resume context metadata, got %#v ok=%t", loadedRun, ok)
+	}
+
+	secondRuntime := newAPITestRuntimeWithStateAndResponses(t, loadedState, []schema.ChatResponse{
+		{Message: schema.Message{Content: "done after large durable ordinary approval"}, Usage: schema.TokenUsage{PromptTokens: 5, OutputTokens: 4}},
+	})
+	secondServer := NewServer(secondRuntime)
+	approveRequest := httptest.NewRequest(http.MethodPost, "/api/agent-runs/"+accepted.RunID+"/approve_tool", nil)
+	approveResponse := httptest.NewRecorder()
+	secondServer.ServeHTTP(approveResponse, approveRequest)
+	if approveResponse.Code != http.StatusOK {
+		t.Fatalf("expected ordinary approval resume 200, got %d body=%s", approveResponse.Code, approveResponse.Body.String())
+	}
+	var completed session.AgentRunSnapshot
+	if err := json.NewDecoder(approveResponse.Body).Decode(&completed); err != nil {
+		t.Fatalf("decode completed run: %v", err)
+	}
+	if completed.Status != "completed" || !strings.Contains(completed.Output, "large durable ordinary approval") {
+		t.Fatalf("expected completed ordinary run after reload, got %#v", completed)
+	}
+	if len(secondRuntime.SessionSnapshot().PendingApprovals) != 0 {
+		t.Fatalf("expected pending approvals cleared after ordinary durable resume, got %#v", secondRuntime.SessionSnapshot().PendingApprovals)
 	}
 }
 
@@ -11232,6 +13225,82 @@ func TestServerWorkflowRunToolApprovalResumesAfterSessionLoad(t *testing.T) {
 	}
 }
 
+func TestServerWorkflowRunToolApprovalResumesAfterSessionLoadWithExternalizedLargeArguments(t *testing.T) {
+	root := t.TempDir()
+	store := session.NewArtifactObjectStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	content := strings.Repeat("externalized workflow approval payload ", 420)
+	args := `{"path":"demo.txt","content":"` + content + `"}`
+
+	firstState := session.New(8)
+	firstState.SetArtifactObjectStore(store)
+	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, []schema.ChatResponse{
+		{Message: schema.Message{Content: "durable plan ready"}},
+		{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(args)}}},
+	})
+	firstServer := NewServer(firstRuntime)
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/workflows/plan-fix-audit", strings.NewReader(`{"input":"write a large demo file"}`))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startResponse := httptest.NewRecorder()
+	firstServer.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow start 200, got %d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var paused agent.WorkflowResult
+	if err := json.NewDecoder(startResponse.Body).Decode(&paused); err != nil {
+		t.Fatalf("decode paused workflow: %v", err)
+	}
+	if paused.Status != "awaiting_tool_approval" || paused.RunID == "" {
+		t.Fatalf("expected workflow awaiting tool approval, got %#v", paused)
+	}
+	workflowBeforeSave := workflowRunSnapshotByID(t, firstRuntime, paused.RunID)
+	if workflowBeforeSave.PendingArgs != "" || workflowBeforeSave.PendingArgsArtifactRef == "" || workflowBeforeSave.PendingArgsHash == "" || !workflowBeforeSave.PendingArgsExternalized {
+		t.Fatalf("expected workflow run pending args to externalize before save, got %#v", workflowBeforeSave)
+	}
+	if firstState.Snapshot().Workflow.PendingArguments != "" || firstState.Snapshot().Workflow.PendingArgumentsArtifactRef == "" {
+		t.Fatalf("expected top-level workflow pending args to externalize, got %#v", firstState.Snapshot().Workflow)
+	}
+
+	sessionPath := filepath.Join(root, "session.json")
+	if err := firstState.Save(sessionPath); err != nil {
+		t.Fatalf("save session: %v", err)
+	}
+	loadedState := session.New(8)
+	loadedState.SetArtifactObjectStore(store)
+	if err := loadedState.Load(sessionPath); err != nil {
+		t.Fatalf("load session: %v", err)
+	}
+	loadedRun, ok := workflowRunByID(loadedState.Snapshot().WorkflowRuns, paused.RunID)
+	if !ok || loadedRun.PendingArgs != "" || loadedRun.PendingArgsArtifactRef == "" {
+		t.Fatalf("expected loaded workflow run to keep externalized pending args metadata, got %#v ok=%t", loadedRun, ok)
+	}
+
+	secondRuntime := newAPITestRuntimeWithStateAndResponses(t, loadedState, []schema.ChatResponse{
+		{Message: schema.Message{Content: "fix after large durable tool approval"}},
+		{Message: schema.Message{Content: "audit after large durable tool approval"}},
+	})
+	secondServer := NewServer(secondRuntime)
+	approveRequest := httptest.NewRequest(http.MethodPost, "/api/workflow-runs/"+paused.RunID+"/approve-tool", nil)
+	approveResponse := httptest.NewRecorder()
+	secondServer.ServeHTTP(approveResponse, approveRequest)
+	if approveResponse.Code != http.StatusOK {
+		t.Fatalf("expected durable workflow tool approval resume 200, got %d body=%s", approveResponse.Code, approveResponse.Body.String())
+	}
+	var resumed agent.WorkflowResult
+	if err := json.NewDecoder(approveResponse.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode resumed workflow: %v", err)
+	}
+	if resumed.Status != "completed" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) != 3 {
+		t.Fatalf("expected workflow to complete after large durable tool approval, got %#v", resumed)
+	}
+	snapshot := secondRuntime.SessionSnapshot()
+	if snapshot.Workflow.Status != "completed" || snapshot.Workflow.PendingCallID != "" || len(snapshot.PendingApprovals) != 0 {
+		t.Fatalf("expected pending approval cleared after large durable resume, got %#v", snapshot)
+	}
+}
+
 func TestServerWorkflowRunRetryCreatesLinkedAttempt(t *testing.T) {
 	runtimeRef := newAPITestRuntime(t)
 	server := NewServer(runtimeRef)
@@ -11522,6 +13591,15 @@ func decodeSSEEvents(t *testing.T, body string) []sseTestEvent {
 func sseEventsContain(events []sseTestEvent, eventType schema.StreamEventType) bool {
 	for _, event := range events {
 		if event.Payload.Type == eventType {
+			return true
+		}
+	}
+	return false
+}
+
+func testStringSliceContains(items []string, want string) bool {
+	for _, item := range items {
+		if item == want {
 			return true
 		}
 	}

@@ -153,7 +153,12 @@ Mount the target project at `/workspace`. Session state is stored at:
 
 ```text
 /workspace/.goflow/session.json
+/workspace/.goflow/session.full.json.gz
 ```
+
+The JSON file is the compact index. The gzip archive preserves complete run
+details for replay without making every HTTP status poll transfer the full
+history.
 
 Keep runtime files under `/app` and target project files under `/workspace` so
 tool boundaries remain clear.

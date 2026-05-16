@@ -15,6 +15,7 @@ func TestBuiltInWorkflowTemplatesLoadFromEmbeddedYAML(t *testing.T) {
 		t.Fatalf("expected embedded workflow templates, got %#v", rows)
 	}
 	required := map[string]bool{
+		"complex-project-delivery":     false,
 		"task-decomposition-plan":      false,
 		"multi-domain-intake-router":   false,
 		"agent-framework-extension":    false,
@@ -50,17 +51,17 @@ func TestBuiltInWorkflowTemplateDetailIsCloned(t *testing.T) {
 	if !ok {
 		t.Fatal("expected plan-fix-audit template")
 	}
-	if len(first.Graph.Stages) < 2 || first.Graph.Stages[1].Name != "plan" {
+	if len(first.Graph.Stages) < 3 || first.Graph.Stages[1].Name != "intake" || first.Graph.Stages[2].Name != "plan" {
 		t.Fatalf("unexpected plan-fix-audit stages: %#v", first.Graph.Stages)
 	}
 	first.Graph.Stages[1].Name = "mutated"
-	first.Graph.Stages[1].Outputs["plan"] = "mutated"
+	first.Graph.Stages[2].Outputs["plan"] = "mutated"
 
 	second, ok := (&WorkflowRunner{}).WorkflowTemplate("plan-fix-audit")
 	if !ok {
 		t.Fatal("expected plan-fix-audit template after mutation")
 	}
-	if second.Graph.Stages[1].Name != "plan" || second.Graph.Stages[1].Outputs["plan"] == "mutated" {
+	if second.Graph.Stages[1].Name != "intake" || second.Graph.Stages[2].Name != "plan" || second.Graph.Stages[2].Outputs["plan"] == "mutated" {
 		t.Fatalf("expected cloned embedded workflow template, got %#v", second)
 	}
 }

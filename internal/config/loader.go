@@ -793,12 +793,6 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("agent.max_iterations must be greater than 0")
 	}
 	for name, provider := range cfg.Providers {
-		if strings.TrimSpace(provider.Model) == "" {
-			return fmt.Errorf("provider %s model is required", name)
-		}
-		if strings.TrimSpace(provider.BaseURL) == "" {
-			return fmt.Errorf("provider %s base_url is required", name)
-		}
 		if strings.TrimSpace(provider.FallbackProvider) != "" {
 			if _, ok := cfg.Providers[provider.FallbackProvider]; !ok {
 				return fmt.Errorf("provider %s references unknown fallback_provider %q", name, provider.FallbackProvider)

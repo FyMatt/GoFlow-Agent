@@ -148,37 +148,91 @@ const (
 
 // PromptBudget is an approximate pre-call token budget for one LLM request.
 type PromptBudget struct {
-	EstimatedPromptTokens            int    `json:"estimated_prompt_tokens,omitempty"`
-	SystemTokens                     int    `json:"system_tokens,omitempty"`
-	MessageTokens                    int    `json:"message_tokens,omitempty"`
-	ToolSchemaTokens                 int    `json:"tool_schema_tokens,omitempty"`
-	SkillTokens                      int    `json:"skill_tokens,omitempty"`
-	CacheablePrefixTokens            int    `json:"cacheable_prefix_tokens,omitempty"`
-	SystemBytes                      int    `json:"system_bytes,omitempty"`
-	MessageBytes                     int    `json:"message_bytes,omitempty"`
-	ToolSchemaBytes                  int    `json:"tool_schema_bytes,omitempty"`
-	MessageCount                     int    `json:"message_count,omitempty"`
-	ExposedToolCount                 int    `json:"exposed_tool_count,omitempty"`
-	TotalToolCount                   int    `json:"total_tool_count,omitempty"`
-	FilteredToolCount                int    `json:"filtered_tool_count,omitempty"`
-	HistoryPromptItems               int    `json:"history_prompt_items,omitempty"`
-	HistoryPromptRetainedItems       int    `json:"history_prompt_retained_items,omitempty"`
-	HistoryPromptDeduplicatedItems   int    `json:"history_prompt_deduplicated_items,omitempty"`
-	HistoryPromptCompactedOlderItems int    `json:"history_prompt_compacted_older_items,omitempty"`
-	HistoryToolItems                 int    `json:"history_tool_items,omitempty"`
-	HistoryToolRetainedItems         int    `json:"history_tool_retained_items,omitempty"`
-	HistoryToolDeduplicatedItems     int    `json:"history_tool_deduplicated_items,omitempty"`
-	HistoryToolCompactedOlderItems   int    `json:"history_tool_compacted_older_items,omitempty"`
-	HistoryEstimatedSavedTokens      int    `json:"history_estimated_saved_tokens,omitempty"`
-	AgentID                          string `json:"agent_id,omitempty"`
-	Mode                             string `json:"mode,omitempty"`
-	WorkflowName                     string `json:"workflow_name,omitempty"`
-	TaskStage                        string `json:"task_stage,omitempty"`
-	SkillName                        string `json:"skill_name,omitempty"`
-	SystemHash                       string `json:"system_hash,omitempty"`
-	ToolSchemaHash                   string `json:"tool_schema_hash,omitempty"`
-	SkillHash                        string `json:"skill_hash,omitempty"`
-	PromptPrefixHash                 string `json:"prompt_prefix_hash,omitempty"`
+	EstimatedPromptTokens            int                  `json:"estimated_prompt_tokens,omitempty"`
+	SystemTokens                     int                  `json:"system_tokens,omitempty"`
+	MessageTokens                    int                  `json:"message_tokens,omitempty"`
+	ToolSchemaTokens                 int                  `json:"tool_schema_tokens,omitempty"`
+	SkillTokens                      int                  `json:"skill_tokens,omitempty"`
+	SkillSourceTokens                int                  `json:"skill_source_tokens,omitempty"`
+	SkillInjectedTokens              int                  `json:"skill_injected_tokens,omitempty"`
+	SkillOmittedTokens               int                  `json:"skill_omitted_tokens,omitempty"`
+	MemoryTokens                     int                  `json:"memory_tokens,omitempty"`
+	DynamicContextTokens             int                  `json:"dynamic_context_tokens,omitempty"`
+	CacheablePrefixTokens            int                  `json:"cacheable_prefix_tokens,omitempty"`
+	SystemBytes                      int                  `json:"system_bytes,omitempty"`
+	MessageBytes                     int                  `json:"message_bytes,omitempty"`
+	ToolSchemaBytes                  int                  `json:"tool_schema_bytes,omitempty"`
+	SkillSourceBytes                 int                  `json:"skill_source_bytes,omitempty"`
+	SkillInjectedBytes               int                  `json:"skill_injected_bytes,omitempty"`
+	SkillOmittedBytes                int                  `json:"skill_omitted_bytes,omitempty"`
+	MessageCount                     int                  `json:"message_count,omitempty"`
+	ExposedToolCount                 int                  `json:"exposed_tool_count,omitempty"`
+	TotalToolCount                   int                  `json:"total_tool_count,omitempty"`
+	FilteredToolCount                int                  `json:"filtered_tool_count,omitempty"`
+	ToolSchemaDiagnosticCount        int                  `json:"tool_schema_diagnostic_count,omitempty"`
+	ToolSchemaDiagnosticOmitted      int                  `json:"tool_schema_diagnostic_omitted,omitempty"`
+	MemoryBlockCount                 int                  `json:"memory_block_count,omitempty"`
+	MemoryOmittedCount               int                  `json:"memory_omitted_count,omitempty"`
+	MemoryEstimatedSavedTokens       int                  `json:"memory_estimated_saved_tokens,omitempty"`
+	ArtifactRefCount                 int                  `json:"artifact_ref_count,omitempty"`
+	CompactedToolResultCount         int                  `json:"compacted_tool_result_count,omitempty"`
+	ArtifactOmittedTokens            int                  `json:"artifact_omitted_tokens,omitempty"`
+	HistoryPromptItems               int                  `json:"history_prompt_items,omitempty"`
+	HistoryPromptRetainedItems       int                  `json:"history_prompt_retained_items,omitempty"`
+	HistoryPromptDeduplicatedItems   int                  `json:"history_prompt_deduplicated_items,omitempty"`
+	HistoryPromptCompactedOlderItems int                  `json:"history_prompt_compacted_older_items,omitempty"`
+	HistoryToolItems                 int                  `json:"history_tool_items,omitempty"`
+	HistoryToolRetainedItems         int                  `json:"history_tool_retained_items,omitempty"`
+	HistoryToolDeduplicatedItems     int                  `json:"history_tool_deduplicated_items,omitempty"`
+	HistoryToolCompactedOlderItems   int                  `json:"history_tool_compacted_older_items,omitempty"`
+	HistoryEstimatedSavedTokens      int                  `json:"history_estimated_saved_tokens,omitempty"`
+	AgentID                          string               `json:"agent_id,omitempty"`
+	Mode                             string               `json:"mode,omitempty"`
+	WorkflowName                     string               `json:"workflow_name,omitempty"`
+	TaskStage                        string               `json:"task_stage,omitempty"`
+	SkillName                        string               `json:"skill_name,omitempty"`
+	SkillInstructionMode             string               `json:"skill_instruction_mode,omitempty"`
+	ToolSchemaSelection              string               `json:"tool_schema_selection,omitempty"`
+	SystemHash                       string               `json:"system_hash,omitempty"`
+	ToolSchemaHash                   string               `json:"tool_schema_hash,omitempty"`
+	SkillHash                        string               `json:"skill_hash,omitempty"`
+	SkillSourceHash                  string               `json:"skill_source_hash,omitempty"`
+	PromptPrefixHash                 string               `json:"prompt_prefix_hash,omitempty"`
+	MemoryBlocks                     []PromptContextBlock `json:"memory_blocks,omitempty"`
+	OmittedContext                   []string             `json:"omitted_context,omitempty"`
+	ArtifactRefs                     []string             `json:"artifact_refs,omitempty"`
+	InjectedToolSchemas              []PromptToolSchema   `json:"injected_tool_schemas,omitempty"`
+	FilteredToolSchemas              []PromptToolSchema   `json:"filtered_tool_schemas,omitempty"`
+}
+
+// PromptContextBlock identifies a compact context block injected into a model
+// request without copying the full source content into diagnostics.
+type PromptContextBlock struct {
+	Kind                 string `json:"kind,omitempty"`
+	Title                string `json:"title,omitempty"`
+	Ref                  string `json:"ref,omitempty"`
+	Tokens               int    `json:"tokens,omitempty"`
+	Score                int    `json:"score,omitempty"`
+	Hash                 string `json:"hash,omitempty"`
+	Language             string `json:"language,omitempty"`
+	Size                 int64  `json:"size,omitempty"`
+	MTime                string `json:"mtime,omitempty"`
+	ContentMode          string `json:"content_mode,omitempty"`
+	EstimatedSavedTokens int    `json:"estimated_saved_tokens,omitempty"`
+}
+
+// PromptToolSchema identifies one tool schema that was either injected into or
+// omitted from a provider request.
+type PromptToolSchema struct {
+	Name          string `json:"name,omitempty"`
+	QualifiedName string `json:"qualified_name,omitempty"`
+	Server        string `json:"server,omitempty"`
+	Kind          string `json:"kind,omitempty"`
+	Status        string `json:"status,omitempty"`
+	Reason        string `json:"reason,omitempty"`
+	Tokens        int    `json:"tokens,omitempty"`
+	Bytes         int    `json:"bytes,omitempty"`
+	SchemaHash    string `json:"schema_hash,omitempty"`
 }
 
 // StreamEvent represents incremental agent or provider output.

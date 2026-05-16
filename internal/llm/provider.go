@@ -2,8 +2,10 @@ package llm
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
@@ -21,7 +23,7 @@ func NewRegistry(defaultLLM config.LLMConfig, named map[string]config.LLMConfig)
 	providers := make(map[string]interfaces.LLMClient)
 	configs := make(map[string]config.LLMConfig)
 	for name, cfg := range named {
-		client, err := buildClient(cfg)
+		client, err := buildClient(name, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("build provider %s: %w", name, err)
 		}
@@ -29,18 +31,21 @@ func NewRegistry(defaultLLM config.LLMConfig, named map[string]config.LLMConfig)
 		configs[name] = cfg
 	}
 	if len(providers) == 0 {
-		client, err := buildClient(defaultLLM)
+		name := defaultProviderName(defaultLLM)
+		client, err := buildClient(name, defaultLLM)
 		if err != nil {
 			return nil, err
 		}
-		name := defaultProviderName(defaultLLM)
 		providers[name] = client
 		configs[name] = defaultLLM
 	}
 	return &Registry{providers: providers, configs: configs}, nil
 }
 
-func buildClient(cfg config.LLMConfig) (interfaces.LLMClient, error) {
+func buildClient(name string, cfg config.LLMConfig) (interfaces.LLMClient, error) {
+	if reasons := providerSetupIssues(cfg); len(reasons) > 0 {
+		return setupRequiredClient{name: name, provider: cfg.Provider, issues: reasons}, nil
+	}
 	switch cfg.Provider {
 	case "", "openai-compatible":
 		return NewClient(cfg), nil
@@ -49,6 +54,78 @@ func buildClient(cfg config.LLMConfig) (interfaces.LLMClient, error) {
 	default:
 		return nil, fmt.Errorf("unsupported provider %q", cfg.Provider)
 	}
+}
+
+func providerSetupIssues(cfg config.LLMConfig) []string {
+	issues := make([]string, 0, 3)
+	provider := strings.TrimSpace(cfg.Provider)
+	switch provider {
+	case "", "openai-compatible", "anthropic":
+		if strings.TrimSpace(cfg.BaseURL) == "" {
+			issues = append(issues, "base_url")
+		}
+		if strings.TrimSpace(cfg.Model) == "" {
+			issues = append(issues, "model")
+		}
+		if strings.TrimSpace(cfg.APIKey) == "" {
+			issues = append(issues, "api_key")
+		}
+	}
+	return issues
+}
+
+type setupRequiredClient struct {
+	name     string
+	provider string
+	issues   []string
+}
+
+func (c setupRequiredClient) Chat(context.Context, schema.ChatRequest) (schema.ChatResponse, error) {
+	return schema.ChatResponse{}, c.err()
+}
+
+func (c setupRequiredClient) StreamChat(context.Context, schema.ChatRequest, interfaces.StreamHandler) (schema.ChatResponse, error) {
+	return schema.ChatResponse{}, c.err()
+}
+
+func (c setupRequiredClient) Capabilities() []string {
+	return []string{"setup_required"}
+}
+
+func (c setupRequiredClient) err() error {
+	return newProviderSetupError(c.name, c.provider, c.issues)
+}
+
+type providerSetupError struct {
+	name     string
+	provider string
+	issues   []string
+}
+
+func newProviderSetupError(name, provider string, issues []string) error {
+	copied := append([]string(nil), issues...)
+	return providerSetupError{name: strings.TrimSpace(name), provider: strings.TrimSpace(provider), issues: copied}
+}
+
+func (e providerSetupError) Error() string {
+	provider := strings.TrimSpace(e.provider)
+	if provider == "" {
+		provider = "openai-compatible"
+	}
+	fields := strings.Join(e.issues, ", ")
+	if fields == "" {
+		fields = "provider settings"
+	}
+	name := strings.TrimSpace(e.name)
+	if name == "" {
+		name = provider
+	}
+	return fmt.Sprintf("model provider setup required: configure %s for provider %s (%s) in Web Studio Settings/Resources or configs/providers/*.yaml", fields, name, provider)
+}
+
+func isProviderSetupRequired(err error) bool {
+	var setupErr providerSetupError
+	return errors.As(err, &setupErr)
 }
 
 func defaultProviderName(cfg config.LLMConfig) string {
@@ -100,6 +177,9 @@ func (c *fallbackClient) Chat(ctx context.Context, req schema.ChatRequest) (sche
 		c.used = false
 		return resp, nil
 	}
+	if isProviderSetupRequired(err) {
+		return schema.ChatResponse{}, err
+	}
 	fallback, fallbackErr := c.fallback()
 	if fallbackErr != nil {
 		return schema.ChatResponse{}, err
@@ -116,6 +196,9 @@ func (c *fallbackClient) StreamChat(ctx context.Context, req schema.ChatRequest,
 	if err == nil {
 		c.used = false
 		return resp, nil
+	}
+	if isProviderSetupRequired(err) {
+		return schema.ChatResponse{}, err
 	}
 	fallback, fallbackErr := c.fallback()
 	if fallbackErr != nil {

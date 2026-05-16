@@ -276,7 +276,7 @@ HTTP exposes these through:
 - `DELETE /api/resources/team-templates/{name}`
 - `GET /api/team-state`
 
-Both collections are persisted in `.goflow/session.json` with the rest of the session snapshot. This gives future team workflows and the Web Studio a stable place to record handoffs, observations, decisions, unresolved questions, and evidence without scraping natural-language stage output.
+Both collections are persisted with the rest of the workspace session. `.goflow/session.json` is the compact index used by fast status and Web Studio polling, while `.goflow/session.full.json.gz` keeps the complete compressed snapshot for detailed replay. This gives future team workflows and the Web Studio a stable place to record handoffs, observations, decisions, unresolved questions, and evidence without scraping natural-language stage output or forcing every page refresh to download full run payloads.
 
 Workflow execution writes to these stores automatically:
 

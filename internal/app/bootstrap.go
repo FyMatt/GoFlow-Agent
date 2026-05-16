@@ -9,6 +9,7 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/internal/llm"
 	"github.com/FyMatt/GoFlow-Agent/internal/mcp"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/internal/skill"
@@ -20,6 +21,8 @@ type RuntimeApp struct {
 	ConfigPath    string
 	WorkspaceRoot string
 	SessionState  *session.State
+	MemoryStore   *memory.Store
+	ArtifactStore *session.ArtifactObjectStore
 	SkillManager  interfaces.SkillManager
 	MCPClient     interfaces.MCPClient
 }
@@ -57,6 +60,8 @@ type NewRuntimeAppOptions struct {
 	MCPClient     interfaces.MCPClient
 	Clients       map[string]interfaces.LLMClient
 	SessionState  *session.State
+	MemoryStore   *memory.Store
+	ArtifactStore *session.ArtifactObjectStore
 	AuditLogger   *runtime.AuditLogger
 }
 
@@ -80,12 +85,15 @@ func NewRuntimeApp(opts NewRuntimeAppOptions) (*RuntimeApp, error) {
 	if err != nil {
 		return nil, err
 	}
+	runtimeRef.SetMemoryStore(opts.MemoryStore)
 	return &RuntimeApp{
 		Runtime:       runtimeRef,
 		Config:        opts.Config,
 		ConfigPath:    opts.ConfigPath,
 		WorkspaceRoot: opts.WorkspaceRoot,
 		SessionState:  opts.SessionState,
+		MemoryStore:   opts.MemoryStore,
+		ArtifactStore: opts.ArtifactStore,
 		SkillManager:  opts.SkillManager,
 		MCPClient:     opts.MCPClient,
 	}, nil
@@ -117,7 +125,16 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) (*RuntimeApp, error) 
 		clients[name] = client
 	}
 	sessionState := session.New(cfg.Session.MaxHistory)
+	artifactStore := session.NewArtifactObjectStore(cfg.WorkspaceRoot)
+	if err := artifactStore.Ensure(); err != nil {
+		return nil, err
+	}
+	sessionState.SetArtifactObjectStore(artifactStore)
 	if err := sessionState.Load(cfg.Session.PersistPath); err != nil {
+		return nil, err
+	}
+	memoryStore := memory.NewStore(cfg.WorkspaceRoot)
+	if err := memoryStore.Ensure(); err != nil {
 		return nil, err
 	}
 	auditLogger := runtime.NewAuditLogger(cfg.Audit.Enabled, cfg.Audit.RedactContent)
@@ -129,6 +146,8 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) (*RuntimeApp, error) 
 		MCPClient:     mcpManager,
 		Clients:       clients,
 		SessionState:  sessionState,
+		MemoryStore:   memoryStore,
+		ArtifactStore: artifactStore,
 		AuditLogger:   auditLogger,
 	})
 }
