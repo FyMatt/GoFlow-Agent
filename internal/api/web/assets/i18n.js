@@ -8098,6 +8098,7 @@ Object.assign(zhKnownText, {
   "Explain what this stage must produce": "说明这个阶段需要产出什么",
   "Expression checked after each iteration, for example contains(previous.raw_output, \"done\").": "每轮迭代后都会检查这个表达式，例如 contains(previous.raw_output, \"done\")。",
   "Extra node parameters passed to the runtime and shown in Studio.": "传给运行时并在 Studio 中展示的额外节点参数。",
+  "Audit collected evidence": "审计已收集证据",
   "Feed web evidence into an audit skill and publish findings.": "把 Web 证据送入审计 skill，并发布 findings。",
   "Map local input names to workflow references or literals.": "把本地输入名映射到工作流引用或字面量。",
   "Map output names to result references that later nodes can consume.": "把输出名映射到后续节点可消费的结果引用。",

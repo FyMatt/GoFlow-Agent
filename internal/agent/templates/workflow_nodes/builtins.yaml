@@ -280,6 +280,20 @@ nodes:
         - Use a Skill node when you want a reusable expert procedure with a clear output contract.
         - Map upstream data through input; publish stable downstream names through outputs.
       examples:
+        - title: Plan stage
+          description: Create a plan that later stages can consume.
+          stage:
+            name: plan
+            node_type: skill
+            agent: planner
+            skill: execution-plan
+            outputs:
+                plan: result.output
+                summary: result.summary
+            next:
+                - implement
+          notes:
+            - Downstream nodes reference stages.plan.outputs.plan.
         - title: Audit collected evidence
           description: Feed web evidence into an audit skill and publish findings.
           stage:
