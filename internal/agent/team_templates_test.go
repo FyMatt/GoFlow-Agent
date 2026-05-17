@@ -39,6 +39,44 @@ func TestBuiltInTeamTemplatesLoadFromEmbeddedYAML(t *testing.T) {
 	}
 }
 
+func TestBuiltInTeamTemplatesMeetDeliveryQualityBar(t *testing.T) {
+	for _, row := range TeamTemplates() {
+		template, ok := LoadTeamTemplate(row.Name)
+		if !ok {
+			t.Fatalf("expected team template %s", row.Name)
+		}
+		normalized := normalizeTeamTemplateResource(template, false)
+		if err := validateTeamTemplateResource(normalized); err != nil {
+			t.Fatalf("expected valid team template %s: %v", row.Name, err)
+		}
+		if strings.TrimSpace(template.Description) == "" || strings.TrimSpace(template.Category) == "" || len(template.Tags) == 0 {
+			t.Fatalf("team template %s is missing user-facing metadata: %#v", row.Name, template.TeamTemplateSummary)
+		}
+		if strings.TrimSpace(template.RecommendedWorkflow) == "" || strings.TrimSpace(template.RecommendedEntryAgent) == "" {
+			t.Fatalf("team template %s should declare recommended workflow and entry agent", row.Name)
+		}
+		if len(template.OutputContract) == 0 {
+			t.Fatalf("team template %s should declare output contract", row.Name)
+		}
+		if len(template.BlackboardTemplates) < 3 {
+			t.Fatalf("team template %s should define shared blackboard slots, got %#v", row.Name, template.BlackboardTemplates)
+		}
+		if len(template.RoleTemplates) > 1 && len(template.Handoffs) == 0 {
+			t.Fatalf("team template %s should define role handoffs", row.Name)
+		}
+		for _, role := range template.RoleTemplates {
+			if strings.TrimSpace(role.Label) == "" || strings.TrimSpace(role.Skill) == "" || len(role.Responsibilities) == 0 || len(role.Produces) == 0 {
+				t.Fatalf("team template %s role %s should define label, skill, responsibilities, and produced artifacts: %#v", row.Name, role.Name, role)
+			}
+		}
+		for _, handoff := range template.Handoffs {
+			if strings.TrimSpace(handoff.Subject) == "" || len(handoff.Artifacts) == 0 || len(handoff.Blackboard) == 0 {
+				t.Fatalf("team template %s handoff %s -> %s should define subject, artifacts, and blackboard references: %#v", row.Name, handoff.From, handoff.To, handoff)
+			}
+		}
+	}
+}
+
 func TestBuiltInTeamTemplateDetailIsCloned(t *testing.T) {
 	first, ok := LoadTeamTemplate("web-research-team")
 	if !ok {

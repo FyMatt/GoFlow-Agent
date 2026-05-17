@@ -1,0 +1,377 @@
+name: plan-implement-audit
+description: Plan a bounded request, implement approved changes, verify the result, audit quality, route by evidence, and produce a final report.
+stages:
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next:
+        - clarify
+      position:
+        x: 80
+        "y": 260
+    - name: clarify
+      node_type: agent
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Objective, Scope, Constraints, Target Areas, Acceptance Criteria, Risks, and Assumptions.
+        purpose: Clarify the user request enough to plan and implement without relying on raw chat history.
+      outputs:
+        clarified_request: result.output
+        risks: result.findings
+        summary: result.summary
+      artifacts:
+        - name: clarified-request
+          kind: report
+          title: Clarified request
+          ref: result.output
+          summary: Objective, scope, constraints, target areas, acceptance criteria, risks, and assumptions.
+      acceptance_criteria:
+        - name: has-objective
+          ref: result.output
+          contains: Objective
+          expected: clarification names the requested outcome
+        - name: has-acceptance-criteria
+          ref: result.output
+          contains: Acceptance Criteria
+          expected: clarification defines success checks
+      context:
+        include:
+            - memory.project
+            - workflow.input
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 3000
+        retrieval:
+            enabled: true
+            query: '{{input.goal}}'
+      next:
+        - plan
+      position:
+        x: 420
+        "y": 220
+    - name: plan
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Implementation Plan, Files Or Modules, Change Steps, Verification Commands, Review Checklist, Rollback Plan, and Done Criteria.
+        purpose: Produce an executable, reviewable plan for a single bounded implementation task.
+      input:
+        clarified_request: stages.clarify.outputs.clarified_request
+        request: workflow.input
+      outputs:
+        plan: result.output
+        summary: result.summary
+      artifacts:
+        - name: implementation-plan
+          kind: report
+          title: Implementation plan
+          ref: result.output
+          summary: Files/modules, change steps, verification commands, review checklist, rollback plan, and done criteria.
+      acceptance_criteria:
+        - name: has-change-steps
+          ref: result.output
+          contains: Change Steps
+          expected: plan contains executable steps
+        - name: has-verification-commands
+          ref: result.output
+          contains: Verification Commands
+          expected: plan declares commands or checks
+        - name: has-done-criteria
+          ref: result.output
+          contains: Done Criteria
+          expected: plan states completion criteria
+      context:
+        include:
+            - memory.project
+            - stages.clarify.outputs.clarified_request
+            - previous.summary
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 3600
+        retrieval:
+            enabled: true
+            query: '{{input.goal}}'
+      next:
+        - implement
+      position:
+        x: 780
+        "y": 220
+    - name: implement
+      node_type: agent
+      agent: fixer
+      skill: code-writing
+      params:
+        edit_policy: Apply only the approved plan, preserve user edits, keep changes scoped, and explain any deviation before proceeding.
+        output_contract: Emit sections named Implementation Summary, Files Changed, Verification Attempted, Deviations, Remaining Work, and Risk Notes.
+      input:
+        clarified_request: stages.clarify.outputs.clarified_request
+        plan: stages.plan.outputs.plan
+      outputs:
+        changes: result.changes
+        implementation_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: implementation-report
+          kind: report
+          title: Implementation report
+          ref: result.output
+          summary: Implementation summary, files changed, verification attempted, deviations, remaining work, and risk notes.
+      acceptance_criteria:
+        - name: has-implementation-summary
+          ref: result.output
+          contains: Implementation Summary
+          expected: implementation explains what changed
+        - name: has-files-changed
+          ref: result.output
+          contains: Files Changed
+          expected: implementation lists changed files or explains why none changed
+        - name: has-verification-attempted
+          ref: result.output
+          contains: Verification Attempted
+          expected: implementation records checks attempted before review
+      retry:
+        max_attempts: 2
+      approval: true
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.implementation-plan
+            - stages.plan.outputs.plan
+            - files.changed
+        exclude:
+            - raw_tool_logs
+            - unrelated_session_history
+        max_tokens: 4600
+      next:
+        - verify
+      position:
+        x: 1140
+        "y": 220
+    - name: verify
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        evidence: Include exact commands or checks performed. If a command cannot run, explain the blocker and substitute checks.
+        output_contract: Emit sections named Verification Result, Commands Run, Coverage, Failures, Evidence, and Residual Risk.
+        verification_command: go test ./...
+      input:
+        implementation: stages.implement.outputs.implementation_report
+        plan: stages.plan.outputs.plan
+      outputs:
+        summary: result.summary
+        verification: result.output
+      artifacts:
+        - name: verification-report
+          kind: verification
+          title: Verification report
+          ref: result.output
+          summary: Verification result, commands, coverage, failures, evidence, and residual risk.
+      acceptance_criteria:
+        - name: has-verification-result
+          ref: result.output
+          contains: Verification Result
+          expected: verification declares pass, warning, fail, or not-run
+        - name: has-commands-run
+          ref: result.output
+          contains: Commands Run
+          expected: verification lists exact commands or explains why none ran
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.implementation-report
+            - stages.implement.outputs.implementation_report
+            - files.changed
+        exclude:
+            - raw_tool_logs
+        max_tokens: 3800
+      next:
+        - audit
+      position:
+        x: 1500
+        "y": 220
+    - name: audit
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        output_contract: Emit sections named Audit Decision, Findings, Missed Requirements, Test Gaps, Safety Notes, Recommendation, and Release Readiness.
+        severity_order: Lead with bugs, regressions, data loss, security risk, or broken acceptance criteria before summaries.
+      input:
+        clarified_request: stages.clarify.outputs.clarified_request
+        implementation: stages.implement.outputs.implementation_report
+        plan: stages.plan.outputs.plan
+        verification: stages.verify.outputs.verification
+      outputs:
+        audit: result.output
+        findings: result.findings
+        summary: result.summary
+      artifacts:
+        - name: audit-report
+          kind: report
+          title: Audit report
+          ref: result.output
+          summary: Audit decision, findings, missed requirements, test gaps, safety notes, recommendation, and release readiness.
+      acceptance_criteria:
+        - name: has-audit-decision
+          ref: result.output
+          contains: Audit Decision
+          expected: audit declares accept, warning, or reject
+        - name: has-recommendation
+          ref: result.output
+          contains: Recommendation
+          expected: audit gives a concrete recommendation
+        - name: has-release-readiness
+          ref: result.output
+          contains: Release Readiness
+          expected: audit states whether the result is ready
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.verification-report
+            - stages.implement.outputs.implementation_report
+            - stages.verify.outputs.verification
+        exclude:
+            - raw_tool_logs
+        max_tokens: 4200
+      next:
+        - quality
+      position:
+        x: 1860
+        "y": 220
+    - name: quality
+      node_type: quality_gate
+      agent: ""
+      skill: ""
+      params:
+        allow_unknown: "false"
+        min_score: "82"
+        reason: implementation, verification, audit, or evidence did not meet the delivery bar
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "true"
+        stages: implement,verify,audit
+      routes:
+        fail: revision-summary
+        pass: final-report
+        warning: operator-review
+      position:
+        x: 2220
+        "y": 220
+    - name: operator-review
+      node_type: checkpoint
+      agent: ""
+      skill: ""
+      params:
+        prompt: The workflow completed with warnings. Review the plan, implementation, verification, and audit evidence before final report.
+      next:
+        - final-report
+      position:
+        x: 2580
+        "y": 80
+    - name: revision-summary
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Revision Required, Blocking Issues, Missing Evidence, Recommended Fix, and Safe Next Step.
+        purpose: Summarize exactly what must be fixed when quality does not pass.
+      input:
+        audit: stages.audit.outputs.audit
+        failures: stages.quality.outputs.failures
+        quality_status: stages.quality.outputs.quality_status
+        verification: stages.verify.outputs.verification
+      outputs:
+        revision_summary: result.output
+        summary: result.summary
+      artifacts:
+        - name: revision-summary
+          kind: report
+          title: Revision summary
+          ref: result.output
+          summary: Blocking issues, missing evidence, recommended fix, and safe next step.
+      acceptance_criteria:
+        - name: has-revision-required
+          ref: result.output
+          contains: Revision Required
+          expected: revision summary states what blocks delivery
+      context:
+        include:
+            - previous.summary
+            - stages.quality.outputs.failures
+            - stages.audit.outputs.audit
+            - stages.verify.outputs.verification
+        exclude:
+            - raw_tool_logs
+        max_tokens: 3600
+      next:
+        - final-report
+      position:
+        x: 2580
+        "y": 360
+    - name: final-report
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Final Status, Delivered Work, Files Changed, Verification Evidence, Audit Outcome, Remaining Risks, and Next Steps.
+        purpose: Produce the final user-facing delivery report from all prior evidence.
+      input:
+        audit: stages.audit.outputs.audit
+        implementation: stages.implement.outputs.implementation_report
+        quality_status: stages.quality.outputs.quality_status
+        revision_summary: stages.revision-summary.outputs.revision_summary
+        verification: stages.verify.outputs.verification
+      outputs:
+        final_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: final-report
+          kind: report
+          title: Final delivery report
+          ref: result.output
+          summary: Final status, delivered work, changed files, verification evidence, audit outcome, risks, and next steps.
+      acceptance_criteria:
+        - name: has-final-status
+          ref: result.output
+          contains: Final Status
+          expected: final report declares whether delivery is complete
+        - name: has-verification-evidence
+          ref: result.output
+          contains: Verification Evidence
+          expected: final report includes evidence or explains the blocker
+        - name: has-next-steps
+          ref: result.output
+          contains: Next Steps
+          expected: final report gives concrete follow-up
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.audit-report
+            - previous.artifacts.verification-report
+            - previous.artifacts.revision-summary
+            - stages.audit.outputs.audit
+            - stages.verify.outputs.verification
+            - stages.revision-summary.outputs.revision_summary
+            - files.changed
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 4200
+      next:
+        - end
+      position:
+        x: 2940
+        "y": 220
+    - name: end
+      node_type: end
+      agent: ""
+      skill: ""
+      position:
+        x: 3300
+        "y": 240

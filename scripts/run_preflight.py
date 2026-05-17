@@ -56,6 +56,7 @@ def main() -> int:
         run("Go tests", ["go", "test", "./..."])
 
     checks = [
+        ("Secret validation", [python, "scripts/validate_no_secrets.py"]),
         ("Python MCP validation", [python, "scripts/validate_python_mcp.py"]),
         ("Extension workflow validation", [python, "scripts/validate_extension_workflow.py"]),
         ("Binary analysis kit validation", [python, "scripts/validate_binary_analysis_kit.py"]),

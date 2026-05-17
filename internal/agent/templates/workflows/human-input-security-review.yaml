@@ -9,7 +9,9 @@ tags:
     - manual-input
     - security
     - operator
-stages: 8
+    - quality_gate
+    - report
+stages: 9
 graph:
     name: human-input-security-review
     description: Operator-guided security review workflow using a manual input gate.
@@ -43,17 +45,55 @@ graph:
           node_type: skill
           agent: auditor
           skill: web-vulnerability-research
+          params:
+            output_contract: Emit sections named Scope Summary, Evidence, Findings, Severity Assessment, Confidence, Limitations, and Recommended Verification.
+            evidence_rule: Keep findings tied to the operator-provided target and scope.
           input:
             scope: stages.collect-scope.outputs.scope
             target: stages.collect-scope.outputs.target
           outputs:
             evidence: result.output
             findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: security-research-evidence
+              kind: evidence
+              title: Security research evidence
+              ref: result.output
+              summary: Scope summary, evidence, findings, severity assessment, confidence, and limitations.
+          acceptance_criteria:
+            - name: has-scope-summary
+              ref: result.output
+              contains: Scope Summary
+              expected: research stays within the operator-provided scope
+            - name: has-severity-assessment
+              ref: result.output
+              contains: Severity Assessment
+              expected: research classifies severity before routing
           next:
-            - risk-check
+            - quality
           position:
             x: 620
             "y": 170
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: research
+            min_score: "75"
+            reason: security review evidence is missing scope, severity, or confidence details
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            allow_unknown: "false"
+          routes:
+            pass: risk-check
+            warning: approval
+            fail: report
+          position:
+            x: 910
+            "y": 200
         - name: risk-check
           node_type: condition
           agent: ""
@@ -63,7 +103,7 @@ graph:
             "false": report
             "true": approval
           position:
-            x: 910
+            x: 1190
             "y": 200
         - name: approval
           node_type: checkpoint
@@ -74,38 +114,73 @@ graph:
           next:
             - verify
           position:
-            x: 1190
+            x: 1460
             "y": 120
         - name: verify
           node_type: skill
           agent: auditor
           skill: code-audit
+          params:
+            output_contract: Emit sections named Verification Result, Evidence Checked, False Positive Review, Remaining Gaps, and Recommendation.
           input:
             evidence: stages.research.outputs.evidence
           outputs:
             verification: result.output
+            summary: result.summary
+          artifacts:
+            - name: security-verification
+              kind: verification
+              title: Security verification
+              ref: result.output
+              summary: Verification result, evidence checked, false-positive review, gaps, and recommendation.
+          acceptance_criteria:
+            - name: has-verification-result
+              ref: result.output
+              contains: Verification Result
+              expected: verification states pass, warning, fail, or not-run
           next:
             - report
           position:
-            x: 1460
+            x: 1740
             "y": 120
         - name: report
           node_type: skill
           agent: planner
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Security Review Summary, Scope, Evidence, Severity, Verification, Residual Risk, Operator Decision, and Next Steps.
+            purpose: Produce a final operator-readable security review report regardless of clean, warning, or failed quality paths.
           input:
             evidence: stages.research.outputs.evidence
+            quality_status: stages.quality.outputs.quality_status
+            verification: stages.verify.outputs.verification
           outputs:
             report: result.output
+            summary: result.summary
+          artifacts:
+            - name: security-review-report
+              kind: report
+              title: Security review report
+              ref: result.output
+              summary: Security review summary, scope, evidence, severity, verification, residual risk, and next steps.
+          acceptance_criteria:
+            - name: has-security-review-summary
+              ref: result.output
+              contains: Security Review Summary
+              expected: report summarizes the review outcome
+            - name: has-next-steps
+              ref: result.output
+              contains: Next Steps
+              expected: report gives operator next steps
           next:
             - end
           position:
-            x: 1460
+            x: 1740
             "y": 300
         - name: end
           node_type: end
           agent: ""
           skill: ""
           position:
-            x: 1720
+            x: 2020
             "y": 220

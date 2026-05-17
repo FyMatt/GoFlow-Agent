@@ -11,7 +11,7 @@ import (
 
 func TestBuiltInWorkflowTemplatesLoadFromEmbeddedYAML(t *testing.T) {
 	rows := (&WorkflowRunner{}).WorkflowTemplates()
-	if len(rows) < 14 {
+	if len(rows) < 16 {
 		t.Fatalf("expected embedded workflow templates, got %#v", rows)
 	}
 	required := map[string]bool{
@@ -19,6 +19,7 @@ func TestBuiltInWorkflowTemplatesLoadFromEmbeddedYAML(t *testing.T) {
 		"task-decomposition-plan":      false,
 		"multi-domain-intake-router":   false,
 		"agent-framework-extension":    false,
+		"plan-implement-audit":         false,
 		"plan-fix-audit":               false,
 		"software-quality-gate":        false,
 		"web-research-risk":            false,
@@ -42,6 +43,42 @@ func TestBuiltInWorkflowTemplatesLoadFromEmbeddedYAML(t *testing.T) {
 	for name, found := range required {
 		if !found {
 			t.Fatalf("missing embedded workflow template %s in %#v", name, rows)
+		}
+	}
+}
+
+func TestBuiltInWorkflowTemplatesValidateAndMeetDeliveryQualityBar(t *testing.T) {
+	runtimeRef := newWorkflowGraphRuntime(t, t.TempDir(), workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
+	runner := runtimeRef.WorkflowRunner()
+	for _, row := range runner.WorkflowTemplates() {
+		template, ok := runner.WorkflowTemplate(row.Name)
+		if !ok {
+			t.Fatalf("expected workflow template %s", row.Name)
+		}
+		if strings.TrimSpace(template.Title) == "" || strings.TrimSpace(template.Description) == "" || strings.TrimSpace(template.Category) == "" || len(template.Tags) == 0 {
+			t.Fatalf("workflow template %s is missing user-facing summary metadata: %#v", row.Name, template.WorkflowTemplateSummary)
+		}
+		if template.Stages != len(template.Graph.Stages) {
+			t.Fatalf("workflow template %s stage count mismatch: summary=%d graph=%d", row.Name, template.Stages, len(template.Graph.Stages))
+		}
+		validation := runner.ValidateWorkflowGraphDocument(row.Name, template.Graph)
+		if !validation.Valid {
+			t.Fatalf("workflow template %s should validate, got %#v", row.Name, validation.Issues)
+		}
+		if !workflowTemplateQualityHasTerminalEnd(template.Graph) {
+			t.Fatalf("workflow template %s must include an explicit end node", row.Name)
+		}
+		if !workflowTemplateQualityHasControlGate(template.Graph) {
+			t.Fatalf("workflow template %s must include a quality gate or policy gate", row.Name)
+		}
+		if !workflowTemplateQualityHasAcceptance(template.Graph) {
+			t.Fatalf("workflow template %s must include acceptance criteria", row.Name)
+		}
+		if !workflowTemplateQualityHasEvidenceArtifact(template.Graph) {
+			t.Fatalf("workflow template %s must emit at least one evidence/report artifact", row.Name)
+		}
+		if !workflowTemplateQualityHasFinalUserOutput(template.Graph) {
+			t.Fatalf("workflow template %s must include a final report, handoff, publish, or materialize stage", row.Name)
 		}
 	}
 }
@@ -134,4 +171,65 @@ graph:
 	if template.Title != "Legacy Plan Template" || template.Category != "legacy" || len(template.Tags) != 2 {
 		t.Fatalf("expected legacy nested summary to load, got %#v", template)
 	}
+}
+
+func workflowTemplateQualityHasTerminalEnd(doc WorkflowGraphDocument) bool {
+	for _, stage := range doc.Stages {
+		if strings.EqualFold(strings.TrimSpace(stage.NodeType), "end") {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowTemplateQualityHasControlGate(doc WorkflowGraphDocument) bool {
+	for _, stage := range doc.Stages {
+		switch strings.ToLower(strings.TrimSpace(stage.NodeType)) {
+		case "quality_gate", "quality_guard", "quality-guard", "policy_guard", "guard":
+			return true
+		}
+	}
+	return false
+}
+
+func workflowTemplateQualityHasAcceptance(doc WorkflowGraphDocument) bool {
+	for _, stage := range doc.Stages {
+		if len(stage.AcceptanceCriteria) > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowTemplateQualityHasEvidenceArtifact(doc WorkflowGraphDocument) bool {
+	for _, stage := range doc.Stages {
+		for _, artifact := range stage.Artifacts {
+			kind := strings.ToLower(strings.TrimSpace(artifact.Kind))
+			name := strings.ToLower(strings.TrimSpace(artifact.Name))
+			switch kind {
+			case "report", "verification", "evidence", "audit", "plan", "acceptance", "test", "tests", "diff", "patch", "change_report", "requirements":
+				return true
+			}
+			if strings.Contains(name, "report") || strings.Contains(name, "handoff") || strings.Contains(name, "review") || strings.Contains(name, "plan") {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func workflowTemplateQualityHasFinalUserOutput(doc WorkflowGraphDocument) bool {
+	for _, stage := range doc.Stages {
+		name := strings.ToLower(strings.TrimSpace(stage.Name))
+		if strings.Contains(name, "report") || strings.Contains(name, "handoff") || strings.Contains(name, "publish") || strings.Contains(name, "materialize") || strings.Contains(name, "summary") {
+			return true
+		}
+		for key := range stage.Outputs {
+			output := strings.ToLower(strings.TrimSpace(key))
+			if strings.Contains(output, "report") || strings.Contains(output, "handoff") || strings.Contains(output, "summary") {
+				return true
+			}
+		}
+	}
+	return false
 }

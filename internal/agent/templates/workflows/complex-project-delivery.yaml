@@ -13,7 +13,9 @@ tags:
     - audit
     - approval
     - durable-run
-stages: 12
+    - quality_gate
+    - report
+stages: 13
 graph:
     name: complex-project-delivery
     description: Long-running delivery workflow for complex software tasks with user plan confirmation, iterative implementation, verification, review, plan updates, final full validation, and a final report.
@@ -41,7 +43,7 @@ graph:
             risks: result.findings
           artifacts:
             - name: requirement-analysis
-              kind: requirements
+              kind: report
               title: Requirement analysis
               ref: result.output
               summary: User goal, functional requirements, constraints, acceptance criteria, risks, and open questions.
@@ -90,7 +92,7 @@ graph:
             summary: result.summary
           artifacts:
             - name: project-plan
-              kind: plan
+              kind: report
               title: Project plan
               ref: result.output
               summary: Milestones, work slices, dependencies, verification strategy, review strategy, stop conditions, and definition of done.
@@ -141,7 +143,7 @@ graph:
           skill: ""
           params:
             stage: iteration
-            max_iterations: "12"
+            max_iterations: "20"
             until: contains(previous.raw_output, "PROJECT_COMPLETE")
           outputs:
             iteration_count: result.iteration_count
@@ -150,15 +152,19 @@ graph:
             complete: result.passed
           artifacts:
             - name: iteration-history
-              kind: plan
+              kind: report
               title: Iteration history
               ref: result.outputs
               summary: Aggregated outputs from each implementation, verification, review, and plan-update iteration.
           acceptance_criteria:
             - name: loop-recorded-iterations
-              ref: result.iteration_count
+              ref: outputs.iteration_count
               exists: true
               expected: loop records how many delivery iterations ran
+            - name: loop-reached-completion
+              ref: outputs.passed
+              equals: "true"
+              expected: delivery loop only passes when the iteration body emits PROJECT_COMPLETE
           context:
             include:
                 - previous.summary
@@ -195,7 +201,7 @@ graph:
             findings: result.findings
           artifacts:
             - name: iteration-report
-              kind: change_report
+              kind: report
               title: Iteration report
               ref: result.output
               summary: Implemented slice, verification performed, review findings, plan update, remaining work, and completion decision.
@@ -245,12 +251,12 @@ graph:
           skill: ""
           params:
             stage: delivery-loop
-            min_score: "75"
+            min_score: "85"
             reason: delivery loop did not produce enough iteration evidence or did not reach the declared completion signal
             require_acceptance: "true"
             require_evidence: "true"
-            require_verification: "false"
-            allow_unknown: "true"
+            require_verification: "true"
+            allow_unknown: "false"
           routes:
             pass: final-validation
             warning: operator-review
@@ -285,7 +291,7 @@ graph:
             summary: result.summary
           artifacts:
             - name: recovery-plan
-              kind: plan
+              kind: report
               title: Recovery plan
               ref: result.output
               summary: Failed iterations, missing evidence, updated plan, and recommended next action.
@@ -305,7 +311,7 @@ graph:
                 - large_file_contents
             max_tokens: 4200
           next:
-            - final-report
+            - final-quality
           position:
             x: 3020
             "y": 520
@@ -361,9 +367,28 @@ graph:
                 enabled: true
                 query: "{{input.goal}}"
           next:
-            - final-report
+            - final-quality
           position:
             x: 3020
+            "y": 300
+        - name: final-quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: delivery-loop,final-validation
+            min_score: "88"
+            reason: final validation did not provide enough acceptance, verification, or artifact evidence for delivery
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            allow_unknown: "false"
+          routes:
+            pass: final-report
+            warning: final-report
+            fail: final-report
+          position:
+            x: 3520
             "y": 300
         - name: final-report
           node_type: skill
@@ -377,6 +402,7 @@ graph:
             project_plan: stages.plan.outputs.project_plan
             iteration_history: stages.delivery-loop.outputs.loop_outputs
             final_validation: stages.final-validation.outputs.final_validation
+            final_quality_status: stages.final-quality.outputs.quality_status
             recovery_plan: stages.recovery-plan.outputs.recovery_plan
           outputs:
             final_report: result.output
@@ -406,6 +432,7 @@ graph:
                 - previous.artifacts.final-validation-report
                 - previous.artifacts.recovery-plan
                 - previous.artifacts.iteration-history
+                - stages.final-quality.outputs.quality_status
                 - stages.final-validation.outputs.final_validation
                 - stages.recovery-plan.outputs.recovery_plan
                 - files.changed
@@ -416,12 +443,12 @@ graph:
           next:
             - end
           position:
-            x: 3520
+            x: 4020
             "y": 300
         - name: end
           node_type: end
           agent: ""
           skill: ""
           position:
-            x: 4020
+            x: 4520
             "y": 300

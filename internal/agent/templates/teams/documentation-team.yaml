@@ -54,16 +54,19 @@ handoffs:
     kind: outline_handoff
     subject: Documentation outline
     artifacts: [outline, doc_targets]
+    blackboard: [request, plan]
   - from: docs-writer
     to: docs-reviewer
     kind: review_request
     subject: Documentation draft
     artifacts: [draft_changes]
+    blackboard: [evidence, finding]
   - from: docs-reviewer
     to: publish-operator
     kind: publish_gate
     subject: Reviewed documentation
     artifacts: [review_notes]
+    blackboard: [finding, decision]
 blackboard_templates:
   - kind: request
     title: Original request and constraints

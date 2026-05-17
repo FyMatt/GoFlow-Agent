@@ -1633,7 +1633,7 @@ and any custom metadata file path.
 
 `/api/workflow-templates` returns reusable graph blueprints such as
 `multi-domain-intake-router`, `complex-project-delivery`,
-`task-decomposition-plan`, `plan-fix-audit`,
+`task-decomposition-plan`, `plan-implement-audit`, `plan-fix-audit`,
 `software-quality-gate`, `web-research-risk`,
 `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`,
 `docs-review-publish`, `operations-runbook`, `customer-support-triage`,
@@ -1646,6 +1646,14 @@ Template list items also include composition metadata for visual pickers:
 `has_control_flow`, `has_data_flow`, `has_approval`, and
 `has_quality_gate`. Studio uses these fields to show what a template creates
 before the user applies it, instead of forcing users to open the full YAML.
+
+All shipped templates are expected to be runnable delivery blueprints rather
+than loose examples. Built-ins must validate as workflow graphs, include an
+explicit end node, emit report or evidence artifacts, declare acceptance
+criteria, route through a `quality_gate` or `policy_guard`, and finish with a
+user-facing report, handoff, publish summary, or materialized workflow draft.
+This keeps simple starters useful while still making them safe foundations for
+larger tasks.
 
 `multi-domain-intake-router` is the recommended built-in entry template for new
 users and broad deployments. It starts with a structured intake form, routes the
@@ -1666,6 +1674,10 @@ loop until the iteration output declares `PROJECT_COMPLETE`. After the loop it
 runs final validation and produces a completion report with delivered
 requirements, changed files, verification evidence, residual risks, and artifact
 references.
+
+`plan-implement-audit` is the recommended template for a bounded delivery task
+that still needs a full handoff: clarify, plan, implement, verify, audit,
+quality gate, and final report.
 
 `task-decomposition-plan` is the recommended pre-flight template for very
 complex tasks. It asks the planner to produce a workflow graph candidate with

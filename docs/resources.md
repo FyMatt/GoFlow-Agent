@@ -187,6 +187,10 @@ Agent runs, but they can be blank during first startup so Web Studio can open
 and guide setup. `fallback_provider` must still point to an existing Provider
 when it is set.
 
+Provider resources saved from Web Studio are written to this YAML path. Literal
+API keys are stored in plain text, so versioned Provider files should prefer
+environment references such as `${GOFLOW_API_KEY}` for shared or release use.
+
 Typical fields:
 
 - `provider`
@@ -305,11 +309,17 @@ Templates are ideal when you want a starter graph for:
 
 - planning
 - software implementation
+- bounded plan-implement-audit delivery
 - web security review
 - binary triage
 - documentation delivery
 - operations runbooks
 - support handoff
+
+Built-in workflow templates are quality-gated delivery starters. They include
+acceptance criteria, replay artifacts, a quality or policy gate, and a final
+report/handoff-style output so users can run them directly or fork them without
+first repairing the graph.
 
 ### Team Templates
 
@@ -327,6 +337,10 @@ Typical fields:
 - `blackboard_templates`
 - `quorum_presets`
 - `output_contract`
+
+Built-in team templates include role responsibilities, produced artifacts,
+handoff artifacts, shared blackboard references, and output contracts so `team`
+workflow nodes can be expanded into auditable multi-agent stages.
 
 Team templates define how multiple agents coordinate before or inside a workflow.
 

@@ -113,7 +113,8 @@ if "%~1"=="" (
 ) else (
   set "WORKSPACE=%~1"
 )
-"%ROOT%bin\\goflow.exe" --config "%ROOT%configs\\goflow.binary.yaml" --workspace "%WORKSPACE%"
+echo Starting GoFlow Web Studio at http://127.0.0.1:8080/console
+"%ROOT%bin\\goflow.exe" --config "%ROOT%configs\\goflow.binary.yaml" --workspace "%WORKSPACE%" --http :8080
 """,
             encoding="utf-8",
             newline="\r\n",
@@ -134,7 +135,8 @@ export GOFLOW_BACKUP_BASE_URL="${GOFLOW_BACKUP_BASE_URL:-${GOFLOW_BASE_URL:-}}"
 export GOFLOW_BACKUP_API_KEY="${GOFLOW_BACKUP_API_KEY:-${GOFLOW_API_KEY:-}}"
 export GOFLOW_BACKUP_MODEL="${GOFLOW_BACKUP_MODEL:-${GOFLOW_MODEL:-}}"
 WORKSPACE="${1:-$PWD/workspace}"
-exec "$ROOT/bin/goflow" --config "$ROOT/configs/goflow.binary.yaml" --workspace "$WORKSPACE"
+echo "Starting GoFlow Web Studio at http://127.0.0.1:8080/console"
+exec "$ROOT/bin/goflow" --config "$ROOT/configs/goflow.binary.yaml" --workspace "$WORKSPACE" --http :8080
 """,
         encoding="utf-8",
     )

@@ -65,8 +65,10 @@ Each archive contains:
 - `docs/`
 - launcher script: `run-goflow.sh` or `run-goflow.cmd`
 
-The launcher sets MCP binary paths and defaults `GOFLOW_BACKUP_*` to the primary
-Provider values when backup variables are unset.
+The launcher starts HTTP/Web Studio at `http://127.0.0.1:8080/console`, sets MCP
+binary paths, and defaults `GOFLOW_BACKUP_*` to the primary Provider values when
+backup variables are unset. Users who want the interactive CLI can run
+`bin/goflow` or `bin/goflow.exe` directly.
 
 Direct execution from `bin/goflow` or `bin/goflow.exe` is also supported. When
 the executable is launched from an archive `bin` directory, GoFlow resolves
@@ -170,6 +172,24 @@ scaffold presets. GoFlow mounts the generated `mcp_servers/<name>.py` file into
 For local Docker usage, see [Deployment](./deployment.md).
 
 ## Validation
+
+Run a secret check before tagging. Provider files committed to the repo should
+use environment references, such as `${GOFLOW_API_KEY}`, not literal API keys:
+
+```bash
+python scripts/validate_no_secrets.py
+```
+
+For an extra manual scan, you can also run:
+
+```bash
+rg --hidden --glob '!.git/**' --glob '!*.png' --glob '!*.jpg' --glob '!*.jpeg' --glob '!*.gif' --glob '!*.webp' --glob '!*.exe' --glob '!*.dll' --glob '!*.zip' --glob '!*.gz' --glob '!*.bin' 'sk-[A-Za-z0-9_-]{20,}' .
+```
+
+If either command returns a real key, remove it from the file, rotate it with
+the model provider, and rerun the scan. Web Studio saves Provider resources under
+`configs/providers/<name>.yaml`, so keys pasted there are plain-text local
+configuration and should not be committed for a release.
 
 Run static release/deployment validation without Docker:
 

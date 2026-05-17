@@ -168,6 +168,9 @@ GoFlow 读取工作区文本文件时统一按 UTF-8 处理，允许 UTF-8 BOM �
 
 `base_url`、`api_key` 和 `model` 是 Provider 真正服务 Agent 运行前所需字段，但首次启动时可以暂时留空，这样 Web Studio 可以正常打开并引导配置。设置了 `fallback_provider` 时，它仍必须指向已存在的 Provider。
 
+从 Web Studio 保存的 Provider 资源会写入这个 YAML 路径。字面量 API Key 会明文保存，
+因此共享仓库或发布版的 Provider 文件建议使用 `${GOFLOW_API_KEY}` 这类环境变量引用。
+
 常见字段：
 
 - `provider`
@@ -279,6 +282,8 @@ Skill 文档通常要写清：
 用于可复用的工作流蓝图。
 GoFlow 的内置 Workflow Template 来自 `internal/agent/templates/workflows/*.yaml`，发布时会内嵌进二进制。运行目录下的 `templates/workflows/*.yaml` 可以新增模板，也可以用同名文件覆盖内置模板。
 
+常用内置模板包括 `complex-project-delivery`、`plan-implement-audit`、`plan-fix-audit`、`task-decomposition-plan` 和 `multi-domain-intake-router`。
+
 适合做这些起步模板：
 
 - 规划
@@ -288,6 +293,8 @@ GoFlow 的内置 Workflow Template 来自 `internal/agent/templates/workflows/*.
 - 文档交付
 - 运维手册
 - 客服交接
+
+内置 Workflow Template 按质量门禁式交付起步模板维护：包含验收标准、可回放产物、质量门禁或策略门禁，以及最终报告/交接类输出。用户可以直接运行，也可以 fork 后微调，而不需要先修补图结构。
 
 ### Team Template
 
@@ -303,6 +310,8 @@ GoFlow 的内置团队模板来自 `internal/agent/templates/teams/*.yaml`，发
 - `blackboard_templates`
 - `quorum_presets`
 - `output_contract`
+
+内置 Team Template 会声明角色职责、产出物、交接产物、共享黑板引用和输出契约，因此 `team` 工作流节点展开后也能形成可审计的多 Agent 阶段。
 
 Team Template 负责定义多个 Agent 如何协作，而不是单个 Agent 如何说话。
 

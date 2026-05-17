@@ -45,11 +45,13 @@ handoffs:
     kind: asset_handoff
     subject: Fetched web evidence
     artifacts: [asset_inventory, page_evidence]
+    blackboard: [request, evidence]
   - from: js-reviewer
     to: risk-analyst
     kind: finding_handoff
     subject: Client-side findings
     artifacts: [client_findings]
+    blackboard: [evidence, finding]
 blackboard_templates:
   - kind: request
     title: Original request and constraints

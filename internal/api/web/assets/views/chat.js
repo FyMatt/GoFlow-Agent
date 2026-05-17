@@ -75,7 +75,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
               </div>
               <div id="runTargetCards" class="run-target-cards" aria-label="${escapeHTML(t("chat.targetCardsAria"))}"></div>
             </div>
-            <details class="run-options-panel">
+            <details class="run-options-panel expert-mode-section">
               <summary>
                 <span>
                   <strong>${t("chat.runOptionsTitle")}</strong>
@@ -100,7 +100,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
               <span><strong>2</strong>${t("chat.helperTarget")}</span>
               <span><strong>3</strong>${t("chat.helperTrack")}</span>
             </div>
-            <div id="runContextGuide" class="run-context-guide" aria-live="polite"></div>
+            <div id="runContextGuide" class="run-context-guide expert-mode-section" aria-live="polite"></div>
           </section>
 
           <section class="run-timeline panel inset" data-tour-id="playground-timeline">
@@ -132,7 +132,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
               <div id="resultPreview" class="result-preview hidden" aria-live="polite"></div>
               <div id="resultOutput" class="result-output hidden"></div>
             </aside>
-            <details id="runCollabPanel" class="run-collab panel inset collab-panel" data-tour-id="playground-collaboration">
+            <details id="runCollabPanel" class="run-collab panel inset collab-panel expert-mode-section" data-tour-id="playground-collaboration">
               <summary class="collab-summary">
                 <div class="panel-head compact collab-head">
                   <div>
@@ -216,7 +216,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
             <button id="runHistoryRefresh" type="button" class="ghost-button">${t("chat.runHistoryRefresh")}</button>
           </div>
           <span id="runHistoryStatus" class="badge">${t("chat.runHistoryLoading")}</span>
-          <div id="runHistoryFilters" class="run-history-filters" aria-label="${escapeHTML(t("chat.runHistoryFilters"))}"></div>
+          <div id="runHistoryFilters" class="run-history-filters expert-mode-section" aria-label="${escapeHTML(t("chat.runHistoryFilters"))}"></div>
           <div id="runHistoryList" class="run-history-list"></div>
           <section class="run-history-detail-shell" aria-label="${escapeHTML(t("chat.runHistoryDetailTitle"))}">
             <div class="run-history-detail-label">
@@ -224,7 +224,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
                 <strong>${t("chat.runHistoryDetailTitle")}</strong>
                 <small>${t("chat.runHistoryDetailHelp")}</small>
               </div>
-              <span class="badge neutral">${t("chat.runHistoryDetailBadge")}</span>
+              <span class="badge neutral expert-mode-section">${t("chat.runHistoryDetailBadge")}</span>
             </div>
             <div id="runHistoryDetail" class="run-history-detail"></div>
           </section>
@@ -4365,12 +4365,90 @@ function workflowRunResultLabel(status, hasOutput) {
 }
 
 function workflowRunResultText(run) {
-  const artifacts = Array.isArray(run.artifacts) ? run.artifacts : [];
-  const artifact = [...artifacts].reverse().find(item => item.content || item.summary);
-  if (artifact) return publicResultText(artifact.content || artifact.summary || "");
   const stages = Array.isArray(run.completed_stages) ? run.completed_stages : [];
-  const stage = [...stages].reverse().find(item => item.summary || item.result?.output);
-  return publicResultText(stage?.summary || stage?.result?.output || run.summary || "");
+  const finalStage = workflowRunPreferredFinalStage(stages);
+  const finalStageText = workflowRunStagePublicOutput(finalStage);
+  if (finalStageText) return finalStageText;
+  const artifacts = Array.isArray(run.artifacts) ? run.artifacts : [];
+  const finalArtifact = workflowRunPreferredFinalArtifact(artifacts);
+  const finalArtifactText = workflowRunArtifactPublicOutput(finalArtifact);
+  if (finalArtifactText) return finalArtifactText;
+  for (const stage of [...stages].reverse()) {
+    const text = workflowRunStagePublicOutput(stage);
+    if (text) return text;
+  }
+  for (const artifact of [...artifacts].reverse()) {
+    const text = workflowRunArtifactPublicOutput(artifact);
+    if (text) return text;
+  }
+  return publicResultText(run.summary || "");
+}
+
+function workflowRunPreferredFinalStage(stages = []) {
+  return [...(Array.isArray(stages) ? stages : [])].reverse().find(stage => workflowRunNameLooksFinal(stage?.stage || stage?.name || ""));
+}
+
+function workflowRunPreferredFinalArtifact(artifacts = []) {
+  return [...(Array.isArray(artifacts) ? artifacts : [])].reverse().find(item => {
+    const label = [item?.stage, item?.kind, item?.title, item?.id].filter(Boolean).join(" ");
+    return workflowRunNameLooksFinal(label);
+  });
+}
+
+function workflowRunStagePublicOutput(stage = {}) {
+  if (!stage) return "";
+  const outputs = stage.output_values || stage.outputs || stage.result?.outputs || {};
+  const candidates = [
+    outputs.final_report,
+    outputs.final_summary,
+    outputs.summary,
+    outputs.output,
+    outputs.report,
+    stage.summary,
+    stage.result?.output
+  ];
+  return workflowRunFirstPublicOutput(candidates);
+}
+
+function workflowRunArtifactPublicOutput(artifact = {}) {
+  if (!artifact) return "";
+  return workflowRunFirstPublicOutput([artifact.content, artifact.summary]);
+}
+
+function workflowRunFirstPublicOutput(values = []) {
+  for (const value of values) {
+    const text = publicResultText(formatStructuredValue(value, true));
+    if (text && !workflowRunLooksLikeInternalArtifact(text)) return text;
+  }
+  return "";
+}
+
+function workflowRunNameLooksFinal(value = "") {
+  const text = String(value || "").toLowerCase();
+  return /\b(final|report|handoff|delivery|summary|validation)\b/.test(text) ||
+    text.includes("final-") ||
+    text.includes("-final") ||
+    text.includes("最终") ||
+    text.includes("交付") ||
+    text.includes("总结");
+}
+
+function workflowRunLooksLikeInternalArtifact(value = "") {
+  const text = String(value || "").trim();
+  if (!text) return true;
+  if (isInternalWorkflowPrompt(text)) return true;
+  if (text.length > 80 && /^[\[{]/.test(text)) {
+    try {
+      const parsed = JSON.parse(text);
+      if (parsed && typeof parsed === "object") {
+        const keys = Object.keys(parsed);
+        if (keys.some(key => ["path", "size", "content", "compilerOptions", "artifact_ref"].includes(key))) return true;
+      }
+    } catch {
+      // Keep non-JSON reports.
+    }
+  }
+  return false;
 }
 
 function historyRunResultText(run) {
@@ -5012,13 +5090,14 @@ function workflowRunDeliveryHTML(run, options = {}) {
   const hasOutput = Boolean(options.hasOutput && publicSummary && publicSummary !== t("chat.runHistoryNoSummary"));
   const summary = publicSummary || t("chat.deliveryNoSummary");
   const lastStage = stages.length ? stages[stages.length - 1] : null;
+  const finalSource = workflowRunFinalSourceLabel(run);
   const filePreview = diffPathPreview(diffs);
   const artifactPreview = artifactKindPreview(artifacts);
   const items = [
     {
       label: t("chat.deliveryFinalOutput"),
       value: hasOutput ? t("chat.deliveryReady") : t("chat.deliveryNoSummary"),
-      detail: hasOutput ? t("chat.deliveryFinalOutputHelp") : t("chat.deliveryContextHelp"),
+      detail: hasOutput ? finalSource || t("chat.deliveryFinalOutputHelp") : t("chat.deliveryContextHelp"),
       tone: hasOutput ? "good" : "neutral"
     },
     {
@@ -5057,6 +5136,17 @@ function workflowRunDeliveryHTML(run, options = {}) {
       </article>`).join("")}
     </div>
   </section>`;
+}
+
+function workflowRunFinalSourceLabel(run = {}) {
+  const stages = workflowRunStages(run);
+  const stage = workflowRunPreferredFinalStage(stages);
+  if (stage?.stage || stage?.name) return t("chat.deliveryFinalStage", { stage: localizedText(stage.stage || stage.name) });
+  const artifacts = workflowRunArtifacts(run);
+  const artifact = workflowRunPreferredFinalArtifact(artifacts);
+  const label = artifact?.title || artifact?.kind || artifact?.id || "";
+  if (label) return t("chat.deliveryFinalArtifact", { artifact: localizedText(label) });
+  return "";
 }
 
 function diffPathPreview(diffs) {

@@ -11,6 +11,7 @@ tags:
     - workflow-template
     - acceptance
     - risk
+    - report
 stages: 8
 graph:
     name: task-decomposition-plan
@@ -134,7 +135,7 @@ graph:
           agent: planner
           skill: execution-plan
           params:
-            output_contract: Emit Final Workflow Draft, Node Contracts, Data Flow, Approval Gates, Evidence Plan, and Next Steps. Include a YAML skeleton with name, description, and stages.
+            output_contract: Emit Final Workflow Draft, Node Contracts, Data Flow, Approval Gates, Evidence Plan, Handoff Summary, and Next Steps. Include a YAML skeleton with name, description, and stages.
             purpose: Produce a final workflow graph draft that can be copied into workflows/<name>/workflow.yaml or saved as a workflow template resource.
           input:
             candidate: stages.decompose.outputs.plan_graph_candidate
@@ -149,6 +150,11 @@ graph:
               title: Workflow draft
               ref: result.output
               summary: Materialized workflow graph draft with node contracts and data-flow notes.
+            - name: decomposition-handoff-report
+              kind: report
+              title: Decomposition handoff report
+              ref: result.output
+              summary: Final workflow draft, node contracts, data flow, approval gates, evidence plan, handoff summary, and next steps.
           acceptance_criteria:
             - name: draft-has-yaml
               ref: result.output
@@ -162,6 +168,10 @@ graph:
               ref: result.output
               contains: Approval Gates
               expected: draft names human or policy checkpoints
+            - name: draft-has-handoff-summary
+              ref: result.output
+              contains: Handoff Summary
+              expected: draft includes a user-facing handoff summary
           next:
             - end
           position:

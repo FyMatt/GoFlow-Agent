@@ -889,9 +889,11 @@ stages:
 
 这个模板适合用来展示 Agent、Skill、Tool、Team、Workflow Template、Policy Rule 和 Kit 如何在同一条工作流里联动。用户可以从它开始 fork，再替换其中的领域团队、技能、工具或门禁规则。
 
-`complex-project-delivery` 是复杂实现任务的推荐模板。它会把用户输入先转换为需求分析、功能需求、验收标准和项目计划，并通过检查点等待用户确认。确认后进入可持久运行的交付循环：每轮选择一个计划切片实现、验证、审查并更新计划，直到迭代输出声明 `PROJECT_COMPLETE`。循环结束后会执行整体验证，并输出包含已交付需求、变更文件、验证证据、剩余风险和产物引用的最终完成报告。
+`complex-project-delivery` 是复杂实现任务的推荐模板。它会把用户输入先转换为需求分析、功能需求、验收标准和项目计划，并通过检查点等待用户确认。确认后进入可持久运行的交付循环：每轮选择一个计划切片实现、验证、审查并更新计划，直到迭代输出声明 `PROJECT_COMPLETE`。循环结束后会执行整体验证，并输出包含已交付需求、变更文件、验证证据、剩余风险和产物引用的最终完成报告。边界清晰但仍需要完整交付闭环的任务，可以优先使用 `plan-implement-audit`。
 
 工作流模板列表会返回可视化选择器需要的构成信息：`node_types`、`agents`、`skills`、`tools`、`team_templates`、`policy_rules`、`has_control_flow`、`has_data_flow`、`has_approval` 和 `has_quality_gate`。Studio 会把这些字段展示成“节点构成、引用资源、能力标签”，让用户在应用模板前就知道它会创建什么、依赖哪些资源、是否包含分支、数据传递、审批或质量门禁。
+
+所有内置模板都按“可交付蓝图”维护，而不是松散示例。内置 Workflow Template 必须能通过图校验，包含明确结束节点，产出报告或证据产物，声明验收标准，经过 `quality_gate` 或 `policy_guard`，并最终收口到面向用户的报告、交接、发布摘要或可落地的工作流草案。这样简单起步模板也能作为复杂任务的稳定基础。
 
 ## Durable Run
 

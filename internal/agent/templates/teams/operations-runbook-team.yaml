@@ -54,16 +54,19 @@ handoffs:
     kind: runbook_plan
     subject: Operational plan and rollback
     artifacts: [runbook_plan, rollback_plan]
+    blackboard: [request, plan]
   - from: runbook-author
     to: risk-reviewer
     kind: risk_review
     subject: Runbook changes ready for review
     artifacts: [runbook_changes]
+    blackboard: [evidence, finding]
   - from: risk-reviewer
     to: operator-handoff
     kind: operator_handoff
     subject: Reviewed runbook and unresolved decisions
     artifacts: [risk_review]
+    blackboard: [finding, decision]
 blackboard_templates:
   - kind: request
     title: Original request and constraints

@@ -613,6 +613,7 @@ func (d WorkflowGraphDocument) toInternalGraph() workflowGraph {
 			Context:            workflowGraphContextToInternal(stage.Context),
 			NextStrategy:       stage.NextStrategy,
 			Next:               append([]string(nil), stage.Next...),
+			Position:           stage.Position,
 		})
 	}
 	return workflowGraph{Name: d.Name, Description: d.Description, Stages: stages}
@@ -1094,9 +1095,13 @@ func workflowGraphDocumentOutputIndex(doc WorkflowGraphDocument) map[string]map[
 			addOutput("completed_count", "number", "completed branch count")
 		case "for_each", "foreach", "map", "loop", "until", "while":
 			addOutput("iteration_count", "number", "iteration count")
+			addOutput("max_iterations", "number", "iteration limit")
+			addOutput("item_count", "number", "iteration item count")
 			addOutput("items", "array", "iteration items")
 			addOutput("outputs", "array", "iteration outputs")
 			addOutput("summaries", "array", "iteration summaries")
+			addOutput("until", "string", "loop completion condition")
+			addOutput("passed", "boolean", "loop completion status")
 		case "team", "agent_team", "team_template":
 			addOutput("team", "string", "team template name")
 			addOutput("roles", "array", "team roles")

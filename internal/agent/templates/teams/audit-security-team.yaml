@@ -54,16 +54,19 @@ handoffs:
     kind: scope_handoff
     subject: Authorized scope
     artifacts: [scope, constraints]
+    blackboard: [request, plan]
   - from: security-analyst
     to: code-auditor
     kind: evidence_handoff
     subject: Evidence and risk register
     artifacts: [risk_register, evidence]
+    blackboard: [evidence, finding]
   - from: code-auditor
     to: policy-reviewer
     kind: policy_review
     subject: Findings require policy review
     artifacts: [findings]
+    blackboard: [finding, decision]
     condition: risk_at_least(high)
 blackboard_templates:
   - kind: request

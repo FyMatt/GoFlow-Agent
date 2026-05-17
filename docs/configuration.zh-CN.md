@@ -83,6 +83,11 @@ GoFlow 可以先加载未完整配置的 Provider，让 Web Studio 正常打开�
 如果某次运行真的要使用这个 Provider，才会返回明确的配置缺失提示。`fallback_provider`
 引用不存在或引用自身仍然属于配置错误，因为这会让路由关系不明确。
 
+从 Web Studio 保存 Provider 时，GoFlow 会把它写入 `configs/providers/<name>.yaml`。
+如果表单里填的是字面量 API Key，这个值会以明文形式写进 YAML 文件。发布版或共享
+仓库建议保留指向环境变量的写法，比如 `${GOFLOW_API_KEY}`，再通过当前 shell、
+`.env` 或本地密钥存储提供真实值。
+
 ## MCP server 配置
 
 MCP server 建议放在 `configs/mcp_servers/<name>.yaml`。

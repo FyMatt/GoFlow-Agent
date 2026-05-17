@@ -11,12 +11,17 @@ cross-platform sandbox.
 For user-facing install commands, see [Installation And Deployment](./install.md).
 For Chinese instructions, see [安装与部署](./install.zh-CN.md).
 
+Keep release and shared deployments on environment-backed Provider config. If a
+Provider is saved from Web Studio with a literal API key, the key is written to
+`configs/providers/<name>.yaml` as plain text.
+
 ## Local Windows
 
 Set provider credentials, then use the packaged command script:
 
 ```bat
 set GOFLOW_BASE_URL=https://api.deepseek.com/v1
+rem Optional: you can also configure the Provider from Web Studio settings.
 set GOFLOW_API_KEY=your-key
 set GOFLOW_MODEL=deepseek-chat
 set GOFLOW_BACKUP_BASE_URL=%GOFLOW_BASE_URL%
@@ -26,8 +31,10 @@ set GOFLOW_BACKUP_MODEL=%GOFLOW_MODEL%
 run-goflow.example.cmd D:\Projects\my-workspace
 ```
 
-The script runs the CLI against the selected workspace. Edit the script or pass
-an argument when you want a different target directory.
+The script starts HTTP/Web Studio at `http://127.0.0.1:8080/console` against
+the selected workspace. Pass an argument when you want a different target
+directory. To use the CLI instead, run `go run ./cmd/goflow` from source or
+`bin\goflow.exe` from a release archive.
 
 ## Local Linux
 

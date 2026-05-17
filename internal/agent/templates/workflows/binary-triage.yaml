@@ -9,7 +9,9 @@ tags:
     - binary
     - reverse
     - security
-stages: 8
+    - quality_gate
+    - evidence
+stages: 9
 graph:
     name: binary-triage
     description: Static binary triage workflow for defensive vulnerability research.
@@ -27,8 +29,27 @@ graph:
           node_type: agent
           agent: planner
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Analysis Plan, Target Assumptions, Tools Needed, Evidence Checklist, Risk Criteria, and Stop Conditions.
+            purpose: Scope a defensive static triage before collecting binary evidence.
           outputs:
             plan: result.output
+            summary: result.summary
+          artifacts:
+            - name: binary-analysis-plan
+              kind: report
+              title: Binary analysis plan
+              ref: result.output
+              summary: Analysis scope, assumptions, tools, evidence checklist, risk criteria, and stop conditions.
+          acceptance_criteria:
+            - name: has-analysis-plan
+              ref: result.output
+              contains: Analysis Plan
+              expected: plan explains the triage approach
+            - name: has-evidence-checklist
+              ref: result.output
+              contains: Evidence Checklist
+              expected: plan lists evidence needed for risk classification
           next:
             - triage
           position:
@@ -38,16 +59,54 @@ graph:
           node_type: skill
           agent: auditor
           skill: binary-vulnerability-research
+          params:
+            output_contract: Emit sections named Evidence Summary, Static Indicators, Risk Classification, Confidence, Limitations, and Recommended Next Step.
+            evidence_rule: Prefer reproducible static observations and clearly mark assumptions.
           input:
             plan: stages.plan.outputs.plan
           outputs:
             evidence: result.output
             findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: binary-triage-evidence
+              kind: evidence
+              title: Binary triage evidence
+              ref: result.output
+              summary: Static indicators, risk classification, confidence, limitations, and next step.
+          acceptance_criteria:
+            - name: has-evidence-summary
+              ref: result.output
+              contains: Evidence Summary
+              expected: triage summarizes observed evidence
+            - name: has-risk-classification
+              ref: result.output
+              contains: Risk Classification
+              expected: triage classifies risk before routing
           next:
-            - risk
+            - quality
           position:
             x: 580
             "y": 170
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: plan,triage
+            min_score: "75"
+            reason: binary triage evidence is missing a plan, evidence summary, or risk classification
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            allow_unknown: "false"
+          routes:
+            pass: risk
+            warning: checkpoint
+            fail: report
+          position:
+            x: 850
+            "y": 200
         - name: risk
           node_type: switch
           agent: ""
@@ -57,7 +116,7 @@ graph:
             critical: checkpoint
             default: report
           position:
-            x: 850
+            x: 1120
             "y": 200
         - name: checkpoint
           node_type: checkpoint
@@ -68,38 +127,73 @@ graph:
           next:
             - deep-review
           position:
-            x: 1120
+            x: 1380
             "y": 120
         - name: deep-review
           node_type: skill
           agent: auditor
           skill: code-audit
+          params:
+            output_contract: Emit sections named Deep Review Findings, Exploitability Notes, False Positive Checks, Evidence Gaps, and Containment Advice.
           input:
             evidence: stages.triage.outputs.evidence
           outputs:
             review: result.output
+            summary: result.summary
+          artifacts:
+            - name: binary-deep-review
+              kind: report
+              title: Binary deep review
+              ref: result.output
+              summary: Deeper review findings, false-positive checks, evidence gaps, and containment advice.
+          acceptance_criteria:
+            - name: has-deep-review-findings
+              ref: result.output
+              contains: Deep Review Findings
+              expected: deep review explains critical-path findings
           next:
             - report
           position:
-            x: 1380
+            x: 1660
             "y": 120
         - name: report
           node_type: skill
           agent: planner
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Final Risk Summary, Evidence, Classification, Confidence, Operator Actions, and Artifact References.
+            purpose: Produce a defensive user-facing binary triage report for either clean, warning, or critical paths.
           input:
+            deep_review: stages.deep-review.outputs.review
             evidence: stages.triage.outputs.evidence
+            quality_status: stages.quality.outputs.quality_status
           outputs:
             report: result.output
+            summary: result.summary
+          artifacts:
+            - name: binary-triage-report
+              kind: report
+              title: Binary triage report
+              ref: result.output
+              summary: Final risk summary, classification, confidence, operator actions, and artifact references.
+          acceptance_criteria:
+            - name: has-final-risk-summary
+              ref: result.output
+              contains: Final Risk Summary
+              expected: report summarizes the risk result
+            - name: has-operator-actions
+              ref: result.output
+              contains: Operator Actions
+              expected: report tells the user what to do next
           next:
             - end
           position:
-            x: 1380
+            x: 1660
             "y": 300
         - name: end
           node_type: end
           agent: ""
           skill: ""
           position:
-            x: 1660
+            x: 1940
             "y": 220

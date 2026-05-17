@@ -9,7 +9,7 @@ stages:
         - intake
       position:
         x: 180
-        "y": 779
+        "y": 330
     - name: intake
       node_type: agent
       agent: planner
@@ -24,7 +24,7 @@ stages:
         risks: result.findings
       artifacts:
         - name: intake-report
-          kind: plan
+          kind: report
           title: Intake report
           ref: result.output
           summary: Clarified objective, affected files, constraints, acceptance checks, risks, and open questions.
@@ -44,8 +44,8 @@ stages:
       next:
         - plan
       position:
-        x: 732
-        "y": 761
+        x: 460
+        "y": 290
     - name: plan
       node_type: skill
       agent: planner
@@ -61,7 +61,7 @@ stages:
         summary: result.summary
       artifacts:
         - name: implementation-plan
-          kind: plan
+          kind: report
           title: Implementation plan
           ref: result.output
           summary: Ordered steps, target files, verification commands, rollback notes, and handoff guidance.
@@ -93,8 +93,8 @@ stages:
       next:
         - implement
       position:
-        x: 1344
-        "y": 761
+        x: 820
+        "y": 290
     - name: implement
       node_type: agent
       agent: fixer
@@ -111,7 +111,7 @@ stages:
         summary: result.summary
       artifacts:
         - name: implementation-report
-          kind: change_report
+          kind: report
           title: Implementation report
           ref: result.output
           summary: Files changed, verification notes, and residual implementation risk.
@@ -140,8 +140,8 @@ stages:
       next:
         - verify
       position:
-        x: 1956
-        "y": 761
+        x: 1180
+        "y": 290
     - name: verify
       node_type: skill
       agent: auditor
@@ -182,8 +182,8 @@ stages:
       next:
         - audit
       position:
-        x: 2568
-        "y": 761
+        x: 1540
+        "y": 290
     - name: audit
       node_type: skill
       agent: auditor
@@ -201,7 +201,7 @@ stages:
         summary: result.summary
       artifacts:
         - name: audit-report
-          kind: audit
+          kind: report
           title: Audit report
           ref: result.output
           summary: Severity-ordered findings, missed requirements, safety notes, test gaps, and recommendation.
@@ -226,8 +226,8 @@ stages:
       next:
         - quality
       position:
-        x: 3180
-        "y": 761
+        x: 1900
+        "y": 290
     - name: quality
       node_type: quality_gate
       agent: ""
@@ -239,14 +239,14 @@ stages:
         require_acceptance: "true"
         require_evidence: "true"
         require_verification: "true"
-        stage: audit
+        stages: implement,verify,audit
       routes:
         fail: revise
-        pass: output
+        pass: final-handoff
         warning: operator-review
       position:
-        x: 3792
-        "y": 761
+        x: 2260
+        "y": 290
     - name: operator-review
       node_type: checkpoint
       agent: ""
@@ -254,10 +254,10 @@ stages:
       params:
         prompt: The quality gate passed with warnings. Review the plan, implementation, verification, and audit artifacts before final handoff.
       next:
-        - output
+        - final-handoff
       position:
-        x: 4404
-        "y": 623
+        x: 2620
+        "y": 150
     - name: revise
       node_type: skill
       agent: planner
@@ -275,19 +275,74 @@ stages:
         summary: result.summary
       artifacts:
         - name: revision-plan
-          kind: plan
+          kind: report
           title: Revision plan
           ref: result.output
           summary: Blocking issues, missing evidence, and next action after a failed quality gate.
       next:
+        - final-handoff
+      position:
+        x: 2620
+        "y": 430
+    - name: final-handoff
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        output_contract: Emit sections named Final Status, Delivered Changes, Verification Evidence, Audit Summary, Remaining Risks, and Next Steps.
+        purpose: Produce a concise user-facing handoff whether the workflow passed, needs operator review, or requires revision.
+      input:
+        audit: stages.audit.outputs.audit
+        implementation: stages.implement.outputs.implementation_report
+        plan: stages.plan.outputs.plan
+        quality_status: stages.quality.outputs.quality_status
+        revision_plan: stages.revise.outputs.revision_plan
+        verification: stages.verify.outputs.verification
+      outputs:
+        final_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: final-handoff-report
+          kind: report
+          title: Final handoff report
+          ref: result.output
+          summary: Final status, delivered changes, verification evidence, audit summary, risks, and next steps.
+      acceptance_criteria:
+        - name: has-final-status
+          ref: result.output
+          contains: Final Status
+          expected: final handoff declares the outcome
+        - name: has-verification-evidence
+          ref: result.output
+          contains: Verification Evidence
+          expected: final handoff includes verification evidence or the reason it is missing
+        - name: has-next-steps
+          ref: result.output
+          contains: Next Steps
+          expected: final handoff gives concrete next steps
+      context:
+        include:
+            - previous.summary
+            - previous.artifacts.audit-report
+            - previous.artifacts.verification-report
+            - previous.artifacts.revision-plan
+            - stages.audit.outputs.audit
+            - stages.verify.outputs.verification
+            - stages.revise.outputs.revision_plan
+            - files.changed
+        exclude:
+            - raw_tool_logs
+            - large_file_contents
+        max_tokens: 4200
+      next:
         - output
       position:
-        x: 4404
-        "y": 899
+        x: 2980
+        "y": 290
     - name: output
       node_type: end
       agent: ""
       skill: ""
       position:
-        x: 5016
-        "y": 779
+        x: 3340
+        "y": 310

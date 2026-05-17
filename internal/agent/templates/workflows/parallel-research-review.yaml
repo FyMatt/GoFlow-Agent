@@ -9,7 +9,9 @@ tags:
     - parallel
     - join
     - research
-stages: 7
+    - quality_gate
+    - report
+stages: 8
 graph:
     name: parallel-research-review
     description: Parallel-style research and review workflow with a join barrier.
@@ -37,8 +39,27 @@ graph:
           node_type: agent
           agent: planner
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Research Summary, Sources Or Assumptions, Key Evidence, Open Questions, and Recommended Focus.
+            purpose: Produce the planning and research branch for the consolidated review.
           outputs:
             research: result.output
+            summary: result.summary
+          artifacts:
+            - name: research-branch-report
+              kind: report
+              title: Research branch report
+              ref: result.output
+              summary: Research summary, sources or assumptions, evidence, open questions, and focus recommendation.
+          acceptance_criteria:
+            - name: has-research-summary
+              ref: result.output
+              contains: Research Summary
+              expected: research branch summarizes its evidence
+            - name: has-key-evidence
+              ref: result.output
+              contains: Key Evidence
+              expected: research branch lists evidence or assumptions
           next:
             - join
           position:
@@ -48,9 +69,28 @@ graph:
           node_type: skill
           agent: auditor
           skill: code-audit
+          params:
+            output_contract: Emit sections named Audit Summary, Findings, Evidence Gaps, Risk Assessment, and Recommendation.
+            review_scope: Review the request independently from the research branch and identify missing evidence.
           outputs:
             audit: result.output
             findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: audit-branch-report
+              kind: report
+              title: Audit branch report
+              ref: result.output
+              summary: Audit summary, findings, evidence gaps, risk assessment, and recommendation.
+          acceptance_criteria:
+            - name: has-audit-summary
+              ref: result.output
+              contains: Audit Summary
+              expected: audit branch summarizes findings
+            - name: has-recommendation
+              ref: result.output
+              contains: Recommendation
+              expected: audit branch gives a recommendation
           next:
             - join
           position:
@@ -61,28 +101,67 @@ graph:
           agent: ""
           skill: ""
           next:
-            - report
+            - quality
           position:
             x: 900
+            "y": 220
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: research,audit
+            min_score: "80"
+            reason: parallel branches did not produce enough research, audit, or evidence quality
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            allow_unknown: "false"
+          routes:
+            pass: report
+            warning: report
+            fail: report
+          position:
+            x: 1180
             "y": 220
         - name: report
           node_type: skill
           agent: planner
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Consolidated Report, Research Evidence, Audit Findings, Quality Decision, Residual Risks, and Next Steps.
+            purpose: Merge the parallel branches into one user-facing decision report.
           input:
             audit: stages.audit.outputs.audit
+            quality_status: stages.quality.outputs.quality_status
             research: stages.research.outputs.research
           outputs:
             report: result.output
+            summary: result.summary
+          artifacts:
+            - name: consolidated-research-report
+              kind: report
+              title: Consolidated research report
+              ref: result.output
+              summary: Consolidated evidence, audit findings, quality decision, residual risks, and next steps.
+          acceptance_criteria:
+            - name: has-consolidated-report
+              ref: result.output
+              contains: Consolidated Report
+              expected: report merges both branches
+            - name: has-next-steps
+              ref: result.output
+              contains: Next Steps
+              expected: report gives concrete follow-up
           next:
             - end
           position:
-            x: 1180
+            x: 1460
             "y": 220
         - name: end
           node_type: end
           agent: ""
           skill: ""
           position:
-            x: 1460
+            x: 1740
             "y": 220

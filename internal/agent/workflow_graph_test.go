@@ -2307,14 +2307,14 @@ func TestWorkflowTemplateCatalogIncludesComplexProjectDelivery(t *testing.T) {
 	if !ok {
 		t.Fatal("expected complex-project-delivery template")
 	}
-	if template.Category != "software" || template.Graph.Name != "complex-project-delivery" || len(template.Graph.Stages) != 12 {
+	if template.Category != "software" || template.Graph.Name != "complex-project-delivery" || len(template.Graph.Stages) != 13 {
 		t.Fatalf("unexpected complex project delivery template: %#v", template)
 	}
 	validation := runner.ValidateWorkflowGraphDocument("complex-project-delivery", template.Graph)
 	if !validation.Valid {
 		t.Fatalf("expected valid complex project delivery graph, got %#v", validation)
 	}
-	requiredStages := []string{"intake", "plan", "confirm-plan", "delivery-loop", "iteration", "loop-quality", "final-validation", "final-report"}
+	requiredStages := []string{"intake", "plan", "confirm-plan", "delivery-loop", "iteration", "loop-quality", "final-validation", "final-quality", "final-report"}
 	for _, stageName := range requiredStages {
 		if !workflowGraphHasStage(template.Graph, stageName) {
 			t.Fatalf("expected complex project delivery template to include stage %q, got %#v", stageName, template.Graph.Stages)
@@ -2324,6 +2324,7 @@ func TestWorkflowTemplateCatalogIncludesComplexProjectDelivery(t *testing.T) {
 	foundLoop := false
 	foundIteration := false
 	foundFinalValidation := false
+	foundFinalQuality := false
 	foundFinalReport := false
 	for _, stage := range template.Graph.Stages {
 		if stage.Name == "confirm-plan" && stage.NodeType == "checkpoint" && strings.Contains(stage.Params["prompt"], "Approve") {
@@ -2338,12 +2339,15 @@ func TestWorkflowTemplateCatalogIncludesComplexProjectDelivery(t *testing.T) {
 		if stage.Name == "final-validation" && stage.Agent == "auditor" && len(stage.Artifacts) == 1 && len(stage.Context.Include) >= 6 {
 			foundFinalValidation = true
 		}
+		if stage.Name == "final-quality" && stage.NodeType == "quality_gate" && stage.Routes["pass"] == "final-report" && stage.Routes["fail"] == "final-report" {
+			foundFinalQuality = true
+		}
 		if stage.Name == "final-report" && stage.Outputs["final_report"] == "result.output" && len(stage.AcceptanceCriteria) >= 3 {
 			foundFinalReport = true
 		}
 	}
-	if !foundConfirmation || !foundLoop || !foundIteration || !foundFinalValidation || !foundFinalReport {
-		t.Fatalf("expected confirmation, loop, iteration, final validation, and final report stages, got %#v", template.Graph.Stages)
+	if !foundConfirmation || !foundLoop || !foundIteration || !foundFinalValidation || !foundFinalQuality || !foundFinalReport {
+		t.Fatalf("expected confirmation, loop, iteration, final validation, final quality, and final report stages, got %#v", template.Graph.Stages)
 	}
 	rendered, err := RenderWorkflowTemplateYAML("complex-delivery-copy", "complex-project-delivery")
 	if err != nil {
@@ -2353,6 +2357,162 @@ func TestWorkflowTemplateCatalogIncludesComplexProjectDelivery(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected rendered complex project delivery template to contain %q, got %q", want, rendered)
 		}
+	}
+}
+
+func TestWorkflowTemplateCatalogIncludesPlanImplementAudit(t *testing.T) {
+	runtimeRef := newWorkflowGraphRuntime(t, t.TempDir(), workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
+	runner := runtimeRef.WorkflowRunner()
+	template, ok := runner.WorkflowTemplate("plan-implement-audit")
+	if !ok {
+		t.Fatal("expected plan-implement-audit template")
+	}
+	if template.Category != "software" || template.Graph.Name != "plan-implement-audit" || len(template.Graph.Stages) != 11 {
+		t.Fatalf("unexpected plan implement audit template: %#v", template)
+	}
+	validation := runner.ValidateWorkflowGraphDocument("plan-implement-audit", template.Graph)
+	if !validation.Valid {
+		t.Fatalf("expected valid plan implement audit graph, got %#v", validation)
+	}
+	for _, stageName := range []string{"clarify", "plan", "implement", "verify", "audit", "quality", "final-report"} {
+		if !workflowGraphHasStage(template.Graph, stageName) {
+			t.Fatalf("expected plan implement audit template to include stage %q, got %#v", stageName, template.Graph.Stages)
+		}
+	}
+	rendered, err := RenderWorkflowTemplateYAML("plan-implement-copy", "plan-implement-audit")
+	if err != nil {
+		t.Fatalf("RenderWorkflowTemplateYAML: %v", err)
+	}
+	for _, want := range []string{"Verification Evidence", "quality_gate", "final-report", "revision-summary"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected rendered plan implement audit template to contain %q, got %q", want, rendered)
+		}
+	}
+}
+
+func TestWorkflowRunnerBuiltInPlanFixAuditCompletesFinalHandoff(t *testing.T) {
+	runtimeHome := t.TempDir()
+	rendered, err := RenderWorkflowTemplateYAML("plan-fix-audit", "plan-fix-audit")
+	if err != nil {
+		t.Fatalf("RenderWorkflowTemplateYAML: %v", err)
+	}
+	writeWorkflowGraphYAML(t, runtimeHome, "plan-fix-audit", rendered)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Content: "Goal: ship fix\nAffected Files: README.md\nConstraints: preserve user edits\nAcceptance Checks: go test ./...\nRisks: low\nOpen Questions: none"}},
+		{Message: schema.Message{Content: "Implementation Steps: update docs\nTarget Files: README.md\nVerification Commands: go test ./...\nRollback Notes: revert patch\nHandoff: implement exactly this"}},
+		{Message: schema.Message{Content: "Final Status: complete\nDelivered Changes: fixed docs\nVerification Evidence: go test ./... passed\nAudit Summary: no findings\nRemaining Risks: none\nNext Steps: release"}},
+	}}
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "Change Summary: updated docs\nFiles Changed: README.md\nVerification Notes: go test ./... passed\nResidual Risk: none"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Content: "Verification Result: passed\nCommands Run: go test ./...\nFailures: none\nCoverage: package tests\nResidual Risk: low"}},
+		{Message: schema.Message{Content: "Findings: none\nSeverity Order: none\nMissed Requirements: none\nTest Gaps: none\nSafety Notes: safe\nRecommendation: ship"}},
+	}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "plan-fix-audit", "ship a documented fix", true, nil)
+	if err != nil {
+		t.Fatalf("Run plan-fix-audit: %v", err)
+	}
+	if result.Status != "completed" || !workflowStageResultNamesContain(result.CompletedStages, "quality") || !workflowStageResultNamesContain(result.CompletedStages, "final-handoff") {
+		t.Fatalf("expected completed workflow through quality and final handoff, got %#v", result.CompletedStages)
+	}
+	quality := workflowGraphStageResultByName(t, result.CompletedStages, "quality")
+	if quality.Output.Variables["route"] != "pass" || quality.Output.Variables["quality_status"] != "passed" {
+		t.Fatalf("expected quality gate to pass, got %#v", quality.Output.Variables)
+	}
+	final := workflowGraphStageResultByName(t, result.CompletedStages, "final-handoff")
+	if !strings.Contains(final.Result.Output, "Final Status") || !strings.Contains(final.Result.Output, "Verification Evidence") {
+		t.Fatalf("expected final handoff with status and evidence, got %q", final.Result.Output)
+	}
+}
+
+func TestWorkflowRunnerBuiltInPlanImplementAuditCompletesFinalReport(t *testing.T) {
+	runtimeHome := t.TempDir()
+	rendered, err := RenderWorkflowTemplateYAML("plan-implement-audit", "plan-implement-audit")
+	if err != nil {
+		t.Fatalf("RenderWorkflowTemplateYAML: %v", err)
+	}
+	writeWorkflowGraphYAML(t, runtimeHome, "plan-implement-audit", rendered)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Content: "Objective: ship bounded change\nScope: small\nConstraints: preserve user edits\nTarget Areas: docs\nAcceptance Criteria: user can see result\nRisks: low\nAssumptions: tests available"}},
+		{Message: schema.Message{Content: "Implementation Plan: update docs\nFiles Or Modules: README.md\nChange Steps: edit file\nVerification Commands: go test ./...\nReview Checklist: acceptance\nRollback Plan: revert patch\nDone Criteria: checks pass"}},
+		{Message: schema.Message{Content: "Final Status: complete\nDelivered Work: bounded change\nFiles Changed: README.md\nVerification Evidence: go test ./... passed\nAudit Outcome: accepted\nRemaining Risks: none\nNext Steps: release"}},
+	}}
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "Implementation Summary: updated docs\nFiles Changed: README.md\nVerification Attempted: go test ./...\nDeviations: none\nRemaining Work: none\nRisk Notes: low"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Content: "Verification Result: passed\nCommands Run: go test ./...\nCoverage: package tests\nFailures: none\nEvidence: all checks passed\nResidual Risk: low"}},
+		{Message: schema.Message{Content: "Audit Decision: accept\nFindings: none\nMissed Requirements: none\nTest Gaps: none\nSafety Notes: safe\nRecommendation: ship\nRelease Readiness: ready"}},
+	}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "plan-implement-audit", "ship bounded change", true, nil)
+	if err != nil {
+		t.Fatalf("Run plan-implement-audit: %v", err)
+	}
+	if result.Status != "completed" || !workflowStageResultNamesContain(result.CompletedStages, "quality") || !workflowStageResultNamesContain(result.CompletedStages, "final-report") {
+		t.Fatalf("expected completed workflow through quality and final report, got %#v", result.CompletedStages)
+	}
+	quality := workflowGraphStageResultByName(t, result.CompletedStages, "quality")
+	if quality.Output.Variables["route"] != "pass" || quality.Output.Variables["quality_status"] != "passed" {
+		t.Fatalf("expected quality gate to pass, got %#v", quality.Output.Variables)
+	}
+	final := workflowGraphStageResultByName(t, result.CompletedStages, "final-report")
+	if !strings.Contains(final.Result.Output, "Final Status") || !strings.Contains(final.Result.Output, "Verification Evidence") {
+		t.Fatalf("expected final report with status and evidence, got %q", final.Result.Output)
+	}
+}
+
+func TestWorkflowRunnerComplexProjectDeliveryCompletesAfterConfirmationAndFinalQuality(t *testing.T) {
+	runtimeHome := t.TempDir()
+	rendered, err := RenderWorkflowTemplateYAML("complex-project-delivery", "complex-project-delivery")
+	if err != nil {
+		t.Fatalf("RenderWorkflowTemplateYAML: %v", err)
+	}
+	writeWorkflowGraphYAML(t, runtimeHome, "complex-project-delivery", rendered)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Content: "User Goal: deliver project\nProblem Context: repo\nFunctional Requirements: feature A\nNon-Functional Requirements: stable\nConstraints: scoped\nUnknowns: none\nAcceptance Criteria: feature works\nRisks: low\nClarifying Questions: none"}},
+		{Message: schema.Message{Content: "Project Plan: deliver in slices\nMilestones: one\nWork Slices: slice A\nDependencies: none\nTarget Files: README.md\nVerification Strategy: go test ./...\nReview Strategy: audit\nStop Conditions: PROJECT_COMPLETE\nUser Checkpoints: confirm plan\nDefinition of Done: requirements delivered"}},
+		{Message: schema.Message{Content: "Completion Summary: complete\nRequirements Delivered: feature A\nFiles Changed: README.md\nVerification Evidence: go test ./... passed\nReview Notes: final quality passed\nResidual Risks: none\nUser Follow-Up: none\nArtifact References: completion-report"}},
+	}}
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "Iteration Number: 1\nSelected Work Slice: slice A\nImplementation Summary: implemented feature A\nFiles Changed: README.md\nVerification Performed: go test ./... passed\nReview Findings: none\nPlan Update: all work complete\nRemaining Work: none\nCompletion Decision: PROJECT_COMPLETE\nNext Action: final validation"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "Final Validation Result: passed\nFull Test Pass: yes\nCommands Run: go test ./...\nRequirements Coverage: feature A covered\nFailures: none\nResidual Risks: low\nRelease Recommendation: release"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "complex-project-delivery", "build the project", true, nil)
+	if err != nil {
+		t.Fatalf("Run complex-project-delivery: %v", err)
+	}
+	for _, stage := range []string{"confirm-plan", "delivery-loop", "loop-quality", "final-validation", "final-quality", "final-report"} {
+		if !workflowStageResultNamesContain(result.CompletedStages, stage) {
+			t.Fatalf("expected completed stage %s in %#v", stage, result.CompletedStages)
+		}
+	}
+	loopQuality := workflowGraphStageResultByName(t, result.CompletedStages, "loop-quality")
+	if loopQuality.Output.Variables["route"] != "pass" || loopQuality.Output.Variables["quality_status"] != "passed" {
+		t.Fatalf("expected loop quality to pass, got %#v", loopQuality.Output.Variables)
+	}
+	finalQuality := workflowGraphStageResultByName(t, result.CompletedStages, "final-quality")
+	if finalQuality.Output.Variables["route"] != "pass" || finalQuality.Output.Variables["quality_status"] != "passed" {
+		t.Fatalf("expected final quality to pass, got %#v", finalQuality.Output.Variables)
+	}
+	final := workflowGraphStageResultByName(t, result.CompletedStages, "final-report")
+	if !strings.Contains(final.Result.Output, "Completion Summary") || !strings.Contains(final.Result.Output, "Artifact References") {
+		t.Fatalf("expected completion report with artifact references, got %q", final.Result.Output)
 	}
 }
 
@@ -3739,6 +3899,17 @@ func writeWorkflowGraph(t *testing.T, runtimeHome, name, content string) {
 	}
 }
 
+func writeWorkflowGraphYAML(t *testing.T, runtimeHome, name, content string) {
+	t.Helper()
+	dir := filepath.Join(runtimeHome, "workflows", name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("MkdirAll workflow dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(content), 0o644); err != nil {
+		t.Fatalf("WriteFile workflow graph: %v", err)
+	}
+}
+
 func writeWorkflowPolicyRule(t *testing.T, runtimeHome, name, content string) {
 	t.Helper()
 	dir := filepath.Join(runtimeHome, "policies", "workflow_rules")
@@ -3766,6 +3937,17 @@ func workflowStageResultNamesContain(stages []WorkflowStageResult, want string) 
 		}
 	}
 	return false
+}
+
+func workflowGraphStageResultByName(t *testing.T, stages []WorkflowStageResult, want string) WorkflowStageResult {
+	t.Helper()
+	for _, stage := range stages {
+		if string(stage.Stage) == want {
+			return stage
+		}
+	}
+	t.Fatalf("stage %s not found in %#v", want, stages)
+	return WorkflowStageResult{}
 }
 
 func workflowGraphRunSnapshotByID(t *testing.T, runtimeRef *Runtime, runID string) session.WorkflowRunSnapshot {

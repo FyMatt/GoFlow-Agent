@@ -309,6 +309,11 @@ the top-level `providers:` map. GoFlow can start while `base_url`, `api_key`, or
 fields before running an Agent that uses this Provider, then restart GoFlow if
 the active runtime already loaded the old Provider registry.
 
+If you later save the Provider from Web Studio with a literal API key, that key
+is written to the generated YAML file as plain text. Keep scaffolded providers
+using environment references, such as `${DEEPSEEK_API_KEY}`, when the file will
+be committed or shared.
+
 The default Provider scaffold is also file-backed. The embedded template is
 `internal/scaffold/templates/config/providers/default.yaml.tmpl`, and runtime
 homes can override it with `templates/config/providers/default.yaml.tmpl`. The
@@ -364,6 +369,7 @@ GET /api/workflow-templates/{name}
 Current built-in templates:
 
 - `complex-project-delivery`
+- `plan-implement-audit`
 - `task-decomposition-plan`
 - `multi-domain-intake-router`
 - `agent-framework-extension`
@@ -383,12 +389,21 @@ Use `complex-project-delivery` for large implementation requests that need to
 stay stable across many iterations. It analyzes the user's requirement,
 extracts functional requirements, builds a user-confirmed project plan, runs an
 implementation/verification/review/plan-update loop until the plan is complete,
-then performs final validation and writes a completion report.
+then performs final validation and writes a completion report. Use
+`plan-implement-audit` for a bounded task that should still produce planning,
+implementation, verification, audit, quality-gate evidence, and a final report.
 
 Use `task-decomposition-plan` before high-risk or broad tasks when you want the
 agent to produce a reviewable workflow draft with node contracts, data flow,
 artifacts, risk labels, and acceptance criteria before any implementation
 workflow runs.
+
+The shipped workflow and team templates are also covered by quality checks:
+workflow templates must validate, emit replay artifacts, declare acceptance
+criteria, pass through a quality or policy gate, and end in a report, handoff,
+publish summary, or materialized workflow draft. Team templates must include
+role responsibilities, handoffs, shared blackboard references, and output
+contracts.
 
 Use `multi-domain-intake-router` as the broad first-run template. It collects
 domain and scope information, routes to software, security, binary,

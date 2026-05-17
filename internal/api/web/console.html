@@ -9,9 +9,12 @@
       try {
         var stored = localStorage.getItem("goflow.theme");
         var theme = stored === "dark" ? "dark" : "light";
+        var mode = localStorage.getItem("goflow.experienceMode") === "expert" ? "expert" : "simple";
         document.documentElement.dataset.theme = theme;
+        document.documentElement.dataset.experience = mode;
       } catch (error) {
         document.documentElement.dataset.theme = "light";
+        document.documentElement.dataset.experience = "simple";
       }
     }());
   </script>
@@ -82,6 +85,10 @@
         </div>
         <div class="top-actions">
           <button id="tourToggle" class="ghost-button" data-tour-id="tour-toggle" data-i18n="tour.start">Start tour</button>
+          <div id="experienceToggle" class="experience-toggle" role="group" aria-label="Experience mode" data-i18n-aria-label="experience.aria">
+            <button type="button" data-experience-mode="simple" aria-pressed="true" data-i18n="experience.simple">Normal</button>
+            <button type="button" data-experience-mode="expert" aria-pressed="false" data-i18n="experience.expert">Expert</button>
+          </div>
           <button id="themeToggle" class="ghost-button theme-toggle" type="button" aria-live="polite">Theme</button>
           <select id="languageSelect" aria-label="Language" data-i18n-aria-label="common.language">
             <option value="en">English</option>

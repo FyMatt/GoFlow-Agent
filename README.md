@@ -125,17 +125,25 @@ export GOFLOW_BACKUP_API_KEY=$GOFLOW_API_KEY
 export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
 ```
 
-For a ready-to-edit template, copy `.env.example` and fill in your own values,
-or paste the API Key directly into the Provider resource in Web Studio.
+For a ready-to-edit template, copy `.env.example` and fill in your own values.
+If you save a Provider from Web Studio with a literal API key, GoFlow writes it
+to `configs/providers/<name>.yaml` as plain text. For release branches or shared
+repos, keep the committed Provider file using `${GOFLOW_API_KEY}` and supply
+the real value through `.env`, your shell, or another local secret store.
 
-On Windows, set the key in your shell and use the bootstrap script:
+On Windows, use the bootstrap script. You can set a key first or configure the
+Provider later from Web Studio settings:
 
 ```bat
 set GOFLOW_API_KEY=your-deepseek-key
 run-goflow.example.cmd
 ```
 
-You can edit `run-goflow.example.cmd` to point `--workspace` at your own target directory.
+The script starts HTTP/Web Studio at `http://127.0.0.1:8080/console`. Pass a
+workspace path as the first argument when you want to work on another project,
+for example `run-goflow.example.cmd D:\Projects\my-workspace`. To use the CLI
+instead, run `go run ./cmd/goflow` from source or `bin\goflow.exe` from a
+release archive.
 
 The bootstrap script fills in DeepSeek defaults without embedding credentials in the repo.
 
@@ -309,9 +317,17 @@ exit
 
 `--approve` pre-approves the planner -> fixer stage transition. Without it, GoFlow first asks whether to enter the fixer stage, then separately prompts again if a fixer tool call requires confirmation.
 
-`/new-workflow <name> [--template <template>]` creates `workflows/<name>/workflow.yaml`. The default template is `plan-fix-audit`; richer built-ins include `complex-project-delivery`, `agent-framework-extension`, `software-quality-gate`, `web-research-risk`, `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`, `docs-review-publish`, `operations-runbook`, `customer-support-triage`, `human-input-security-review`, and `software-team-review-gate`. That file is executable through `/workflow <name> <request>` and can declare named stages with `agent`, `skill`, explicit `input`/`outputs`, replay `artifacts`, control nodes such as `condition`, `policy_guard`, `quality_gate`, `parallel`/`join`, `for_each`, `loop`, and `sub_workflow`, approval gates, and `next` edges.
+`/new-workflow <name> [--template <template>]` creates `workflows/<name>/workflow.yaml`. The default template is `plan-fix-audit`; richer built-ins include `complex-project-delivery`, `plan-implement-audit`, `agent-framework-extension`, `software-quality-gate`, `web-research-risk`, `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`, `docs-review-publish`, `operations-runbook`, `customer-support-triage`, `human-input-security-review`, and `software-team-review-gate`. That file is executable through `/workflow <name> <request>` and can declare named stages with `agent`, `skill`, explicit `input`/`outputs`, replay `artifacts`, control nodes such as `condition`, `policy_guard`, `quality_gate`, `parallel`/`join`, `for_each`, `loop`, and `sub_workflow`, approval gates, and `next` edges.
 
-Use `complex-project-delivery` for broad implementation work that should keep running until the accepted plan is complete: it analyzes requirements, builds a user-confirmed project plan, iterates implementation with verification and review, updates plan state, runs final validation, and emits a completion report.
+Shipped workflow templates are held to a delivery quality bar: each built-in
+template validates as a graph, includes an explicit end node, emits replayable
+report/evidence artifacts, declares acceptance criteria, uses a quality or
+policy gate, and finishes with a user-facing report, handoff, publish summary,
+or materialized workflow draft. Shipped team templates likewise declare role
+responsibilities, handoffs, shared blackboard references, quorum presets where
+needed, and output contracts.
+
+Use `complex-project-delivery` for broad implementation work that should keep running until the accepted plan is complete: it analyzes requirements, builds a user-confirmed project plan, iterates implementation with verification and review, updates plan state, runs final validation, and emits a completion report. Use `plan-implement-audit` for one bounded task that still needs planning, implementation, verification, audit, a quality gate, and a final report.
 
 `plan-fix-audit` and `skill-chain` remain runnable compatibility executors.
 Custom graph files are the editable model. In HTTP, `/api/workflow-graphs`

@@ -32,6 +32,7 @@ const views = {
 
 const themeStorageKey = "goflow.theme";
 const sidebarStorageKey = "goflow.sidebar.collapsed";
+const experienceModeStorageKey = "goflow.experienceMode";
 
 const app = document.getElementById("app");
 const shellRoot = document.querySelector("[data-app-shell]");
@@ -41,6 +42,7 @@ const runtimePill = document.getElementById("runtimePill");
 const sideStatus = document.getElementById("sideStatus");
 const languageSelect = document.getElementById("languageSelect");
 const themeToggle = document.getElementById("themeToggle");
+const experienceToggle = document.getElementById("experienceToggle");
 const tourToggle = document.getElementById("tourToggle");
 const sidebarToggle = document.getElementById("sidebarToggle");
 const navButtons = Array.from(document.querySelectorAll(".nav button[data-view]"));
@@ -57,6 +59,7 @@ let approvalBadgeSignature = "";
 let approvalBadgeLastFetch = 0;
 let approvalBadgeResolvedCount = null;
 let sidebarCollapsed = loadSidebarCollapsed();
+let experienceMode = loadExperienceMode();
 const configDiagnosticsRefreshMs = 8000;
 const approvalBadgeRefreshMs = 10000;
 const userScrollIntentWindowMs = 420;
@@ -92,6 +95,7 @@ setupOnboarding({
 });
 
 applyTheme(theme);
+applyExperienceMode(experienceMode, { persist: false, notify: false });
 updateDocumentLanguage();
 renderAllNavButtons();
 setSidebarCollapsed(sidebarCollapsed, { persist: false });
@@ -528,6 +532,7 @@ async function show(viewName) {
   applyStaticTranslations();
   renderAllNavButtons();
   updateThemeToggle();
+  updateExperienceToggle();
   updateSidebarToggle();
   sectionTitle.textContent = t(view.title);
   sectionEyebrow.textContent = t(view.eyebrow);
@@ -579,6 +584,47 @@ function toggleTheme() {
   updateThemeToggle();
 }
 
+function loadExperienceMode() {
+  try {
+    return localStorage.getItem(experienceModeStorageKey) === "expert" ? "expert" : "simple";
+  } catch {
+    return "simple";
+  }
+}
+
+function applyExperienceMode(nextMode, options = {}) {
+  experienceMode = nextMode === "expert" ? "expert" : "simple";
+  shellRoot?.classList.toggle("expert-experience", experienceMode === "expert");
+  shellRoot?.classList.toggle("simple-experience", experienceMode !== "expert");
+  document.documentElement.dataset.experience = experienceMode;
+  if (options.persist !== false) {
+    try {
+      localStorage.setItem(experienceModeStorageKey, experienceMode);
+    } catch {
+      // Mode persistence is optional; the visible session still updates.
+    }
+  }
+  updateExperienceToggle();
+  if (options.notify !== false) {
+    window.dispatchEvent(new CustomEvent("goflow:experience-mode", {
+      detail: { mode: experienceMode, expert: experienceMode === "expert" }
+    }));
+  }
+}
+
+function updateExperienceToggle() {
+  if (!experienceToggle) return;
+  const active = experienceMode === "expert" ? "expert" : "simple";
+  experienceToggle.querySelectorAll("[data-experience-mode]").forEach(button => {
+    const mode = button.dataset.experienceMode === "expert" ? "expert" : "simple";
+    const selected = mode === active;
+    button.classList.toggle("active", selected);
+    button.setAttribute("aria-pressed", selected ? "true" : "false");
+    button.setAttribute("title", t(mode === "expert" ? "experience.expertHelp" : "experience.simpleHelp"));
+  });
+  experienceToggle.setAttribute("data-current-mode", active);
+}
+
 navButtons.forEach(button => {
   button.addEventListener("click", () => {
     location.hash = button.dataset.view;
@@ -599,6 +645,12 @@ languageSelect.addEventListener("change", () => {
 
 themeToggle?.addEventListener("click", () => {
   toggleTheme();
+});
+
+experienceToggle?.addEventListener("click", event => {
+  const button = event.target instanceof Element ? event.target.closest("[data-experience-mode]") : null;
+  if (!button) return;
+  applyExperienceMode(button.dataset.experienceMode === "expert" ? "expert" : "simple");
 });
 
 sidebarToggle?.addEventListener("click", () => {

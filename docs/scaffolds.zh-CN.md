@@ -109,6 +109,10 @@ Agent 会写入 `configs/agents/`，Provider 会写入 `configs/providers/`。�
 
 Provider 里的 `base_url`、`api_key` 和 `model` 可以在首次启动时暂时留空，GoFlow 仍会启动并让 Web Studio 展示配置诊断。真正运行使用该 Provider 的 Agent 前需要补全这些字段；如果运行时已经加载过旧 Provider 配置，补全后需要重启 GoFlow。
 
+如果后续在 Web Studio 里保存 Provider，并直接填写字面量 API Key，这个密钥会以明文
+写入生成的 YAML 文件。准备提交或共享脚手架文件时，建议保留 `${DEEPSEEK_API_KEY}`
+这类环境变量引用。
+
 Agent 默认脚手架已经文件化。内置模板位于
 `internal/scaffold/templates/config/agents/default.yaml.tmpl`，运行目录可以用
 `templates/config/agents/default.yaml.tmpl` 覆盖。模板是 Go
@@ -190,7 +194,9 @@ Team 模板用于多 Agent 协作组合，Kit 用于打包领域资源。它们�
 
 Workflow Template 已经从 Go 代码硬编码迁移为文件化资源。发布二进制会内嵌 `internal/agent/templates/workflows/*.yaml` 作为默认模板目录；运行目录可以通过 `templates/workflows/*.yaml` 添加或覆盖工作流模板。例如 `templates/workflows/plan-fix-audit.yaml` 会覆盖内置 `plan-fix-audit` 模板，并同时影响 `/workflow-templates`、Workflow 创建、校验、fork 和 Studio 模板选择。
 
-复杂实现任务优先使用 `complex-project-delivery` 工作流模板。它会先分析用户需求、整理功能需求和验收标准，生成项目计划并等待用户确认；确认后循环执行“实现一个计划切片 -> 验证 -> 审查 -> 更新计划”，直到计划全部完成，再执行整体验证并输出最终完成报告。
+复杂实现任务优先使用 `complex-project-delivery` 工作流模板。它会先分析用户需求、整理功能需求和验收标准，生成项目计划并等待用户确认；确认后循环执行“实现一个计划切片 -> 验证 -> 审查 -> 更新计划”，直到计划全部完成，再执行整体验证并输出最终完成报告。边界清晰的单个交付任务可以使用 `plan-implement-audit`，它会完成澄清、规划、实现、验证、审计、质量门禁和最终报告。
+
+内置 Workflow Template 和 Team Template 现在也有质量校验：工作流模板必须能通过图校验，产出可回放产物，声明验收标准，经过质量门禁或策略门禁，并最终输出报告、交接、发布摘要或工作流草案；团队模板必须包含角色职责、交接关系、共享黑板引用和输出契约。
 
 Team Template 已经从 Go 代码硬编码迁移为文件化资源。发布二进制会内嵌 `internal/agent/templates/teams/*.yaml` 作为默认团队目录；运行目录可以通过 `templates/teams/*.yaml` 添加或覆盖团队模板。例如 `templates/teams/web-research-team.yaml` 会覆盖内置 `web-research-team`，并同时影响 `/teams`、Workflow 选项、校验、执行、TeamState 和 Studio 表单。
 

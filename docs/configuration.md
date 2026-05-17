@@ -251,6 +251,13 @@ Provider returns a clear setup-required error until the fields are completed.
 Invalid `fallback_provider` references are still treated as configuration errors
 because they make routing ambiguous.
 
+When a Provider is saved from Web Studio, GoFlow writes it to
+`configs/providers/<name>.yaml`. If the form contains a literal API key, that
+value is stored in plain text in the YAML file. For release builds or shared
+repositories, keep the committed Provider file pointing at environment
+variables, such as `${GOFLOW_API_KEY}`, and supply the real secret through your
+local shell, `.env`, or another private secret store.
+
 Provider definitions can live in the main config file or in separate module files under `configs/providers/*.yaml`. Module files are merged at startup after the main file is parsed, and a module with the same provider name overrides the main-file entry. Both direct and wrapped forms are accepted:
 
 ```yaml

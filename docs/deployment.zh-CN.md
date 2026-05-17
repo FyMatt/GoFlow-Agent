@@ -4,12 +4,16 @@
 
 GoFlow 支持 Windows、Linux 和 Docker 部署。对于 MCP 工具沙箱，推荐使用 Docker/Podman `isolation: container` 作为跨平台强边界。
 
+发布版和共享部署建议使用环境变量引用 Provider 配置。如果在 Web Studio 里保存字面量
+API Key，密钥会以明文写入 `configs/providers/<name>.yaml`。
+
 ## Windows 本地运行
 
-设置模型凭据后运行：
+可以先设置模型凭据后运行，也可以启动后在 Web Studio 设置页填写：
 
 ```bat
 set GOFLOW_BASE_URL=https://api.deepseek.com/v1
+rem 可选：也可以启动后在 Web Studio 设置页填写
 set GOFLOW_API_KEY=your-key
 set GOFLOW_MODEL=deepseek-chat
 set GOFLOW_BACKUP_BASE_URL=%GOFLOW_BASE_URL%
@@ -18,6 +22,8 @@ set GOFLOW_BACKUP_MODEL=%GOFLOW_MODEL%
 
 run-goflow.example.cmd D:\Projects\my-workspace
 ```
+
+这个脚本默认启动 HTTP/Web Studio，打开 `http://127.0.0.1:8080/console` 即可使用。第一个参数是 workspace 路径；如果想用 CLI，源码运行时直接执行 `go run ./cmd/goflow`，发布包中直接运行 `bin\goflow.exe`。
 
 ## Linux 本地运行
 

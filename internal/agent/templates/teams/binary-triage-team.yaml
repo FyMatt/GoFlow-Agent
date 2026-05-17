@@ -55,16 +55,19 @@ handoffs:
     kind: triage_plan
     subject: Static analysis plan
     artifacts: [triage_plan]
+    blackboard: [request, plan]
   - from: reverse-analyst
     to: vulnerability-analyst
     kind: evidence_handoff
     subject: Reverse notes and evidence
     artifacts: [reverse_notes, evidence]
+    blackboard: [evidence, finding]
   - from: vulnerability-analyst
     to: reporter
     kind: report_handoff
     subject: Findings and next checks
     artifacts: [findings, next_checks]
+    blackboard: [finding, decision]
 blackboard_templates:
   - kind: request
     title: Original request and constraints

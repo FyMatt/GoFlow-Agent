@@ -50,6 +50,7 @@ type workflowGraphStage struct {
 	Context            workflowGraphStageContext          `yaml:"context"`
 	NextStrategy       string                             `yaml:"next_strategy"`
 	Next               []string                           `yaml:"next"`
+	Position           WorkflowGraphPosition              `yaml:"position"`
 }
 
 type workflowGraphRetry struct {
@@ -2019,6 +2020,7 @@ func workflowGraphRepeatControlResult(stage workflowGraphStage, graph workflowGr
 	iterations := workflowGraphRepeatCompletedIterations(completed, stage.Name)
 	outputs := make([]string, 0, len(iterations))
 	summaries := make([]string, 0, len(iterations))
+	verifications := make([]schema.Verification, 0)
 	for _, iteration := range iterations {
 		if strings.TrimSpace(iteration.Output.RawOutput) != "" {
 			outputs = append(outputs, iteration.Output.RawOutput)
@@ -2026,6 +2028,22 @@ func workflowGraphRepeatControlResult(stage workflowGraphStage, graph workflowGr
 			outputs = append(outputs, iteration.Result.Output)
 		}
 		summaries = append(summaries, iteration.Output.Summary)
+		verifications = append(verifications, iteration.Result.Verification...)
+	}
+	status := "completed"
+	if !passed && workflowGraphRepeatKind(context.Kind) == "loop" {
+		status = "warning"
+		verifications = append(verifications, schema.Verification{
+			Kind:   "loop:completion",
+			Status: "failed",
+			Detail: fmt.Sprintf("loop did not satisfy %s before max_iterations=%d", fallbackWorkflowGraphValue(context.Until, "completion condition"), context.MaxIterations),
+		})
+	} else if workflowGraphRepeatKind(context.Kind) == "loop" {
+		verifications = append(verifications, schema.Verification{
+			Kind:   "loop:completion",
+			Status: "passed",
+			Detail: fmt.Sprintf("loop satisfied %s after %d iteration(s)", fallbackWorkflowGraphValue(context.Until, "completion condition"), len(iterations)),
+		})
 	}
 	variables := workflowStageMetadata(map[string]string{
 		"body_stage":      graph.Stages[context.BodyIndex].Name,
@@ -2043,12 +2061,29 @@ func workflowGraphRepeatControlResult(stage workflowGraphStage, graph workflowGr
 		Route:     "completed",
 		Value:     workflowGraphJSON(outputs),
 		Passed:    passed || workflowGraphRepeatKind(context.Kind) == "for_each",
-		Status:    "completed",
+		Status:    status,
 		Variables: variables,
+		ValueVariables: map[string]any{
+			"body_stage":      graph.Stages[context.BodyIndex].Name,
+			"iteration_count": len(iterations),
+			"max_iterations":  context.MaxIterations,
+			"items":           append([]string(nil), context.Items...),
+			"item_count":      len(context.Items),
+			"outputs":         append([]string(nil), outputs...),
+			"summaries":       append([]string(nil), summaries...),
+			"until":           context.Until,
+			"passed":          passed,
+		},
 	}
 	decision.Targets = nil
 	decision.Target = workflowGraphStageNamesForIndices(graph, decision.Targets)
-	return workflowGraphControlStageResult(stage, graph, decision)
+	stageResult := workflowGraphControlStageResult(stage, graph, decision)
+	if len(verifications) > 0 {
+		stageResult.Result.Verification = append(stageResult.Result.Verification, verifications...)
+		stageResult.Output.Verification = append(stageResult.Output.Verification, verifications...)
+	}
+	applyWorkflowStageCanonicalOutputFields(&stageResult.Output)
+	return stageResult
 }
 
 func workflowGraphRepeatCompletedIterations(completed []WorkflowStageResult, controlName string) []WorkflowStageResult {
@@ -3644,7 +3679,7 @@ func workflowGraphQualityArtifactEvidence(artifact session.WorkflowRunArtifact) 
 		return false
 	}
 	switch normalizeWorkflowSkillName(artifact.Kind) {
-	case "artifact", "output", "report", "evidence", "verification", "acceptance", "test", "tests", "diff", "patch":
+	case "artifact", "output", "report", "evidence", "verification", "acceptance", "test", "tests", "diff", "patch", "audit", "change_report", "requirements", "plan":
 		return true
 	default:
 		return false
@@ -5474,6 +5509,9 @@ func workflowGraphStageResult(stage workflowGraphStage, result schema.AgentResul
 		stageResult.Result.Verification = append(stageResult.Result.Verification, verifications...)
 		stageResult.Output.Verification = append(stageResult.Output.Verification, verifications...)
 	}
+	stageResult.Output.Artifacts = workflowGraphDeclaredStageArtifacts(stage, stageResult.Output, stageResult.Result)
+	stageResult.Output.Evidence = workflowStageEvidenceArtifacts(stageResult.Output.Artifacts)
+	applyWorkflowStageCanonicalOutputFields(&stageResult.Output)
 	return stageResult
 }
 
@@ -5673,8 +5711,9 @@ func workflowGraphControlStageResult(stage workflowGraphStage, graph workflowGra
 		output.Variables[key] = value
 	}
 	applyWorkflowStageCanonicalOutputFields(&output)
+	applyWorkflowGraphControlStageDeclaredOutputs(stage, &output)
 	status := fallbackWorkflowGraphValue(decision.Status, "completed")
-	return WorkflowStageResult{
+	stageResult := WorkflowStageResult{
 		Stage:    WorkflowStage(stage.Name),
 		Agent:    stage.Agent,
 		NodeType: stage.NodeType,
@@ -5691,6 +5730,89 @@ func workflowGraphControlStageResult(stage workflowGraphStage, graph workflowGra
 			Mode:   stage.Name,
 		},
 	}
+	stageResult.Output.Artifacts = workflowGraphDeclaredControlArtifacts(stage, stageResult.Output, stageResult.Result)
+	stageResult.Output.Evidence = workflowStageEvidenceArtifacts(stageResult.Output.Artifacts)
+	applyWorkflowStageCanonicalOutputFields(&stageResult.Output)
+	stageResult.Acceptance = evaluateWorkflowGraphAcceptanceCriteria(stage, stageResult)
+	if len(stageResult.Acceptance) > 0 {
+		verifications := workflowGraphAcceptanceVerifications(stageResult.Acceptance)
+		stageResult.Result.Verification = append(stageResult.Result.Verification, verifications...)
+		stageResult.Output.Verification = append(stageResult.Output.Verification, verifications...)
+	}
+	applyWorkflowStageCanonicalOutputFields(&stageResult.Output)
+	stageResult.Result.Verification = append([]schema.Verification(nil), stageResult.Output.Verification...)
+	return stageResult
+}
+
+func applyWorkflowGraphControlStageDeclaredOutputs(stage workflowGraphStage, output *WorkflowStageOutput) {
+	if output == nil || len(stage.Outputs) == 0 {
+		return
+	}
+	keys := make([]string, 0, len(stage.Outputs))
+	for key := range stage.Outputs {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	for _, key := range keys {
+		value, ok := workflowGraphControlStageOutputReference(stage.Outputs[key], *output)
+		if !ok {
+			continue
+		}
+		workflowStageSetOutputValue(output, key, value)
+	}
+}
+
+func workflowGraphControlStageOutputReference(expr string, output WorkflowStageOutput) (any, bool) {
+	expr = strings.TrimSpace(expr)
+	if expr == "" {
+		return nil, false
+	}
+	if literal, ok := unquoteWorkflowLiteral(expr); ok {
+		return literal, true
+	}
+	lower := strings.ToLower(expr)
+	switch lower {
+	case "result.output", "result.raw_output", "output", "raw_output":
+		return fallbackWorkflowGraphValue(output.Variables["value"], output.RawOutput), true
+	case "result.summary", "summary":
+		return output.Summary, strings.TrimSpace(output.Summary) != ""
+	case "result.variables", "outputs.variables":
+		return copyStringMap(output.Variables), len(output.Variables) > 0
+	case "result.values", "outputs.values":
+		return copyWorkflowAnyMap(output.Values), len(output.Values) > 0
+	}
+	for _, prefix := range []string{"result.", "outputs.", "output."} {
+		if strings.HasPrefix(lower, prefix) {
+			rawKey := strings.TrimSpace(expr[len(prefix):])
+			key := normalizeWorkflowSkillName(rawKey)
+			if value, ok := output.Values[key]; ok {
+				return copyWorkflowAnyValue(value), true
+			}
+			if value, ok := output.Values[rawKey]; ok {
+				return copyWorkflowAnyValue(value), true
+			}
+			if value, ok := workflowGraphNestedValue(output.Values, strings.Split(rawKey, ".")); ok {
+				return copyWorkflowAnyValue(value), true
+			}
+			if value, ok := workflowGraphNestedValue(output.Values, strings.Split(key, ".")); ok {
+				return copyWorkflowAnyValue(value), true
+			}
+			if value := strings.TrimSpace(output.Variables[key]); value != "" {
+				return value, true
+			}
+			if value := strings.TrimSpace(output.Variables[rawKey]); value != "" {
+				return value, true
+			}
+			if value, ok := workflowGraphNestedValue(output.Variables, strings.Split(rawKey, ".")); ok {
+				return copyWorkflowAnyValue(value), true
+			}
+			if value, ok := workflowGraphNestedValue(output.Variables, strings.Split(key, ".")); ok {
+				return copyWorkflowAnyValue(value), true
+			}
+			return nil, false
+		}
+	}
+	return nil, false
 }
 
 func workflowStageMetadata(values map[string]string) map[string]string {
@@ -5824,7 +5946,6 @@ func buildWorkflowStageOutput(stage workflowGraphStage, result schema.AgentResul
 	output := WorkflowStageOutput{
 		Summary:      truncateSummary(result.Output),
 		RawOutput:    limitWorkflowGraphText(result.Output),
-		Artifacts:    workflowGraphDeclaredArtifacts(stage, result),
 		ToolResults:  append([]schema.ToolResult(nil), result.ToolResults...),
 		Findings:     append([]schema.Finding(nil), result.Findings...),
 		Changes:      append([]schema.Change(nil), result.Changes...),
@@ -6037,14 +6158,14 @@ func workflowStageNextActionList(value any) []string {
 	}
 }
 
-func workflowGraphDeclaredArtifacts(stage workflowGraphStage, result schema.AgentResult) []session.WorkflowRunArtifact {
+func workflowGraphDeclaredStageArtifacts(stage workflowGraphStage, output WorkflowStageOutput, result schema.AgentResult) []session.WorkflowRunArtifact {
 	if len(stage.Artifacts) == 0 {
 		return nil
 	}
 	artifacts := make([]session.WorkflowRunArtifact, 0, len(stage.Artifacts))
 	stageName := strings.TrimSpace(stage.Name)
 	for index, declared := range stage.Artifacts {
-		artifact := workflowGraphDeclaredArtifact(stageName, index+1, declared, stage, result)
+		artifact := workflowGraphDeclaredStageArtifact(stageName, index+1, declared, stage, output, result)
 		if strings.TrimSpace(artifact.Content) == "" && strings.TrimSpace(artifact.Summary) == "" {
 			continue
 		}
@@ -6056,7 +6177,11 @@ func workflowGraphDeclaredArtifacts(stage workflowGraphStage, result schema.Agen
 	return artifacts
 }
 
-func workflowGraphDeclaredArtifact(stageName string, index int, declared workflowGraphArtifact, stage workflowGraphStage, result schema.AgentResult) session.WorkflowRunArtifact {
+func workflowGraphDeclaredControlArtifacts(stage workflowGraphStage, output WorkflowStageOutput, result schema.AgentResult) []session.WorkflowRunArtifact {
+	return workflowGraphDeclaredStageArtifacts(stage, output, result)
+}
+
+func workflowGraphDeclaredStageArtifact(stageName string, index int, declared workflowGraphArtifact, stage workflowGraphStage, output WorkflowStageOutput, result schema.AgentResult) session.WorkflowRunArtifact {
 	kind := normalizeWorkflowArtifactKind(declared.Kind)
 	if kind == "" {
 		kind = "artifact"
@@ -6065,11 +6190,11 @@ func workflowGraphDeclaredArtifact(stageName string, index int, declared workflo
 	if name == "" {
 		name = fmt.Sprintf("%s-%d", kind, index)
 	}
-	content := workflowGraphDeclaredArtifactValue(declared.Content, stage, result)
+	content := workflowGraphDeclaredStageArtifactValue(declared.Content, stage, output, result)
 	if strings.TrimSpace(content) == "" {
-		content = workflowGraphDeclaredArtifactValue(declared.Ref, stage, result)
+		content = workflowGraphDeclaredStageArtifactValue(declared.Ref, stage, output, result)
 	}
-	summary := workflowGraphDeclaredArtifactValue(declared.Summary, stage, result)
+	summary := workflowGraphDeclaredStageArtifactValue(declared.Summary, stage, output, result)
 	if strings.TrimSpace(summary) == "" {
 		summary = truncateSummary(content)
 	}
@@ -6097,13 +6222,16 @@ func workflowGraphDeclaredArtifact(stageName string, index int, declared workflo
 	}
 }
 
-func workflowGraphDeclaredArtifactValue(expr string, stage workflowGraphStage, result schema.AgentResult) string {
+func workflowGraphDeclaredStageArtifactValue(expr string, stage workflowGraphStage, output WorkflowStageOutput, result schema.AgentResult) string {
 	expr = strings.TrimSpace(expr)
 	if expr == "" {
 		return ""
 	}
 	if literal, ok := unquoteWorkflowLiteral(expr); ok {
 		return literal
+	}
+	if value, ok := workflowGraphControlStageOutputReference(expr, output); ok {
+		return workflowGraphValueString(value)
 	}
 	return resolveWorkflowResultReference(expr, result, stage)
 }

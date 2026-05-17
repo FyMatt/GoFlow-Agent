@@ -196,11 +196,11 @@ export async function renderCatalog(root, runtime) {
             ${renderPolicyRuleResourceSections(policyRules, policyRuleScaffolds)}
           </div>
         </section>
-        <section class="panel span-12">
+        <section class="panel span-12 resource-mcp-health-panel">
           <div class="panel-head"><h2>${t("catalog.mcpHealth")}</h2><span class="badge">${Object.keys(runtime.mcp_health || {}).length}</span></div>
           <table class="kv">${Object.entries(runtime.mcp_health || {}).map(([name, status]) => `<tr><th>${escapeHTML(name)}</th><td>${escapeHTML(status)}</td></tr>`).join("") || `<tr><td class="muted">${t("catalog.noMCP")}</td></tr>`}</table>
         </section>
-        <section class="panel span-12">
+        <section class="panel span-12 resource-cli-parity-panel">
           <div class="panel-head"><h2>${t("catalog.cliParity")}</h2><span class="badge">${t("catalog.webCoverage")}</span></div>
           <div class="parity-grid">
             ${parityItem(t("catalog.parityVisualWorkflow"), t("catalog.parityVisualWorkflowHelp"))}
@@ -2043,7 +2043,12 @@ function resetCatalogTourFilters(root) {
 
 function applyResourceFilters(root) {
   const query = String(root.querySelector("#resourceSearch")?.value || "").trim().toLowerCase();
-  const group = root.querySelector("#resourceGroupFilter")?.value || "all";
+  const groupSelect = root.querySelector("#resourceGroupFilter");
+  let group = groupSelect?.value || "all";
+  if (catalogNormalExperience() && ["all", "advanced", "runtime", "policy"].includes(group)) {
+    group = "recommended";
+    if (groupSelect) groupSelect.value = group;
+  }
   let visibleItems = 0;
   let visiblePanels = 0;
   const panels = [...root.querySelectorAll("[data-resource-panel]")];
@@ -2082,6 +2087,13 @@ function resourcePanelMatchesGroup(panelGroup, selectedGroup) {
   if (group === "all") return true;
   if (group === "recommended") return ["essential", "workflow", "runtime"].includes(panelGroup);
   return panelGroup === group;
+}
+
+function catalogNormalExperience() {
+  const shell = document.querySelector("[data-app-shell]");
+  if (shell?.classList.contains("simple-experience")) return true;
+  if (shell?.classList.contains("expert-experience")) return false;
+  return document.documentElement.dataset.experience !== "expert";
 }
 
 function resourceSearchText(item) {

@@ -9,7 +9,9 @@ tags:
     - docs
     - review
     - approval
-stages: 6
+    - quality_gate
+    - report
+stages: 9
 graph:
     name: docs-review-publish
     description: Documentation generation and review workflow.
@@ -27,8 +29,27 @@ graph:
           node_type: agent
           agent: planner
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Documentation Goal, Audience, Source Files, Outline, Acceptance Checks, and Publish Risks.
+            purpose: Plan documentation changes before drafting.
           outputs:
             outline: result.output
+            summary: result.summary
+          artifacts:
+            - name: documentation-plan
+              kind: report
+              title: Documentation plan
+              ref: result.output
+              summary: Goal, audience, source files, outline, acceptance checks, and publish risks.
+          acceptance_criteria:
+            - name: has-outline
+              ref: result.output
+              contains: Outline
+              expected: plan includes a documentation outline
+            - name: has-acceptance-checks
+              ref: result.output
+              contains: Acceptance Checks
+              expected: plan declares how documentation quality will be checked
           next:
             - draft
           position:
@@ -38,11 +59,30 @@ graph:
           node_type: agent
           agent: fixer
           skill: code-writing
+          params:
+            output_contract: Emit sections named Draft Summary, Files Changed, Content Decisions, Verification Notes, and Publish Notes.
+            edit_policy: Keep documentation changes scoped to the approved outline and preserve unrelated user edits.
           input:
             outline: stages.plan.outputs.outline
           outputs:
             changes: result.changes
             draft: result.output
+            summary: result.summary
+          artifacts:
+            - name: documentation-draft
+              kind: report
+              title: Documentation draft
+              ref: result.output
+              summary: Draft summary, files changed, content decisions, verification notes, and publish notes.
+          acceptance_criteria:
+            - name: has-draft-summary
+              ref: result.output
+              contains: Draft Summary
+              expected: draft summarizes the documentation change
+            - name: has-files-changed
+              ref: result.output
+              contains: Files Changed
+              expected: draft lists changed docs or explains none
           approval: true
           next:
             - review
@@ -53,14 +93,52 @@ graph:
           node_type: skill
           agent: auditor
           skill: code-audit
+          params:
+            output_contract: Emit sections named Review Decision, Accuracy Checks, Broken Links, Missing Context, Readability, and Recommendation.
+            review_scope: Check correctness, missing context, stale instructions, broken links, and release-readiness.
           input:
             draft: stages.draft.outputs.draft
           outputs:
             review: result.output
+            summary: result.summary
+          artifacts:
+            - name: documentation-review
+              kind: report
+              title: Documentation review
+              ref: result.output
+              summary: Review decision, accuracy checks, link risks, missing context, readability, and recommendation.
+          acceptance_criteria:
+            - name: has-review-decision
+              ref: result.output
+              contains: Review Decision
+              expected: review states whether documentation is publishable
+            - name: has-recommendation
+              ref: result.output
+              contains: Recommendation
+              expected: review gives a concrete publish recommendation
           next:
-            - publish-gate
+            - quality
           position:
             x: 860
+            "y": 160
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: plan,draft,review
+            min_score: "80"
+            reason: documentation output is missing plan, draft, review, or publish evidence
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            allow_unknown: "false"
+          routes:
+            pass: publish-gate
+            warning: publish-gate
+            fail: revise
+          position:
+            x: 1130
             "y": 160
         - name: publish-gate
           node_type: checkpoint
@@ -69,14 +147,78 @@ graph:
           params:
             prompt: Approve documentation publish or handoff?
           next:
+            - publish-report
+          position:
+            x: 1400
+            "y": 160
+        - name: revise
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          params:
+            output_contract: Emit sections named Revision Required, Blocking Issues, Missing Evidence, Safe Fix Plan, and Publish Recommendation.
+            purpose: Explain what must change before documentation can be published.
+          input:
+            failures: stages.quality.outputs.failures
+            review: stages.review.outputs.review
+          outputs:
+            revision_plan: result.output
+            summary: result.summary
+          artifacts:
+            - name: documentation-revision-plan
+              kind: report
+              title: Documentation revision plan
+              ref: result.output
+              summary: Blocking issues, missing evidence, safe fix plan, and publish recommendation.
+          acceptance_criteria:
+            - name: has-revision-required
+              ref: result.output
+              contains: Revision Required
+              expected: revision plan explains why publish is blocked
+          next:
+            - publish-report
+          position:
+            x: 1400
+            "y": 320
+        - name: publish-report
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          params:
+            output_contract: Emit sections named Publish Status, Documentation Changes, Review Evidence, Remaining Risks, and Next Steps.
+            purpose: Produce a final user-facing documentation publish or handoff report.
+          input:
+            draft: stages.draft.outputs.draft
+            quality_status: stages.quality.outputs.quality_status
+            review: stages.review.outputs.review
+            revision_plan: stages.revise.outputs.revision_plan
+          outputs:
+            final_report: result.output
+            summary: result.summary
+          artifacts:
+            - name: documentation-publish-report
+              kind: report
+              title: Documentation publish report
+              ref: result.output
+              summary: Publish status, documentation changes, review evidence, risks, and next steps.
+          acceptance_criteria:
+            - name: has-publish-status
+              ref: result.output
+              contains: Publish Status
+              expected: final report declares publish or handoff status
+            - name: has-review-evidence
+              ref: result.output
+              contains: Review Evidence
+              expected: final report includes review evidence
+          next:
             - end
           position:
-            x: 1130
-            "y": 160
+            x: 1680
+            "y": 200
         - name: end
           node_type: end
           agent: ""
           skill: ""
           position:
-            x: 1390
-            "y": 180
+            x: 1960
+            "y": 200

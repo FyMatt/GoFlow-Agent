@@ -7,7 +7,7 @@ internals first.
 
 Use one of these paths:
 
-- **Release archive**: best for local interactive CLI usage on Windows or Linux.
+- **Release archive**: best for local Web Studio startup, with direct CLI still available from `bin/`.
 - **Docker image**: best for HTTP/API deployments and service integration.
 - **Source checkout**: best for development and second-development work.
 
@@ -22,6 +22,11 @@ startup fail.
 You can configure the Provider directly in Web Studio, edit
 `configs/providers/*.yaml`, or use environment variables. For environment-based
 setup, copy the template and fill in your provider values:
+
+Web Studio saves Provider resources to `configs/providers/<name>.yaml`. A
+literal API key entered there is stored as plain text, so shared and release
+checkouts should keep `${GOFLOW_API_KEY}` in the committed Provider file and
+load the real value from `.env`, your shell, or another local secret store.
 
 ```bash
 cp .env.example .env
@@ -69,6 +74,10 @@ $env:GOFLOW_MODEL="deepseek-chat"
 .\run-goflow.cmd D:\Projects\my-workspace
 ```
 
+The release launcher starts HTTP/Web Studio by default. Open
+`http://127.0.0.1:8080/console` after it prints the ready message. To use the
+interactive CLI instead, run `.\bin\goflow.exe` directly.
+
 ### Linux
 
 Extract the tarball, then run:
@@ -83,6 +92,10 @@ export GOFLOW_MODEL=deepseek-chat
 
 ./run-goflow.sh /path/to/workspace
 ```
+
+The release launcher starts HTTP/Web Studio by default. Open
+`http://127.0.0.1:8080/console` after it prints the ready message. To use the
+interactive CLI instead, run `./bin/goflow` directly.
 
 Release archives use `configs/goflow.binary.yaml`. The launcher scripts set the
 compiled MCP tool paths automatically, so Go is not required on the target

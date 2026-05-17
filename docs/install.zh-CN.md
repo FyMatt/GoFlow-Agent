@@ -6,7 +6,7 @@
 
 常见使用方式：
 
-- **Release 压缩包**：适合 Windows/Linux 本地交互式 CLI。
+- **Release 压缩包**：适合本地直接启动 Web Studio，也可以从 `bin/` 直接进入 CLI。
 - **Docker 镜像**：适合 HTTP/API 服务部署和系统集成。
 - **源码运行**：适合开发、调试和二开。
 
@@ -19,6 +19,11 @@ Web Studio，再到资源或设置页面填写 Provider 信息。真正发起 Ag
 
 你可以在 Web Studio 中直接配置 Provider，也可以编辑 `configs/providers/*.yaml`，
 或继续使用环境变量。使用环境变量时，可以复制模板：
+
+Web Studio 会把 Provider 资源保存到 `configs/providers/<name>.yaml`。如果直接在
+页面里填写字面量 API Key，它会以明文形式落到这个 YAML 文件里。共享仓库和发布版
+建议在已提交的 Provider 文件中保留 `${GOFLOW_API_KEY}`，真实值通过 `.env`、当前
+shell 或本地密钥存储加载。
 
 ```bash
 cp .env.example .env
@@ -68,6 +73,8 @@ $env:GOFLOW_BACKUP_MODEL=$env:GOFLOW_MODEL
 .\run-goflow.cmd D:\Projects\my-workspace
 ```
 
+发布包启动脚本默认启动 HTTP/Web Studio。看到 ready 信息后打开 `http://127.0.0.1:8080/console`。如果想进入交互式 CLI，直接运行 `.\bin\goflow.exe`。
+
 ### Linux
 
 解压 tarball 后运行：
@@ -85,6 +92,8 @@ export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
 
 ./run-goflow.sh /path/to/workspace
 ```
+
+发布包启动脚本默认启动 HTTP/Web Studio。看到 ready 信息后打开 `http://127.0.0.1:8080/console`。如果想进入交互式 CLI，直接运行 `./bin/goflow`。
 
 压缩包内的启动脚本会使用 `configs/goflow.binary.yaml`，并把内置 Go MCP 工具指向 `bin/` 下的可执行文件。
 

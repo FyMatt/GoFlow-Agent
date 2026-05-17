@@ -183,6 +183,7 @@ def validate_release_workflow() -> None:
         preflight,
         [
             "go test",
+            "validate_no_secrets.py",
             "validate_python_mcp.py",
             "validate_extension_workflow.py",
             "validate_binary_analysis_kit.py",
@@ -218,6 +219,8 @@ def validate_release_script() -> None:
             "goflow.binary.yaml",
             "run-goflow.sh",
             "run-goflow.cmd",
+            "--http :8080",
+            "Starting GoFlow Web Studio",
             "GOFLOW_BACKUP_MODEL",
             "SHA256SUMS",
             "hashlib.sha256",
@@ -311,6 +314,7 @@ def validate_release_docs() -> None:
             "python scripts/run_preflight.py --browser-required",
             "python scripts/run_preflight.py --browser-required --release-target",
             "python scripts/run_preflight.py --skip-browser",
+            "validate_no_secrets.py",
         ],
     )
 

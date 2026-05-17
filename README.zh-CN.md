@@ -96,13 +96,17 @@ export GOFLOW_BACKUP_API_KEY=$GOFLOW_API_KEY
 export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
 ```
 
-也可以复制 `.env.example`，填入自己的模型地址、密钥和模型名，或在 Web Studio
-的 Provider 资源里直接填写 API Key。
+也可以复制 `.env.example`，填入自己的模型地址、密钥和模型名。注意，如果你在
+Web Studio 里保存了一个字面量 API Key，GoFlow 会把它写入
+`configs/providers/<name>.yaml`，内容是明文。发布版或共享仓库建议保留
+`${GOFLOW_API_KEY}` 这类环境变量引用，再通过 `.env`、当前 shell 或本地密钥存储
+提供真实值。
 
 Windows 示例：
 
 ```bat
 set GOFLOW_BASE_URL=https://api.deepseek.com/v1
+rem 可选：也可以启动后在 Web Studio 设置页填写
 set GOFLOW_API_KEY=your-api-key
 set GOFLOW_MODEL=deepseek-chat
 set GOFLOW_BACKUP_BASE_URL=%GOFLOW_BASE_URL%
@@ -111,6 +115,8 @@ set GOFLOW_BACKUP_MODEL=%GOFLOW_MODEL%
 
 run-goflow.example.cmd D:\Projects\my-workspace
 ```
+
+这个脚本默认启动 HTTP/Web Studio，打开 `http://127.0.0.1:8080/console` 即可使用。第一个参数是 workspace 路径；如果想用 CLI，源码运行时直接执行 `go run ./cmd/goflow`，发布包中直接运行 `bin\goflow.exe`。
 
 ### 启动 CLI
 
@@ -293,13 +299,15 @@ Release 工作流会构建 Windows/Linux 二进制压缩包、生成 SBOM、签�
 
 `/new-kit <preset> <name> --materialize` 会同时生成 Kit、Agent、Skill、容器化 MCP Tool、Workflow、Workflow Template、Team Template 和 Policy Rule，并让 Workflow 节点之间通过输出/输入引用串联起来。HTTP Studio 可用 `POST /api/resources/kits/scaffolds/{preset}?materialize=1` 调用同样能力。内置 Workflow Template 资源也已经文件化：默认模板从 `internal/agent/templates/workflows/*.yaml` 内嵌进二进制；运行目录可以通过 `templates/workflows/*.yaml` 新增或覆盖模板。
 
-`plan-fix-audit` 和 `skill-chain` 仍然是可运行的兼容执行器；真正可编辑的是
+`plan-fix-audit`、`plan-implement-audit` 和 `skill-chain` 仍然是可运行的兼容执行器；真正可编辑的是
 `workflows/<name>/workflow.yaml` 这种图工作流文件。HTTP 中
 `/api/workflow-graphs` 用于列出和编辑图文件，
 `/api/workflow-options.workflow_executors` 用于列出所有可运行 workflow 入口。
 如果保存了同名且有效的图工作流，它会覆盖对应兼容执行器。
 
-复杂项目可以从 `complex-project-delivery` 工作流模板开始。它会先分析用户需求，产出功能需求和项目计划，等待用户确认后进入实现循环：每轮实现一个计划切片、验证、审查、更新计划，直到计划完成；最后执行整体验证并输出完成报告。
+内置 Workflow Template 已经按交付质量标准加固：每个模板都必须能通过图校验，包含明确的结束节点，产出可回放的报告或证据产物，声明验收标准，经过质量门禁或策略门禁，并最终收口到面向用户的报告、交接、发布摘要或工作流草案。内置 Team Template 也要求角色职责、交接关系、共享黑板引用、必要的审批 quorum 和输出契约完整。
+
+复杂项目可以从 `complex-project-delivery` 工作流模板开始。它会先分析用户需求，产出功能需求和项目计划，等待用户确认后进入实现循环：每轮实现一个计划切片、验证、审查、更新计划，直到计划完成；最后执行整体验证并输出完成报告。单个边界任务可以使用 `plan-implement-audit`，它会完成澄清、规划、实现、验证、审计、质量门禁和最终报告。
 
 内置 Kit preset 包括 `multi-domain-agent`、`software-engineering`、`agent-framework`、`web-security`、`security-research`、`binary-analysis`、`documentation`、`operations-runbook` 和 `customer-support`。其中 `agent-framework` 用于二开 GoFlow 本身：创建新的垂直 Agent、Skill、Tool、Workflow、Team、Policy 或 Kit。
 

@@ -9,7 +9,9 @@ tags:
     - web
     - security
     - branching
-stages: 8
+    - quality_gate
+    - evidence
+stages: 9
 graph:
     name: web-research-risk
     description: Research a web target and route findings through a risk branch.
@@ -27,9 +29,28 @@ graph:
           node_type: agent
           agent: auditor
           skill: web-vulnerability-research
+          params:
+            output_contract: Emit sections named Evidence Summary, Target Scope, Findings, Source Confidence, Limitations, and Recommended Verification.
+            evidence_rule: Keep evidence tied to the target and distinguish confirmed observations from assumptions.
           outputs:
             evidence: result.output
             findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: web-research-evidence
+              kind: evidence
+              title: Web research evidence
+              ref: result.output
+              summary: Evidence summary, target scope, findings, confidence, limitations, and recommended verification.
+          acceptance_criteria:
+            - name: has-evidence-summary
+              ref: result.output
+              contains: Evidence Summary
+              expected: collection summarizes the evidence
+            - name: has-target-scope
+              ref: result.output
+              contains: Target Scope
+              expected: collection states the target scope
           next:
             - audit
           position:
@@ -39,16 +60,54 @@ graph:
           node_type: skill
           agent: auditor
           skill: code-audit
+          params:
+            output_contract: Emit sections named Audit Decision, Findings, Vulnerability Assessment, Evidence Gaps, Risk Level, and Recommendation.
+            review_scope: Classify risk using the collected evidence and call out uncertainty.
           input:
             evidence: stages.collect.outputs.evidence
           outputs:
             audit: result.output
             findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: web-risk-audit
+              kind: report
+              title: Web risk audit
+              ref: result.output
+              summary: Audit decision, findings, vulnerability assessment, evidence gaps, risk level, and recommendation.
+          acceptance_criteria:
+            - name: has-audit-decision
+              ref: result.output
+              contains: Audit Decision
+              expected: audit states whether risk is present
+            - name: has-risk-level
+              ref: result.output
+              contains: Risk Level
+              expected: audit classifies risk level
           next:
-            - has-risk
+            - quality
           position:
             x: 580
             "y": 170
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: collect,audit
+            min_score: "80"
+            reason: web risk evidence is missing target scope, audit decision, or risk classification
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            allow_unknown: "false"
+          routes:
+            pass: has-risk
+            warning: verify
+            fail: report-risk
+          position:
+            x: 850
+            "y": 200
         - name: has-risk
           node_type: condition
           agent: ""
@@ -58,7 +117,7 @@ graph:
             "false": report-clean
             "true": verify
           position:
-            x: 850
+            x: 1120
             "y": 200
         - name: verify
           node_type: checkpoint
@@ -69,38 +128,80 @@ graph:
           next:
             - report-risk
           position:
-            x: 1120
+            x: 1390
             "y": 120
         - name: report-risk
           node_type: skill
           agent: planner
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Risk Report, Evidence, Vulnerability Assessment, Quality Decision, Operator Actions, and Next Steps.
+            purpose: Produce a risk-positive or evidence-insufficient user report.
           input:
             audit: stages.audit.outputs.audit
+            evidence: stages.collect.outputs.evidence
+            quality_status: stages.quality.outputs.quality_status
           outputs:
             report: result.output
+            summary: result.summary
+          artifacts:
+            - name: web-risk-report
+              kind: report
+              title: Web risk report
+              ref: result.output
+              summary: Risk report, evidence, vulnerability assessment, quality decision, operator actions, and next steps.
+          acceptance_criteria:
+            - name: has-risk-report
+              ref: result.output
+              contains: Risk Report
+              expected: report summarizes risk-positive or uncertain findings
+            - name: has-next-steps
+              ref: result.output
+              contains: Next Steps
+              expected: report gives next steps
           next:
             - end
           position:
-            x: 1380
+            x: 1660
             "y": 120
         - name: report-clean
           node_type: skill
           agent: planner
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Clean Report, Evidence, Why No Risk Was Routed, Residual Uncertainty, and Next Steps.
+            purpose: Produce a clean-path user report that still documents evidence and uncertainty.
           input:
             audit: stages.audit.outputs.audit
+            evidence: stages.collect.outputs.evidence
+            quality_status: stages.quality.outputs.quality_status
           outputs:
             report: result.output
+            summary: result.summary
+          artifacts:
+            - name: web-clean-report
+              kind: report
+              title: Web clean report
+              ref: result.output
+              summary: Clean-path evidence, no-risk rationale, residual uncertainty, and next steps.
+          acceptance_criteria:
+            - name: has-clean-report
+              ref: result.output
+              contains: Clean Report
+              expected: clean report explains why risk was not routed
+            - name: has-residual-uncertainty
+              ref: result.output
+              contains: Residual Uncertainty
+              expected: clean report states residual uncertainty
           next:
             - end
           position:
-            x: 1120
+            x: 1390
             "y": 300
         - name: end
           node_type: end
           agent: ""
           skill: ""
           position:
-            x: 1640
+            x: 1940
             "y": 200

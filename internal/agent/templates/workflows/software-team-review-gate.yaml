@@ -10,6 +10,7 @@ tags:
     - approval
     - policy_guard
     - review
+    - report
 stages: 6
 graph:
     name: software-team-review-gate
@@ -56,12 +57,31 @@ graph:
           node_type: skill
           agent: chat
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Team Review Status, Approved Work, Review Evidence, Approvers, Residual Risks, and Next Steps.
+            purpose: Produce the final handoff after the team approval gate allows delivery.
           input:
             approvers: stages.review-gate.outputs.approvers
             final_handoff: stages.team__reporter.outputs.summary
             gate_status: stages.review-gate.outputs.value
           outputs:
             handoff: result.output
+            summary: result.summary
+          artifacts:
+            - name: team-review-handoff
+              kind: report
+              title: Team review handoff
+              ref: result.output
+              summary: Team review status, approved work, evidence, approvers, residual risks, and next steps.
+          acceptance_criteria:
+            - name: has-team-review-status
+              ref: result.output
+              contains: Team Review Status
+              expected: handoff states the team gate outcome
+            - name: has-next-steps
+              ref: result.output
+              contains: Next Steps
+              expected: handoff gives next steps
           next:
             - end
           position:
@@ -71,12 +91,31 @@ graph:
           node_type: skill
           agent: planner
           skill: execution-plan
+          params:
+            output_contract: Emit sections named Revision Required, Gate Status, Rejectors, Missing Evidence, Safe Revision Plan, and Next Steps.
+            purpose: Produce a user-facing revision plan when the team approval gate denies delivery.
           input:
             gate_rejectors: stages.review-gate.outputs.rejectors
             gate_status: stages.review-gate.outputs.value
             team_summary: stages.team__reporter.outputs.summary
           outputs:
             revision_plan: result.output
+            summary: result.summary
+          artifacts:
+            - name: team-review-revision-plan
+              kind: report
+              title: Team review revision plan
+              ref: result.output
+              summary: Gate status, rejectors, missing evidence, safe revision plan, and next steps.
+          acceptance_criteria:
+            - name: has-revision-required
+              ref: result.output
+              contains: Revision Required
+              expected: revision plan explains why delivery is blocked
+            - name: has-safe-revision-plan
+              ref: result.output
+              contains: Safe Revision Plan
+              expected: revision plan gives a safe next action
           next:
             - end
           position:

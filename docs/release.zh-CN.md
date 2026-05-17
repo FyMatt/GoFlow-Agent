@@ -84,6 +84,8 @@ Release workflow 会：
 - `docs/`
 - 启动脚本：`run-goflow.sh` 或 `run-goflow.cmd`
 
+启动脚本默认启动 HTTP/Web Studio，地址为 `http://127.0.0.1:8080/console`，并自动设置内置 MCP 工具路径。需要交互式 CLI 时，直接运行 `bin/goflow` 或 `bin/goflow.exe`。
+
 启动脚本会设置 MCP 工具路径，并在备份 Provider 变量为空时复制主 Provider 变量。
 
 `kits/` 和 `examples/` 会随压缩包一起发布，确保下载包内也包含 README 和
@@ -129,6 +131,23 @@ goflow --config /app/configs/goflow.docker.yaml --workspace /workspace --http :8
 ```
 
 ## 发布前检查
+
+打 tag 前先做密钥检查。提交到仓库的 Provider 文件应保留 `${GOFLOW_API_KEY}` 这类
+环境变量引用，不要写入真实 API Key：
+
+```bash
+python scripts/validate_no_secrets.py
+```
+
+如需额外手动扫描，也可以运行：
+
+```bash
+rg --hidden --glob '!.git/**' --glob '!*.png' --glob '!*.jpg' --glob '!*.jpeg' --glob '!*.gif' --glob '!*.webp' --glob '!*.exe' --glob '!*.dll' --glob '!*.zip' --glob '!*.gz' --glob '!*.bin' 'sk-[A-Za-z0-9_-]{20,}' .
+```
+
+如果任一命令命中了真实密钥，先从文件中移除，再到模型服务商后台轮换或吊销该密钥，然后重新
+扫描。Web Studio 会把 Provider 资源保存到 `configs/providers/<name>.yaml`，因此
+页面里粘贴的密钥属于本地明文配置，不应进入发布提交。
 
 ```bash
 python scripts/run_preflight.py --browser-required
