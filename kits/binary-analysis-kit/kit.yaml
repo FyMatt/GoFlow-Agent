@@ -43,6 +43,55 @@ examples:
       request: Run static binary triage on sample.bin without executing it.
       workflow: binary-triage
       agent: binary-analyst
+vertical_pack:
+    domain: binary-analysis
+    maturity: guided
+    summary: Performs static binary and reverse-engineering triage using metadata, strings, hex previews, and defensive vulnerability reasoning.
+    supported_tasks:
+        - static binary metadata review
+        - printable string triage
+        - suspicious indicator extraction
+        - reverse-analysis note generation
+        - follow-up vulnerability hypothesis report
+    required_inputs:
+        - binary path
+        - analysis objective
+        - allowed analysis depth
+        - target platform when known
+    tool_boundaries:
+        - Do not execute untrusted binaries.
+        - Use bounded metadata, strings, and hex previews.
+        - Treat deeper disassembly/debugging as a future specialized tool boundary.
+    safety_gates:
+        - Keep analysis static by default.
+        - Require operator approval before any future execution-capable workflow.
+    quality_gates:
+        - Requires file metadata.
+        - Requires evidence for suspicious indicators.
+        - Requires confidence and next analysis steps.
+    evidence_artifacts:
+        - binary metadata
+        - string indicators
+        - hex evidence
+        - reverse notes
+        - risk report
+    simple_mode:
+        - Show file path, metadata, suspicious indicators, and next steps.
+    expert_mode:
+        - Show offsets, tool outputs, artifact refs, static-analysis limits, and follow-up tool gaps.
+    token_strategy:
+        - Return bounded strings and hex snippets instead of full binary content.
+        - Keep raw binary data out of prompts.
+    model_routes:
+        strong:
+            - risk interpretation
+            - reverse-analysis synthesis
+        worker:
+            - metadata extraction
+            - string extraction
+            - hex preview
+        verifier:
+            - static evidence review
 metadata:
     preset: binary-analysis
     recommended_agent: binary-analyst

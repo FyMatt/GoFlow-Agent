@@ -369,6 +369,7 @@ GET /api/workflow-templates/{name}
 Current built-in templates:
 
 - `complex-project-delivery`
+- `engineering-parallel-delivery`
 - `plan-implement-audit`
 - `task-decomposition-plan`
 - `multi-domain-intake-router`
@@ -390,8 +391,15 @@ stay stable across many iterations. It analyzes the user's requirement,
 extracts functional requirements, builds a user-confirmed project plan, runs an
 implementation/verification/review/plan-update loop until the plan is complete,
 then performs final validation and writes a completion report. Use
-`plan-implement-audit` for a bounded task that should still produce planning,
-implementation, verification, audit, quality-gate evidence, and a final report.
+`engineering-parallel-delivery` when a complex task should be decomposed by a
+strong planning route, dispatched to bounded parallel worker stages on cheaper
+routes, then joined, audited, and summarized without passing full history or raw
+logs into every worker. Its worker stages declare bounded `model.max_tokens`
+budgets and compact context rules so small models receive only their assigned
+scope and artifact refs. If the quality gate warns or fails, the template
+routes through a short resolver pass before final handoff. Use `plan-implement-audit`
+for a bounded task that should still produce planning, implementation,
+verification, audit, quality-gate evidence, and a final report.
 
 Use `task-decomposition-plan` before high-risk or broad tasks when you want the
 agent to produce a reviewable workflow draft with node contracts, data flow,
@@ -406,9 +414,10 @@ role responsibilities, handoffs, shared blackboard references, and output
 contracts.
 
 Use `multi-domain-intake-router` as the broad first-run template. It collects
-domain and scope information, routes to software, security, binary,
-documentation, operations, support, or framework-extension team templates, and
-then sends the team output through synthesis and quality-gate handoff stages.
+domain and scope information, uses a strong planner route to decompose the
+request, activates only the selected software, web-security, security, binary,
+documentation, operations, support, platform, or general worker branches, and
+then joins, audits, and hands off a compact quality-gated report.
 
 Use `agent-framework-extension` when the task is to create or reshape GoFlow
 itself: a vertical Agent, skill, MCP tool, workflow, team template, policy rule,
@@ -634,13 +643,20 @@ runtime homes can override it with
 materialization and HTTP Studio materialization use that renderer.
 
 For the broadest starter path, use `multi-domain-agent`. It creates or
-references one connected entry kit that can route software engineering, web
-security, security research, binary analysis, documentation, operations,
-customer support, and framework-extension requests into the matching workflow
-and team templates. It is intended for first-time Studio users because the
-generated resource graph shows how Agents, Skills, Tools, Teams, Workflow
-Templates, Policy Rules, and Kits are meant to work together instead of as
-isolated examples.
+references one connected entry kit that decomposes broad requests, activates
+only the selected software engineering, web security, security research,
+binary analysis, documentation, operations, customer support, platform, or
+general worker branches, and preserves linked team-template refs for expert
+inspection. It is intended for first-time Studio users because the generated
+resource graph shows how Agents, Skills, Tools, Teams, Workflow Templates,
+Policy Rules, and Kits are meant to work together instead of as isolated
+examples.
+
+`operations-runbook` is the professional operations starter in that set. Its
+vertical pack includes network-device planning contracts so the starter can
+collect authorized scope, allowed hosts, credential refs, command allowlists,
+rollback steps, and evidence refs before any execution-capable connector is
+introduced.
 
 Available presets:
 

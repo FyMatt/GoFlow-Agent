@@ -10,10 +10,10 @@ import (
 )
 
 const (
-	systemPromptRecentPromptLimit = 4
-	systemPromptRecentToolLimit   = 6
-	systemPromptPromptItemBytes   = 1200
-	systemPromptToolItemBytes     = 900
+	systemPromptRecentPromptLimit = 3
+	systemPromptRecentToolLimit   = 4
+	systemPromptPromptItemBytes   = 700
+	systemPromptToolItemBytes     = 500
 	systemPromptSkillFullBytes    = 1800
 	systemPromptSkillSummaryBytes = 900
 )
@@ -364,6 +364,97 @@ func compactHistoryItemForPrompt(item string, maxBytes int) string {
 		return trimmed
 	}
 	return fmt.Sprintf("%s ... [compacted %d bytes]", trimmed, omitted)
+}
+
+func compactMessagesForSummaryPrompt(messages []schema.Message) []schema.Message {
+	return compactMessagesForPrompt(messages, 2, 8, 1200, 900)
+}
+
+func compactMessagesForResumePrompt(messages []schema.Message) []schema.Message {
+	return compactMessagesForPrompt(messages, 2, 12, 1600, 1200)
+}
+
+func compactMessagesForConversation(messages []schema.Message) []schema.Message {
+	return compactMessagesForPrompt(messages, 2, 16, 1600, 1200)
+}
+
+func compactMessagesForPrompt(messages []schema.Message, prefixCount, recentLimit, messageBytes, toolBytes int) []schema.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	if prefixCount < 0 {
+		prefixCount = 0
+	}
+	if prefixCount > len(messages) {
+		prefixCount = len(messages)
+	}
+	prefix := schema.CopyMessages(messages[:prefixCount])
+	tail := messages[prefixCount:]
+	if len(tail) == 0 {
+		return prefix
+	}
+	existingMarker := schema.Message{}
+	existingOmitted := 0
+	if isGoFlowConversationCompactionMarker(tail[0].Content) {
+		existingMarker = schema.CopyMessage(tail[0])
+		existingOmitted = markerIntAfterPrefix(existingMarker.Content, "[GoFlow compacted ")
+		tail = tail[1:]
+	}
+	if recentLimit <= 0 || recentLimit > len(messages) {
+		recentLimit = len(tail)
+	}
+	if recentLimit > len(tail) {
+		recentLimit = len(tail)
+	}
+	start := len(tail) - recentLimit
+	start = compactMessageValidSuffixStart(tail, start)
+	omitted := start
+	out := make([]schema.Message, 0, len(prefix)+recentLimit+1)
+	out = append(out, prefix...)
+	totalOmitted := existingOmitted + omitted
+	if totalOmitted > 0 {
+		role := "user"
+		if strings.TrimSpace(existingMarker.Role) != "" {
+			role = existingMarker.Role
+		}
+		out = append(out, schema.Message{
+			Role:    role,
+			Content: conversationCompactionMarker(totalOmitted, len(tail)-omitted),
+		})
+	}
+	for _, message := range tail[start:] {
+		copied := schema.CopyMessage(message)
+		limit := messageBytes
+		if strings.EqualFold(copied.Role, "tool") {
+			limit = toolBytes
+		}
+		if limit > 0 {
+			copied.Content = compactHistoryItemForPrompt(copied.Content, limit)
+		}
+		out = append(out, copied)
+	}
+	return out
+}
+
+func isGoFlowConversationCompactionMarker(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "[GoFlow compacted ") && strings.Contains(content, "earlier conversation messages for LLM context;")
+}
+
+func conversationCompactionMarker(omitted, retained int) string {
+	return fmt.Sprintf("[GoFlow compacted %d earlier conversation messages for LLM context; latest %d retained. Full run history remains in session artifacts.]", omitted, retained)
+}
+
+func compactMessageValidSuffixStart(messages []schema.Message, start int) int {
+	if start <= 0 || start >= len(messages) {
+		if start < 0 {
+			return 0
+		}
+		return start
+	}
+	for start > 0 && strings.EqualFold(strings.TrimSpace(messages[start].Role), "tool") {
+		start--
+	}
+	return start
 }
 
 func fallbackHistoryLabel(label string) string {

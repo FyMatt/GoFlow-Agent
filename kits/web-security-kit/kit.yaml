@@ -26,6 +26,8 @@ tools:
     - web_tools/web_search
     - web_tools/fetch_url
     - web_tools/fetch_page_assets
+    - web_tools/browser_snapshot
+    - web_tools/browser_probe_points
     - file_tools/read_file
     - file_tools/search_files
 workflows:
@@ -53,6 +55,66 @@ examples:
       request: Build an evidence-backed web security report for this authorized target.
       workflow: security-audit-evidence-gate
       agent: security-researcher
+vertical_pack:
+    domain: web-security
+    maturity: production-ready
+    summary: Collects authorized source and browser-rendered web evidence, classifies client-side risk, and reports defensive findings with approval gates.
+    supported_tasks:
+        - authorized web target intake
+        - page and asset collection
+        - browser DOM and form evidence collection
+        - browser probe surface enumeration and approved GET canary validation
+        - client-side XSS and security signal review
+        - evidence-backed remediation report
+    required_inputs:
+        - target URL
+        - authorized scope confirmation
+        - allowed hosts
+        - desired evidence depth
+        - active verification approval status
+    tool_boundaries:
+        - web_tools/browser_snapshot requires authorized_scope=true and allowed_hosts.
+        - web_tools/browser_probe_points requires authorized_scope=true and allowed_hosts, and only runs active GET canary probes when active_probe_approved=true.
+        - Browser automation returns compact DOM, form, link, script, signal, screenshot hash, and path summaries instead of full raw evidence by default.
+        - Active XSS or SQLi-style probing is not a default passive collection step and must be approval-gated, non-destructive, rate-limited, and scoped.
+    safety_gates:
+        - Reject browser collection without explicit authorized scope.
+        - Require host allowlist before browser automation.
+        - Route active probing requests through operator approval and evidence capture.
+    quality_gates:
+        - Requires target scope.
+        - Requires collected source or browser evidence.
+        - Requires confirmed vs hypothetical finding separation.
+        - Requires remediation and residual uncertainty.
+    evidence_artifacts:
+        - target scope
+        - page asset inventory
+        - browser snapshot summary
+        - browser probe-point summary
+        - security signal list
+        - risk report
+    simple_mode:
+        - Show target URL, allowed hosts, authorization checkbox, evidence status, risk level, and final report.
+        - Hide payload and browser runtime details unless approval is needed.
+    expert_mode:
+        - Show tool allowlists, browser evidence refs, context budgets, approval gates, route conditions, and raw workflow graph.
+    token_strategy:
+        - Keep browser outputs compact with DOM hashes and previews.
+        - Store screenshots as artifact paths and hashes instead of injecting image bytes.
+        - Pass evidence summaries and artifact refs to audit/report stages.
+    model_routes:
+        strong:
+            - scope and risk arbitration
+            - active verification decision
+            - final remediation synthesis
+        worker:
+            - asset collection
+            - browser snapshot collection
+            - probe surface enumeration
+            - client-side pattern review
+        verifier:
+            - evidence gate review
+            - finding confidence audit
 metadata:
     preset: web-security
     recommended_agent: web-security-researcher

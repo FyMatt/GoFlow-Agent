@@ -188,8 +188,16 @@ or symlink escapes.
 The built-in Go and Python tools are reference implementations:
 
 - `mcp_servers/file_tools/main.go`
+- `mcp_servers/network_tools/main.go`
 - `mcp_servers/skill_runner/main.go`
 - `mcp_servers/python_notes.py`
+
+For vertical operations tools, use `network_tools` as the reference contract.
+It deliberately returns device discovery, command, and configuration dry-run
+plans without opening network connections. A real SSH/API connector should keep
+the same authorization, host allowlist, command allowlist, dry-run, rollback,
+approval, and evidence-ref fields so workflows can stay audit-friendly and
+token-efficient.
 
 ## Config
 

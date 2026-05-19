@@ -33,6 +33,7 @@ type workflowGraphStage struct {
 	Agent              string                             `yaml:"agent"`
 	Skill              string                             `yaml:"skill"`
 	Tool               string                             `yaml:"tool"`
+	Model              workflowGraphStageModel            `yaml:"model"`
 	Params             map[string]string                  `yaml:"params"`
 	Input              map[string]string                  `yaml:"input"`
 	Outputs            map[string]string                  `yaml:"outputs"`
@@ -57,11 +58,22 @@ type workflowGraphRetry struct {
 	MaxAttempts int `yaml:"max_attempts"`
 }
 
+type workflowGraphStageModel struct {
+	Provider    string   `yaml:"provider"`
+	Model       string   `yaml:"model"`
+	MaxTokens   int      `yaml:"max_tokens"`
+	Temperature *float64 `yaml:"temperature"`
+}
+
 type workflowGraphStageContext struct {
-	Include   []string                      `yaml:"include"`
-	Exclude   []string                      `yaml:"exclude"`
-	MaxTokens int                           `yaml:"max_tokens"`
-	Retrieval workflowGraphContextRetrieval `yaml:"retrieval"`
+	Include             []string                      `yaml:"include"`
+	Exclude             []string                      `yaml:"exclude"`
+	MaxTokens           int                           `yaml:"max_tokens"`
+	PromptMaxTokens     int                           `yaml:"prompt_max_tokens"`
+	RequestMaxTokens    int                           `yaml:"request_max_tokens"`
+	InputsMaxTokens     int                           `yaml:"inputs_max_tokens"`
+	ParametersMaxTokens int                           `yaml:"parameters_max_tokens"`
+	Retrieval           workflowGraphContextRetrieval `yaml:"retrieval"`
 }
 
 type workflowGraphContextRetrieval struct {
@@ -325,6 +337,9 @@ func validateWorkflowGraphWithTeamLookup(invokedName string, graph workflowGraph
 		if stage.Retry.MaxAttempts < 0 {
 			return fmt.Errorf("workflow graph %s stage %s retry.max_attempts must not be negative", graph.Name, stage.Name)
 		}
+		if stage.Model.MaxTokens < 0 {
+			return fmt.Errorf("workflow graph %s stage %s model.max_tokens must not be negative", graph.Name, stage.Name)
+		}
 	}
 	for _, stage := range graph.Stages {
 		if isRepeatWorkflowNode(stage) {
@@ -521,7 +536,7 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 			return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", stage.Name, err)
 		}
 		if hasSuspendedToolResult(result.ToolResults) {
-			w.captureWorkflowGraphApprovalContext(graph, index, request, result.Output, completed, result.ToolResults, prompt)
+			w.captureWorkflowGraphApprovalContext(graph, index, request, result.Output, result.ResponseMessage, completed, result.ToolResults, prompt)
 			approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(result.ToolResults), stage.Agent)
 			w.persistWorkflowState(graph.Name, "awaiting_tool_approval", WorkflowStage(stage.Name), request, summarizeWorkflow(completed), approvalPrompt)
 			return WorkflowResult{Name: graph.Name, Status: "awaiting_tool_approval", PendingApproval: true, ApprovalPrompt: approvalPrompt, CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
@@ -580,12 +595,12 @@ func (w *WorkflowRunner) resumeWorkflowGraph(ctx context.Context, graph workflow
 	if err := w.runtime.SetActiveAgent(stage.Agent); err != nil {
 		return WorkflowResult{}, err
 	}
-	result, err := continueAgentRunWithSkill(ctx, w.runtime, stage.Agent, prompt, &skill, pending.call, pending.responseContent, toolResult, handler)
+	result, err := continueAgentRunWithModelSkillAndOptions(ctx, w.runtime, stage.Agent, prompt, stage.Model, &skill, workflowStageRunOptions{AllowedTools: workflowGraphStageAllowedTools(stage)}, pending.call, pending.responseContent, pending.responseMessage, toolResult, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", stage.Name, err)
 	}
 	if hasSuspendedToolResult(result.ToolResults) {
-		w.captureWorkflowGraphApprovalContext(graph, pending.skillIndex, pending.request, result.Output, completed, result.ToolResults, prompt)
+		w.captureWorkflowGraphApprovalContext(graph, pending.skillIndex, pending.request, result.Output, result.ResponseMessage, completed, result.ToolResults, prompt)
 		approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(result.ToolResults), stage.Agent)
 		w.persistWorkflowState(graph.Name, "awaiting_tool_approval", WorkflowStage(stage.Name), pending.request, summarizeWorkflow(completed), approvalPrompt)
 		return WorkflowResult{Name: graph.Name, Status: "awaiting_tool_approval", PendingApproval: true, ApprovalPrompt: approvalPrompt, CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
@@ -1076,7 +1091,7 @@ func (w *WorkflowRunner) runWorkflowGraphConcurrentParallelBranches(ctx context.
 	}
 	completed = append(completed, successful...)
 	if suspended != nil {
-		w.captureWorkflowGraphApprovalContext(graph, suspended.Index, request, suspended.Result.Output, completed, suspended.Result.ToolResults, suspended.Prompt)
+		w.captureWorkflowGraphApprovalContext(graph, suspended.Index, request, suspended.Result.Output, suspended.Result.ResponseMessage, completed, suspended.Result.ToolResults, suspended.Prompt)
 		approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(suspended.Result.ToolResults), suspended.Stage.Agent)
 		w.persistWorkflowState(graph.Name, "awaiting_tool_approval", WorkflowStage(suspended.Stage.Name), request, summarizeWorkflow(completed), approvalPrompt)
 		return workflowGraphParallelOutcome{Result: &WorkflowResult{Name: graph.Name, Status: "awaiting_tool_approval", PendingApproval: true, ApprovalPrompt: approvalPrompt, CompletedStages: completed, NextStage: WorkflowStage(suspended.Stage.Name)}}, true, nil
@@ -1441,6 +1456,9 @@ func (w *WorkflowRunner) controlWorkflowGraphStageDecision(graph workflowGraph, 
 	switch normalizeWorkflowSkillName(stage.NodeType) {
 	case "parallel", "fan_out", "fork":
 		targets := w.nextWorkflowGraphStageIndices(graph, currentIndex, request, "", completed)
+		if selected := w.workflowGraphSelectedParallelStageIndices(graph, stage, targets, request, completed); len(selected) > 0 {
+			targets = selected
+		}
 		return workflowGraphControlDecision{
 			Kind:    "parallel",
 			Route:   "fan_out",
@@ -1450,10 +1468,14 @@ func (w *WorkflowRunner) controlWorkflowGraphStageDecision(graph workflowGraph, 
 			Status:  "completed",
 			Variables: workflowStageMetadata(map[string]string{
 				"branch_count": strconv.Itoa(len(targets)),
+				"branches":     workflowGraphStageNamesForIndices(graph, targets),
 			}),
+			ValueVariables: map[string]any{
+				"branches": workflowGraphStageNamesForIndicesList(graph, targets),
+			},
 		}
 	case "join", "merge", "barrier":
-		required := workflowGraphJoinRequiredStageNames(graph, stage)
+		required := workflowGraphJoinRequiredStageNames(graph, stage, completed)
 		targets := w.nextWorkflowGraphStageIndices(graph, currentIndex, request, strings.Join(required, ","), completed)
 		return workflowGraphControlDecision{
 			Kind:    "join",
@@ -1467,6 +1489,9 @@ func (w *WorkflowRunner) controlWorkflowGraphStageDecision(graph workflowGraph, 
 				"wait_for":        strings.Join(required, ","),
 				"completed_count": strconv.Itoa(len(required)),
 			}),
+			ValueVariables: map[string]any{
+				"wait_for": append([]string(nil), required...),
+			},
 		}
 	case "condition":
 		passed := evaluateWorkflowGraphCondition(stage.Condition, request, completed)
@@ -1711,12 +1736,12 @@ func (w *WorkflowRunner) resumeWorkflowGraphRepeatStage(ctx context.Context, gra
 	if err := w.runtime.SetActiveAgent(iterationStage.Agent); err != nil {
 		return WorkflowResult{}, err
 	}
-	result, err := continueAgentRunWithSkill(ctx, w.runtime, iterationStage.Agent, prompt, &skill, pending.call, pending.responseContent, toolResult, handler)
+	result, err := continueAgentRunWithModelSkillAndOptions(ctx, w.runtime, iterationStage.Agent, prompt, iterationStage.Model, &skill, workflowStageRunOptions{AllowedTools: workflowGraphStageAllowedTools(iterationStage)}, pending.call, pending.responseContent, pending.responseMessage, toolResult, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", iterationStage.Name, err)
 	}
 	if hasSuspendedToolResult(result.ToolResults) {
-		w.captureWorkflowGraphRepeatApprovalContext(graph, context, iterationIndex, pending.request, result.Output, completed, result.ToolResults, prompt)
+		w.captureWorkflowGraphRepeatApprovalContext(graph, context, iterationIndex, pending.request, result.Output, result.ResponseMessage, completed, result.ToolResults, prompt)
 		approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(result.ToolResults), iterationStage.Agent)
 		w.persistWorkflowState(graph.Name, "awaiting_tool_approval", WorkflowStage(iterationStage.Name), pending.request, summarizeWorkflow(completed), approvalPrompt)
 		return WorkflowResult{Name: graph.Name, Status: "awaiting_tool_approval", PendingApproval: true, ApprovalPrompt: approvalPrompt, CompletedStages: completed, NextStage: WorkflowStage(iterationStage.Name)}, nil
@@ -1776,7 +1801,7 @@ func (w *WorkflowRunner) runWorkflowGraphRepeatIterations(ctx context.Context, g
 			return workflowGraphRepeatOutcome{}, fmt.Errorf("workflow stage %s: %w", iterationStage.Name, err)
 		}
 		if hasSuspendedToolResult(result.ToolResults) {
-			w.captureWorkflowGraphRepeatApprovalContext(graph, context, iteration, request, result.Output, completed, result.ToolResults, prompt)
+			w.captureWorkflowGraphRepeatApprovalContext(graph, context, iteration, request, result.Output, result.ResponseMessage, completed, result.ToolResults, prompt)
 			approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(result.ToolResults), iterationStage.Agent)
 			w.persistWorkflowState(graph.Name, "awaiting_tool_approval", WorkflowStage(iterationStage.Name), request, summarizeWorkflow(completed), approvalPrompt)
 			return workflowGraphRepeatOutcome{Result: &WorkflowResult{Name: graph.Name, Status: "awaiting_tool_approval", PendingApproval: true, ApprovalPrompt: approvalPrompt, CompletedStages: completed, NextStage: WorkflowStage(iterationStage.Name)}}, nil
@@ -2097,7 +2122,7 @@ func workflowGraphRepeatCompletedIterations(completed []WorkflowStageResult, con
 	return iterations
 }
 
-func (w *WorkflowRunner) captureWorkflowGraphRepeatApprovalContext(graph workflowGraph, context workflowGraphRepeatContext, iteration int, request, responseContent string, completed []WorkflowStageResult, results []schema.ToolResult, stagePrompt string) {
+func (w *WorkflowRunner) captureWorkflowGraphRepeatApprovalContext(graph workflowGraph, context workflowGraphRepeatContext, iteration int, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult, results []schema.ToolResult, stagePrompt string) {
 	callID := firstSuspendedToolCallID(results)
 	if callID == "" {
 		return
@@ -2105,7 +2130,7 @@ func (w *WorkflowRunner) captureWorkflowGraphRepeatApprovalContext(graph workflo
 	body := graph.Stages[context.BodyIndex]
 	iterationStage := workflowGraphRepeatIterationStage(body, graph.Stages[context.ControlIndex], context, iteration)
 	context.NextIteration = iteration + 1
-	_ = w.runtime.AnnotateWorkflowGraphRepeatPendingApproval(callID, graph.Name, WorkflowStage(iterationStage.Name), request, responseContent, completed, context.BodyIndex, stagePrompt, context)
+	_ = w.runtime.AnnotateWorkflowGraphRepeatPendingApproval(callID, graph.Name, WorkflowStage(iterationStage.Name), request, responseContent, responseMessage, completed, context.BodyIndex, stagePrompt, context)
 }
 
 func (w *WorkflowRunner) runWorkflowGraphSubWorkflowStage(ctx context.Context, graph workflowGraph, stage workflowGraphStage, request string, completed []WorkflowStageResult, approve bool, handler func(event schema.StreamEvent) error) (WorkflowStageResult, *WorkflowResult, error) {
@@ -2318,7 +2343,7 @@ func isJoinWorkflowNode(stage workflowGraphStage) bool {
 }
 
 func workflowGraphJoinMissingStages(graph workflowGraph, stage workflowGraphStage, completed []WorkflowStageResult) []string {
-	required := workflowGraphJoinRequiredStageNames(graph, stage)
+	required := workflowGraphJoinRequiredStageNames(graph, stage, completed)
 	if len(required) == 0 {
 		return nil
 	}
@@ -2332,7 +2357,15 @@ func workflowGraphJoinMissingStages(graph workflowGraph, stage workflowGraphStag
 	return missing
 }
 
-func workflowGraphJoinRequiredStageNames(graph workflowGraph, stage workflowGraphStage) []string {
+func workflowGraphJoinRequiredStageNames(graph workflowGraph, stage workflowGraphStage, completed []WorkflowStageResult) []string {
+	for _, key := range []string{"wait_for_ref", "requires_ref", "required_ref", "branches_ref", "stages_ref"} {
+		if value := strings.TrimSpace(stage.Params[key]); value != "" {
+			if resolved, ok := resolveWorkflowGraphReferenceValue(value, "", completed); ok {
+				return workflowGraphStageNamesFromValue(resolved)
+			}
+			return workflowGraphCSVStageNames(resolveWorkflowGraphReference(value, "", completed))
+		}
+	}
 	for _, key := range []string{"wait_for", "requires", "required", "branches", "stages"} {
 		if value := strings.TrimSpace(stage.Params[key]); value != "" {
 			return workflowGraphCSVStageNames(value)
@@ -2361,6 +2394,60 @@ func workflowGraphJoinRequiredStageNames(graph workflowGraph, stage workflowGrap
 		return normalizeWorkflowSkillName(required[i]) < normalizeWorkflowSkillName(required[j])
 	})
 	return required
+}
+
+func workflowGraphStageNamesFromValue(value any) []string {
+	switch typed := value.(type) {
+	case nil:
+		return nil
+	case string:
+		return workflowGraphCSVStageNames(typed)
+	case []string:
+		return workflowGraphUniqueStageNames(typed)
+	case []any:
+		names := make([]string, 0, len(typed))
+		for _, item := range typed {
+			names = append(names, workflowGraphStageNamesFromValue(item)...)
+		}
+		return workflowGraphUniqueStageNames(names)
+	case map[string]string:
+		for _, key := range []string{"branches", "active_branches", "selected_branches", "run_branches", "wait_for", "stages"} {
+			if value := strings.TrimSpace(typed[key]); value != "" {
+				return workflowGraphCSVStageNames(value)
+			}
+		}
+	case map[string]any:
+		for _, key := range []string{"branches", "active_branches", "selected_branches", "run_branches", "wait_for", "stages"} {
+			if value, ok := typed[key]; ok {
+				return workflowGraphStageNamesFromValue(value)
+			}
+		}
+	}
+	return workflowGraphCSVStageNames(workflowGraphValueString(value))
+}
+
+func workflowGraphUniqueStageNames(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		name := strings.Trim(strings.TrimSpace(value), `"'`)
+		if name == "" {
+			continue
+		}
+		key := normalizeWorkflowSkillName(name)
+		if key == "" {
+			continue
+		}
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		names = append(names, name)
+	}
+	return names
 }
 
 func workflowGraphCSVStageNames(value string) []string {
@@ -2593,11 +2680,11 @@ type workflowGraphInputFieldDocument struct {
 	Placeholder string                            `json:"placeholder,omitempty"`
 	Group       string                            `json:"group,omitempty"`
 	Required    bool                              `json:"required,omitempty"`
-	Default     string                            `json:"default,omitempty"`
-	Options     []string                          `json:"options,omitempty"`
+	Default     any                               `json:"default,omitempty"`
+	Options     []any                             `json:"options,omitempty"`
 	Rows        int                               `json:"rows,omitempty"`
-	Min         string                            `json:"min,omitempty"`
-	Max         string                            `json:"max,omitempty"`
+	Min         any                               `json:"min,omitempty"`
+	Max         any                               `json:"max,omitempty"`
 	Pattern     string                            `json:"pattern,omitempty"`
 	Multiple    bool                              `json:"multiple,omitempty"`
 	Advanced    bool                              `json:"advanced,omitempty"`
@@ -2735,11 +2822,11 @@ func workflowGraphFlattenInputFieldDocuments(docs []workflowGraphInputFieldDocum
 			Placeholder: doc.Placeholder,
 			Group:       fieldGroup,
 			Required:    doc.Required,
-			Default:     doc.Default,
-			Options:     doc.Options,
+			Default:     workflowGraphInputAnyString(doc.Default),
+			Options:     workflowGraphInputOptionStrings(doc.Options),
 			Rows:        doc.Rows,
-			Min:         doc.Min,
-			Max:         doc.Max,
+			Min:         workflowGraphInputAnyString(doc.Min),
+			Max:         workflowGraphInputAnyString(doc.Max),
 			Pattern:     doc.Pattern,
 			Multiple:    doc.Multiple,
 			Advanced:    doc.Advanced,
@@ -2807,6 +2894,20 @@ func workflowGraphInputAnyString(value any) string {
 		return typed
 	case float64:
 		return strconv.FormatFloat(typed, 'f', -1, 64)
+	case float32:
+		return strconv.FormatFloat(float64(typed), 'f', -1, 32)
+	case int:
+		return strconv.Itoa(typed)
+	case int64:
+		return strconv.FormatInt(typed, 10)
+	case int32:
+		return strconv.FormatInt(int64(typed), 10)
+	case uint:
+		return strconv.FormatUint(uint64(typed), 10)
+	case uint64:
+		return strconv.FormatUint(typed, 10)
+	case uint32:
+		return strconv.FormatUint(uint64(typed), 10)
 	case bool:
 		return strconv.FormatBool(typed)
 	default:
@@ -2816,6 +2917,20 @@ func workflowGraphInputAnyString(value any) string {
 		}
 		return string(data)
 	}
+}
+
+func workflowGraphInputOptionStrings(values []any) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		text := strings.TrimSpace(workflowGraphInputAnyString(value))
+		if text != "" {
+			out = append(out, text)
+		}
+	}
+	return out
 }
 
 func workflowGraphInputFieldRequiredByName(name string, required map[string]struct{}) bool {
@@ -4358,16 +4473,17 @@ func workflowStageResultsFromRunSnapshots(snapshots []session.WorkflowRunStageSn
 	}
 	results := make([]WorkflowStageResult, 0, len(snapshots))
 	for _, snapshot := range snapshots {
+		result := copyAgentResultForWorkflow(snapshot.Result)
 		output := WorkflowStageOutput{
-			Summary:      fallbackWorkflowGraphValue(snapshot.Summary, truncateSummary(snapshot.Result.Output)),
-			RawOutput:    limitWorkflowGraphText(snapshot.Result.Output),
+			Summary:      fallbackWorkflowGraphValue(snapshot.Summary, truncateSummary(result.Output)),
+			RawOutput:    limitWorkflowGraphText(result.Output),
 			Variables:    copyStringMap(snapshot.Outputs),
 			Values:       copyWorkflowAnyMap(snapshot.OutputValues),
 			Artifacts:    append([]session.WorkflowRunArtifact(nil), snapshot.Artifacts...),
-			ToolResults:  append([]schema.ToolResult(nil), snapshot.Result.ToolResults...),
-			Findings:     append([]schema.Finding(nil), snapshot.Result.Findings...),
-			Changes:      append([]schema.Change(nil), snapshot.Result.Changes...),
-			Verification: append([]schema.Verification(nil), snapshot.Result.Verification...),
+			ToolResults:  append([]schema.ToolResult(nil), result.ToolResults...),
+			Findings:     append([]schema.Finding(nil), result.Findings...),
+			Changes:      append([]schema.Change(nil), result.Changes...),
+			Verification: append([]schema.Verification(nil), result.Verification...),
 		}
 		applyWorkflowStageCanonicalOutputFields(&output)
 		results = append(results, WorkflowStageResult{
@@ -4381,7 +4497,7 @@ func workflowStageResultsFromRunSnapshots(snapshots []session.WorkflowRunStageSn
 			Input:       copyStringMap(snapshot.Inputs),
 			InputValues: copyWorkflowAnyMap(snapshot.InputValues),
 			Metadata:    copyStringMap(snapshot.Metadata),
-			Result:      snapshot.Result,
+			Result:      result,
 			Output:      output,
 			Acceptance:  append([]session.WorkflowRunAcceptanceSnapshot(nil), snapshot.Acceptance...),
 		})
@@ -4400,6 +4516,56 @@ func workflowGraphStageNamesForIndices(graph workflowGraph, indices []int) strin
 		}
 	}
 	return strings.Join(names, ",")
+}
+
+func workflowGraphStageNamesForIndicesList(graph workflowGraph, indices []int) []string {
+	if len(indices) == 0 {
+		return nil
+	}
+	names := make([]string, 0, len(indices))
+	for _, index := range indices {
+		if index >= 0 && index < len(graph.Stages) {
+			names = append(names, graph.Stages[index].Name)
+		}
+	}
+	if len(names) == 0 {
+		return nil
+	}
+	return names
+}
+
+func (w *WorkflowRunner) workflowGraphSelectedParallelStageIndices(graph workflowGraph, stage workflowGraphStage, candidates []int, request string, completed []WorkflowStageResult) []int {
+	if len(candidates) == 0 {
+		return nil
+	}
+	names := workflowGraphSelectedParallelStageNames(stage, request, completed)
+	if len(names) == 0 {
+		return nil
+	}
+	selected := filterExplicitWorkflowGraphStages(names, graph, candidates)
+	if len(selected) == 0 {
+		return nil
+	}
+	return selected
+}
+
+func workflowGraphSelectedParallelStageNames(stage workflowGraphStage, request string, completed []WorkflowStageResult) []string {
+	var names []string
+	for _, key := range []string{"active_branches", "branches", "selected_branches", "run_branches"} {
+		names = append(names, workflowGraphCSVStageNames(stage.Params[key])...)
+	}
+	for _, key := range []string{"active_branches_ref", "branches_ref", "selected_branches_ref", "run_branches_ref"} {
+		ref := strings.TrimSpace(stage.Params[key])
+		if ref == "" {
+			continue
+		}
+		if value, ok := resolveWorkflowGraphReferenceValue(ref, request, completed); ok {
+			names = append(names, workflowGraphStageNamesFromValue(value)...)
+			continue
+		}
+		names = append(names, workflowGraphCSVStageNames(resolveWorkflowGraphReference(ref, request, completed))...)
+	}
+	return workflowGraphUniqueStageNames(names)
 }
 
 func workflowGraphSwitchTarget(cases map[string]string, value string) string {
@@ -4620,7 +4786,8 @@ func buildWorkflowGraphStagePrompt(graph workflowGraph, stage workflowGraphStage
 
 func buildWorkflowGraphStagePromptWithMemory(ctx context.Context, graph workflowGraph, stage workflowGraphStage, request string, completed []WorkflowStageResult, store *memory.Store) string {
 	var builder strings.Builder
-	fmt.Fprintf(&builder, "Run workflow %q stage %q for the following request.\n\nOriginal request:\n%s\n", graph.Name, stage.Name, request)
+	budget := workflowGraphStagePromptBudget(stage.Context)
+	fmt.Fprintf(&builder, "Run workflow %q stage %q for the following request.\n\nOriginal request:\n%s\n", graph.Name, stage.Name, workflowGraphBudgetText(request, budget.RequestBytes, "original request truncated by request_max_tokens"))
 	if graph.Description != "" {
 		fmt.Fprintf(&builder, "\nWorkflow description: %s\n", graph.Description)
 	}
@@ -4631,14 +4798,9 @@ func buildWorkflowGraphStagePromptWithMemory(ctx context.Context, graph workflow
 		fmt.Fprintf(&builder, "Preferred/related tool for this stage: %s\n", stage.Tool)
 	}
 	if len(stage.Params) > 0 {
-		builder.WriteString("Stage parameters:\n")
-		keys := make([]string, 0, len(stage.Params))
-		for key := range stage.Params {
-			keys = append(keys, key)
-		}
-		sort.Strings(keys)
-		for _, key := range keys {
-			fmt.Fprintf(&builder, "- %s: %s\n", key, stage.Params[key])
+		paramsText := workflowGraphStagePromptParameters(stage, budget.ParametersBytes)
+		if paramsText != "" {
+			builder.WriteString(paramsText)
 		}
 	}
 	if inputs := resolveWorkflowGraphStageInputs(stage, request, completed); len(inputs) > 0 {
@@ -4648,8 +4810,22 @@ func buildWorkflowGraphStagePromptWithMemory(ctx context.Context, graph workflow
 			keys = append(keys, key)
 		}
 		sort.Strings(keys)
+		inputBudget := budget.InputsBytes
+		usedInputBytes := 0
 		for _, key := range keys {
-			fmt.Fprintf(&builder, "- %s (%s): %s\n", key, stage.Input[key], truncateSummary(inputs[key]))
+			linePrefix := fmt.Sprintf("- %s (%s): ", key, stage.Input[key])
+			value := workflowGraphPromptValue(inputs[key])
+			if inputBudget > 0 {
+				remaining := inputBudget - usedInputBytes - len([]byte(linePrefix)) - 1
+				if remaining <= 32 {
+					fmt.Fprintf(&builder, "- %s (%s): [mapped inputs truncated by inputs_max_tokens]\n", key, stage.Input[key])
+					break
+				}
+				value = workflowGraphBudgetText(value, remaining, "mapped input truncated by inputs_max_tokens")
+			}
+			line := linePrefix + value
+			usedInputBytes += len([]byte(line)) + 1
+			fmt.Fprintf(&builder, "%s\n", line)
 		}
 	}
 	if len(completed) > 0 {
@@ -4686,12 +4862,171 @@ func buildWorkflowGraphStagePromptWithMemory(ctx context.Context, graph workflow
 		}
 	}
 	builder.WriteString("\nUse the configured stage skill instructions. Produce a concise stage result.")
-	builder.WriteString("\nReturn structured fields when applicable: summary, evidence, artifacts, decision, next_actions.")
-	return builder.String()
+	builder.WriteString(workflowGraphStageWorkerContractPrompt(stage))
+	builder.WriteString("\nReturn structured fields when applicable: summary, evidence, artifacts, decision, changed_files, verification, blockers, next_actions.")
+	return workflowGraphBudgetPrompt(builder.String(), budget.PromptBytes)
+}
+
+type workflowGraphStagePromptBudgetSpec struct {
+	PromptBytes     int
+	RequestBytes    int
+	InputsBytes     int
+	ParametersBytes int
+}
+
+func workflowGraphStagePromptBudget(context workflowGraphStageContext) workflowGraphStagePromptBudgetSpec {
+	return workflowGraphStagePromptBudgetSpec{
+		PromptBytes:     workflowGraphTokenBudgetBytes(context.PromptMaxTokens),
+		RequestBytes:    workflowGraphTokenBudgetBytes(context.RequestMaxTokens),
+		InputsBytes:     workflowGraphTokenBudgetBytes(context.InputsMaxTokens),
+		ParametersBytes: workflowGraphTokenBudgetBytes(context.ParametersMaxTokens),
+	}
+}
+
+func workflowGraphTokenBudgetBytes(tokens int) int {
+	if tokens <= 0 {
+		return 0
+	}
+	return tokens * 4
+}
+
+func workflowGraphBudgetText(value string, maxBytes int, marker string) string {
+	value = strings.TrimSpace(value)
+	if maxBytes <= 0 || len([]byte(value)) <= maxBytes {
+		return value
+	}
+	suffix := " [" + strings.TrimSpace(marker) + "]"
+	remaining := maxBytes - len([]byte(suffix))
+	if remaining < 32 {
+		remaining = maxBytes
+		suffix = ""
+	}
+	return strings.TrimSpace(trimWorkflowGraphContextValue(value, remaining)) + suffix
+}
+
+func workflowGraphBudgetPrompt(value string, maxBytes int) string {
+	value = strings.TrimSpace(value)
+	if maxBytes <= 0 || len([]byte(value)) <= maxBytes {
+		return value
+	}
+	const tailMarker = "\nUse the configured stage skill instructions."
+	index := strings.LastIndex(value, tailMarker)
+	if index <= 0 {
+		return workflowGraphBudgetText(value, maxBytes, "workflow stage prompt truncated by prompt_max_tokens")
+	}
+	tail := strings.TrimSpace(value[index:])
+	marker := "\n[workflow stage prompt middle truncated by prompt_max_tokens]\n"
+	tailBytes := len([]byte(tail))
+	markerBytes := len([]byte(marker))
+	if tailBytes+markerBytes+64 >= maxBytes {
+		return workflowGraphBudgetText(value, maxBytes, "workflow stage prompt truncated by prompt_max_tokens")
+	}
+	prefixBudget := maxBytes - tailBytes - markerBytes
+	prefix := trimWorkflowGraphContextValue(value[:index], prefixBudget)
+	return strings.TrimSpace(prefix) + marker + tail
+}
+
+func workflowGraphPromptValue(value string) string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return ""
+	}
+	if strings.Contains(value, "\n") || len([]byte(value)) > 480 {
+		return workflowGraphCompactRawReference(value)
+	}
+	return value
+}
+
+func workflowGraphStagePromptParameters(stage workflowGraphStage, maxBytes int) string {
+	keys := workflowGraphStagePromptParamKeys(stage.Params)
+	if len(keys) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Stage parameters:\n")
+	for _, key := range keys {
+		fmt.Fprintf(&builder, "- %s: %s\n", key, workflowGraphPromptValue(stage.Params[key]))
+	}
+	return workflowGraphBudgetText(builder.String(), maxBytes, "stage parameters truncated by parameters_max_tokens")
+}
+
+func workflowGraphStagePromptParamKeys(params map[string]string) []string {
+	if len(params) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(params))
+	for key := range params {
+		if workflowGraphStagePromptParamHidden(key) {
+			continue
+		}
+		keys = append(keys, key)
+	}
+	sort.Slice(keys, func(i, j int) bool {
+		leftRank := workflowGraphStagePromptParamRank(keys[i])
+		rightRank := workflowGraphStagePromptParamRank(keys[j])
+		if leftRank != rightRank {
+			return leftRank < rightRank
+		}
+		return strings.ToLower(keys[i]) < strings.ToLower(keys[j])
+	})
+	return keys
+}
+
+func workflowGraphStagePromptParamRank(key string) int {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "purpose", "goal", "objective":
+		return 0
+	case "output_contract", "worker_contract", "contract", "output_format":
+		return 1
+	case "acceptance", "acceptance_bar", "quality_bar", "quality_policy":
+		return 2
+	case "token_policy", "context_policy", "handoff_policy":
+		return 3
+	case "edit_policy", "verification_policy", "validation_policy", "failure_policy", "risk_scope":
+		return 4
+	case "ownership", "tools", "allowed_tools", "tool":
+		return 5
+	default:
+		return 10
+	}
+}
+
+func workflowGraphStagePromptParamHidden(key string) bool {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	case "fields_json", "schema_json", "ui_schema", "template_json", "raw_schema", "large_context", "debug_prompt":
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowGraphStageWorkerContractPrompt(stage workflowGraphStage) string {
+	if !workflowGraphStageWorkerContractEnabled(stage) {
+		return ""
+	}
+	return "\nWorker contract engineering_v1: return one compact JSON object with keys summary, changed_files, evidence, verification, blockers, next_actions. Keep values short; reference artifacts or file paths instead of copying full logs or diffs."
+}
+
+func workflowGraphStageWorkerContractEnabled(stage workflowGraphStage) bool {
+	for _, key := range []string{"worker_contract", "output_format", "contract"} {
+		value := strings.ToLower(strings.TrimSpace(stage.Params[key]))
+		if value == "engineering_v1" || value == "worker_json" || value == "worker-json" || value == "json_worker" {
+			return true
+		}
+	}
+	return false
 }
 
 func workflowGraphContextConfigured(context workflowGraphStageContext) bool {
-	return len(context.Include) > 0 || len(context.Exclude) > 0 || context.MaxTokens > 0 || context.Retrieval.Enabled || strings.TrimSpace(context.Retrieval.Query) != ""
+	return len(context.Include) > 0 ||
+		len(context.Exclude) > 0 ||
+		context.MaxTokens > 0 ||
+		context.PromptMaxTokens > 0 ||
+		context.RequestMaxTokens > 0 ||
+		context.InputsMaxTokens > 0 ||
+		context.ParametersMaxTokens > 0 ||
+		context.Retrieval.Enabled ||
+		strings.TrimSpace(context.Retrieval.Query) != ""
 }
 
 func workflowGraphContextMetadata(context workflowGraphStageContext) map[string]string {
@@ -4707,6 +5042,18 @@ func workflowGraphContextMetadata(context workflowGraphStageContext) map[string]
 	}
 	if context.MaxTokens > 0 {
 		metadata["context.max_tokens"] = strconv.Itoa(context.MaxTokens)
+	}
+	if context.PromptMaxTokens > 0 {
+		metadata["context.prompt_max_tokens"] = strconv.Itoa(context.PromptMaxTokens)
+	}
+	if context.RequestMaxTokens > 0 {
+		metadata["context.request_max_tokens"] = strconv.Itoa(context.RequestMaxTokens)
+	}
+	if context.InputsMaxTokens > 0 {
+		metadata["context.inputs_max_tokens"] = strconv.Itoa(context.InputsMaxTokens)
+	}
+	if context.ParametersMaxTokens > 0 {
+		metadata["context.parameters_max_tokens"] = strconv.Itoa(context.ParametersMaxTokens)
 	}
 	if context.Retrieval.Enabled {
 		metadata["context.retrieval.enabled"] = "true"
@@ -4743,7 +5090,7 @@ func workflowGraphContextEntries(ctx context.Context, store *memory.Store, stage
 	exclude := trimWorkflowGraphStringList(stage.Context.Exclude)
 	maxTokens := stage.Context.MaxTokens
 	if maxTokens <= 0 {
-		maxTokens = 4000
+		maxTokens = 1800
 	}
 	entries := make([]workflowGraphContextEntry, 0, len(include)+len(stage.Input))
 	if len(include) == 0 {
@@ -5457,7 +5804,7 @@ func (w *WorkflowRunner) runWorkflowGraphExecutableStage(ctx context.Context, st
 	}
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
-		result, err := runSkillStage(ctx, w.runtime, stage.Agent, prompt, skill, handler)
+		result, err := runSkillStageWithModelAndOptions(ctx, w.runtime, stage.Agent, prompt, skill, stage.Model, workflowStageRunOptions{AllowedTools: workflowGraphStageAllowedTools(stage)}, handler)
 		if err == nil {
 			return result, attempt, nil
 		}
@@ -5470,6 +5817,8 @@ func workflowGraphStageResult(stage workflowGraphStage, result schema.AgentResul
 	metadata := workflowStageMetadata(map[string]string{
 		"next_strategy": stage.NextStrategy,
 	})
+	metadata = mergeWorkflowStageMetadata(metadata, workflowGraphStageModelMetadata(stage.Model, result))
+	metadata = mergeWorkflowStageMetadata(metadata, workflowGraphStageToolMetadata(stage))
 	metadataKeys := []string{"team", "team_title", "team_stage", "team_role", "team_role_label", "team_role_final", "team_recommended_flow", "consumes", "produces", "tools"}
 	metadataKeys = append(metadataKeys, workflowTeamEscalationPolicyParamKeys()...)
 	metadataKeys = append(metadataKeys, workflowTeamApprovalPolicyParamKeys()...)
@@ -5513,6 +5862,88 @@ func workflowGraphStageResult(stage workflowGraphStage, result schema.AgentResul
 	stageResult.Output.Evidence = workflowStageEvidenceArtifacts(stageResult.Output.Artifacts)
 	applyWorkflowStageCanonicalOutputFields(&stageResult.Output)
 	return stageResult
+}
+
+func workflowGraphStageAllowedTools(stage workflowGraphStage) []string {
+	values := make([]string, 0, 4)
+	if tool := strings.TrimSpace(stage.Tool); tool != "" {
+		values = append(values, tool)
+	}
+	for _, key := range []string{"tools", "allowed_tools", "tool"} {
+		values = append(values, splitWorkflowGraphList(stage.Params[key])...)
+	}
+	return dedupeToolNames(values)
+}
+
+func workflowGraphStageToolMetadata(stage workflowGraphStage) map[string]string {
+	tools := workflowGraphStageAllowedTools(stage)
+	if len(tools) == 0 {
+		return nil
+	}
+	return map[string]string{
+		"tool.allowed":      strings.Join(tools, ","),
+		"tool.stage_scoped": "true",
+	}
+}
+
+func splitWorkflowGraphList(value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return nil
+	}
+	fields := strings.FieldsFunc(value, func(r rune) bool {
+		return r == ',' || r == '\n' || r == '\r' || r == '\t' || r == ';'
+	})
+	out := make([]string, 0, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field != "" {
+			out = append(out, field)
+		}
+	}
+	return out
+}
+
+func mergeWorkflowStageMetadata(base map[string]string, extra map[string]string) map[string]string {
+	if len(extra) == 0 {
+		return base
+	}
+	if base == nil {
+		base = make(map[string]string, len(extra))
+	}
+	for key, value := range extra {
+		if strings.TrimSpace(value) != "" {
+			base[key] = value
+		}
+	}
+	if len(base) == 0 {
+		return nil
+	}
+	return base
+}
+
+func workflowGraphStageModelMetadata(model workflowGraphStageModel, result schema.AgentResult) map[string]string {
+	if !workflowGraphStageModelConfigured(model) {
+		return nil
+	}
+	values := map[string]string{
+		"model.override": "true",
+	}
+	if provider := strings.TrimSpace(model.Provider); provider != "" {
+		values["model.provider"] = provider
+	}
+	if name := strings.TrimSpace(result.Model); name != "" {
+		values["model.model"] = name
+	} else if name := strings.TrimSpace(model.Model); name != "" {
+		values["model.model"] = name
+	}
+	if model.MaxTokens > 0 {
+		values["model.max_tokens"] = strconv.Itoa(model.MaxTokens)
+	}
+	if model.Temperature != nil {
+		values["model.temperature"] = strconv.FormatFloat(*model.Temperature, 'f', -1, 64)
+	}
+	return workflowStageMetadata(values)
 }
 
 func workflowGraphStageAcceptanceCriteria(stage workflowGraphStage) []workflowGraphAcceptanceCriterion {
@@ -6006,7 +6437,7 @@ func applyWorkflowStageJSONOutputFields(output *WorkflowStageOutput) {
 	if !ok {
 		return
 	}
-	for _, key := range []string{"summary", "evidence", "artifacts", "decision", "next_actions"} {
+	for _, key := range []string{"summary", "evidence", "artifacts", "decision", "changed_files", "verification", "blockers", "next_actions"} {
 		value, exists := workflowStageOutputJSONValue(decoded, key)
 		if !exists {
 			continue
@@ -6311,6 +6742,28 @@ func resolveWorkflowResultReference(expr string, result schema.AgentResult, stag
 	case "result.mode", "mode":
 		return result.Mode
 	}
+	if strings.HasPrefix(strings.ToLower(expr), "result.") {
+		key := strings.TrimSpace(expr[len("result."):])
+		if value, ok := workflowGraphResultJSONValue(result.Output, key); ok {
+			return workflowGraphValueString(value)
+		}
+		switch strings.ToLower(key) {
+		case "tool_results":
+			return workflowGraphJSON(result.ToolResults)
+		case "findings":
+			return workflowGraphJSON(result.Findings)
+		case "changes":
+			return workflowGraphJSON(result.Changes)
+		case "verification":
+			return workflowGraphJSON(result.Verification)
+		case "structured":
+			return workflowGraphJSON(result.Structured)
+		case "agent_id":
+			return result.AgentID
+		case "mode":
+			return result.Mode
+		}
+	}
 	if strings.HasPrefix(strings.ToLower(expr), "params.") {
 		key := strings.TrimSpace(expr[len("params."):])
 		return stage.Params[key]
@@ -6346,11 +6799,47 @@ func resolveWorkflowResultReferenceValue(expr string, result schema.AgentResult,
 	case "result.mode", "mode":
 		return result.Mode, true
 	}
+	if strings.HasPrefix(strings.ToLower(expr), "result.") {
+		key := strings.TrimSpace(expr[len("result."):])
+		if value, ok := workflowGraphResultJSONValue(result.Output, key); ok {
+			return copyWorkflowAnyValue(value), true
+		}
+		switch strings.ToLower(key) {
+		case "tool_results":
+			return append([]schema.ToolResult(nil), result.ToolResults...), true
+		case "findings":
+			return append([]schema.Finding(nil), result.Findings...), true
+		case "changes":
+			return append([]schema.Change(nil), result.Changes...), true
+		case "verification":
+			return append([]schema.Verification(nil), result.Verification...), true
+		case "structured":
+			return append([]schema.StructuredSection(nil), result.Structured...), true
+		case "agent_id":
+			return result.AgentID, true
+		case "mode":
+			return result.Mode, true
+		}
+	}
 	if strings.HasPrefix(strings.ToLower(expr), "params.") {
 		key := strings.TrimSpace(expr[len("params."):])
 		return stage.Params[key], true
 	}
 	return nil, false
+}
+
+func workflowGraphResultJSONValue(output, key string) (any, bool) {
+	if strings.TrimSpace(output) == "" || strings.TrimSpace(key) == "" {
+		return nil, false
+	}
+	decoded, ok := workflowStageJSONOutputObject(output)
+	if !ok {
+		return nil, false
+	}
+	if value, ok := workflowStageOutputJSONValue(decoded, key); ok {
+		return value, true
+	}
+	return workflowGraphNestedValue(decoded, strings.Split(key, "."))
 }
 
 func resolveWorkflowGraphReference(expr, request string, completed []WorkflowStageResult) string {
@@ -6373,7 +6862,7 @@ func resolveWorkflowGraphReference(expr, request string, completed []WorkflowSta
 		if len(completed) == 0 {
 			return ""
 		}
-		return completed[len(completed)-1].Output.RawOutput
+		return workflowGraphCompactRawReference(completed[len(completed)-1].Output.RawOutput)
 	}
 	if strings.HasPrefix(strings.ToLower(expr), "stages.") {
 		return resolveWorkflowStageReference(expr, completed)
@@ -6401,7 +6890,7 @@ func resolveWorkflowGraphReferenceValue(expr, request string, completed []Workfl
 		if len(completed) == 0 {
 			return nil, false
 		}
-		return completed[len(completed)-1].Output.RawOutput, true
+		return workflowGraphCompactRawReference(completed[len(completed)-1].Output.RawOutput), true
 	}
 	if strings.HasPrefix(strings.ToLower(expr), "stages.") {
 		return resolveWorkflowStageReferenceValue(expr, completed)
@@ -6439,7 +6928,7 @@ func resolveWorkflowStageReferenceValue(expr string, completed []WorkflowStageRe
 		case "summary":
 			return stage.Output.Summary, true
 		case "raw_output", "output":
-			return stage.Output.RawOutput, true
+			return workflowGraphCompactRawReference(stage.Output.RawOutput), true
 		case "tool_results":
 			return append([]schema.ToolResult(nil), stage.Output.ToolResults...), true
 		case "findings":
@@ -6447,6 +6936,12 @@ func resolveWorkflowStageReferenceValue(expr string, completed []WorkflowStageRe
 		case "changes":
 			return append([]schema.Change(nil), stage.Output.Changes...), true
 		case "verification":
+			if value, ok := stage.Output.Values[key]; ok {
+				return copyWorkflowAnyValue(value), true
+			}
+			if value, ok := stage.Output.Variables[key]; ok {
+				return value, true
+			}
 			return append([]schema.Verification(nil), stage.Output.Verification...), true
 		case "artifacts":
 			return append([]session.WorkflowRunArtifact(nil), stage.Output.Artifacts...), true
@@ -6456,6 +6951,14 @@ func resolveWorkflowStageReferenceValue(expr string, completed []WorkflowStageRe
 			return stage.Output.Decision, true
 		case "next_actions":
 			return append([]string(nil), stage.Output.NextActions...), true
+		case "changed_files", "blockers":
+			if value, ok := stage.Output.Values[key]; ok {
+				return copyWorkflowAnyValue(value), true
+			}
+			if value, ok := stage.Output.Variables[key]; ok {
+				return value, true
+			}
+			return nil, false
 		default:
 			if value, ok := stage.Output.Values[key]; ok {
 				return copyWorkflowAnyValue(value), true
@@ -6475,7 +6978,7 @@ func resolveWorkflowStageReferenceValue(expr string, completed []WorkflowStageRe
 		key := strings.Join(parts[3:], ".")
 		switch strings.ToLower(key) {
 		case "output":
-			return stage.Result.Output, true
+			return workflowGraphCompactRawReference(stage.Result.Output), true
 		case "tool_results":
 			return append([]schema.ToolResult(nil), stage.Result.ToolResults...), true
 		case "findings":
@@ -6541,7 +7044,7 @@ func resolveWorkflowStageReference(expr string, completed []WorkflowStageResult)
 		case "summary":
 			return stage.Output.Summary
 		case "raw_output", "output":
-			return stage.Output.RawOutput
+			return workflowGraphCompactRawReference(stage.Output.RawOutput)
 		case "tool_results":
 			return workflowGraphJSON(stage.Output.ToolResults)
 		case "findings":
@@ -6549,6 +7052,12 @@ func resolveWorkflowStageReference(expr string, completed []WorkflowStageResult)
 		case "changes":
 			return workflowGraphJSON(stage.Output.Changes)
 		case "verification":
+			if value, ok := stage.Output.Values[key]; ok {
+				return workflowGraphValueString(value)
+			}
+			if value := stage.Output.Variables[key]; strings.TrimSpace(value) != "" {
+				return value
+			}
 			return workflowGraphJSON(stage.Output.Verification)
 		case "artifacts":
 			return workflowGraphJSON(stage.Output.Artifacts)
@@ -6558,6 +7067,11 @@ func resolveWorkflowStageReference(expr string, completed []WorkflowStageResult)
 			return stage.Output.Decision
 		case "next_actions":
 			return workflowGraphJSON(stage.Output.NextActions)
+		case "changed_files", "blockers":
+			if value, ok := stage.Output.Values[key]; ok {
+				return workflowGraphValueString(value)
+			}
+			return stage.Output.Variables[key]
 		default:
 			if strings.HasPrefix(strings.ToLower(key), "artifacts.") || strings.HasPrefix(strings.ToLower(key), "evidence.") {
 				if value, ok := resolveWorkflowStageReferenceValue(expr, completed); ok {
@@ -6574,7 +7088,7 @@ func resolveWorkflowStageReference(expr string, completed []WorkflowStageResult)
 		key := strings.Join(parts[3:], ".")
 		switch strings.ToLower(key) {
 		case "output":
-			return stage.Result.Output
+			return workflowGraphCompactRawReference(stage.Result.Output)
 		case "tool_results":
 			return workflowGraphJSON(stage.Result.ToolResults)
 		case "findings":
@@ -7239,13 +7753,23 @@ func limitWorkflowGraphText(value string) string {
 	return value[:limit]
 }
 
-func (w *WorkflowRunner) captureWorkflowGraphApprovalContext(graph workflowGraph, index int, request, responseContent string, completed []WorkflowStageResult, results []schema.ToolResult, stagePrompt string) {
+func workflowGraphCompactRawReference(value string) string {
+	value = strings.TrimSpace(value)
+	const limit = 2400
+	if len([]byte(value)) <= limit {
+		return value
+	}
+	trimmed := trimWorkflowGraphContextValue(value, limit)
+	return strings.TrimSpace(trimmed) + " [raw output compacted by workflow context budget]"
+}
+
+func (w *WorkflowRunner) captureWorkflowGraphApprovalContext(graph workflowGraph, index int, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult, results []schema.ToolResult, stagePrompt string) {
 	callID := firstSuspendedToolCallID(results)
 	if callID == "" {
 		return
 	}
 	stage := graph.Stages[index]
-	_ = w.runtime.AnnotateWorkflowGraphPendingApproval(callID, graph.Name, WorkflowStage(stage.Name), request, responseContent, completed, index, stagePrompt)
+	_ = w.runtime.AnnotateWorkflowGraphPendingApproval(callID, graph.Name, WorkflowStage(stage.Name), request, responseContent, responseMessage, completed, index, stagePrompt)
 }
 
 func (w *WorkflowRunner) approveWorkflowGraphTool(ctx context.Context, pending pendingApproval) (schema.ToolResult, error) {

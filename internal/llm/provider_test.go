@@ -227,7 +227,7 @@ func TestClientStreamChatFallsBackToNonStreamWhenToolArgumentsAreIncomplete(t *t
 }
 
 func TestStreamAssemblerEmitsToolCallAnnouncementOnlyOnce(t *testing.T) {
-	assembler := newStreamAssembler()
+	assembler := newStreamAssembler(nil)
 	chunks := []string{
 		`{"choices":[{"delta":{"tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"write_file","arguments":""}}]}}]}`,
 		`{"choices":[{"delta":{"tool_calls":[{"index":0,"function":{"arguments":"{\"path\":\"a.txt\","}}]}}]}`,
@@ -273,7 +273,7 @@ func TestNormalizeResponseCapturesOpenAIUsage(t *testing.T) {
 	}
 	raw.Usage.PromptTokensDetails.CachedTokens = 20
 
-	resp, err := normalizeResponse(raw)
+	resp, err := normalizeResponse(raw, nil)
 	if err != nil {
 		t.Fatalf("normalizeResponse: %v", err)
 	}
@@ -282,8 +282,140 @@ func TestNormalizeResponseCapturesOpenAIUsage(t *testing.T) {
 	}
 }
 
+func TestNormalizeResponseCapturesProviderMessageFields(t *testing.T) {
+	raw := openAIResponse{
+		Choices: []struct {
+			FinishReason string        `json:"finish_reason"`
+			Message      openAIMessage `json:"message"`
+		}{{
+			FinishReason: "tool_calls",
+			Message: openAIMessage{
+				Role:    "assistant",
+				Content: "need a tool",
+				ProviderFields: providerFields{
+					"reasoning_content": json.RawMessage(`"private reasoning"`),
+				},
+				ToolCalls: []openAIToolCall{{
+					ID:   "call-1",
+					Type: "function",
+					Function: openAIToolFunction{
+						Name:      "read_file",
+						Arguments: `{"path":"a.txt"}`,
+					},
+				}},
+			},
+		}},
+	}
+
+	resp, err := normalizeResponse(raw, map[string]struct{}{"reasoning_content": {}})
+	if err != nil {
+		t.Fatalf("normalizeResponse: %v", err)
+	}
+	if got := string(resp.Message.ProviderFields["reasoning_content"]); got != `"private reasoning"` {
+		t.Fatalf("expected reasoning_content provider field, got %q", got)
+	}
+}
+
+func TestNormalizeResponseOmitsProviderMessageFieldsWhenNotAllowed(t *testing.T) {
+	raw := openAIResponse{
+		Choices: []struct {
+			FinishReason string        `json:"finish_reason"`
+			Message      openAIMessage `json:"message"`
+		}{{
+			FinishReason: "stop",
+			Message: openAIMessage{
+				Role: "assistant",
+				ProviderFields: providerFields{
+					"reasoning_content": json.RawMessage(`"private reasoning"`),
+				},
+			},
+		}},
+	}
+
+	resp, err := normalizeResponse(raw, nil)
+	if err != nil {
+		t.Fatalf("normalizeResponse: %v", err)
+	}
+	if len(resp.Message.ProviderFields) != 0 {
+		t.Fatalf("expected provider fields to be gated by allow-list, got %#v", resp.Message.ProviderFields)
+	}
+}
+
+func TestNewOpenAIRequestReplaysAllowedProviderMessageFields(t *testing.T) {
+	req := schema.ChatRequest{Messages: []schema.Message{{
+		Role:      "assistant",
+		Content:   "need a tool",
+		ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}},
+		ProviderFields: map[string]json.RawMessage{
+			"reasoning_content": json.RawMessage(`"private reasoning"`),
+			"ignored":           json.RawMessage(`"nope"`),
+		},
+	}}}
+	payload := newOpenAIRequest(req, map[string]struct{}{"reasoning_content": {}})
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if !strings.Contains(string(data), `"reasoning_content":"private reasoning"`) {
+		t.Fatalf("expected request to include reasoning_content, got %s", string(data))
+	}
+	if strings.Contains(string(data), "ignored") || strings.Contains(string(data), "provider_fields") {
+		t.Fatalf("expected only provider wire fields, got %s", string(data))
+	}
+}
+
+func TestNewOpenAIRequestReplaysConfiguredProviderMessageFields(t *testing.T) {
+	req := schema.ChatRequest{Messages: []schema.Message{{
+		Role: "assistant",
+		ProviderFields: map[string]json.RawMessage{
+			"vendor_trace": json.RawMessage(`"opaque value"`),
+		},
+	}}}
+	payload := newOpenAIRequest(req, providerMessageFieldSet([]string{"vendor_trace"}))
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if !strings.Contains(string(data), `"vendor_trace":"opaque value"`) {
+		t.Fatalf("expected configured provider field to be replayed, got %s", string(data))
+	}
+}
+
+func TestProviderMessageFieldSetRejectsReservedAndUnsafeFields(t *testing.T) {
+	fields := providerMessageFieldSet([]string{"reasoning_content", "content", "bad.field", "x-provider"})
+	if _, ok := fields["reasoning_content"]; !ok {
+		t.Fatalf("expected configured reasoning_content field, got %#v", fields)
+	}
+	if _, ok := fields["x-provider"]; !ok {
+		t.Fatalf("expected configured hyphenated provider field, got %#v", fields)
+	}
+	if _, ok := fields["content"]; ok {
+		t.Fatalf("expected reserved content field to be rejected, got %#v", fields)
+	}
+	if _, ok := fields["bad.field"]; ok {
+		t.Fatalf("expected unsafe field to be rejected, got %#v", fields)
+	}
+}
+
+func TestNewOpenAIRequestOmitsProviderMessageFieldsWhenNotAllowed(t *testing.T) {
+	req := schema.ChatRequest{Messages: []schema.Message{{
+		Role: "assistant",
+		ProviderFields: map[string]json.RawMessage{
+			"reasoning_content": json.RawMessage(`"private reasoning"`),
+		},
+	}}}
+	payload := newOpenAIRequest(req, nil)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatalf("marshal request: %v", err)
+	}
+	if strings.Contains(string(data), "reasoning_content") {
+		t.Fatalf("expected provider field to be gated by allow-list, got %s", string(data))
+	}
+}
+
 func TestStreamAssemblerCapturesOpenAIUsageChunk(t *testing.T) {
-	assembler := newStreamAssembler()
+	assembler := newStreamAssembler(nil)
 	contentChunk := `{"choices":[{"delta":{"role":"assistant","content":"done"},"finish_reason":"stop"}]}`
 	var first openAIStreamChunk
 	if err := json.Unmarshal([]byte(contentChunk), &first); err != nil {
@@ -304,6 +436,30 @@ func TestStreamAssemblerCapturesOpenAIUsageChunk(t *testing.T) {
 	resp := assembler.response()
 	if resp.Usage.PromptTokens != 1234 || resp.Usage.OutputTokens != 56 || resp.Usage.CachedTokens != 100 {
 		t.Fatalf("expected stream usage to be normalized, got %#v", resp.Usage)
+	}
+}
+
+func TestStreamAssemblerCapturesProviderMessageFields(t *testing.T) {
+	assembler := newStreamAssembler(map[string]struct{}{"reasoning_content": {}})
+	chunks := []string{
+		`{"choices":[{"delta":{"role":"assistant","reasoning_content":"private "}}]}`,
+		`{"choices":[{"delta":{"reasoning_content":"reasoning","tool_calls":[{"index":0,"id":"call-1","type":"function","function":{"name":"read_file","arguments":"{\"path\":\"a.txt\"}"}}]},"finish_reason":"tool_calls"}]}`,
+	}
+	for _, raw := range chunks {
+		var chunk openAIStreamChunk
+		if err := json.Unmarshal([]byte(raw), &chunk); err != nil {
+			t.Fatalf("decode chunk: %v", err)
+		}
+		if _, _, err := assembler.ingest(chunk); err != nil {
+			t.Fatalf("ingest chunk: %v", err)
+		}
+	}
+	resp := assembler.response()
+	if got := string(resp.Message.ProviderFields["reasoning_content"]); got != `"private reasoning"` {
+		t.Fatalf("expected assembled reasoning_content, got %q", got)
+	}
+	if len(resp.ToolCalls) != 1 {
+		t.Fatalf("expected tool call to remain assembled, got %#v", resp.ToolCalls)
 	}
 }
 

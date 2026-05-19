@@ -22,6 +22,7 @@ import (
 	apppkg "github.com/FyMatt/GoFlow-Agent/internal/app"
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
@@ -174,6 +175,30 @@ func TestApplyStartupEnvDefaultsMirrorsBackupProviderFromPrimary(t *testing.T) {
 	}
 	if os.Getenv("GOFLOW_BACKUP_MODEL") != "primary-model" {
 		t.Fatalf("expected backup model fallback, got %q", os.Getenv("GOFLOW_BACKUP_MODEL"))
+	}
+}
+
+func TestApplyStartupEnvDefaultsSetsBinaryToolCommands(t *testing.T) {
+	runtimeHome := t.TempDir()
+	t.Setenv("GOFLOW_FILE_TOOLS_CMD", "")
+	t.Setenv("GOFLOW_WEB_TOOLS_CMD", "")
+	t.Setenv("GOFLOW_NETWORK_TOOLS_CMD", "")
+	t.Setenv("GOFLOW_PYTHON_CMD", "")
+	t.Setenv("GOFLOW_PYTHON_NOTES_PATH", "")
+
+	applyStartupEnvDefaults(runtimeHomeInfo{Root: runtimeHome, BinaryArchive: true})
+
+	expected := map[string]string{
+		"GOFLOW_FILE_TOOLS_CMD":    filepath.Join(runtimeHome, "bin", executableName("file_tools")),
+		"GOFLOW_WEB_TOOLS_CMD":     filepath.Join(runtimeHome, "bin", executableName("web_tools")),
+		"GOFLOW_NETWORK_TOOLS_CMD": filepath.Join(runtimeHome, "bin", executableName("network_tools")),
+		"GOFLOW_PYTHON_CMD":        defaultPythonCommand(),
+		"GOFLOW_PYTHON_NOTES_PATH": filepath.Join(runtimeHome, "mcp_servers", "python_notes.py"),
+	}
+	for key, want := range expected {
+		if got := os.Getenv(key); got != want {
+			t.Fatalf("expected %s=%q, got %q", key, want, got)
+		}
 	}
 }
 
@@ -2600,6 +2625,18 @@ workflow_templates: [software-team-review-gate]
 team_templates: [software-task-team]
 policy_rules: [expression]
 required_env: [GOFLOW_MISSING_TEST_ENV]
+vertical_pack:
+  domain: software-engineering
+  maturity: professional
+  summary: Scoped engineering delivery with bounded tools and evidence.
+  supported_tasks: [implementation, verification]
+  required_inputs: [requirement, acceptance criteria]
+  tool_boundaries:
+    - File tools stay inside the confirmed workspace.
+  simple_mode:
+    - Show task, verification, and final handoff.
+  expert_mode:
+    - Show workflow graph, tool allowlists, and context budgets.
 examples:
   - title: Improve project
     request: Optimize this project.
@@ -2638,7 +2675,7 @@ metadata:
 			t.Fatal("expected /kits command to be handled")
 		}
 	})
-	if !strings.Contains(listOutput, "Vertical Kits") || !strings.Contains(listOutput, "acme-platform") || !strings.Contains(listOutput, "warnings=1") || !strings.Contains(listOutput, "required environment variable GOFLOW_MISSING_TEST_ENV is not set") {
+	if !strings.Contains(listOutput, "Vertical Kits") || !strings.Contains(listOutput, "acme-platform") || !strings.Contains(listOutput, "maturity=professional") || !strings.Contains(listOutput, "domain=software-engineering") || !strings.Contains(listOutput, "warnings=1") || !strings.Contains(listOutput, "required environment variable GOFLOW_MISSING_TEST_ENV is not set") {
 		t.Fatalf("expected kit list with warning, got %q", listOutput)
 	}
 
@@ -2647,7 +2684,7 @@ metadata:
 			t.Fatal("expected /kits detail command to be handled")
 		}
 	})
-	for _, want := range []string{"Vertical Kit", "Acme Platform Kit", "providers", "primary", "workflow_templates", "software-team-review-gate", "examples", "Optimize this project.", "metadata", "owner=local"} {
+	for _, want := range []string{"Vertical Kit", "Acme Platform Kit", "maturity=professional", "domain=software-engineering", "Scoped engineering delivery", "simple_mode", "expert_mode", "providers", "primary", "workflow_templates", "software-team-review-gate", "examples", "Optimize this project.", "metadata", "owner=local"} {
 		if !strings.Contains(detailOutput, want) {
 			t.Fatalf("expected kit detail to contain %q, got %q", want, detailOutput)
 		}
@@ -3034,6 +3071,55 @@ func TestDecodeCLIWorkflowSchemaImportFormats(t *testing.T) {
 	}
 	if _, _, err := decodeCLIWorkflowSchemaImport([]byte(`{"kind":"goflow.workflow_schemas","version":99,"schemas":[]}`), true); err == nil {
 		t.Fatal("expected future bundle version to fail")
+	}
+}
+
+func TestHandleCommandMemorySolutionLifecycle(t *testing.T) {
+	runtimeRef := newMainTestRuntimeForHome(t, t.TempDir())
+	root := t.TempDir()
+	store := memory.NewStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure memory store: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+	kb, err := store.UpsertSolution(memory.SolutionMemory{
+		ProblemSignature: "provider thinking retry",
+		Problem:          "provider requires thinking payload",
+		Decision:         "preserve provider reasoning content",
+		Solution:         "pass provider reasoning content only when required",
+		Confidence:       "high",
+		Resolved:         true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertSolution: %v", err)
+	}
+	id := kb.Solutions[0].ID
+
+	retireOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/memory solution retire "+id+" --reason provider changed --superseded-by sol-next", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected memory solution retire command to be handled")
+		}
+	})
+	if !strings.Contains(retireOutput, "solution retired") || !strings.Contains(retireOutput, "retired") || !strings.Contains(retireOutput, "superseded by") {
+		t.Fatalf("expected retired solution output, got %q", retireOutput)
+	}
+	results, err := store.Search("thinking retry", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	for _, result := range results.Results {
+		if result.Kind == "solution" {
+			t.Fatalf("retired solution should not search by default, got %#v", result)
+		}
+	}
+
+	restoreOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/memory solution restore "+id, nil, nil, runtimeRef); !handled {
+			t.Fatal("expected memory solution restore command to be handled")
+		}
+	})
+	if !strings.Contains(restoreOutput, "solution restored") || !strings.Contains(restoreOutput, "active") {
+		t.Fatalf("expected restored solution output, got %q", restoreOutput)
 	}
 }
 

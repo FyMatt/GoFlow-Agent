@@ -167,6 +167,168 @@ func TestStoreContextDashboardSearchAndPrompt(t *testing.T) {
 	}
 }
 
+func TestSolutionMemoryLearnsSearchesInjectsAndMarksUsage(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	if _, err := store.RecordTask(TaskSummary{
+		UserGoal:        "fix DeepSeek thinking mode reasoning_content retry error",
+		KeyDecisions:    []string{"pass provider reasoning_content back when the provider requires it"},
+		ModifiedFiles:   []string{"internal/llm/client.go"},
+		TestResults:     []string{"go test ./internal/llm passed"},
+		ReusableLessons: []string{"store provider-specific retry decisions as reusable solution memory"},
+	}); err != nil {
+		t.Fatalf("RecordTask: %v", err)
+	}
+	solutions, err := store.Solutions()
+	if err != nil {
+		t.Fatalf("Solutions: %v", err)
+	}
+	if len(solutions.Solutions) != 1 {
+		t.Fatalf("expected one learned solution, got %#v", solutions.Solutions)
+	}
+	learned := solutions.Solutions[0]
+	if learned.ID == "" || learned.Confidence != "high" || !learned.Resolved {
+		t.Fatalf("unexpected learned solution metadata: %#v", learned)
+	}
+
+	results, err := store.Search("DeepSeek reasoning_content", 10)
+	if err != nil {
+		t.Fatalf("Search: %v", err)
+	}
+	foundSolution := false
+	for _, result := range results.Results {
+		if result.Kind == "solution" && strings.Contains(result.Summary, "reasoning_content") {
+			foundSolution = true
+			break
+		}
+	}
+	if !foundSolution {
+		t.Fatalf("expected solution search result, got %#v", results.Results)
+	}
+
+	if err := store.MarkSolutionsUsed([]string{learned.ID}); err != nil {
+		t.Fatalf("MarkSolutionsUsed: %v", err)
+	}
+	solutions, err = store.Solutions()
+	if err != nil {
+		t.Fatalf("Solutions after mark: %v", err)
+	}
+	if solutions.Solutions[0].UseCount != 1 || solutions.Solutions[0].LastUsedAt == "" {
+		t.Fatalf("expected usage metadata update, got %#v", solutions.Solutions[0])
+	}
+
+	ctx, err := store.PromptContextFresh(context.Background(), "DeepSeek reasoning_content invalid_request_error", "run-solution")
+	if err != nil {
+		t.Fatalf("PromptContextFresh: %v", err)
+	}
+	block := findPromptBlockByKind(ctx, "solution")
+	if block.Kind != "solution" || block.ContentMode != "decision" || !strings.Contains(block.Summary, "reasoning_content") {
+		t.Fatalf("expected decision solution prompt block, got %#v in %#v", block, ctx.Blocks)
+	}
+	if !strings.Contains(ctx.PromptText(), "reuse that decision before asking the operator") {
+		t.Fatalf("expected prompt reuse instruction, got %s", ctx.PromptText())
+	}
+	solutions, err = store.Solutions()
+	if err != nil {
+		t.Fatalf("Solutions after prompt: %v", err)
+	}
+	if solutions.Solutions[0].UseCount < 2 {
+		t.Fatalf("expected prompt retrieval to mark solution used, got %#v", solutions.Solutions[0])
+	}
+
+	dashboard, err := store.Dashboard(5)
+	if err != nil {
+		t.Fatalf("Dashboard: %v", err)
+	}
+	if len(dashboard.Solutions.Solutions) != 1 {
+		t.Fatalf("expected dashboard solutions, got %#v", dashboard.Solutions)
+	}
+}
+
+func TestSolutionMemoryLifecycleSkipsRetiredRetrieval(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	kb, err := store.UpsertSolution(SolutionMemory{
+		ProblemSignature:    "provider retry requires thinking payload",
+		Problem:             "provider returns reasoning_content retry error",
+		Decision:            "send the provider thinking payload back on retry",
+		Solution:            "preserve reasoning_content and replay it only when the provider asks for it",
+		Applicability:       []string{"same provider retry error"},
+		InvalidWhen:         []string{"provider protocol changes"},
+		VerificationCommand: "go test ./internal/llm",
+		Confidence:          "high",
+		Resolved:            true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertSolution: %v", err)
+	}
+	if len(kb.Solutions) != 1 {
+		t.Fatalf("expected solution, got %#v", kb.Solutions)
+	}
+	id := kb.Solutions[0].ID
+
+	kb, err = store.RetireSolution(id, "provider protocol changed", "sol-replacement")
+	if err != nil {
+		t.Fatalf("RetireSolution: %v", err)
+	}
+	if !kb.Solutions[0].Retired || kb.Solutions[0].RetiredAt == "" || kb.Solutions[0].RetiredReason == "" || kb.Solutions[0].SupersededBy != "sol-replacement" {
+		t.Fatalf("expected retired metadata, got %#v", kb.Solutions[0])
+	}
+	results, err := store.Search("thinking payload", 10)
+	if err != nil {
+		t.Fatalf("Search retired: %v", err)
+	}
+	for _, result := range results.Results {
+		if result.Kind == "solution" {
+			t.Fatalf("retired solution should not be searchable by default, got %#v", result)
+		}
+	}
+	ctx, err := store.PromptContextFresh(context.Background(), "thinking payload retry", "run-retired")
+	if err != nil {
+		t.Fatalf("PromptContextFresh retired: %v", err)
+	}
+	if block := findPromptBlockByKind(ctx, "solution"); block.Kind != "" {
+		t.Fatalf("retired solution should not be injected, got %#v", block)
+	}
+	if err := store.MarkSolutionsUsed([]string{id}); err != nil {
+		t.Fatalf("MarkSolutionsUsed retired: %v", err)
+	}
+	kb, err = store.Solutions()
+	if err != nil {
+		t.Fatalf("Solutions after mark retired: %v", err)
+	}
+	if kb.Solutions[0].UseCount != 0 {
+		t.Fatalf("retired solution should not record use count, got %#v", kb.Solutions[0])
+	}
+
+	kb, err = store.RestoreSolution(id)
+	if err != nil {
+		t.Fatalf("RestoreSolution: %v", err)
+	}
+	if kb.Solutions[0].Retired || kb.Solutions[0].RetiredAt != "" || kb.Solutions[0].RetiredReason != "" || kb.Solutions[0].SupersededBy != "" {
+		t.Fatalf("expected restored solution lifecycle cleared, got %#v", kb.Solutions[0])
+	}
+	results, err = store.Search("thinking payload", 10)
+	if err != nil {
+		t.Fatalf("Search restored: %v", err)
+	}
+	found := false
+	for _, result := range results.Results {
+		if result.Kind == "solution" && result.Metadata["solution_id"] == id {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected restored solution in search, got %#v", results.Results)
+	}
+}
+
 func TestPromptContextFreshInjectsFileSummaryAndRefreshesChangedIndex(t *testing.T) {
 	root := t.TempDir()
 	path := filepath.Join(root, "auth.go")
@@ -261,6 +423,15 @@ func TestEnsureProjectProfileSeedsFromWorkspace(t *testing.T) {
 func findPromptFileBlock(ctx PromptContext, path string) PromptBlock {
 	for _, block := range ctx.Blocks {
 		if block.Kind == "file" && block.Ref == path {
+			return block
+		}
+	}
+	return PromptBlock{}
+}
+
+func findPromptBlockByKind(ctx PromptContext, kind string) PromptBlock {
+	for _, block := range ctx.Blocks {
+		if block.Kind == kind {
 			return block
 		}
 	}

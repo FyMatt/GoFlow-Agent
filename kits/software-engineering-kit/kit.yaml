@@ -28,6 +28,7 @@ tools:
 workflows:
     - plan-fix-audit
 workflow_templates:
+    - engineering-parallel-delivery
     - plan-fix-audit
     - software-quality-gate
     - software-team-review-gate
@@ -48,6 +49,69 @@ examples:
       request: Add the requested feature and route it through a quality gate before final response.
       workflow: software-quality-gate
       agent: software-engineer
+vertical_pack:
+    domain: software-engineering
+    maturity: production-ready
+    summary: Plans, decomposes, implements, verifies, audits, and reports scoped software changes with workspace-scoped file tools, token-bounded context, approval-aware writes, artifact-first evidence, and quality-gated handoff.
+    supported_tasks:
+        - scoped implementation
+        - bug fixing
+        - refactoring
+        - test and verification planning
+        - parallel bounded worker delivery
+        - code review handoff
+    required_inputs:
+        - user requirement
+        - target files or project area
+        - acceptance criteria
+        - verification command preference
+        - risk tolerance for writes
+        - confirmed workspace boundary
+    tool_boundaries:
+        - Read tools are used for discovery before edits.
+        - Write tools require fix-stage scope and approval policy.
+        - Exec verification should stay focused and report exact commands.
+        - File tools stay inside the confirmed workspace and reject outside-workspace paths.
+    safety_gates:
+        - Request approval before broad rewrites or risky writes.
+        - Keep changes inside the confirmed workspace.
+        - Preserve verification failures and unresolved risks for review.
+        - Use worker ownership boundaries before parallel writes.
+    quality_gates:
+        - Requires implementation summary.
+        - Requires verification evidence or a stated blocker.
+        - Requires audit findings or clean review rationale.
+        - Requires artifact refs or compact evidence for worker outputs.
+    evidence_artifacts:
+        - implementation plan
+        - changed file summary
+        - verification output
+        - audit report
+        - worker artifact refs
+        - final handoff
+    simple_mode:
+        - Show task, target area, approval prompts, verification result, and final handoff.
+        - Hide raw context budgets and route internals by default.
+    expert_mode:
+        - Show workflow graph, stage models, allowed tools, context budgets, artifact refs, and retry state.
+    token_strategy:
+        - Use file summaries and hashes before full file reads.
+        - Pass compact stage outputs and artifact refs between stages.
+        - Route bounded worker slices through engineering-parallel-delivery when the task can split safely.
+        - Use artifact refs, changed-file summaries, and verification summaries instead of copying worker transcripts.
+    model_routes:
+        strong:
+            - task decomposition
+            - architecture tradeoff review
+            - conflict resolution
+            - final audit synthesis
+        worker:
+            - bounded code edits
+            - focused tests
+            - local refactors
+        verifier:
+            - regression review
+            - quality gate evaluation
 metadata:
     preset: software-engineering
     recommended_agent: software-engineer

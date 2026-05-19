@@ -35,31 +35,44 @@ type MaterializedSkillTool struct {
 }
 
 type MaterializedKitTemplateData struct {
-	Preset           KitPreset
-	Names            MaterializedKitNames
-	PrimaryProvider  string
-	Metadata         map[string]string
-	Tool             MaterializedToolConfig
-	AgentTools       []string
-	SkillTools       []MaterializedSkillTool
-	PlannerTools     []string
-	ReviewerTools    []string
+	Preset          KitPreset
+	Names           MaterializedKitNames
+	PrimaryProvider string
+	Metadata        map[string]string
+	Tool            MaterializedToolConfig
+	AgentTools      []string
+	SkillTools      []MaterializedSkillTool
+	PlannerTools    []string
+	ReviewerTools   []string
+	BuiltinTools    []string
+	// DomainToolNotes carries tool-boundary notes into materialized resources; the API returns activation_steps after saving them.
+	DomainToolNotes  []string
 	WorkflowTitle    string
 	WorkflowTemplate bool
 }
 
 func RenderMaterializedKitYAML(runtimeHome string, preset KitPreset, names MaterializedKitNames) (string, error) {
+	toolNames := materializedToolNames(preset, names)
 	return renderMaterializedTemplate(runtimeHome, preset.Name, "kit.yaml.tmpl", MaterializedKitTemplateData{
 		Preset:          preset,
 		Names:           names,
 		PrimaryProvider: primaryProvider(preset),
 		Metadata:        materializedKitMetadata(preset, names),
+		BuiltinTools:    builtinMaterializedTools(toolNames, names),
+		DomainToolNotes: domainToolBoundaryNotes(toolNames),
 		WorkflowTitle:   firstOrDefault(preset.RecommendedWorkflow, names.Workflow),
 	})
 }
 
 func RenderMaterializedAgentConfig(runtimeHome string, preset KitPreset, names MaterializedKitNames) (string, error) {
-	data := MaterializedKitTemplateData{Preset: preset, Names: names, PrimaryProvider: primaryProvider(preset)}
+	toolNames := materializedToolNames(preset, names)
+	data := MaterializedKitTemplateData{
+		Preset:          preset,
+		Names:           names,
+		PrimaryProvider: primaryProvider(preset),
+		BuiltinTools:    builtinMaterializedTools(toolNames, names),
+		DomainToolNotes: domainToolBoundaryNotes(toolNames),
+	}
 	if normalizeName(preset.Name) == "binary-analysis" {
 		data.AgentTools = []string{
 			names.Tool + "/ping",
@@ -71,11 +84,18 @@ func RenderMaterializedAgentConfig(runtimeHome string, preset KitPreset, names M
 	} else {
 		data.AgentTools = []string{names.Tool + "/ping", names.Tool + "/read_text"}
 	}
+	data.AgentTools = appendMissingStrings(data.AgentTools, data.BuiltinTools...)
 	return renderMaterializedTemplate(runtimeHome, preset.Name, "agent.yaml.tmpl", data)
 }
 
 func RenderMaterializedSkillMarkdown(runtimeHome string, preset KitPreset, names MaterializedKitNames) (string, error) {
-	data := MaterializedKitTemplateData{Preset: preset, Names: names}
+	toolNames := materializedToolNames(preset, names)
+	data := MaterializedKitTemplateData{
+		Preset:          preset,
+		Names:           names,
+		BuiltinTools:    builtinMaterializedTools(toolNames, names),
+		DomainToolNotes: domainToolBoundaryNotes(toolNames),
+	}
 	if normalizeName(preset.Name) == "binary-analysis" {
 		data.SkillTools = []MaterializedSkillTool{
 			{Name: names.Tool + "/binary_file_info", Required: true},
@@ -85,6 +105,9 @@ func RenderMaterializedSkillMarkdown(runtimeHome string, preset KitPreset, names
 		}
 	} else {
 		data.SkillTools = []MaterializedSkillTool{{Name: names.Tool + "/read_text", Required: false}}
+	}
+	for _, name := range data.BuiltinTools {
+		data.SkillTools = appendSkillToolIfMissing(data.SkillTools, MaterializedSkillTool{Name: name, Required: false})
 	}
 	return renderMaterializedTemplate(runtimeHome, preset.Name, "skill.md.tmpl", data)
 }
@@ -105,27 +128,42 @@ func RenderMaterializedToolConfig(runtimeHome string, preset KitPreset, names Ma
 }
 
 func RenderMaterializedWorkflowYAML(runtimeHome string, preset KitPreset, names MaterializedKitNames) (string, error) {
+	toolNames := materializedToolNames(preset, names)
 	return renderMaterializedTemplate(runtimeHome, preset.Name, "workflow.yaml.tmpl", MaterializedKitTemplateData{
-		Preset: preset,
-		Names:  names,
+		Preset:          preset,
+		Names:           names,
+		BuiltinTools:    builtinMaterializedTools(toolNames, names),
+		DomainToolNotes: domainToolBoundaryNotes(toolNames),
 	})
 }
 
 func RenderMaterializedWorkflowTemplateYAML(runtimeHome string, preset KitPreset, names MaterializedKitNames) (string, error) {
+	toolNames := materializedToolNames(preset, names)
 	return renderMaterializedTemplate(runtimeHome, preset.Name, "workflow-template.yaml.tmpl", MaterializedKitTemplateData{
-		Preset: preset,
-		Names:  names,
+		Preset:          preset,
+		Names:           names,
+		PrimaryProvider: primaryProvider(preset),
+		BuiltinTools:    builtinMaterializedTools(toolNames, names),
+		DomainToolNotes: domainToolBoundaryNotes(toolNames),
 	})
 }
 
 func RenderMaterializedTeamTemplateYAML(runtimeHome string, preset KitPreset, names MaterializedKitNames) (string, error) {
-	data := MaterializedKitTemplateData{Preset: preset, Names: names}
+	toolNames := materializedToolNames(preset, names)
+	data := MaterializedKitTemplateData{
+		Preset:          preset,
+		Names:           names,
+		BuiltinTools:    builtinMaterializedTools(toolNames, names),
+		DomainToolNotes: domainToolBoundaryNotes(toolNames),
+	}
 	if normalizeName(preset.Name) == "binary-analysis" {
 		data.PlannerTools = []string{names.Tool + "/binary_file_info", names.Tool + "/binary_strings", names.Tool + "/hex_preview"}
 		data.ReviewerTools = []string{names.Tool + "/binary_strings", names.Tool + "/hex_preview"}
 	} else {
 		data.PlannerTools = []string{names.Tool + "/read_text"}
 	}
+	data.PlannerTools = appendMissingStrings(data.PlannerTools, data.BuiltinTools...)
+	data.ReviewerTools = appendMissingStrings(data.ReviewerTools, reviewerBuiltinTools(data.BuiltinTools)...)
 	return renderMaterializedTemplate(runtimeHome, preset.Name, "team.yaml.tmpl", data)
 }
 
@@ -137,9 +175,12 @@ func RenderMaterializedPolicyRuleYAML(runtimeHome string, preset KitPreset, name
 }
 
 func RenderMaterializedWorkflowMarkdown(runtimeHome string, preset KitPreset, names MaterializedKitNames) (string, error) {
+	toolNames := materializedToolNames(preset, names)
 	return renderMaterializedTemplate(runtimeHome, preset.Name, "workflow.md.tmpl", MaterializedKitTemplateData{
-		Preset: preset,
-		Names:  names,
+		Preset:          preset,
+		Names:           names,
+		BuiltinTools:    builtinMaterializedTools(toolNames, names),
+		DomainToolNotes: domainToolBoundaryNotes(toolNames),
 	})
 }
 
@@ -227,4 +268,105 @@ func materializedKitMetadata(preset KitPreset, names MaterializedKitNames) map[s
 	meta["recommended_workflow"] = names.Workflow
 	meta["recommended_team"] = names.TeamTemplate
 	return meta
+}
+
+func materializedToolNames(preset KitPreset, names MaterializedKitNames) []string {
+	out := []string{names.Tool}
+	out = append(out, preset.Tools...)
+	return normalizeStringList(out, true)
+}
+
+func builtinMaterializedTools(tools []string, names MaterializedKitNames) []string {
+	out := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		tool = strings.TrimSpace(tool)
+		if tool == "" || strings.EqualFold(tool, names.Tool) || strings.HasPrefix(strings.ToLower(tool), strings.ToLower(names.Tool)+"/") {
+			continue
+		}
+		out = append(out, tool)
+	}
+	return normalizeStringList(out, true)
+}
+
+func appendMissingStrings(values []string, extra ...string) []string {
+	out := append([]string(nil), values...)
+	seen := make(map[string]struct{}, len(out)+len(extra))
+	for _, value := range out {
+		seen[strings.ToLower(strings.TrimSpace(value))] = struct{}{}
+	}
+	for _, value := range extra {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
+}
+
+func appendSkillToolIfMissing(values []MaterializedSkillTool, extra MaterializedSkillTool) []MaterializedSkillTool {
+	name := strings.TrimSpace(extra.Name)
+	if name == "" {
+		return values
+	}
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value.Name), name) {
+			return values
+		}
+	}
+	return append(values, extra)
+}
+
+func reviewerBuiltinTools(tools []string) []string {
+	out := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		normalized := strings.ToLower(strings.TrimSpace(tool))
+		switch {
+		case normalized == "":
+			continue
+		case strings.Contains(normalized, "/write_"):
+			continue
+		case strings.Contains(normalized, "config_dry_run"):
+			continue
+		default:
+			out = append(out, tool)
+		}
+	}
+	return out
+}
+
+func domainToolBoundaryNotes(tools []string) []string {
+	notes := make([]string, 0)
+	seen := make(map[string]struct{})
+	add := func(note string) {
+		note = strings.TrimSpace(note)
+		if note == "" {
+			return
+		}
+		key := strings.ToLower(note)
+		if _, ok := seen[key]; ok {
+			return
+		}
+		seen[key] = struct{}{}
+		notes = append(notes, note)
+	}
+	for _, tool := range tools {
+		normalized := strings.ToLower(strings.TrimSpace(tool))
+		switch {
+		case strings.HasPrefix(normalized, "network_tools/"):
+			add("network_tools are planning and policy-check tools only; require authorized_scope, allowed_hosts, credential_ref, command allowlists, dry_run, rollback, approval metadata, and artifact refs; they do not connect to devices or apply configuration.")
+		case strings.HasPrefix(normalized, "web_tools/browser_"):
+			add("browser automation tools require authorized hosts and scoped evidence collection; active probe behavior must stay approval-gated.")
+		case strings.HasPrefix(normalized, "file_tools/write_"):
+			add("workspace write tools require scoped ownership, approval policy, and concise changed-file evidence.")
+		case strings.Contains(normalized, "binary_") || strings.Contains(normalized, "hex_preview"):
+			add("binary analysis tools are static triage helpers; do not execute untrusted binaries and keep raw evidence as artifacts.")
+		}
+	}
+	return notes
 }

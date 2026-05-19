@@ -93,6 +93,7 @@ Recommended first-run paths:
 | Software changes | `software-engineering-kit` | planner/fixer/auditor style implementation workflow with review gates |
 | Web security review | `web-security-kit` | page and client-asset collection plus evidence-based security review |
 | Binary triage | `binary-analysis-kit` | static binary metadata, strings, hex preview, team review, and report handoff |
+| Operations and network-device planning | `operations-runbook-kit` | runbook drafting plus authorized device discovery, command, dry-run, rollback, and audit evidence contracts |
 | Framework extension | `agent-framework-kit` | starter resources for creating new Agent, Skill, Tool, Workflow, Team, Policy, and Kit packages |
 
 ## Quick start
@@ -317,7 +318,7 @@ exit
 
 `--approve` pre-approves the planner -> fixer stage transition. Without it, GoFlow first asks whether to enter the fixer stage, then separately prompts again if a fixer tool call requires confirmation.
 
-`/new-workflow <name> [--template <template>]` creates `workflows/<name>/workflow.yaml`. The default template is `plan-fix-audit`; richer built-ins include `complex-project-delivery`, `plan-implement-audit`, `agent-framework-extension`, `software-quality-gate`, `web-research-risk`, `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`, `docs-review-publish`, `operations-runbook`, `customer-support-triage`, `human-input-security-review`, and `software-team-review-gate`. That file is executable through `/workflow <name> <request>` and can declare named stages with `agent`, `skill`, explicit `input`/`outputs`, replay `artifacts`, control nodes such as `condition`, `policy_guard`, `quality_gate`, `parallel`/`join`, `for_each`, `loop`, and `sub_workflow`, approval gates, and `next` edges.
+`/new-workflow <name> [--template <template>]` creates `workflows/<name>/workflow.yaml`. The default template is `plan-fix-audit`; richer built-ins include `complex-project-delivery`, `engineering-parallel-delivery`, `plan-implement-audit`, `agent-framework-extension`, `software-quality-gate`, `web-research-risk`, `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`, `docs-review-publish`, `operations-runbook`, `customer-support-triage`, `human-input-security-review`, and `software-team-review-gate`. That file is executable through `/workflow <name> <request>` and can declare named stages with `agent`, `skill`, stage-level `model` routes, explicit `input`/`outputs`, replay `artifacts`, control nodes such as `condition`, `policy_guard`, `quality_gate`, `parallel`/`join`, `for_each`, `loop`, and `sub_workflow`, approval gates, and `next` edges.
 
 Shipped workflow templates are held to a delivery quality bar: each built-in
 template validates as a graph, includes an explicit end node, emits replayable
@@ -327,7 +328,7 @@ or materialized workflow draft. Shipped team templates likewise declare role
 responsibilities, handoffs, shared blackboard references, quorum presets where
 needed, and output contracts.
 
-Use `complex-project-delivery` for broad implementation work that should keep running until the accepted plan is complete: it analyzes requirements, builds a user-confirmed project plan, iterates implementation with verification and review, updates plan state, runs final validation, and emits a completion report. Use `plan-implement-audit` for one bounded task that still needs planning, implementation, verification, audit, a quality gate, and a final report.
+Use `complex-project-delivery` for broad implementation work that should keep running until the accepted plan is complete: it analyzes requirements, builds a user-confirmed project plan, iterates implementation with verification and review, updates plan state, runs final validation, and emits a completion report. Use `engineering-parallel-delivery` when a complex task should be decomposed by a strong planning route, executed as bounded parallel worker slices on cheaper routes, then aggregated, audited, and resolved if needed without copying full history into every worker. Use `plan-implement-audit` for one bounded task that still needs planning, implementation, verification, audit, a quality gate, and a final report.
 
 `plan-fix-audit` and `skill-chain` remain runnable compatibility executors.
 Custom graph files are the editable model. In HTTP, `/api/workflow-graphs`
@@ -609,6 +610,11 @@ configured release feed.
 - `web_tools/web_search`
 - `web_tools/fetch_url`
 - `web_tools/fetch_page_assets`
+- `web_tools/browser_snapshot`
+- `web_tools/browser_probe_points`
+- `network_tools/device_discovery_plan`
+- `network_tools/device_command_plan`
+- `network_tools/device_config_dry_run`
 - `python_notes/read_note`
 - `python_notes/write_note`
 - `python_notes/python_ast_summary`

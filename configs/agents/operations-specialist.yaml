@@ -8,4 +8,11 @@ operations-specialist:
   mode: plan
   tool_policy: confirm
   allowed_tool_kinds: [read, write, exec, network]
+  allowed_tools:
+    - file_tools/read_file
+    - file_tools/search_files
+    - file_tools/write_file
+    - network_tools/device_discovery_plan
+    - network_tools/device_command_plan
+    - network_tools/device_config_dry_run
   max_iterations: 8

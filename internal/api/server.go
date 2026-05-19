@@ -76,6 +76,7 @@ func NewServerWithWorkspaceRebinder(runtime *agent.Runtime, workspaceState *work
 	s.mux.HandleFunc("/api/memory/project", s.handleMemoryProject)
 	s.mux.HandleFunc("/api/memory/search", s.handleMemorySearch)
 	s.mux.HandleFunc("/api/memory/rebuild", s.handleMemoryRebuild)
+	s.mux.HandleFunc("/api/memory/solutions/", s.handleMemorySolutionAction)
 	s.mux.HandleFunc("/api/memory", s.handleMemoryDashboard)
 	s.mux.HandleFunc("/api/artifacts", s.handleArtifactObjectCollection)
 	s.mux.HandleFunc("/api/artifacts/", s.handleArtifactObjectItem)

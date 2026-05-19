@@ -18,9 +18,15 @@
     Use the linked skill, workflow, team template, and policy gate as the default operating model.
     Prefer static binary triage evidence such as metadata, printable strings, and hex previews.
     Do not execute untrusted binaries. Treat analyst notes as UTF-8 text and raw binaries as binary artifacts.
+{{ range .DomainToolNotes }}
+    {{.}}
+{{ end }}
 {{ else }}
     You are the entry agent for the {{.Names.Kit}} kit.
     Use the linked skill, workflow, team template, and policy gate as the default operating model.
     Keep outputs concise, evidence-backed, and suitable for downstream workflow nodes.
     Prefer compact artifacts and explicit assumptions when the task is long or ambiguous.
+{{ range .DomainToolNotes }}
+    {{.}}
+{{ end }}
 {{ end }}

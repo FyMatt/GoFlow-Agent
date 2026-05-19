@@ -1,0 +1,559 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: engineering-parallel-delivery
+title: Token-Bounded Parallel Engineering Delivery
+description: Use a strong planning route to decompose a complex engineering task, fan out bounded implementation slices to cheaper worker routes, join their reports, audit quality, and produce a concise final handoff.
+category: software
+tags:
+    - engineering
+    - parallel
+    - model-routing
+    - token-budget
+    - decomposition
+    - quality_gate
+    - report
+stages: 13
+graph:
+    name: engineering-parallel-delivery
+    description: Token-bounded strong/weak model orchestration for complex engineering work with parallel workers and consolidated audit.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - decompose
+          position:
+            x: 60
+            "y": 260
+        - name: decompose
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          model:
+            provider: primary
+            max_tokens: 1800
+            temperature: 0.1
+          params:
+            output_contract: Emit sections named Task Graph, Work Slices, Parallel Groups, Ownership, Dependencies, Shared Context Budget, Acceptance Criteria, Verification Plan, Conflict Rules, and Final Report Contract.
+            purpose: Decompose the request into small independent engineering slices before any worker starts.
+            token_policy: Emit compact slice contracts. Do not include large file contents, logs, or full diffs.
+          outputs:
+            task_graph: result.output
+            work_slices: result.summary
+            summary: result.summary
+          artifacts:
+            - name: task-decomposition
+              kind: plan
+              title: Task decomposition
+              ref: result.output
+              summary: Compact engineering task graph with slice ownership, dependencies, context budget, acceptance criteria, and verification plan.
+          acceptance_criteria:
+            - name: has-work-slices
+              ref: result.output
+              contains: Work Slices
+              expected: decomposition lists bounded worker slices
+            - name: has-parallel-groups
+              ref: result.output
+              contains: Parallel Groups
+              expected: decomposition identifies work that can run concurrently
+            - name: has-context-budget
+              ref: result.output
+              contains: Shared Context Budget
+              expected: decomposition declares what each worker may read
+            - name: has-conflict-rules
+              ref: result.output
+              contains: Conflict Rules
+              expected: decomposition prevents overlapping ownership
+          context:
+            include:
+                - memory.project
+                - workflow.input
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 2200
+            prompt_max_tokens: 5200
+            request_max_tokens: 1200
+            inputs_max_tokens: 1000
+            parameters_max_tokens: 900
+            retrieval:
+                enabled: true
+                query: "{{input.goal}}"
+          next:
+            - dispatch
+          position:
+            x: 360
+            "y": 260
+        - name: dispatch
+          node_type: parallel
+          agent: ""
+          skill: ""
+          params:
+            concurrent: "true"
+          next:
+            - worker-core
+            - worker-tests
+            - worker-docs
+          position:
+            x: 700
+            "y": 260
+        - name: worker-core
+          node_type: agent
+          agent: fixer
+          skill: code-writing
+          model:
+            provider: backup
+            max_tokens: 900
+            temperature: 0.1
+          params:
+            ownership: Implement only the core/product code slice assigned by Task Graph. Avoid tests/docs unless required to keep the slice coherent.
+            worker_contract: engineering_v1
+            output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, and next_actions. Put complete detail in artifacts, not handoff text.
+            token_policy: Use task_graph and named context only. Summarize tool observations; never paste large diffs.
+            tools: file_tools/read_file,file_tools/search_files,file_tools/write_file
+          input:
+            task_graph: stages.decompose.outputs.task_graph
+            request: workflow.input
+          outputs:
+            core_report: result.output
+            changed_files: result.changed_files
+            verification: result.verification
+            blockers: result.blockers
+            next_actions: result.next_actions
+            core_changes: result.changes
+            summary: result.summary
+          artifacts:
+            - name: core-worker-report
+              kind: report
+              title: Core worker report
+              ref: result.output
+              summary: Core implementation slice, files touched, verification attempted, risks, and handoff.
+          acceptance_criteria:
+            - name: has-slice
+              ref: result.output
+              contains: Slice
+              expected: worker states its assigned slice
+            - name: has-files-touched
+              ref: result.output
+              contains: Files Touched
+              expected: worker lists files or explains why none changed
+            - name: has-verification
+              ref: result.output
+              contains: Verification Attempted
+              expected: worker records checks attempted
+          retry:
+            max_attempts: 2
+          approval: true
+          context:
+            include:
+                - stages.decompose.outputs.task_graph
+                - files.changed
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1200
+            prompt_max_tokens: 3400
+            request_max_tokens: 500
+            inputs_max_tokens: 1100
+            parameters_max_tokens: 700
+          next:
+            - join
+          position:
+            x: 1040
+            "y": 90
+        - name: worker-tests
+          node_type: agent
+          agent: fixer
+          skill: code-writing
+          model:
+            provider: backup
+            max_tokens: 900
+            temperature: 0.1
+          params:
+            ownership: Implement only test, fixture, validation, or deterministic check changes assigned by Task Graph.
+            worker_contract: engineering_v1
+            output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, and next_actions. Include test coverage in evidence or verification.
+            token_policy: Prefer command summaries and exact failing checks over raw logs.
+            tools: file_tools/read_file,file_tools/search_files,file_tools/write_file
+          input:
+            task_graph: stages.decompose.outputs.task_graph
+            request: workflow.input
+          outputs:
+            summary: result.summary
+            test_report: result.output
+            changed_files: result.changed_files
+            verification: result.verification
+            blockers: result.blockers
+            next_actions: result.next_actions
+            test_changes: result.changes
+          artifacts:
+            - name: test-worker-report
+              kind: test
+              title: Test worker report
+              ref: result.output
+              summary: Test slice, coverage, verification attempted, risks, and handoff.
+          acceptance_criteria:
+            - name: has-test-coverage
+              ref: result.output
+              contains: Test Coverage
+              expected: test worker states coverage added or why none was needed
+            - name: has-verification
+              ref: result.output
+              contains: Verification Attempted
+              expected: test worker records checks attempted
+          retry:
+            max_attempts: 2
+          approval: true
+          context:
+            include:
+                - stages.decompose.outputs.task_graph
+                - files.changed
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1200
+            prompt_max_tokens: 3400
+            request_max_tokens: 500
+            inputs_max_tokens: 1100
+            parameters_max_tokens: 700
+          next:
+            - join
+          position:
+            x: 1040
+            "y": 260
+        - name: worker-docs
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          model:
+            provider: backup
+            max_tokens: 750
+            temperature: 0.1
+          params:
+            ownership: Produce operator-facing notes, migration guidance, or documentation updates assigned by Task Graph. Do not modify product code.
+            worker_contract: engineering_v1
+            output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, and next_actions. Keep documentation detail in artifacts or named refs.
+            token_policy: Keep handoff concise and cite artifact refs instead of copying upstream reports.
+            tools: file_tools/read_file,file_tools/search_files
+          input:
+            task_graph: stages.decompose.outputs.task_graph
+            request: workflow.input
+          outputs:
+            docs_report: result.output
+            changed_files: result.changed_files
+            verification: result.verification
+            blockers: result.blockers
+            next_actions: result.next_actions
+            summary: result.summary
+          artifacts:
+            - name: docs-worker-report
+              kind: report
+              title: Documentation worker report
+              ref: result.output
+              summary: Documentation slice, user impact, validation notes, risks, and handoff.
+          acceptance_criteria:
+            - name: has-documentation-summary
+              ref: result.output
+              contains: Documentation Summary
+              expected: docs worker reports its documentation impact
+            - name: has-user-impact
+              ref: result.output
+              contains: User Impact
+              expected: docs worker names user-facing changes
+          context:
+            include:
+                - stages.decompose.outputs.task_graph
+                - previous.summary
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 900
+            prompt_max_tokens: 2800
+            request_max_tokens: 500
+            inputs_max_tokens: 900
+            parameters_max_tokens: 650
+          next:
+            - join
+          position:
+            x: 1040
+            "y": 430
+        - name: join
+          node_type: join
+          agent: ""
+          skill: ""
+          params:
+            wait_for: worker-core,worker-tests,worker-docs
+          next:
+            - aggregate
+          position:
+            x: 1390
+            "y": 260
+        - name: aggregate
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          model:
+            provider: primary
+            max_tokens: 1400
+            temperature: 0.1
+          params:
+            output_contract: Emit sections named Integrated Delivery Report, Worker Outputs, Conflicts, Gaps, Verification Matrix, Residual Risks, and Audit Request.
+            purpose: Merge parallel worker results into one compact engineering report before audit.
+            token_policy: Use worker summaries and artifacts only. Reference reports by name instead of copying them fully.
+          input:
+            core_summary: stages.worker-core.outputs.summary
+            core_changed_files: stages.worker-core.outputs.changed_files
+            core_verification: stages.worker-core.outputs.verification
+            docs_summary: stages.worker-docs.outputs.summary
+            docs_changed_files: stages.worker-docs.outputs.changed_files
+            tests_summary: stages.worker-tests.outputs.summary
+            tests_changed_files: stages.worker-tests.outputs.changed_files
+            tests_verification: stages.worker-tests.outputs.verification
+            task_graph: stages.decompose.outputs.task_graph
+          outputs:
+            integrated_report: result.output
+            summary: result.summary
+          artifacts:
+            - name: integrated-delivery-report
+              kind: report
+              title: Integrated delivery report
+              ref: result.output
+              summary: Consolidated worker outputs, conflicts, gaps, verification matrix, residual risks, and audit request.
+          acceptance_criteria:
+            - name: has-integrated-report
+              ref: result.output
+              contains: Integrated Delivery Report
+              expected: aggregate report merges workers
+            - name: has-verification-matrix
+              ref: result.output
+              contains: Verification Matrix
+              expected: aggregate report records verification coverage
+            - name: has-conflicts
+              ref: result.output
+              contains: Conflicts
+              expected: aggregate report declares conflicts or none
+          context:
+            include:
+                - stages.worker-core.outputs.summary
+                - stages.worker-core.outputs.changed_files
+                - stages.worker-core.outputs.verification
+                - stages.worker-core.outputs.blockers
+                - stages.worker-tests.outputs.summary
+                - stages.worker-tests.outputs.changed_files
+                - stages.worker-tests.outputs.verification
+                - stages.worker-tests.outputs.blockers
+                - stages.worker-docs.outputs.summary
+                - stages.worker-docs.outputs.changed_files
+                - stages.worker-docs.outputs.blockers
+                - stages.decompose.outputs.summary
+                - files.changed
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1800
+            prompt_max_tokens: 4300
+            request_max_tokens: 600
+            inputs_max_tokens: 1500
+            parameters_max_tokens: 800
+          next:
+            - audit
+          position:
+            x: 1700
+            "y": 260
+        - name: audit
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          model:
+            provider: primary
+            max_tokens: 1200
+            temperature: 0.1
+          params:
+            output_contract: Emit sections named Audit Decision, Blocking Findings, Acceptance Coverage, Token Discipline, Test Gaps, Safety Notes, and Recommendation.
+            review_scope: Review the integrated delivery report and worker artifacts for conflicts, missing acceptance evidence, unsafe edits, and token-heavy handoffs.
+          input:
+            integrated_report: stages.aggregate.outputs.integrated_report
+            task_graph: stages.decompose.outputs.task_graph
+          outputs:
+            audit: result.output
+            findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: parallel-delivery-audit
+              kind: audit
+              title: Parallel delivery audit
+              ref: result.output
+              summary: Audit decision, blocking findings, acceptance coverage, token discipline, test gaps, safety notes, and recommendation.
+          acceptance_criteria:
+            - name: has-audit-decision
+              ref: result.output
+              contains: Audit Decision
+              expected: audit declares pass, warning, or fail
+            - name: has-token-discipline
+              ref: result.output
+              contains: Token Discipline
+              expected: audit checks that workers used compact handoffs
+            - name: has-recommendation
+              ref: result.output
+              contains: Recommendation
+              expected: audit gives a concrete recommendation
+          context:
+            include:
+                - stages.aggregate.outputs.integrated_report
+                - previous.artifacts.integrated-delivery-report
+                - files.changed
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+            max_tokens: 1800
+            prompt_max_tokens: 4200
+            request_max_tokens: 600
+            inputs_max_tokens: 1500
+            parameters_max_tokens: 800
+          next:
+            - quality
+          position:
+            x: 2020
+            "y": 260
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: decompose,worker-core,worker-tests,worker-docs,aggregate,audit
+            min_score: "85"
+            reason: parallel engineering delivery lacks task contracts, worker evidence, integration summary, or audit coverage
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            allow_unknown: "false"
+          routes:
+            fail: resolve
+            pass: final-report
+            warning: resolve
+          position:
+            x: 2340
+            "y": 260
+        - name: resolve
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          model:
+            provider: primary
+            max_tokens: 900
+            temperature: 0.1
+          params:
+            output_contract: Emit sections named Resolution Plan, Blocking Issues, Minimal Fix Slices, Verification Needed, and Handoff.
+            purpose: Convert quality-gate warnings or failures into bounded follow-up slices without replaying branch transcripts.
+            token_policy: Use only quality status, audit summary, aggregate summary, and artifact refs. Do not copy worker logs.
+          input:
+            audit_summary: stages.audit.outputs.summary
+            integrated_summary: stages.aggregate.outputs.summary
+            quality_status: stages.quality.outputs.quality_status
+          outputs:
+            resolution_plan: result.output
+            summary: result.summary
+          artifacts:
+            - name: quality-resolution-plan
+              kind: plan
+              title: Quality resolution plan
+              ref: result.output
+              summary: Blocking issues, minimal follow-up slices, verification needed, and handoff.
+          acceptance_criteria:
+            - name: has-resolution-plan
+              ref: result.output
+              contains: Resolution Plan
+              expected: resolver produces a bounded repair plan
+            - name: has-verification-needed
+              ref: result.output
+              contains: Verification Needed
+              expected: resolver names verification needed before completion
+          context:
+            include:
+                - stages.quality.outputs.quality_status
+                - stages.audit.outputs.summary
+                - stages.aggregate.outputs.summary
+                - previous.artifacts.parallel-delivery-audit
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1200
+            prompt_max_tokens: 3200
+            request_max_tokens: 500
+            inputs_max_tokens: 1000
+            parameters_max_tokens: 700
+          next:
+            - final-report
+          position:
+            x: 2660
+            "y": 430
+        - name: final-report
+          node_type: skill
+          agent: chat
+          skill: execution-plan
+          model:
+            provider: backup
+            max_tokens: 800
+            temperature: 0.1
+          params:
+            output_contract: Emit sections named Final Handoff, Completed Slices, Verification, Audit Decision, Remaining Risks, and Next Steps.
+            purpose: Produce a concise user-facing handoff from the aggregate report, audit, and quality gate.
+            token_policy: Keep final output short. Reference artifacts instead of copying full worker reports.
+          input:
+            audit: stages.audit.outputs.audit
+            integrated_report: stages.aggregate.outputs.integrated_report
+            quality_status: stages.quality.outputs.quality_status
+            resolution_plan: stages.resolve.outputs.resolution_plan
+          outputs:
+            final_report: result.output
+            summary: result.summary
+          artifacts:
+            - name: final-handoff-report
+              kind: report
+              title: Final handoff report
+              ref: result.output
+              summary: Completed slices, verification, audit decision, remaining risks, and next steps.
+          acceptance_criteria:
+            - name: has-final-handoff
+              ref: result.output
+              contains: Final Handoff
+              expected: final report has a user-facing handoff
+            - name: has-next-steps
+              ref: result.output
+              contains: Next Steps
+              expected: final report gives concrete follow-up
+          context:
+            include:
+                - stages.audit.outputs.summary
+                - stages.aggregate.outputs.summary
+                - stages.quality.outputs.quality_status
+                - stages.resolve.outputs.summary
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1200
+            prompt_max_tokens: 3000
+            request_max_tokens: 500
+            inputs_max_tokens: 1000
+            parameters_max_tokens: 650
+          next:
+            - end
+          position:
+            x: 2980
+            "y": 260
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 3310
+            "y": 260

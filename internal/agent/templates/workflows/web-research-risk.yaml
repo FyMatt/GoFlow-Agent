@@ -3,7 +3,7 @@ version: 2
 min_supported_version: 1
 name: web-research-risk
 title: Web Research -> Risk Audit
-description: Collect web evidence, audit it, branch on findings, and produce a risk report.
+description: Collect authorized web source/runtime evidence, audit it, branch on findings, and produce a risk report.
 category: security
 tags:
     - web
@@ -27,11 +27,12 @@ graph:
             "y": 200
         - name: collect
           node_type: agent
-          agent: auditor
+          agent: web-security-researcher
           skill: web-vulnerability-research
           params:
             output_contract: Emit sections named Evidence Summary, Target Scope, Findings, Source Confidence, Limitations, and Recommended Verification.
-            evidence_rule: Keep evidence tied to the target and distinguish confirmed observations from assumptions.
+            evidence_rule: Keep evidence tied to the target, require authorized scope and allowed hosts before browser evidence collection, use browser_probe_points only for scoped probe surface enumeration unless active_probe_approved=true, and distinguish confirmed observations from assumptions.
+            allowed_tools: web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points,web_tools/fetch_url,web_tools/web_search
           outputs:
             evidence: result.output
             findings: result.findings
@@ -41,7 +42,7 @@ graph:
               kind: evidence
               title: Web research evidence
               ref: result.output
-              summary: Evidence summary, target scope, findings, confidence, limitations, and recommended verification.
+              summary: Evidence summary, target scope, browser/source findings, confidence, limitations, and recommended verification.
           acceptance_criteria:
             - name: has-evidence-summary
               ref: result.output

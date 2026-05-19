@@ -68,17 +68,17 @@ Template, and Policy Rule names. If an example says to run a workflow, that
 workflow or template should also be listed by the Kit so Web Studio can explain
 the relationship before the user materializes it.
 
-| Kit | Primary agent | Main workflow template | Team template | Typical customization |
-| --- | --- | --- | --- | --- |
-| `multi-domain-agent-kit` | `chat` | `multi-domain-intake-router` | all domain teams | add or remove domains, routing cases, and final handoff requirements |
-| `software-engineering-kit` | `software-engineer` | `plan-fix-audit`, `software-team-review-gate` | `software-task-team` | adjust coding, test, review, and approval policy |
-| `web-security-kit` | `web-security-researcher` | `web-research-risk` | `web-research-team` | tune target intake, evidence collection, and risk gates |
-| `security-research-kit` | `security-researcher` | `security-audit-evidence-gate` | `audit-security-team` | tune scope confirmation, severity rules, and report shape |
-| `binary-analysis-kit` | `binary-analyst` | `binary-triage` | `binary-triage-team` | add binary helper tools, output sections, and review gates |
-| `documentation-kit` | `documentation-specialist` | `docs-review-publish` | `documentation-team` | edit doc style, publish checklist, and acceptance criteria |
-| `operations-runbook-kit` | `operations-specialist` | `operations-runbook` | `operations-runbook-team` | customize prechecks, rollback, and approval gates |
-| `customer-support-kit` | `support-specialist` | `customer-support-triage` | `customer-support-team` | adjust intake fields, response policy, and escalation rules |
-| `agent-framework-kit` | `framework-extension-architect` | `agent-framework-extension` | `framework-extension-team` | build a new vertical Agent/Skill/Tool/Workflow/Team/Policy/Kit package |
+| Kit | Maturity | Primary agent | Main workflow template | Team template | Typical customization |
+| --- | --- | --- | --- | --- | --- |
+| `multi-domain-agent-kit` | guided | `chat` | `multi-domain-intake-router` | all domain teams | adjust decomposition rules, selected parallel branches, and final handoff requirements |
+| `software-engineering-kit` | production-ready | `software-engineer` | `engineering-parallel-delivery`, `plan-fix-audit`, `software-team-review-gate` | `software-task-team` | adjust coding, test, review, parallel worker delivery, and approval policy |
+| `web-security-kit` | production-ready | `web-security-researcher` | `web-research-risk` | `web-research-team` | tune target intake, evidence collection, and risk gates |
+| `security-research-kit` | guided | `security-researcher` | `security-audit-evidence-gate` | `audit-security-team` | tune scope confirmation, severity rules, and report shape |
+| `binary-analysis-kit` | guided | `binary-analyst` | `binary-triage` | `binary-triage-team` | add binary helper tools, output sections, and review gates |
+| `documentation-kit` | guided | `documentation-specialist` | `docs-review-publish` | `documentation-team` | edit doc style, publish checklist, and acceptance criteria |
+| `operations-runbook-kit` | production-ready | `operations-specialist` | `operations-runbook` | `operations-runbook-team` | customize prechecks, rollback, approval gates, and network-device planning contracts |
+| `customer-support-kit` | guided | `support-specialist` | `customer-support-triage` | `customer-support-team` | adjust intake fields, response policy, and escalation rules |
+| `agent-framework-kit` | production-ready | `framework-extension-architect` | `agent-framework-extension`, `engineering-parallel-delivery` | `framework-extension-team` | build and materialize a new vertical Agent/Skill/Tool/Workflow/Team/Policy/Kit package |
 
 Recommended workflow:
 
@@ -96,6 +96,92 @@ python scripts/validate_resource_links.py
 
 The check reports the exact Kit or scaffold preset that points to a missing
 resource.
+
+## Professional Vertical Pack Contract
+
+A vertical domain is considered professional only when its resources encode the
+domain rules, not just a prompt. A professional pack should include linked
+Agent, Skill, Tool/MCP, Workflow Template, Team Template, Policy Rule, Kit,
+docs, and Web copy resources.
+
+Each professional pack should declare:
+
+- supported task types and required inputs
+- tool boundaries and risky-action approval gates
+- evidence artifacts and acceptance criteria
+- quality gates, recovery path, and final report shape
+- token strategy, context budgets, and model routes
+- Simple mode guidance for ordinary users
+- Expert mode fields for developers to inspect and extend the pack
+
+`scripts/validate_resource_links.py` checks production starter links and now
+also validates professional-pack metadata where a Kit declares professional
+maturity. Keep resources synchronized when changing a domain pack; a workflow
+template that requires a new browser, network, device, or analysis tool should
+be reflected in the related Agent, Skill, Policy, Team, Kit, and scaffold
+preset.
+
+The same validator also prints a domain capability matrix summary. It groups
+saved Kits and scaffold presets by domain, tracks the highest maturity level
+seen for each domain, and fails when a professional or production-ready pack
+drifts between the saved Kit and the starter preset.
+
+Production-ready validation currently requires domain-specific MCP tools,
+safety contract terms, tests, config, docs, release/deployment validation, and
+evidence that materialized resources expose activation guidance. The current
+production-ready packs are `operations-runbook-kit`, `web-security-kit`,
+`software-engineering-kit`, and `agent-framework-kit`.
+
+The operations pack includes `network_tools` for device work, but those tools
+are deliberately planning-only. They validate authorized scope, allowed hosts,
+credential references, command allowlists, dry-run status, rollback, and audit
+evidence. They do not connect to devices or apply configuration. If a
+deployment adds a real SSH/API connector, keep that connector behind the same
+contracts and approvals so ordinary users see a safe guided flow while expert
+users can inspect the exact tool and evidence boundary.
+
+The `multi-domain-agent-kit` starter is also engineered for parallel domain
+delivery. The recommended workflow first decomposes the request, then activates
+only the selected domain workers, then joins, audits, and hands off a compact
+report. Simple mode keeps the intake and final outcome visible. Expert mode
+adds active branches, branch contracts, model routes, token budgets, and
+artifact refs.
+
+## Memory And Learned Solutions
+
+GoFlow memory is summary-first. The framework keeps full details in files or
+artifacts, then injects compact summaries and refs into prompts.
+
+Durable memory paths:
+
+- `.goflow/memory/project.md`: workspace profile and stable operating facts.
+- `.goflow/memory/tasks/*.json`: completed task summaries.
+- `.goflow/memory/errors.json`: recurring errors, root causes, fixes, and
+  verification commands.
+- `.goflow/memory/solutions.json`: recurring problem signatures, decisions,
+  correct solutions, applicability, invalidation rules, confidence, and usage
+  counts.
+- `.goflow/index/files.json`: file summaries, hashes, symbols, and usage
+  metadata.
+
+When a task records key decisions or reusable lessons, GoFlow derives a compact
+solution record. Later searches and prompt retrieval can include a matching
+solution block as `content=decision`; the model is instructed to reuse that
+decision when it still applies, instead of asking the operator to make the same
+choice again. This keeps the framework improving with use while preserving the
+token strategy: only the top matching solution summaries are injected, and the
+full history stays behind refs.
+
+CLI surfaces:
+
+- `/memory solutions`: list learned decisions, correct solutions, verification,
+  applicability, invalidation, confidence, and use count.
+- `/memory search <query>`: searches project, context, tasks, errors,
+  solutions, and file summaries.
+
+Web Studio Memory shows learned solutions directly. Simple mode focuses on the
+problem, chosen solution, and verification. Expert mode additionally shows the
+solution ID, applicability, invalidation, last-used timestamp, and use count.
 
 ## File Content Rule
 
@@ -281,9 +367,11 @@ Common stage fields:
 - `agent`
 - `skill`
 - `tool`
+- `model`
 - `params`
 - `input`
 - `outputs`
+- `context`
 - `next`
 - `routes`
 - `cases`
@@ -294,6 +382,14 @@ Common stage fields:
 - `acceptance_criteria`
 
 Workflows are best when each stage has a clear input contract and a clear output contract.
+For complex engineering workflows, also declare a context budget contract:
+`context.max_tokens` for selected upstream context and expert fields
+`context.prompt_max_tokens`, `context.request_max_tokens`,
+`context.inputs_max_tokens`, and `context.parameters_max_tokens` for the full
+stage prompt envelope. Use `params.worker_contract: engineering_v1` on bounded
+worker stages so downstream nodes can consume stable `summary`,
+`changed_files`, `evidence`, `verification`, `blockers`, and `next_actions`
+instead of raw prose.
 
 ### Workflow Templates
 
@@ -309,6 +405,7 @@ Templates are ideal when you want a starter graph for:
 
 - planning
 - software implementation
+- parallel engineering delivery with stage-level model routing
 - bounded plan-implement-audit delivery
 - web security review
 - binary triage
@@ -320,6 +417,11 @@ Built-in workflow templates are quality-gated delivery starters. They include
 acceptance criteria, replay artifacts, a quality or policy gate, and a final
 report/handoff-style output so users can run them directly or fork them without
 first repairing the graph.
+
+The software delivery templates are also token-budgeted engineering examples:
+stronger routes handle decomposition, aggregation, audit, and recovery; lower
+cost worker routes execute bounded slices with stage-scoped tools, worker JSON
+contracts, and artifact-first handoffs.
 
 ### Team Templates
 

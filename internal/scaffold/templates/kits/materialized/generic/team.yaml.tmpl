@@ -24,6 +24,9 @@ role_templates:
       - clarify scope
       - produce a compact execution plan
       - declare evidence and acceptance criteria
+{{ range .DomainToolNotes }}
+      - "{{.}}"
+{{ end }}
     produces: [plan, acceptance_criteria]
 {{ if .PlannerTools }}
     tools:
@@ -39,6 +42,9 @@ role_templates:
       - review the plan
       - identify risks
       - approve or request revision
+{{ if .DomainToolNotes }}
+      - verify domain tool boundaries and evidence contracts
+{{ end }}
     consumes: [plan]
     produces: [review_decision, risk_notes]
 {{ if .ReviewerTools }}
@@ -76,4 +82,4 @@ quorum_presets:
     roles: [reviewer]
     reject_blocks: true
     default: true
-output_contract: [plan, review_decision, risk_notes, final_report]
+output_contract: [plan, review_decision, risk_notes, final_report{{ if .BuiltinTools }}, domain_tool_evidence{{ end }}]

@@ -982,7 +982,7 @@ func TestWorkflowResumeDoesNotReachIntoApprovalStoreWithoutLock(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		workflow.captureApprovalContext(workflowNamePlanFixAudit, WorkflowStageFix, "build flask hello world", "fixer requested write_file", []WorkflowStageResult{{
+		workflow.captureApprovalContext(workflowNamePlanFixAudit, WorkflowStageFix, "build flask hello world", "fixer requested write_file", schema.Message{}, []WorkflowStageResult{{
 			Stage:  WorkflowStagePlan,
 			Agent:  workflowAgentPlanner,
 			Result: schema.AgentResult{Output: "plan complete"},
@@ -1033,6 +1033,9 @@ func TestWorkflowResumeDoesNotReachIntoApprovalStoreWithoutLock(t *testing.T) {
 	}
 	if pending.responseContent != "fixer requested write_file" {
 		t.Fatalf("expected workflow response content to be recorded, got %q", pending.responseContent)
+	}
+	if pending.responseMessage.Content != "fixer requested write_file" {
+		t.Fatalf("expected workflow response message content to be recorded, got %#v", pending.responseMessage)
 	}
 	if len(pending.completed) != 1 || pending.completed[0].Stage != WorkflowStagePlan {
 		t.Fatalf("expected completed workflow context to be copied, got %#v", pending.completed)
@@ -1204,7 +1207,7 @@ func TestResumePlanFixAuditStopsWhenFixerSuspendsAgainAfterApproval(t *testing.T
 	ctx := context.Background()
 	capture := newWorkflowTestRuntimeWithRepeatedSuspendedFixTools()
 
-	first, err := capture.runtime.WorkflowRunner().RunPlanFixAudit(ctx, "build flask hello world", true, nil)
+	first, err := capture.runtime.WorkflowRunner().Run(ctx, workflowNamePlanFixAudit, "build flask hello world", true, nil)
 	if err != nil {
 		t.Fatalf("RunPlanFixAudit: %v", err)
 	}
@@ -1254,9 +1257,9 @@ func TestResumePlanFixAuditAutoApprovesLaterMatchingFixerCallsAfterWorkflowAppro
 	ctx := context.Background()
 	capture := newWorkflowTestRuntimeWithRepeatedSuspendedFixTools()
 
-	first, err := capture.runtime.WorkflowRunner().RunPlanFixAudit(ctx, "build flask hello world", true, nil)
+	first, err := capture.runtime.WorkflowRunner().Run(ctx, workflowNamePlanFixAudit, "build flask hello world", true, nil)
 	if err != nil {
-		t.Fatalf("RunPlanFixAudit: %v", err)
+		t.Fatalf("Run: %v", err)
 	}
 	if first.Status != "awaiting_tool_approval" {
 		t.Fatalf("expected awaiting_tool_approval, got %q", first.Status)
@@ -1330,6 +1333,66 @@ func TestResumePlanFixAuditUsesSuspendedFixerToolCallMessageOnResume(t *testing.
 	}
 	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "call-1" {
 		t.Fatalf("expected resumed assistant message to replay call-1, got %#v", assistant)
+	}
+}
+
+func TestResumePlanFixAuditPreservesSuspendedProviderFields(t *testing.T) {
+	ctx := context.Background()
+	capture := newWorkflowTestRuntimeWithRepeatedSuspendedFixTools()
+	capture.fixer.responses[0].Message.ProviderFields = map[string]json.RawMessage{
+		"reasoning_content": json.RawMessage(`"private workflow reasoning"`),
+	}
+
+	_, err := capture.runtime.WorkflowRunner().RunPlanFixAudit(ctx, "build flask hello world", true, nil)
+	if err != nil {
+		t.Fatalf("RunPlanFixAudit: %v", err)
+	}
+	pending, ok := capture.runtime.PendingApproval("call-1")
+	if !ok {
+		t.Fatal("expected pending approval for first suspended fixer tool call")
+	}
+	if got := string(pending.responseMessage.ProviderFields["reasoning_content"]); got != `"private workflow reasoning"` {
+		t.Fatalf("expected pending response message provider field, got %#v", pending.responseMessage.ProviderFields)
+	}
+
+	_, err = capture.runtime.WorkflowRunner().ResumePlanFixAudit(ctx, "call-1", true, nil)
+	if err != nil {
+		t.Fatalf("ResumePlanFixAudit: %v", err)
+	}
+	if len(capture.fixer.requests) < 2 {
+		t.Fatalf("expected fixer to be called twice, got %d requests", len(capture.fixer.requests))
+	}
+	resumeRequest := capture.fixer.requests[1]
+	assistant := resumeRequest.Messages[len(resumeRequest.Messages)-2]
+	if got := string(assistant.ProviderFields["reasoning_content"]); got != `"private workflow reasoning"` {
+		t.Fatalf("expected resumed assistant provider field, got %#v", assistant.ProviderFields)
+	}
+}
+
+func TestWorkflowToolApprovalRebuildPreservesProviderFields(t *testing.T) {
+	ctx := context.Background()
+	capture := newWorkflowTestRuntimeWithRepeatedSuspendedFixTools()
+	capture.fixer.responses[0].Message.ProviderFields = map[string]json.RawMessage{
+		"reasoning_content": json.RawMessage(`"private workflow reasoning"`),
+	}
+
+	first, err := capture.runtime.WorkflowRunner().Run(ctx, workflowNamePlanFixAudit, "build flask hello world", true, nil)
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	run, ok := capture.runtime.session.WorkflowRun(first.RunID)
+	if !ok {
+		t.Fatalf("expected workflow run %s", first.RunID)
+	}
+	capture.runtime.approvals = newApprovalStore()
+	capture.runtime.approvedWorkflowResumes = nil
+
+	pending, err := capture.runtime.WorkflowRunner().pendingToolApprovalFromRun(ctx, run)
+	if err != nil {
+		t.Fatalf("pendingToolApprovalFromRun: %v", err)
+	}
+	if got := string(pending.responseMessage.ProviderFields["reasoning_content"]); got != `"private workflow reasoning"` {
+		t.Fatalf("expected rebuilt pending provider field, got %#v", pending.responseMessage.ProviderFields)
 	}
 }
 

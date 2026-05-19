@@ -20,6 +20,15 @@ stages:
     node_type: skill
     agent: {{.Names.Agent}}
     skill: {{.Names.Skill}}
+    params:
+      output_contract: Emit concise sections named Goal, Work Plan, Evidence Needed, Acceptance Criteria, Risks, and Next Handoff.
+{{ if .BuiltinTools }}
+      allowed_tools: {{ range $index, $tool := .BuiltinTools }}{{ if $index }},{{ end }}{{ $tool }}{{ end }}
+{{ end }}
+{{ if .DomainToolNotes }}
+      domain_tool_boundaries: {{ range $index, $note := .DomainToolNotes }}{{ if $index }} | {{ end }}{{ $note }}{{ end }}
+{{ end }}
+      token_policy: Prefer summaries and artifact refs. Do not paste large logs, full files, or long upstream outputs.
     input:
       request: params.request
       scope: params.scope
@@ -34,6 +43,13 @@ stages:
         ref: result.output
         title: {{.Preset.Title}} Plan
         summary: Initial plan and evidence requirements for the linked starter workflow.
+{{ if .BuiltinTools }}
+      - name: domain-tool-contract
+        kind: contract
+        ref: result.output
+        title: Domain Tool Contract
+        summary: Built-in tool boundaries, authorization requirements, compact evidence refs, and approval expectations for this starter kit.
+{{ end }}
     next: [gate]
     position: {x: 620, y: 260}
   - name: gate
@@ -50,6 +66,16 @@ stages:
     node_type: skill
     agent: {{.Names.Agent}}
     skill: {{.Names.Skill}}
+    params:
+      worker_contract: engineering_v1
+      output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, and next_actions.
+{{ if .BuiltinTools }}
+      allowed_tools: {{ range $index, $tool := .BuiltinTools }}{{ if $index }},{{ end }}{{ $tool }}{{ end }}
+{{ end }}
+{{ if .DomainToolNotes }}
+      domain_tool_boundaries: {{ range $index, $note := .DomainToolNotes }}{{ if $index }} | {{ end }}{{ $note }}{{ end }}
+{{ end }}
+      token_policy: Use the approved plan summary and artifact refs; do not copy upstream reports.
     input:
       request: Build the final handoff from the approved plan.
       upstream: stages.plan.outputs.plan

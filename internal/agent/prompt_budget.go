@@ -117,7 +117,8 @@ func estimatePromptBudgetWithContext(agentID, mode string, request schema.ChatRe
 	toolTokens := estimateByteTokens(toolBytes)
 	memoryBlocks, memoryOmitted, memoryTokens, memorySavedTokens := promptBudgetMemoryDiagnostics(context.Memory)
 	artifactRefs, compactedToolResults, artifactOmittedTokens, artifactOmitted := promptBudgetArtifactDiagnostics(request.Messages)
-	injectedToolSchemas, filteredToolSchemas, omittedToolDiagnostics, toolSelection := promptBudgetToolSchemaDiagnostics(request.Tools, context.ToolPolicy)
+	messageCompactedCount, messageOmittedTokens, messageOmitted := promptBudgetCompactedMessageDiagnostics(request.Messages)
+	injectedToolSchemas, filteredToolSchemas, omittedToolDiagnostics, toolSelection, toolSchemaEstimatedSavedTokens := promptBudgetToolSchemaDiagnostics(request.Tools, context.ToolPolicy)
 	systemHash := stablePromptHash(request.System)
 	toolSchemaHash := stableToolSchemaHash(request.Tools)
 	skillHash := stablePromptHash(skillInjectedBudgetText)
@@ -125,7 +126,7 @@ func estimatePromptBudgetWithContext(agentID, mode string, request schema.ChatRe
 	prefixHash := stablePromptHash(strings.Join([]string{request.Model, systemHash, toolSchemaHash, skillHash}, "\x00"))
 	historyPromptStats := sessionHistoryCompactionStats(snapshot.RecentPrompts, systemPromptRecentPromptLimit)
 	historyToolStats := sessionHistoryCompactionStats(snapshot.RecentTools, systemPromptRecentToolLimit)
-	omittedContext := make([]string, 0, len(memoryOmitted)+len(artifactOmitted)+1)
+	omittedContext := make([]string, 0, len(memoryOmitted)+len(artifactOmitted)+len(messageOmitted)+1)
 	omittedContext = append(omittedContext, memoryOmitted...)
 	if skillOmittedTokens > 0 {
 		detail := fmt.Sprintf("skill %s full instructions omitted from prompt summary; estimated_saved_tokens=%d", fallbackPromptBudgetName(skillName, "skill"), skillOmittedTokens)
@@ -135,6 +136,7 @@ func estimatePromptBudgetWithContext(agentID, mode string, request schema.ChatRe
 		omittedContext = append(omittedContext, detail)
 	}
 	omittedContext = append(omittedContext, artifactOmitted...)
+	omittedContext = append(omittedContext, messageOmitted...)
 	return schema.PromptBudget{
 		EstimatedPromptTokens:            systemTokens + messageTokens + toolTokens,
 		SystemTokens:                     systemTokens,
@@ -157,6 +159,7 @@ func estimatePromptBudgetWithContext(agentID, mode string, request schema.ChatRe
 		ExposedToolCount:                 len(request.Tools),
 		TotalToolCount:                   totalTools,
 		FilteredToolCount:                maxInt(totalTools-len(request.Tools), 0),
+		ToolSchemaEstimatedSavedTokens:   toolSchemaEstimatedSavedTokens,
 		ToolSchemaDiagnosticCount:        len(injectedToolSchemas) + len(filteredToolSchemas),
 		ToolSchemaDiagnosticOmitted:      omittedToolDiagnostics,
 		MemoryBlockCount:                 len(memoryBlocks),
@@ -172,8 +175,8 @@ func estimatePromptBudgetWithContext(agentID, mode string, request schema.ChatRe
 		HistoryToolItems:                 historyToolStats.OriginalItems,
 		HistoryToolRetainedItems:         len(historyToolStats.RetainedItems),
 		HistoryToolDeduplicatedItems:     historyToolStats.Deduplicated,
-		HistoryToolCompactedOlderItems:   historyToolStats.OlderCompacted,
-		HistoryEstimatedSavedTokens:      historyPromptStats.SavedItemTokens + historyToolStats.SavedItemTokens,
+		HistoryToolCompactedOlderItems:   historyToolStats.OlderCompacted + messageCompactedCount,
+		HistoryEstimatedSavedTokens:      historyPromptStats.SavedItemTokens + historyToolStats.SavedItemTokens + messageOmittedTokens,
 		AgentID:                          agentID,
 		Mode:                             mode,
 		SkillName:                        skillName,
@@ -333,7 +336,42 @@ func promptBudgetArtifactDiagnostics(messages []schema.Message) ([]string, int, 
 	return refs, compacted, omittedTokens, omitted
 }
 
-func promptBudgetToolSchemaDiagnostics(promptTools []schema.Tool, context *promptToolPolicyContext) ([]schema.PromptToolSchema, []schema.PromptToolSchema, int, string) {
+func promptBudgetCompactedMessageDiagnostics(messages []schema.Message) (int, int, []string) {
+	compacted := 0
+	omittedTokens := 0
+	omitted := make([]string, 0)
+	for _, message := range messages {
+		content := strings.TrimSpace(message.Content)
+		if !strings.HasPrefix(content, "[GoFlow compacted ") {
+			continue
+		}
+		count := markerIntAfterPrefix(content, "[GoFlow compacted ")
+		if count <= 0 {
+			continue
+		}
+		compacted += count
+		tokens := count * 180
+		omittedTokens += tokens
+		omitted = append(omitted, fmt.Sprintf("conversation history compacted; messages=%d estimated_saved_tokens=%d", count, tokens))
+	}
+	return compacted, omittedTokens, omitted
+}
+
+func markerIntAfterPrefix(content, prefix string) int {
+	content = strings.TrimSpace(content)
+	prefix = strings.TrimSpace(prefix)
+	if prefix == "" || !strings.HasPrefix(content, prefix) {
+		return 0
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(content, prefix))
+	var parsed int
+	if _, err := fmt.Sscanf(rest, "%d", &parsed); err != nil || parsed <= 0 {
+		return 0
+	}
+	return parsed
+}
+
+func promptBudgetToolSchemaDiagnostics(promptTools []schema.Tool, context *promptToolPolicyContext) ([]schema.PromptToolSchema, []schema.PromptToolSchema, int, string, int) {
 	injected := make([]schema.PromptToolSchema, 0, len(promptTools))
 	for _, tool := range promptTools {
 		injected = append(injected, promptToolSchemaDiagnostic(tool, "injected", "visible to model"))
@@ -377,6 +415,10 @@ func promptBudgetToolSchemaDiagnostics(promptTools []schema.Tool, context *promp
 	} else if len(promptTools) > 0 {
 		selection = "visible"
 	}
+	savedTokens := 0
+	for _, tool := range filtered {
+		savedTokens += tool.Tokens
+	}
 	omitted := 0
 	if len(injected) > promptBudgetToolDiagnosticLimit {
 		omitted += len(injected) - promptBudgetToolDiagnosticLimit
@@ -386,7 +428,7 @@ func promptBudgetToolSchemaDiagnostics(promptTools []schema.Tool, context *promp
 		omitted += len(filtered) - promptBudgetToolDiagnosticLimit
 		filtered = append([]schema.PromptToolSchema(nil), filtered[:promptBudgetToolDiagnosticLimit]...)
 	}
-	return injected, filtered, omitted, selection
+	return injected, filtered, omitted, selection, savedTokens
 }
 
 func promptToolSchemaDiagnostic(tool schema.Tool, status, reason string) schema.PromptToolSchema {

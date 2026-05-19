@@ -7,6 +7,7 @@ import {
   rebuildMemoryIndex,
   renderSafeMarkdown,
   searchMemory,
+  updateMemorySolutionLifecycle,
   updateMemoryProject
 } from "../api.js";
 import { localizedText, t } from "../i18n.js";
@@ -23,6 +24,7 @@ export async function renderMemory(root) {
     artifactAttached: false,
     artifactWorkflowAttached: false,
     copiedArtifactRef: false,
+    solutionActionID: "",
     busy: false,
     busyAction: "",
     error: ""
@@ -35,11 +37,16 @@ function drawMemory(root, state) {
   const project = dashboard.project || {};
   const tasks = Array.isArray(dashboard.tasks) ? dashboard.tasks : [];
   const errors = Array.isArray(dashboard.errors?.errors) ? dashboard.errors.errors : [];
+  const solutions = Array.isArray(dashboard.solutions?.solutions) ? dashboard.solutions.solutions : [];
+  const activeSolutions = solutions.filter(solution => !isSolutionRetired(solution));
+  const retiredSolutions = solutions.length - activeSolutions.length;
+  const visibleSolutions = memoryExpertMode() ? solutions : activeSolutions;
   const files = Array.isArray(dashboard.file_index?.files) ? dashboard.file_index.files : [];
   const context = dashboard.context || {};
   const stats = [
     [t("memory.metric.tasks"), tasks.length],
     [t("memory.metric.errors"), errors.length],
+    [t("memory.metric.solutions"), retiredSolutions ? t("memory.solutionMetricValue", { active: activeSolutions.length, retired: retiredSolutions }) : activeSolutions.length],
     [t("memory.metric.files"), dashboard.file_index?.total_files || files.length],
     [t("memory.metric.bytes"), formatNumber(dashboard.file_index?.indexed_bytes || 0)],
     [t("memory.metric.contextSaved"), formatNumber(context.estimated_saved_tokens || context.estimatedSavedTokens || 0)]
@@ -82,6 +89,16 @@ function drawMemory(root, state) {
       </div>
 
       ${renderContextSummary(context, state)}
+
+      <section class="panel memory-solutions-panel">
+        <div class="section-heading memory-panel-head">
+          <div>
+            <h3>${escapeHTML(t("memory.solutions"))}</h3>
+            <p>${escapeHTML(t("memory.solutionsHelp"))}</p>
+          </div>
+        </div>
+        ${renderSolutions(visibleSolutions, state)}
+      </section>
 
       <div class="memory-grid">
         <section class="panel memory-project-panel">
@@ -199,6 +216,10 @@ function drawMemory(root, state) {
       </section>
     </section>`;
 
+  bindMemoryActions(root, state);
+}
+
+function bindMemoryActions(root, state) {
   root.querySelector("[data-memory-search]")?.addEventListener("submit", async event => {
     event.preventDefault();
     const query = String(new FormData(event.currentTarget).get("q") || "").trim();
@@ -235,6 +256,21 @@ function drawMemory(root, state) {
     await runMemoryAction(root, state, async () => {
       state.dashboard.context = await compactSessionContext(t("memory.compactManualReason"));
     }, "compact");
+  });
+  root.querySelectorAll("[data-solution-action]").forEach(button => {
+    button.addEventListener("click", async event => {
+      const id = event.currentTarget?.dataset?.solutionId || "";
+      const action = event.currentTarget?.dataset?.solutionAction || "";
+      if (!id || !action) return;
+      const body = action === "retire" ? {
+        reason: t("memory.solutionRetireDefaultReason")
+      } : {};
+      await runMemoryAction(root, state, async () => {
+        state.solutionActionID = id;
+        state.dashboard.solutions = await updateMemorySolutionLifecycle(id, action, body);
+      }, `solution:${id}:${action}`);
+      state.solutionActionID = "";
+    });
   });
   root.querySelector("[data-artifact-load]")?.addEventListener("submit", async event => {
     event.preventDefault();
@@ -327,7 +363,7 @@ function renderSearchResults(search) {
     eyebrow: [memoryKindLabel(result.kind || "memory"), result.score ? `score ${result.score}` : ""].filter(Boolean).join(" / "),
     title: result.title || result.path || t("memory.item"),
     summary: result.summary,
-    meta: result.path || result.metadata?.task_id || result.metadata?.error_id || ""
+    meta: result.path || result.metadata?.solution_id || result.metadata?.task_id || result.metadata?.error_id || ""
   })).join("")}</div>`;
 }
 
@@ -358,6 +394,62 @@ function renderErrors(errors) {
     ].filter(Boolean).join("\n"),
     meta: [(item.related_files || []).join(", "), formatDateTime(item.updated_at || item.updatedAt)].filter(Boolean).join(" / ")
   })).join("")}</div>`;
+}
+
+function renderSolutions(solutions, state = {}) {
+  if (!solutions.length) {
+    return renderMemoryActionEmpty(t("memory.solutionsEmpty"), t("memory.solutionsGenerationHint"), t("memory.openRun"), "playground");
+  }
+  return `<div class="memory-list memory-solution-list">${solutions.slice(0, 12).map(item => renderSolutionItem(item, state)).join("")}</div>`;
+}
+
+function renderSolutionItem(item = {}, state = {}) {
+  const title = item.problem || item.problem_signature || item.problemSignature || item.id || t("memory.solution");
+  const confidence = item.confidence ? t("memory.solutionConfidence", { confidence: item.confidence }) : "";
+  const useCount = item.use_count ?? item.useCount ?? 0;
+  const updatedAt = item.updated_at || item.updatedAt || "";
+  const lastUsedAt = item.last_used_at || item.lastUsedAt || "";
+  const retired = isSolutionRetired(item);
+  const retiredAt = item.retired_at || item.retiredAt || "";
+  const retiredReason = item.retired_reason || item.retiredReason || "";
+  const supersededBy = item.superseded_by || item.supersededBy || "";
+  const applicability = item.applicability || [];
+  const invalidWhen = item.invalid_when || item.invalidWhen || [];
+  const relatedFiles = item.related_files || item.relatedFiles || [];
+  const summaryRows = [
+    item.decision ? [t("memory.solutionDecision"), item.decision] : null,
+    item.solution ? [t("memory.solutionFix"), item.solution] : null,
+    item.verification_command || item.verificationCommand ? [t("memory.solutionVerify"), item.verification_command || item.verificationCommand] : null
+  ].filter(Boolean);
+  const expertRows = [
+    item.id ? [t("memory.solutionId"), item.id] : null,
+    retired ? [t("memory.solutionStatus"), t("memory.solutionRetired")] : [t("memory.solutionStatus"), t("memory.solutionActive")],
+    useCount ? [t("memory.solutionUseCount"), formatNumber(useCount)] : null,
+    lastUsedAt ? [t("memory.solutionLastUsed"), formatDateTime(lastUsedAt)] : null,
+    retiredAt ? [t("memory.solutionRetiredAt"), formatDateTime(retiredAt)] : null,
+    retiredReason ? [t("memory.solutionRetiredReason"), retiredReason] : null,
+    supersededBy ? [t("memory.solutionSupersededBy"), supersededBy] : null,
+    applicability.length ? [t("memory.solutionApplicability"), applicability.join("; ")] : null,
+    invalidWhen.length ? [t("memory.solutionInvalidWhen"), invalidWhen.join("; ")] : null
+  ].filter(Boolean);
+  const action = retired ? "restore" : "retire";
+  const actionKey = retired ? "memory.solutionRestore" : "memory.solutionRetire";
+  const busy = isBusyAction(state, `solution:${item.id}:${action}`);
+  return `
+    <article class="memory-item memory-solution-item${retired ? " is-retired" : ""}">
+      <div class="memory-item-head">
+        <span>${escapeHTML([retired ? t("memory.solutionRetired") : (item.resolved ? t("memory.resolved") : t("memory.open")), confidence].filter(Boolean).join(" / "))}</span>
+        <strong>${escapeHTML(localizedText(title))}</strong>
+      </div>
+      <div class="memory-solution-lines">
+        ${summaryRows.map(([label, value]) => `<div><span>${escapeHTML(label)}</span><p>${escapeHTML(localizeMemoryText(value))}</p></div>`).join("")}
+      </div>
+      ${relatedFiles.length || updatedAt ? `<div class="memory-meta">${escapeHTML([relatedFiles.join(", "), formatDateTime(updatedAt)].filter(Boolean).join(" / "))}</div>` : ""}
+      ${expertRows.length ? `<div class="memory-solution-expert expert-mode-section">${expertRows.map(([label, value]) => `<span><b>${escapeHTML(label)}</b>${escapeHTML(localizeMemoryText(value))}</span>`).join("")}</div>` : ""}
+      ${item.id ? `<div class="memory-solution-actions expert-mode-section">
+        <button type="button" data-solution-action="${escapeHTML(action)}" data-solution-id="${escapeHTML(item.id)}" ${state.busy ? "disabled" : ""} aria-busy="${busy ? "true" : "false"}">${escapeHTML(t(actionKey))}</button>
+      </div>` : ""}
+    </article>`;
 }
 
 function renderContextSummary(context = {}, state = {}) {
@@ -667,4 +759,15 @@ function formatDateTime(value) {
     hour: "2-digit",
     minute: "2-digit"
   }).format(date);
+}
+
+function isSolutionRetired(item = {}) {
+  return Boolean(item.retired || item.Retired);
+}
+
+function memoryExpertMode() {
+  const shell = document.querySelector("[data-app-shell]");
+  if (shell?.classList.contains("expert-experience")) return true;
+  if (shell?.classList.contains("simple-experience")) return false;
+  return document.documentElement.dataset.experience === "expert";
 }

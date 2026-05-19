@@ -4,21 +4,22 @@ min_supported_version: 1
 name: web-research-team
 title: Web Research Team
 category: security
-description: Collect web assets, audit client/server evidence, and branch on risk.
+description: Collect web source/runtime evidence, audit client/server evidence, and branch on risk.
 tags: [web, research, assets, risk]
 recommended_workflow: web-research-risk
-recommended_entry_agent: auditor
+recommended_entry_agent: web-security-researcher
 role_templates:
   - name: asset-collector
     label: Asset Collector
-    agent: auditor
+    agent: web-security-researcher
     skill: web-vulnerability-research
     responsibilities:
       - fetch target page
       - collect linked scripts and source evidence
-      - record reachable surfaces
-    tools: [web_tools/fetch_url, web_tools/fetch_page_assets]
-    produces: [asset_inventory, page_evidence]
+      - collect authorized browser DOM, form, link, script, signal, and screenshot evidence when scope allows
+      - record reachable surfaces without active exploitation
+    tools: [web_tools/fetch_url, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points]
+    produces: [asset_inventory, browser_evidence, page_evidence]
   - name: js-reviewer
     label: JavaScript Reviewer
     agent: auditor
@@ -27,7 +28,7 @@ role_templates:
       - inspect collected scripts
       - identify risky sinks and sources
       - separate evidence from speculation
-    consumes: [asset_inventory, page_evidence]
+    consumes: [asset_inventory, browser_evidence, page_evidence]
     produces: [client_findings]
   - name: risk-analyst
     label: Risk Analyst
@@ -44,7 +45,7 @@ handoffs:
     to: js-reviewer
     kind: asset_handoff
     subject: Fetched web evidence
-    artifacts: [asset_inventory, page_evidence]
+    artifacts: [asset_inventory, browser_evidence, page_evidence]
     blackboard: [request, evidence]
   - from: js-reviewer
     to: risk-analyst

@@ -23,6 +23,9 @@ skills:
   - {{.Names.Skill}}
 tools:
   - {{.Names.Tool}}
+{{ range .BuiltinTools }}
+  - {{.}}
+{{ end }}
 workflows:
   - {{.Names.Workflow}}
 workflow_templates:
@@ -42,6 +45,93 @@ examples:
     request: "{{if .Preset.Examples}}{{(index .Preset.Examples 0).Request}}{{else}}Describe the task, scope, expected output, and acceptance criteria.{{end}}"
     workflow: {{.Names.Workflow}}
     agent: {{.Names.Agent}}
+{{ with .Preset.VerticalPack }}
+vertical_pack:
+  domain: {{.Domain}}
+  maturity: {{.Maturity}}
+  summary: "{{.Summary}}"
+{{ if .SupportedTasks }}
+  supported_tasks:
+{{ range .SupportedTasks }}
+    - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .RequiredInputs }}
+  required_inputs:
+{{ range .RequiredInputs }}
+    - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .ToolBoundaries }}
+  tool_boundaries:
+{{ range .ToolBoundaries }}
+    - "{{.}}"
+{{ end }}
+{{ range $.DomainToolNotes }}
+    - "{{.}}"
+{{ end }}
+{{ else if $.DomainToolNotes }}
+  tool_boundaries:
+{{ range $.DomainToolNotes }}
+    - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .SafetyGates }}
+  safety_gates:
+{{ range .SafetyGates }}
+    - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .QualityGates }}
+  quality_gates:
+{{ range .QualityGates }}
+    - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .EvidenceArtifacts }}
+  evidence_artifacts:
+{{ range .EvidenceArtifacts }}
+    - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .SimpleMode }}
+  simple_mode:
+{{ range .SimpleMode }}
+    - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .ExpertMode }}
+  expert_mode:
+{{ range .ExpertMode }}
+    - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .TokenStrategy }}
+  token_strategy:
+{{ range .TokenStrategy }}
+    - "{{.}}"
+{{ end }}
+{{ end }}
+  model_routes:
+{{ if .ModelRoutes.Strong }}
+    strong:
+{{ range .ModelRoutes.Strong }}
+      - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .ModelRoutes.Worker }}
+    worker:
+{{ range .ModelRoutes.Worker }}
+      - "{{.}}"
+{{ end }}
+{{ end }}
+{{ if .ModelRoutes.Verifier }}
+    verifier:
+{{ range .ModelRoutes.Verifier }}
+      - "{{.}}"
+{{ end }}
+{{ end }}
+{{ end }}
 metadata:
 {{ range $key, $value := .Metadata }}
   {{$key}}: {{$value}}

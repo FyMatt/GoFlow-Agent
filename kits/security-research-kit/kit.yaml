@@ -29,6 +29,9 @@ tools:
     - file_tools/search_files
     - web_tools/web_search
     - web_tools/fetch_url
+    - web_tools/fetch_page_assets
+    - web_tools/browser_snapshot
+    - web_tools/browser_probe_points
     - python_notes/binary_file_info
     - python_notes/binary_strings
     - python_notes/hex_preview
@@ -59,6 +62,58 @@ examples:
       request: Review this authorized target and produce an evidence-backed remediation report.
       workflow: security-audit-evidence-gate
       agent: security-researcher
+vertical_pack:
+    domain: security-research
+    maturity: guided
+    summary: Plans authorized security reviews, collects evidence across code, web, and binary surfaces, and routes findings through risk and quality gates.
+    supported_tasks:
+        - authorized security review planning
+        - evidence collection
+        - vulnerability classification
+        - remediation planning
+        - cross-domain security handoff
+    required_inputs:
+        - authorized scope
+        - target type
+        - target files or URL
+        - allowed actions
+        - reporting expectations
+    tool_boundaries:
+        - Use read-only evidence collection before any active verification.
+        - Web browser automation requires allowed hosts and authorized scope; active web canary probes require explicit approval.
+        - Binary analysis remains static unless a separate sandboxed execution tool is added.
+    safety_gates:
+        - Require scope confirmation.
+        - Require approval for active verification or exec-capable tools.
+        - Separate confirmed vulnerabilities from hypotheses.
+    quality_gates:
+        - Requires evidence-backed severity.
+        - Requires exploitability prerequisites.
+        - Requires remediation and follow-up tests.
+    evidence_artifacts:
+        - scope note
+        - evidence inventory
+        - finding list
+        - risk decision
+        - remediation report
+    simple_mode:
+        - Show scope, target type, allowed actions, evidence status, and risk summary.
+    expert_mode:
+        - Show tool allowlists, approval decisions, evidence refs, severity policy, and route diagnostics.
+    token_strategy:
+        - Route each surface to a bounded specialist workflow.
+        - Pass concise evidence summaries to the final risk report.
+    model_routes:
+        strong:
+            - scope triage
+            - exploitability arbitration
+            - final report synthesis
+        worker:
+            - code evidence collection
+            - web evidence collection
+            - static binary triage
+        verifier:
+            - severity and evidence review
 metadata:
     preset: security-research
     recommended_agent: security-researcher

@@ -54,17 +54,19 @@ Workflow Studio 中把推荐模板打开成一个新的可编辑图，方便你�
 
 仓库会用 `python scripts/validate_resource_links.py` 检查这些引用关系。新增或修改生产级 starter 时，Kit 和对应 scaffold preset 应该引用同一组具体的 Agent、Skill、Tool、Workflow Template、Team Template 和 Policy Rule。只要示例里说要运行某个 workflow，这个 workflow 或 template 也应该出现在 Kit 引用里，这样 Web Studio 才能在物化资源前解释清楚它们之间的关系。
 
-| Kit | 主 Agent | 主工作流模板 | Team Template | 常见二开方向 |
-| --- | --- | --- | --- | --- |
-| `multi-domain-agent-kit` | `chat` | `multi-domain-intake-router` | 全部领域 Team | 增删领域、路由分支和最终交接要求 |
-| `software-engineering-kit` | `software-engineer` | `plan-fix-audit`、`software-team-review-gate` | `software-task-team` | 调整编码、测试、审计和审批策略 |
-| `web-security-kit` | `web-security-researcher` | `web-research-risk` | `web-research-team` | 调整目标录入、证据采集和风险门禁 |
-| `security-research-kit` | `security-researcher` | `security-audit-evidence-gate` | `audit-security-team` | 调整授权范围、严重性规则和报告格式 |
-| `binary-analysis-kit` | `binary-analyst` | `binary-triage` | `binary-triage-team` | 增加二进制辅助工具、输出章节和复核门禁 |
-| `documentation-kit` | `documentation-specialist` | `docs-review-publish` | `documentation-team` | 调整文档风格、发布检查表和验收条件 |
-| `operations-runbook-kit` | `operations-specialist` | `operations-runbook` | `operations-runbook-team` | 自定义预检、回滚和审批门禁 |
-| `customer-support-kit` | `support-specialist` | `customer-support-triage` | `customer-support-team` | 调整录入字段、回复策略和升级规则 |
-| `agent-framework-kit` | `framework-extension-architect` | `agent-framework-extension` | `framework-extension-team` | 创建新的垂直 Agent/Skill/Tool/Workflow/Team/Policy/Kit 包 |
+同一个校验脚本现在还会输出“领域能力矩阵”摘要：按领域汇总已保存 Kit 和 scaffold preset，统计最高成熟度，并在 professional / production-ready 包里强制 Kit 与 preset 的资源契约一致。这样一来，资源不是“看起来差不多”，而是有可执行的对齐标准。
+
+| Kit | 成熟度 | 主 Agent | 主工作流模板 | Team Template | 常见二开方向 |
+| --- | --- | --- | --- | --- | --- |
+| `multi-domain-agent-kit` | guided | `chat` | `multi-domain-intake-router` | 全部领域 Team | 调整拆解规则、选中并行分支、团队引用和最终交接要求 |
+| `software-engineering-kit` | production-ready | `software-engineer` | `engineering-parallel-delivery`、`plan-fix-audit`、`software-team-review-gate` | `software-task-team` | 调整编码、测试、审计、并行 Worker 交付和审批策略 |
+| `web-security-kit` | production-ready | `web-security-researcher` | `web-research-risk` | `web-research-team` | 调整目标录入、证据采集和风险门禁 |
+| `security-research-kit` | guided | `security-researcher` | `security-audit-evidence-gate` | `audit-security-team` | 调整授权范围、严重性规则和报告格式 |
+| `binary-analysis-kit` | guided | `binary-analyst` | `binary-triage` | `binary-triage-team` | 增加二进制辅助工具、输出章节和复核门禁 |
+| `documentation-kit` | guided | `documentation-specialist` | `docs-review-publish` | `documentation-team` | 调整文档风格、发布检查表和验收条件 |
+| `operations-runbook-kit` | production-ready | `operations-specialist` | `operations-runbook` | `operations-runbook-team` | 自定义预检、回滚、审批门禁和网络设备规划契约 |
+| `customer-support-kit` | guided | `support-specialist` | `customer-support-triage` | `customer-support-team` | 调整录入字段、回复策略和升级规则 |
+| `agent-framework-kit` | production-ready | `framework-extension-architect` | `agent-framework-extension`、`engineering-parallel-delivery` | `framework-extension-team` | 创建并物化新的垂直 Agent/Skill/Tool/Workflow/Team/Policy/Kit 包 |
 
 推荐操作顺序：
 
@@ -80,6 +82,12 @@ python scripts/validate_resource_links.py
 ```
 
 它会指出具体哪个 Kit 或 scaffold preset 指向了不存在的资源。
+
+当前 production-ready 校验会要求领域专用 MCP 工具、安全契约字段、测试、配置、文档、release/deployment 校验依据，以及物化资源的 activation guidance。当前达到 production-ready 的内置包是 `operations-runbook-kit`、`web-security-kit`、`software-engineering-kit` 和 `agent-framework-kit`。
+
+`operations-runbook-kit` 内置引用了 `network_tools`，用于网络设备场景，但这些工具只做规划和策略检查：校验授权范围、允许的主机、凭据引用、命令白名单、干跑状态、回滚计划和审计证据，不会连接设备，也不会应用配置。如果部署方要增加真实 SSH/API 连接器，应继续复用这些输入、审批、回滚和证据契约，这样普通用户看到的是安全引导流程，专家模式和二开开发者也能检查真实工具边界。
+
+`multi-domain-agent-kit` 是跨领域总控 starter。推荐工作流先用强模型规划节点拆解任务，再只激活必要的领域 worker 并行执行，随后动态 join、汇总、审计并输出精简交接报告。普通模式展示需求、选中领域、质量状态和最终结果；专家模式展示 `active_branches`、branch contracts、`team_template_ref`、模型路由、上下文预算、artifact refs 和审计证据。这样多领域工程化不是固定跑所有团队，而是把 token 花在拆解、审计和必要的执行分支上。
 
 ## 文件内容规则
 
@@ -282,12 +290,17 @@ Skill 文档通常要写清：
 用于可复用的工作流蓝图。
 GoFlow 的内置 Workflow Template 来自 `internal/agent/templates/workflows/*.yaml`，发布时会内嵌进二进制。运行目录下的 `templates/workflows/*.yaml` 可以新增模板，也可以用同名文件覆盖内置模板。
 
-常用内置模板包括 `complex-project-delivery`、`plan-implement-audit`、`plan-fix-audit`、`task-decomposition-plan` 和 `multi-domain-intake-router`。
+常用内置模板包括 `complex-project-delivery`、`engineering-parallel-delivery`、`plan-implement-audit`、`plan-fix-audit`、`task-decomposition-plan` 和 `multi-domain-intake-router`。
+
+复杂工程类模板会同时使用模型路由、上下文预算和结构化 worker 契约：强模型节点负责任务拆解、汇总、审计和恢复，低成本 worker 节点使用 `worker_contract: engineering_v1`、阶段级工具白名单、`context.max_tokens`、`context.prompt_max_tokens`、`context.request_max_tokens`、`context.inputs_max_tokens` 和 `context.parameters_max_tokens` 执行小切片。完整报告保存为 artifact，下游优先传递 `summary`、`changed_files`、`verification`、`blockers`、`next_actions` 和 artifact 引用，避免反复复制原始输出。
+
+`multi-domain-intake-router` 采用同一套省 token 工程化原则，但面向所有垂直领域。`decompose` 阶段输出 `active_branches` 和 `branch_contracts`；`parallel` 节点只运行被选中的领域 worker；`join` 节点通过 `wait_for_ref` 只等待实际激活的分支；汇总和审计节点只消费摘要、结构化字段和 artifact refs。二开时优先修改拆解规则、领域 worker 的工具边界和质量门禁，不要把所有领域输出都塞进下游 prompt。
 
 适合做这些起步模板：
 
 - 规划
 - 软件实现
+- 带阶段级模型路由的并行工程交付
 - Web 安全审查
 - 二进制初筛
 - 文档交付

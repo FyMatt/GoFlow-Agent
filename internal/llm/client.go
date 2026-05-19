@@ -18,11 +18,12 @@ import (
 
 // Client implements an OpenAI-compatible chat client.
 type Client struct {
-	baseURL      string
-	apiKey       string
-	httpClient   *http.Client
-	retryCount   int
-	retryBackoff time.Duration
+	baseURL               string
+	apiKey                string
+	httpClient            *http.Client
+	retryCount            int
+	retryBackoff          time.Duration
+	providerMessageFields map[string]struct{}
 }
 
 // NewClient constructs a new OpenAI-compatible LLM client.
@@ -36,11 +37,12 @@ func NewClient(cfg config.LLMConfig) *Client {
 		backoff = 500 * time.Millisecond
 	}
 	return &Client{
-		baseURL:      strings.TrimRight(cfg.BaseURL, "/"),
-		apiKey:       cfg.APIKey,
-		httpClient:   &http.Client{Timeout: timeout},
-		retryCount:   cfg.RetryCount,
-		retryBackoff: backoff,
+		baseURL:               strings.TrimRight(cfg.BaseURL, "/"),
+		apiKey:                cfg.APIKey,
+		httpClient:            &http.Client{Timeout: timeout},
+		retryCount:            cfg.RetryCount,
+		retryBackoff:          backoff,
+		providerMessageFields: providerMessageFieldSet(cfg.ProviderMessageFields),
 	}
 }
 
@@ -49,7 +51,7 @@ func (c *Client) Chat(ctx context.Context, req schema.ChatRequest) (schema.ChatR
 	if err := validateOpenAICompatibleSetup(c, req); err != nil {
 		return schema.ChatResponse{}, err
 	}
-	payload := newOpenAIRequest(req)
+	payload := c.newOpenAIRequest(req)
 	body, err := json.Marshal(payload)
 	if err != nil {
 		return schema.ChatResponse{}, fmt.Errorf("marshal request: %w", err)
@@ -77,7 +79,7 @@ func (c *Client) StreamChat(ctx context.Context, req schema.ChatRequest, handler
 	if err := validateOpenAICompatibleSetup(c, req); err != nil {
 		return schema.ChatResponse{}, err
 	}
-	payload := newOpenAIRequest(req)
+	payload := c.newOpenAIRequest(req)
 	payload.Stream = true
 	payload.StreamOptions = &openAIStreamOptions{IncludeUsage: true}
 	body, err := json.Marshal(payload)
@@ -137,6 +139,10 @@ func validateOpenAICompatibleSetup(c *Client, req schema.ChatRequest) error {
 	return fmt.Errorf("model provider setup required: configure %s in Web Studio Settings/Resources or configs/providers/*.yaml", strings.Join(missing, ", "))
 }
 
+func (c *Client) newOpenAIRequest(req schema.ChatRequest) openAIRequest {
+	return newOpenAIRequest(req, c.providerMessageFields)
+}
+
 func (c *Client) doJSON(ctx context.Context, body []byte, stream bool) (schema.ChatResponse, error) {
 	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
 	if err != nil {
@@ -165,7 +171,7 @@ func (c *Client) doJSON(ctx context.Context, body []byte, stream bool) (schema.C
 	if err := json.Unmarshal(respBody, &raw); err != nil {
 		return schema.ChatResponse{}, fmt.Errorf("decode response: %w", err)
 	}
-	normalizedResp, err := normalizeResponse(raw)
+	normalizedResp, err := normalizeResponse(raw, c.providerMessageFields)
 	if err != nil {
 		return schema.ChatResponse{}, err
 	}
@@ -195,7 +201,7 @@ func (c *Client) doStream(ctx context.Context, body []byte, req schema.ChatReque
 	}
 
 	reader := bufio.NewReader(resp.Body)
-	assembler := newStreamAssembler()
+	assembler := newStreamAssembler(c.providerMessageFields)
 	for {
 		line, err := reader.ReadString('\n')
 		if err != nil {

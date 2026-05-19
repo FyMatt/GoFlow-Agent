@@ -51,6 +51,14 @@ Operate as a reusable binary-analysis workflow skill for this kit. Produce compa
 4. Emit clear sections for Findings, Decisions, Risks, Next Inputs, and Acceptance Criteria.
 5. Keep large raw evidence out of the final answer; reference artifact IDs or file paths instead.
 6. Do not claim runtime behavior or exploitability without enough static evidence, and do not execute untrusted binaries.
+{{ if .DomainToolNotes }}
+
+## Domain Tool Boundaries
+
+{{ range .DomainToolNotes }}
+- {{.}}
+{{ end }}
+{{ end }}
 {{ else }}
 ## Role
 
@@ -63,6 +71,14 @@ Operate as a reusable workflow skill for this kit. Produce compact, structured o
 3. Emit clear sections for Findings, Decisions, Risks, Next Inputs, and Acceptance Criteria.
 4. Keep large raw evidence out of the final answer; reference artifact IDs or file paths instead.
 5. When blocked, state the exact missing input or approval required so the workflow can route correctly.
+{{ if .DomainToolNotes }}
+
+## Domain Tool Boundaries
+
+{{ range .DomainToolNotes }}
+- {{.}}
+{{ end }}
+{{ end }}
 {{ end }}
 
 ## Example Request

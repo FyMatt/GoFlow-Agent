@@ -68,12 +68,14 @@ templates:
   - name: web-vulnerability-research
     description: Collect web page source and linked assets for defensive vulnerability analysis.
     mode: audit
-    preferred_agent: auditor
+    preferred_agent: web-security-researcher
     allowed_tool_kinds: [read, network]
     output_kind: security-findings
     tools:
       - name: web_tools/fetch_page_assets
         required: true
+      - name: web_tools/browser_snapshot
+      - name: web_tools/browser_probe_points
       - name: web_tools/fetch_url
       - name: web_tools/web_search
     keywords: [web vulnerability, web漏洞, 网站漏洞, xss, csrf, 前端漏洞]
@@ -81,18 +83,23 @@ templates:
     body: |
       ## Role
 
-      You perform defensive web vulnerability research from fetched source and assets.
+      You perform defensive web vulnerability research from fetched source, linked assets, and authorized browser-rendered evidence.
 
       ## Workflow
 
-      1. Fetch the target page and linked JavaScript/CSS assets.
-      2. Identify exposed routes, client-side trust boundaries, tokens, sinks, and risky patterns.
-      3. Separate confirmed evidence from hypotheses.
-      4. Avoid intrusive scanning unless the operator explicitly provides authorization and tools.
+      1. Confirm the target URL, allowed host list, and authorized scope.
+      2. Fetch the target page and linked JavaScript/CSS assets.
+      3. Use browser_snapshot only for authorized hosts when runtime DOM, form, link, script, or screenshot evidence is needed.
+      4. Use browser_probe_points to enumerate GET query/form/link probe surfaces; run active canary probes only when active_probe_approved=true.
+      5. Identify exposed routes, client-side trust boundaries, tokens, sinks, and risky patterns.
+      6. Separate confirmed evidence from hypotheses.
+      7. Avoid intrusive scanning unless the operator explicitly provides authorization, approval, rate limits, and safe tools.
 
       ## Output
 
       - Target and collected assets.
+      - Browser evidence summary when collected.
+      - Probe-point summary and approved canary results when collected.
       - Findings with evidence snippets and affected assets.
       - Exploitability assumptions.
       - Defensive remediation steps.

@@ -4,12 +4,13 @@ import "encoding/json"
 
 // Message represents a normalized chat message exchanged with the LLM.
 type Message struct {
-	Role       string     `json:"role"`
-	Content    string     `json:"content,omitempty"`
-	Name       string     `json:"name,omitempty"`
-	ToolCallID string     `json:"tool_call_id,omitempty"`
-	ToolCall   *ToolCall  `json:"tool_call,omitempty"`
-	ToolCalls  []ToolCall `json:"tool_calls,omitempty"`
+	Role           string                     `json:"role"`
+	Content        string                     `json:"content,omitempty"`
+	Name           string                     `json:"name,omitempty"`
+	ToolCallID     string                     `json:"tool_call_id,omitempty"`
+	ToolCall       *ToolCall                  `json:"tool_call,omitempty"`
+	ToolCalls      []ToolCall                 `json:"tool_calls,omitempty"`
+	ProviderFields map[string]json.RawMessage `json:"provider_fields,omitempty"`
 }
 
 // Tool describes a callable tool exposed to the LLM.
@@ -169,6 +170,7 @@ type PromptBudget struct {
 	ExposedToolCount                 int                  `json:"exposed_tool_count,omitempty"`
 	TotalToolCount                   int                  `json:"total_tool_count,omitempty"`
 	FilteredToolCount                int                  `json:"filtered_tool_count,omitempty"`
+	ToolSchemaEstimatedSavedTokens   int                  `json:"tool_schema_estimated_saved_tokens,omitempty"`
 	ToolSchemaDiagnosticCount        int                  `json:"tool_schema_diagnostic_count,omitempty"`
 	ToolSchemaDiagnosticOmitted      int                  `json:"tool_schema_diagnostic_omitted,omitempty"`
 	MemoryBlockCount                 int                  `json:"memory_block_count,omitempty"`
@@ -433,14 +435,16 @@ type WorkflowStageResult struct {
 
 // AgentResult is the final answer returned by the agent.
 type AgentResult struct {
-	Output       string              `json:"output"`
-	MatchedSkill *Skill              `json:"matched_skill,omitempty"`
-	ToolResults  []ToolResult        `json:"tool_results,omitempty"`
-	AgentID      string              `json:"agent_id,omitempty"`
-	Mode         string              `json:"mode,omitempty"`
-	Structured   []StructuredSection `json:"structured,omitempty"`
-	AuditTrail   []AuditEntry        `json:"audit_trail,omitempty"`
-	Findings     []Finding           `json:"findings,omitempty"`
-	Changes      []Change            `json:"changes,omitempty"`
-	Verification []Verification      `json:"verification,omitempty"`
+	Output          string              `json:"output"`
+	MatchedSkill    *Skill              `json:"matched_skill,omitempty"`
+	ToolResults     []ToolResult        `json:"tool_results,omitempty"`
+	AgentID         string              `json:"agent_id,omitempty"`
+	Mode            string              `json:"mode,omitempty"`
+	Model           string              `json:"model,omitempty"`
+	Structured      []StructuredSection `json:"structured,omitempty"`
+	AuditTrail      []AuditEntry        `json:"audit_trail,omitempty"`
+	Findings        []Finding           `json:"findings,omitempty"`
+	Changes         []Change            `json:"changes,omitempty"`
+	Verification    []Verification      `json:"verification,omitempty"`
+	ResponseMessage Message             `json:"-"`
 }

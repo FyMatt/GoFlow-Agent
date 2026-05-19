@@ -34,6 +34,10 @@ type WorkflowRunner struct {
 type workflowRunStartHookKey struct{}
 type workflowRunRetryOfKey struct{}
 
+type workflowStageRunOptions struct {
+	AllowedTools []string
+}
+
 // WithWorkflowRunStartHook returns a context that is notified after a run id is allocated.
 func WithWorkflowRunStartHook(ctx context.Context, hook func(runID string)) context.Context {
 	if ctx == nil || hook == nil {
@@ -228,6 +232,7 @@ func (w *WorkflowRunner) ResumeToolApproval(ctx context.Context, runID string, a
 		PendingArgumentsBytes:        run.PendingArgsBytes,
 		PendingArgumentsStoredBytes:  run.PendingArgsStoredBytes,
 		PendingArgumentsExternalized: run.PendingArgsExternalized,
+		PendingResponseMessage:       schema.CopyMessage(run.PendingResponseMessage),
 	})
 	w.runtime.session.UpdateWorkflowRunState(w.runtime.session.Snapshot().Workflow)
 	w.runtime.session.AppendWorkflowRunEvent(run.ID, session.WorkflowRunEventSnapshot{
@@ -336,12 +341,15 @@ func (w *WorkflowRunner) pendingToolApprovalFromRun(ctx context.Context, run ses
 			Name:      toolName,
 			Arguments: json.RawMessage(strings.TrimSpace(run.PendingArgs)),
 		},
-		tool:      tool,
-		workflow:  strings.TrimSpace(run.Name),
-		stage:     WorkflowStage(strings.TrimSpace(run.NextStage)),
-		request:   strings.TrimSpace(run.Request),
-		completed: workflowStageResultsFromRunSnapshots(run.CompletedStages),
+		tool:            tool,
+		workflow:        strings.TrimSpace(run.Name),
+		stage:           WorkflowStage(strings.TrimSpace(run.NextStage)),
+		request:         strings.TrimSpace(run.Request),
+		responseContent: strings.TrimSpace(run.PendingResponseMessage.Content),
+		responseMessage: schema.CopyMessage(run.PendingResponseMessage),
+		completed:       workflowStageResultsFromRunSnapshots(run.CompletedStages),
 	}
+	pending.responseMessage = responseMessageForApproval(pending.responseContent, pending.call, pending.responseMessage)
 	if strings.TrimSpace(run.PendingAgentID) != "" {
 		pending.agent = strings.TrimSpace(run.PendingAgentID)
 	}
@@ -2002,7 +2010,7 @@ func (w *WorkflowRunner) runSkillChainFrom(ctx context.Context, request string, 
 			return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", stage, err)
 		}
 		if hasSuspendedToolResult(result.ToolResults) {
-			w.captureSkillChainApprovalContext(stage, request, result.Output, completed, result.ToolResults, chain, index, stagePrompt)
+			w.captureSkillChainApprovalContext(stage, request, result.Output, result.ResponseMessage, completed, result.ToolResults, chain, index, stagePrompt)
 			approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(result.ToolResults), agentID)
 			w.recordWorkflowSummary(fmt.Sprintf("workflow %s awaiting tool approval", workflowNameSkillChain))
 			w.persistWorkflowState(workflowNameSkillChain, "awaiting_tool_approval", stage, request, summarizeWorkflow(completed), approvalPrompt)
@@ -2315,12 +2323,51 @@ func workflowPromptSummary(text string) string {
 }
 
 func runSkillStage(ctx context.Context, runtimeRef *Runtime, agentID, input string, skill schema.Skill, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	return runSkillStageWithModel(ctx, runtimeRef, agentID, input, skill, workflowGraphStageModel{}, handler)
+}
+
+func runSkillStageWithModel(ctx context.Context, runtimeRef *Runtime, agentID, input string, skill schema.Skill, model workflowGraphStageModel, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	return runSkillStageWithModelAndOptions(ctx, runtimeRef, agentID, input, skill, model, workflowStageRunOptions{}, handler)
+}
+
+func runSkillStageWithModelAndOptions(ctx context.Context, runtimeRef *Runtime, agentID, input string, skill schema.Skill, model workflowGraphStageModel, options workflowStageRunOptions, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
 	runner, ok := runtimeRef.runners[agentID]
 	if !ok {
 		return schema.AgentResult{}, fmt.Errorf("workflow agent not configured: %s", agentID)
 	}
+	if err := validateWorkflowStageModelRoute(runtimeRef, model); err != nil {
+		return schema.AgentResult{}, err
+	}
+	runner = runtimeRef.workflowStageRunnerWithModel(agentID, runner, model)
 	manager := fixedSkillManager{skill: &skill}
-	return runner.RunStream(ctx, input, manager, runtimeRef.mcp, runtimeRef.session, runtimeRef.audit, runtimeRef, handler)
+	result, err := runner.runStreamWithOptions(ctx, input, manager, runtimeRef.mcp, runtimeRef.session, runtimeRef.audit, runtimeRef, agentRunOptions{AllowedTools: options.AllowedTools}, handler)
+	if err != nil {
+		return result, err
+	}
+	if strings.TrimSpace(result.Model) == "" {
+		result.Model = strings.TrimSpace(runner.profile.Model)
+	}
+	return result, nil
+}
+
+func validateWorkflowStageModelRoute(runtimeRef *Runtime, model workflowGraphStageModel) error {
+	if !workflowGraphStageModelConfigured(model) {
+		return nil
+	}
+	if model.MaxTokens < 0 {
+		return fmt.Errorf("workflow stage model.max_tokens must not be negative")
+	}
+	provider := strings.TrimSpace(model.Provider)
+	if provider == "" {
+		return nil
+	}
+	if runtimeRef == nil {
+		return fmt.Errorf("workflow stage model provider %s cannot be resolved without runtime", provider)
+	}
+	if _, ok := runtimeRef.clients[provider]; !ok {
+		return fmt.Errorf("workflow stage references unknown model provider: %s", provider)
+	}
+	return nil
 }
 
 type fixedSkillManager struct {
@@ -2360,6 +2407,17 @@ func copySkillChain(chain []schema.Skill) []schema.Skill {
 	copied := make([]schema.Skill, len(chain))
 	copy(copied, chain)
 	return copied
+}
+
+func copyAgentResultForWorkflow(result schema.AgentResult) schema.AgentResult {
+	result.ToolResults = append([]schema.ToolResult(nil), result.ToolResults...)
+	result.Structured = append([]schema.StructuredSection(nil), result.Structured...)
+	result.AuditTrail = append([]schema.AuditEntry(nil), result.AuditTrail...)
+	result.Findings = append([]schema.Finding(nil), result.Findings...)
+	result.Changes = append([]schema.Change(nil), result.Changes...)
+	result.Verification = append([]schema.Verification(nil), result.Verification...)
+	result.ResponseMessage = schema.CopyMessage(result.ResponseMessage)
+	return result
 }
 
 // RunPlanFixAudit executes the planner �?fixer �?auditor workflow.
@@ -2403,12 +2461,12 @@ func (w *WorkflowRunner) RunPlanFixAudit(ctx context.Context, request string, ap
 		return WorkflowResult{}, err
 	}
 	fixPrompt := buildPlanFixAuditFixPrompt(request, planResult.Output)
-	fixResult, err := continueAgentRun(ctx, w.runtime, workflowAgentFixer, fixPrompt, schema.ToolCall{}, "", schema.ToolResult{}, handler)
+	fixResult, err := continueAgentRun(ctx, w.runtime, workflowAgentFixer, fixPrompt, schema.ToolCall{}, "", schema.Message{}, schema.ToolResult{}, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageFix, err)
 	}
 	if hasSuspendedToolResult(fixResult.ToolResults) {
-		w.captureApprovalContext(workflowNamePlanFixAudit, WorkflowStageFix, request, fixResult.Output, completed, fixResult.ToolResults)
+		w.captureApprovalContext(workflowNamePlanFixAudit, WorkflowStageFix, request, fixResult.Output, fixResult.ResponseMessage, completed, fixResult.ToolResults)
 		approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(fixResult.ToolResults), workflowAgentFixer)
 		w.recordWorkflowSummary(fmt.Sprintf("workflow %s awaiting tool approval", workflowNamePlanFixAudit))
 		w.persistWorkflowState(workflowNamePlanFixAudit, "awaiting_tool_approval", WorkflowStageFix, request, summarizeWorkflow(completed), approvalPrompt)
@@ -2478,6 +2536,9 @@ func (w *WorkflowRunner) persistWorkflowState(name, status string, nextStage Wor
 		LastApproval: prompt,
 	}
 	if status == "awaiting_tool_approval" {
+		if pending, ok := w.pendingApprovalForWorkflowState(name, nextStage); ok {
+			snapshot.PendingResponseMessage = schema.CopyMessage(pending.responseMessage)
+		}
 		for _, pending := range w.runtime.SessionSnapshot().PendingApprovals {
 			if pending.WorkflowName != name {
 				continue
@@ -2513,6 +2574,22 @@ func (w *WorkflowRunner) persistWorkflowState(name, status string, nextStage Wor
 	}
 }
 
+func (w *WorkflowRunner) pendingApprovalForWorkflowState(name string, nextStage WorkflowStage) (pendingApproval, bool) {
+	if w == nil || w.runtime == nil || w.runtime.approvals == nil {
+		return pendingApproval{}, false
+	}
+	for _, pending := range w.runtime.approvals.List() {
+		if !strings.EqualFold(strings.TrimSpace(pending.workflow), strings.TrimSpace(name)) {
+			continue
+		}
+		if strings.TrimSpace(string(nextStage)) != "" && !strings.EqualFold(strings.TrimSpace(string(pending.stage)), strings.TrimSpace(string(nextStage))) {
+			continue
+		}
+		return pending, true
+	}
+	return pendingApproval{}, false
+}
+
 func workflowStateEventContent(snapshot session.WorkflowSnapshot) string {
 	if strings.TrimSpace(snapshot.LastApproval) != "" {
 		return snapshot.LastApproval
@@ -2526,7 +2603,7 @@ func workflowStateEventContent(snapshot session.WorkflowSnapshot) string {
 	return fmt.Sprintf("workflow %s %s", snapshot.Name, snapshot.Status)
 }
 
-func (w *WorkflowRunner) captureApprovalContext(workflowName string, stage WorkflowStage, request, responseContent string, completed []WorkflowStageResult, results []schema.ToolResult) {
+func (w *WorkflowRunner) captureApprovalContext(workflowName string, stage WorkflowStage, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult, results []schema.ToolResult) {
 	if w == nil || w.runtime == nil || w.runtime.approvals == nil {
 		return
 	}
@@ -2534,12 +2611,12 @@ func (w *WorkflowRunner) captureApprovalContext(workflowName string, stage Workf
 	if callID == "" {
 		return
 	}
-	if !w.runtime.AnnotatePendingApproval(callID, workflowName, stage, request, responseContent, completed) {
+	if !w.runtime.AnnotatePendingApproval(callID, workflowName, stage, request, responseContent, responseMessage, completed) {
 		return
 	}
 }
 
-func (w *WorkflowRunner) captureSkillChainApprovalContext(stage WorkflowStage, request, responseContent string, completed []WorkflowStageResult, results []schema.ToolResult, chain []schema.Skill, index int, stagePrompt string) {
+func (w *WorkflowRunner) captureSkillChainApprovalContext(stage WorkflowStage, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult, results []schema.ToolResult, chain []schema.Skill, index int, stagePrompt string) {
 	if w == nil || w.runtime == nil || w.runtime.approvals == nil {
 		return
 	}
@@ -2547,7 +2624,7 @@ func (w *WorkflowRunner) captureSkillChainApprovalContext(stage WorkflowStage, r
 	if callID == "" {
 		return
 	}
-	_ = w.runtime.AnnotateSkillChainPendingApproval(callID, workflowNameSkillChain, stage, request, responseContent, completed, chain, index, stagePrompt)
+	_ = w.runtime.AnnotateSkillChainPendingApproval(callID, workflowNameSkillChain, stage, request, responseContent, responseMessage, completed, chain, index, stagePrompt)
 }
 
 func (w *WorkflowRunner) ResumePlanFixAudit(ctx context.Context, callID string, approve bool, handler func(event schema.StreamEvent) error) (WorkflowResult, error) {
@@ -2616,12 +2693,12 @@ func (w *WorkflowRunner) runPlanFixAuditApprovedStages(ctx context.Context, requ
 		return WorkflowResult{}, err
 	}
 	fixPrompt := buildPlanFixAuditFixPrompt(request, planOutput)
-	fixResult, err := continueAgentRun(ctx, w.runtime, workflowAgentFixer, fixPrompt, schema.ToolCall{}, "", schema.ToolResult{}, handler)
+	fixResult, err := continueAgentRun(ctx, w.runtime, workflowAgentFixer, fixPrompt, schema.ToolCall{}, "", schema.Message{}, schema.ToolResult{}, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageFix, err)
 	}
 	if hasSuspendedToolResult(fixResult.ToolResults) {
-		w.captureApprovalContext(workflowNamePlanFixAudit, WorkflowStageFix, request, fixResult.Output, completed, fixResult.ToolResults)
+		w.captureApprovalContext(workflowNamePlanFixAudit, WorkflowStageFix, request, fixResult.Output, fixResult.ResponseMessage, completed, fixResult.ToolResults)
 		approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(fixResult.ToolResults), workflowAgentFixer)
 		w.recordWorkflowSummary(fmt.Sprintf("workflow %s awaiting tool approval", workflowNamePlanFixAudit))
 		w.persistWorkflowState(workflowNamePlanFixAudit, "awaiting_tool_approval", WorkflowStageFix, request, summarizeWorkflow(completed), approvalPrompt)
@@ -2704,7 +2781,7 @@ func resumePlanFixAuditWorkflow(w *WorkflowRunner, ctx context.Context, pending 
 			planSummary = completed[len(completed)-1].Result.Output
 		}
 		fixPrompt := buildPlanFixAuditFixPrompt(pending.request, planSummary)
-		fixResult, err := continueAgentRun(ctx, w.runtime, workflowAgentFixer, fixPrompt, pending.call, pending.responseContent, toolResult, handler)
+		fixResult, err := continueAgentRun(ctx, w.runtime, workflowAgentFixer, fixPrompt, pending.call, pending.responseContent, pending.responseMessage, toolResult, handler)
 		if err != nil {
 			return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageFix, err)
 		}
@@ -2715,7 +2792,7 @@ func resumePlanFixAuditWorkflow(w *WorkflowRunner, ctx context.Context, pending 
 		})
 
 		if hasSuspendedToolResult(fixResult.ToolResults) {
-			w.captureApprovalContext(workflowNamePlanFixAudit, WorkflowStageFix, pending.request, fixResult.Output, completed[:len(completed)-1], fixResult.ToolResults)
+			w.captureApprovalContext(workflowNamePlanFixAudit, WorkflowStageFix, pending.request, fixResult.Output, fixResult.ResponseMessage, completed[:len(completed)-1], fixResult.ToolResults)
 			approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(fixResult.ToolResults), workflowAgentFixer)
 			w.recordWorkflowSummary(fmt.Sprintf("workflow %s awaiting tool approval", workflowNamePlanFixAudit))
 			w.persistWorkflowState(workflowNamePlanFixAudit, "awaiting_tool_approval", WorkflowStageFix, pending.request, summarizeWorkflow(completed[:len(completed)-1]), approvalPrompt)
@@ -2856,12 +2933,12 @@ func resumeSkillChainWorkflow(w *WorkflowRunner, ctx context.Context, pending pe
 	if err := w.runtime.SetActiveAgent(pending.agent); err != nil {
 		return WorkflowResult{}, err
 	}
-	stageResult, err := continueAgentRunWithSkill(ctx, w.runtime, pending.agent, stagePrompt, &skill, pending.call, pending.responseContent, toolResult, handler)
+	stageResult, err := continueAgentRunWithSkill(ctx, w.runtime, pending.agent, stagePrompt, &skill, pending.call, pending.responseContent, pending.responseMessage, toolResult, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", pending.stage, err)
 	}
 	if hasSuspendedToolResult(stageResult.ToolResults) {
-		w.captureSkillChainApprovalContext(pending.stage, pending.request, stageResult.Output, completed, stageResult.ToolResults, chain, pending.skillIndex, stagePrompt)
+		w.captureSkillChainApprovalContext(pending.stage, pending.request, stageResult.Output, stageResult.ResponseMessage, completed, stageResult.ToolResults, chain, pending.skillIndex, stagePrompt)
 		approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(stageResult.ToolResults), pending.agent)
 		w.persistWorkflowState(workflowNameSkillChain, "awaiting_tool_approval", pending.stage, pending.request, summarizeWorkflow(completed), approvalPrompt)
 		return WorkflowResult{
@@ -2888,20 +2965,30 @@ func findWorkflowSkillByName(skills []schema.Skill, name string) (schema.Skill, 
 	return schema.Skill{}, false
 }
 
-func continueAgentRun(ctx context.Context, runtimeRef *Runtime, agentID, input string, approvedCall schema.ToolCall, approvedResponseContent string, approvedResult schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
-	return continueAgentRunWithSkill(ctx, runtimeRef, agentID, input, nil, approvedCall, approvedResponseContent, approvedResult, handler)
+func continueAgentRun(ctx context.Context, runtimeRef *Runtime, agentID, input string, approvedCall schema.ToolCall, approvedResponseContent string, approvedResponseMessage schema.Message, approvedResult schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	return continueAgentRunWithModelAndSkill(ctx, runtimeRef, agentID, input, workflowGraphStageModel{}, nil, approvedCall, approvedResponseContent, approvedResponseMessage, approvedResult, handler)
 }
 
-func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID, input string, matchedSkill *schema.Skill, approvedCall schema.ToolCall, approvedResponseContent string, approvedResult schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID, input string, matchedSkill *schema.Skill, approvedCall schema.ToolCall, approvedResponseContent string, approvedResponseMessage schema.Message, approvedResult schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	return continueAgentRunWithModelAndSkill(ctx, runtimeRef, agentID, input, workflowGraphStageModel{}, matchedSkill, approvedCall, approvedResponseContent, approvedResponseMessage, approvedResult, handler)
+}
+
+func continueAgentRunWithModelAndSkill(ctx context.Context, runtimeRef *Runtime, agentID, input string, model workflowGraphStageModel, matchedSkill *schema.Skill, approvedCall schema.ToolCall, approvedResponseContent string, approvedResponseMessage schema.Message, approvedResult schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	return continueAgentRunWithModelSkillAndOptions(ctx, runtimeRef, agentID, input, model, matchedSkill, workflowStageRunOptions{}, approvedCall, approvedResponseContent, approvedResponseMessage, approvedResult, handler)
+}
+
+func continueAgentRunWithModelSkillAndOptions(ctx context.Context, runtimeRef *Runtime, agentID, input string, model workflowGraphStageModel, matchedSkill *schema.Skill, options workflowStageRunOptions, approvedCall schema.ToolCall, approvedResponseContent string, approvedResponseMessage schema.Message, approvedResult schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
 	runner, ok := runtimeRef.runners[agentID]
 	if !ok {
 		return schema.AgentResult{}, fmt.Errorf("workflow agent not configured: %s", agentID)
 	}
+	runner = runtimeRef.workflowStageRunnerWithModel(agentID, runner, model)
 	tools, err := runtimeRef.mcp.ListTools(ctx)
 	if err != nil {
 		return schema.AgentResult{}, fmt.Errorf("list tools: %w", err)
 	}
 	profile := applySkillToProfile(runner.profile, matchedSkill)
+	profile = applyWorkflowStageAllowedTools(profile, options.AllowedTools)
 	profile = ensureMinimumToolIterations(profile)
 	mode := profile.Mode
 	memoryText := ""
@@ -2917,7 +3004,8 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 	messages := dynamicContextMessages(memoryText, snapshot, input, []schema.Message{{Role: "user", Content: input}})
 	collectedResults := make([]schema.ToolResult, 0, 1)
 	if strings.TrimSpace(approvedCall.ID) != "" {
-		messages = append(messages, schema.Message{Role: "assistant", Content: approvedResponseContent, ToolCalls: []schema.ToolCall{approvedCall}})
+		messages = append(messages, responseMessageForApproval(approvedResponseContent, approvedCall, approvedResponseMessage))
+		messages = compactMessagesForResumePrompt(messages)
 	}
 	if strings.TrimSpace(approvedResult.CallID) != "" || strings.TrimSpace(approvedResult.ToolName) != "" || strings.TrimSpace(approvedResult.Content) != "" {
 		artifactRef := storeCompactedToolResultArtifact(runtimeRef.session, approvedResult, agentID, mode)
@@ -2955,7 +3043,7 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 		if len(resp.ToolCalls) == 0 {
 			emitTaskStage(handler, runtimeRef.session, agentID, mode, "summarize", "preparing stage response")
 			if strings.TrimSpace(runtimeRef.SessionSnapshot().Workflow.Name) != "" && strings.EqualFold(runtimeRef.SessionSnapshot().Workflow.Status, "running") {
-				return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode}, nil
+				return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode, Model: profile.Model, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
 			}
 			if !streamedText && handler != nil && resp.Message.Content != "" {
 				if err := handler(schema.StreamEvent{Type: schema.StreamEventText, Content: resp.Message.Content, AgentID: agentID, Mode: mode}); err != nil {
@@ -2965,13 +3053,15 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 			if handler != nil {
 				_ = handler(schema.StreamEvent{Type: schema.StreamEventDone, Content: resp.Message.Content, AgentID: agentID, Mode: mode})
 			}
-			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode}, nil
+			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode, Model: profile.Model, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
 		}
 		runFinalToolCalls := finalResponseTurn && shouldRunFinalTurnToolCalls(execCtx, resp.ToolCalls)
 		if finalResponseTurn && !runFinalToolCalls {
 			return runner.finalizeAfterIterationBudget(ctx, agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, messages, collectedResults, false, i+1, handler, runtimeRef.audit, runtimeRef)
 		}
-		messages = append(messages, schema.Message{Role: "assistant", Content: resp.Message.Content, ToolCalls: resp.ToolCalls})
+		assistantMessage := assistantToolMessage(resp)
+		messages = append(messages, assistantMessage)
+		messages = compactMessagesForConversation(messages)
 		batchProfile := classifyToolCallBatch(resp.ToolCalls, execCtx)
 		emitTaskStage(handler, runtimeRef.session, agentID, mode, taskStageForToolCalls(resp.ToolCalls, execCtx), summarizeToolCallStage(resp.ToolCalls, execCtx))
 		results, err := runner.executor.RunToolCalls(ctx, execCtx, resp.ToolCalls, runtimeRef, handler)
@@ -2997,7 +3087,7 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 				}
 			}
 			if result.Suspended {
-				return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode}, nil
+				return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode, Model: profile.Model, ResponseMessage: assistantMessage}, nil
 			}
 			artifactRef := storeCompactedToolResultArtifact(runtimeRef.session, result, agentID, mode)
 			messages = append(messages, schema.Message{Role: "tool", Name: result.ToolName, ToolCallID: result.CallID, Content: compactToolResultForPromptWithArtifact(result, artifactRef)})
@@ -3006,6 +3096,9 @@ func continueAgentRunWithSkill(ctx context.Context, runtimeRef *Runtime, agentID
 			return runner.finalizeAfterIterationBudget(ctx, agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, messages, collectedResults, false, i+1, handler, runtimeRef.audit, runtimeRef)
 		}
 		if nudge, ok := actionNudge.Next(batchProfile, len(results)); ok {
+			if summary := toolObservationDigestMessage(collectedResults); strings.TrimSpace(summary) != "" {
+				messages = append(messages, schema.Message{Role: "user", Content: summary})
+			}
 			messages = append(messages, schema.Message{Role: "user", Content: nudge})
 			if handler != nil {
 				_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "enough context gathered; nudging model to act", AgentID: agentID, Mode: mode, NeedsAction: true})

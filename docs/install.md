@@ -103,6 +103,10 @@ machine. They also default the backup provider environment variables to the
 primary provider values when `GOFLOW_BACKUP_*` is not set. Python is still
 required for the built-in Python MCP server.
 
+The release launchers also set `GOFLOW_NETWORK_TOOLS_CMD` so the bundled
+network-device planning server resolves to `bin/network_tools` or
+`bin/network_tools.exe` in the extracted archive.
+
 You can also run `bin/goflow` or `bin/goflow.exe` directly from an extracted
 archive. When launched from `bin`, GoFlow resolves runtime home to the archive
 root and uses `configs/goflow.binary.yaml` by default.

@@ -60,6 +60,78 @@ type ErrorKnowledgeBase struct {
 	Errors    []ErrorMemory `json:"errors,omitempty"`
 }
 
+// SolutionKnowledgeBase stores reusable decisions and correct solutions so
+// future runs can avoid asking the user to repeat the same choice.
+type SolutionKnowledgeBase struct {
+	UpdatedAt string           `json:"updated_at,omitempty"`
+	Solutions []SolutionMemory `json:"solutions,omitempty"`
+}
+
+// SolutionMemory captures one reusable problem-to-solution record.
+type SolutionMemory struct {
+	ID                  string   `json:"id"`
+	CreatedAt           string   `json:"created_at,omitempty"`
+	UpdatedAt           string   `json:"updated_at,omitempty"`
+	LastUsedAt          string   `json:"last_used_at,omitempty"`
+	ProblemSignature    string   `json:"problem_signature"`
+	Problem             string   `json:"problem,omitempty"`
+	Decision            string   `json:"decision,omitempty"`
+	Solution            string   `json:"solution,omitempty"`
+	Applicability       []string `json:"applicability,omitempty"`
+	InvalidWhen         []string `json:"invalid_when,omitempty"`
+	RelatedFiles        []string `json:"related_files,omitempty"`
+	VerificationCommand string   `json:"verification_command,omitempty"`
+	Confidence          string   `json:"confidence,omitempty"`
+	Resolved            bool     `json:"resolved,omitempty"`
+	Retired             bool     `json:"retired,omitempty"`
+	RetiredAt           string   `json:"retired_at,omitempty"`
+	RetiredReason       string   `json:"retired_reason,omitempty"`
+	SupersededBy        string   `json:"superseded_by,omitempty"`
+	UseCount            int      `json:"use_count,omitempty"`
+}
+
+// SearchSummary returns a compact human-readable solution summary.
+func (s SolutionMemory) SearchSummary() string {
+	parts := make([]string, 0, 8)
+	if strings.TrimSpace(s.ProblemSignature) != "" {
+		parts = append(parts, "Problem signature: "+strings.TrimSpace(s.ProblemSignature))
+	}
+	if strings.TrimSpace(s.Problem) != "" {
+		parts = append(parts, "Problem: "+strings.TrimSpace(s.Problem))
+	}
+	if strings.TrimSpace(s.Decision) != "" {
+		parts = append(parts, "Decision: "+strings.TrimSpace(s.Decision))
+	}
+	if strings.TrimSpace(s.Solution) != "" {
+		parts = append(parts, "Solution: "+strings.TrimSpace(s.Solution))
+	}
+	if len(s.Applicability) > 0 {
+		parts = append(parts, "Use when: "+strings.Join(s.Applicability, "; "))
+	}
+	if len(s.InvalidWhen) > 0 {
+		parts = append(parts, "Invalid when: "+strings.Join(s.InvalidWhen, "; "))
+	}
+	if len(s.RelatedFiles) > 0 {
+		parts = append(parts, "Files: "+strings.Join(s.RelatedFiles, ", "))
+	}
+	if strings.TrimSpace(s.VerificationCommand) != "" {
+		parts = append(parts, "Verify: "+strings.TrimSpace(s.VerificationCommand))
+	}
+	if strings.TrimSpace(s.Confidence) != "" {
+		parts = append(parts, "Confidence: "+strings.TrimSpace(s.Confidence))
+	}
+	if s.Retired {
+		parts = append(parts, "Retired: true")
+	}
+	if strings.TrimSpace(s.RetiredReason) != "" {
+		parts = append(parts, "Retired reason: "+strings.TrimSpace(s.RetiredReason))
+	}
+	if strings.TrimSpace(s.SupersededBy) != "" {
+		parts = append(parts, "Superseded by: "+strings.TrimSpace(s.SupersededBy))
+	}
+	return strings.TrimSpace(strings.Join(parts, "\n"))
+}
+
 // ErrorMemory captures one reusable troubleshooting record.
 type ErrorMemory struct {
 	ID                  string   `json:"id"`
@@ -227,11 +299,12 @@ type ContextPromptCost struct {
 
 // Dashboard is a lightweight aggregate view for Web Studio.
 type Dashboard struct {
-	Project   ProjectMemory      `json:"project"`
-	Tasks     []TaskSummary      `json:"tasks,omitempty"`
-	Errors    ErrorKnowledgeBase `json:"errors"`
-	FileIndex FileIndex          `json:"file_index"`
-	Context   ContextSummary     `json:"context,omitempty"`
+	Project   ProjectMemory         `json:"project"`
+	Tasks     []TaskSummary         `json:"tasks,omitempty"`
+	Errors    ErrorKnowledgeBase    `json:"errors"`
+	Solutions SolutionKnowledgeBase `json:"solutions"`
+	FileIndex FileIndex             `json:"file_index"`
+	Context   ContextSummary        `json:"context,omitempty"`
 }
 
 func pluralizeMemoryCount(count int, singular string) string {

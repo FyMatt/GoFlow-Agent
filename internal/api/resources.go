@@ -171,6 +171,10 @@ type resourceFamilySummary struct {
 	Notes                 []string             `json:"notes,omitempty"`
 }
 
+// Kit resource catalog entries expose the scaffold materialize action; the Kit
+// endpoint returns resources, restart_required, and activation_steps for the
+// generated resource graph.
+
 type policyRuleValidationResult struct {
 	Valid      bool                        `json:"valid"`
 	Name       string                      `json:"name,omitempty"`
@@ -219,25 +223,26 @@ type agentResourceDocument struct {
 }
 
 type providerResourceDocument struct {
-	ID               string  `json:"id" yaml:"id,omitempty"`
-	Type             string  `json:"type,omitempty" yaml:"-"`
-	Provider         string  `json:"provider" yaml:"provider"`
-	BaseURL          string  `json:"base_url" yaml:"base_url"`
-	APIKey           string  `json:"api_key,omitempty" yaml:"api_key,omitempty"`
-	EnvKey           string  `json:"env_key,omitempty" yaml:"-"`
-	APIKeySet        bool    `json:"api_key_set,omitempty" yaml:"-"`
-	Model            string  `json:"model" yaml:"model"`
-	DefaultModel     string  `json:"default_model,omitempty" yaml:"-"`
-	FallbackProvider string  `json:"fallback_provider,omitempty" yaml:"fallback_provider,omitempty"`
-	Timeout          string  `json:"timeout,omitempty" yaml:"timeout,omitempty"`
-	Temperature      float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
-	MaxTokens        int     `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
-	RetryCount       int     `json:"retry_count,omitempty" yaml:"retry_count,omitempty"`
-	RetryBackoff     string  `json:"retry_backoff,omitempty" yaml:"retry_backoff,omitempty"`
-	Path             string  `json:"path,omitempty" yaml:"-"`
-	RestartRequired  bool    `json:"restart_required,omitempty" yaml:"-"`
-	ApplyState       string  `json:"apply_state,omitempty" yaml:"-"`
-	ApplyMessage     string  `json:"apply_message,omitempty" yaml:"-"`
+	ID                    string   `json:"id" yaml:"id,omitempty"`
+	Type                  string   `json:"type,omitempty" yaml:"-"`
+	Provider              string   `json:"provider" yaml:"provider"`
+	BaseURL               string   `json:"base_url" yaml:"base_url"`
+	APIKey                string   `json:"api_key,omitempty" yaml:"api_key,omitempty"`
+	EnvKey                string   `json:"env_key,omitempty" yaml:"-"`
+	APIKeySet             bool     `json:"api_key_set,omitempty" yaml:"-"`
+	Model                 string   `json:"model" yaml:"model"`
+	DefaultModel          string   `json:"default_model,omitempty" yaml:"-"`
+	FallbackProvider      string   `json:"fallback_provider,omitempty" yaml:"fallback_provider,omitempty"`
+	ProviderMessageFields []string `json:"provider_message_fields,omitempty" yaml:"provider_message_fields,omitempty"`
+	Timeout               string   `json:"timeout,omitempty" yaml:"timeout,omitempty"`
+	Temperature           float64  `json:"temperature,omitempty" yaml:"temperature,omitempty"`
+	MaxTokens             int      `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+	RetryCount            int      `json:"retry_count,omitempty" yaml:"retry_count,omitempty"`
+	RetryBackoff          string   `json:"retry_backoff,omitempty" yaml:"retry_backoff,omitempty"`
+	Path                  string   `json:"path,omitempty" yaml:"-"`
+	RestartRequired       bool     `json:"restart_required,omitempty" yaml:"-"`
+	ApplyState            string   `json:"apply_state,omitempty" yaml:"-"`
+	ApplyMessage          string   `json:"apply_message,omitempty" yaml:"-"`
 }
 
 type toolResourceDocument struct {
@@ -2226,19 +2231,20 @@ func agentResourceFromProfile(id string, profile config.AgentProfile) agentResou
 
 func providerResourceFromConfig(id string, provider config.LLMConfig, revealAPIKey bool) providerResourceDocument {
 	doc := providerResourceDocument{
-		ID:               id,
-		Type:             provider.Provider,
-		Provider:         provider.Provider,
-		BaseURL:          provider.BaseURL,
-		Model:            provider.Model,
-		DefaultModel:     provider.Model,
-		FallbackProvider: provider.FallbackProvider,
-		Timeout:          durationString(provider.Timeout),
-		Temperature:      provider.Temperature,
-		MaxTokens:        provider.MaxTokens,
-		RetryCount:       provider.RetryCount,
-		RetryBackoff:     durationString(provider.RetryBackoff),
-		APIKeySet:        strings.TrimSpace(provider.APIKey) != "",
+		ID:                    id,
+		Type:                  provider.Provider,
+		Provider:              provider.Provider,
+		BaseURL:               provider.BaseURL,
+		Model:                 provider.Model,
+		DefaultModel:          provider.Model,
+		FallbackProvider:      provider.FallbackProvider,
+		ProviderMessageFields: append([]string(nil), provider.ProviderMessageFields...),
+		Timeout:               durationString(provider.Timeout),
+		Temperature:           provider.Temperature,
+		MaxTokens:             provider.MaxTokens,
+		RetryCount:            provider.RetryCount,
+		RetryBackoff:          durationString(provider.RetryBackoff),
+		APIKeySet:             strings.TrimSpace(provider.APIKey) != "",
 	}
 	if revealAPIKey {
 		doc.APIKey = provider.APIKey
@@ -2264,6 +2270,7 @@ func applyProviderResourceDefaults(doc *providerResourceDocument) {
 	if doc.MaxTokens < 0 {
 		doc.MaxTokens = 0
 	}
+	doc.ProviderMessageFields = normalizeProviderMessageFields(doc.ProviderMessageFields)
 }
 
 func normalizeProviderResourceAliases(doc *providerResourceDocument) {
@@ -2316,16 +2323,17 @@ func validateProviderResource(doc providerResourceDocument, existing map[string]
 
 func renderProviderResource(doc providerResourceDocument) (string, error) {
 	meta := map[string]providerResourceDocument{doc.ID: {
-		Provider:         doc.Provider,
-		BaseURL:          doc.BaseURL,
-		APIKey:           doc.APIKey,
-		Model:            doc.Model,
-		FallbackProvider: doc.FallbackProvider,
-		Timeout:          doc.Timeout,
-		Temperature:      doc.Temperature,
-		MaxTokens:        doc.MaxTokens,
-		RetryCount:       doc.RetryCount,
-		RetryBackoff:     doc.RetryBackoff,
+		Provider:              doc.Provider,
+		BaseURL:               doc.BaseURL,
+		APIKey:                doc.APIKey,
+		Model:                 doc.Model,
+		FallbackProvider:      doc.FallbackProvider,
+		ProviderMessageFields: append([]string(nil), doc.ProviderMessageFields...),
+		Timeout:               doc.Timeout,
+		Temperature:           doc.Temperature,
+		MaxTokens:             doc.MaxTokens,
+		RetryCount:            doc.RetryCount,
+		RetryBackoff:          doc.RetryBackoff,
 	}}
 	data, err := yaml.Marshal(meta)
 	if err != nil {
@@ -2411,16 +2419,17 @@ func providerResourceLLMConfig(doc providerResourceDocument) config.LLMConfig {
 	timeout, _ := time.ParseDuration(strings.TrimSpace(doc.Timeout))
 	retryBackoff, _ := time.ParseDuration(strings.TrimSpace(doc.RetryBackoff))
 	return config.LLMConfig{
-		Provider:         strings.TrimSpace(doc.Provider),
-		BaseURL:          os.ExpandEnv(strings.TrimSpace(doc.BaseURL)),
-		APIKey:           os.ExpandEnv(strings.TrimSpace(doc.APIKey)),
-		Model:            os.ExpandEnv(strings.TrimSpace(doc.Model)),
-		FallbackProvider: strings.TrimSpace(doc.FallbackProvider),
-		Timeout:          timeout,
-		Temperature:      doc.Temperature,
-		MaxTokens:        doc.MaxTokens,
-		RetryCount:       doc.RetryCount,
-		RetryBackoff:     retryBackoff,
+		Provider:              strings.TrimSpace(doc.Provider),
+		BaseURL:               os.ExpandEnv(strings.TrimSpace(doc.BaseURL)),
+		APIKey:                os.ExpandEnv(strings.TrimSpace(doc.APIKey)),
+		Model:                 os.ExpandEnv(strings.TrimSpace(doc.Model)),
+		FallbackProvider:      strings.TrimSpace(doc.FallbackProvider),
+		ProviderMessageFields: normalizeProviderMessageFields(doc.ProviderMessageFields),
+		Timeout:               timeout,
+		Temperature:           doc.Temperature,
+		MaxTokens:             doc.MaxTokens,
+		RetryCount:            doc.RetryCount,
+		RetryBackoff:          retryBackoff,
 	}
 }
 
@@ -3061,6 +3070,7 @@ func comparableProviderResource(doc providerResourceDocument) providerResourceDo
 	doc.APIKeySet = false
 	doc.Model = strings.TrimSpace(doc.Model)
 	doc.FallbackProvider = strings.TrimSpace(doc.FallbackProvider)
+	doc.ProviderMessageFields = normalizeProviderMessageFields(doc.ProviderMessageFields)
 	doc.Timeout = comparableDurationString(doc.Timeout)
 	doc.RetryBackoff = comparableDurationString(doc.RetryBackoff)
 	doc.Path = ""
@@ -3068,6 +3078,27 @@ func comparableProviderResource(doc providerResourceDocument) providerResourceDo
 	doc.ApplyState = ""
 	doc.ApplyMessage = ""
 	return doc
+}
+
+func normalizeProviderMessageFields(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func normalizedComparableStrings(values []string) []string {

@@ -57,9 +57,11 @@ def validate_dockerfile() -> None:
             "go build -o /out/file_tools ./mcp_servers/file_tools",
             "go build -o /out/skill_runner ./mcp_servers/skill_runner",
             "go build -o /out/web_tools ./mcp_servers/web_tools",
+            "go build -o /out/network_tools ./mcp_servers/network_tools",
             "COPY --from=builder /out/file_tools /app/bin/file_tools",
             "COPY --from=builder /out/skill_runner /app/bin/skill_runner",
             "COPY --from=builder /out/web_tools /app/bin/web_tools",
+            "COPY --from=builder /out/network_tools /app/bin/network_tools",
             'CMD ["--config", "/app/configs/goflow.docker.yaml", "--workspace", "/workspace", "--http", ":8080"]',
         ],
     )
@@ -87,6 +89,7 @@ def validate_docker_config() -> None:
             "command: /app/bin/file_tools",
             "command: /app/bin/skill_runner",
             "command: /app/bin/web_tools",
+            "command: /app/bin/network_tools",
             "command: python3",
             "- /app/mcp_servers/python_notes.py",
             "allowed_command_paths:",
@@ -108,6 +111,7 @@ def validate_binary_config() -> None:
             "command: ${GOFLOW_FILE_TOOLS_CMD}",
             "command: ${GOFLOW_SKILL_RUNNER_CMD}",
             "command: ${GOFLOW_WEB_TOOLS_CMD}",
+            "command: ${GOFLOW_NETWORK_TOOLS_CMD}",
             "command: ${GOFLOW_PYTHON_CMD}",
             "- ${GOFLOW_PYTHON_NOTES_PATH}",
             "allowed_commands:",
@@ -216,6 +220,8 @@ def validate_release_script() -> None:
             '("file_tools", "./mcp_servers/file_tools")',
             '("skill_runner", "./mcp_servers/skill_runner")',
             '("web_tools", "./mcp_servers/web_tools")',
+            '("network_tools", "./mcp_servers/network_tools")',
+            'COMMON_DIRS = ["configs", "skills", "docs", "kits", "templates", "examples"]',
             "goflow.binary.yaml",
             "run-goflow.sh",
             "run-goflow.cmd",
@@ -226,6 +232,12 @@ def validate_release_script() -> None:
             "hashlib.sha256",
             "archive_base.parent",
         ],
+    )
+    engineering_template = read("templates/workflows/engineering-parallel-delivery.yaml")
+    assert_contains(
+        "templates/workflows/engineering-parallel-delivery.yaml",
+        engineering_template,
+        ["engineering-parallel-delivery", "worker_contract", "quality_gate"],
     )
     python_tool_config = read("internal/scaffold/templates/tools/python/config.yaml.tmpl")
     assert_contains(
@@ -265,6 +277,7 @@ def validate_release_script() -> None:
             "configs/providers/primary.yaml",
             "configs/providers/backup.yaml",
             "configs/mcp_servers/python_notes.yaml",
+            "configs/mcp_servers/network_tools.yaml",
             "skills/execution-plan/SKILL.md",
             "docs/install.md",
             "mcp_servers/python_notes.py",

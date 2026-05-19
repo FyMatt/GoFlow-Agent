@@ -63,7 +63,7 @@ mcp_servers:
     enabled: true
     timeout: 30s
     workdir: /app
-    env_allowlist: [PATH, HOME, TMP, TEMP, HTTP_PROXY, HTTPS_PROXY, NO_PROXY]
+    env_allowlist: [PATH, HOME, TMP, TEMP, HTTP_PROXY, HTTPS_PROXY, NO_PROXY, GOFLOW_BROWSER_PATH]
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
@@ -72,6 +72,22 @@ mcp_servers:
       - /app/bin
     max_request_bytes: 65536
     max_response_bytes: 2097152
+
+  - name: network_tools
+    command: /app/bin/network_tools
+    args: []
+    enabled: true
+    timeout: 30s
+    workdir: /app
+    env_allowlist: [PATH, HOME, TMP, TEMP]
+    isolation: process_group
+    restart_limit: 3
+    cooldown: 10s
+    max_concurrent_calls: 1
+    allowed_command_paths:
+      - /app/bin
+    max_request_bytes: 65536
+    max_response_bytes: 1048576
 
 skill:
   directory: /app/skills

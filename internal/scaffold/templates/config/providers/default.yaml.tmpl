@@ -5,6 +5,10 @@
   base_url: https://api.example.com/v1
   api_key: ${{"{"}}{{.EnvAPIKey}}{{"}"}}
   model: model-name
+  # Optional provider-specific assistant message fields to capture and replay.
+  # DeepSeek thinking/tool-call mode requires:
+  # provider_message_fields:
+  #   - reasoning_content
   timeout: 60s
   temperature: 0.2
   max_tokens: 4096

@@ -1139,6 +1139,7 @@ func applyStartupEnvDefaults(info runtimeHomeInfo) {
 	}
 	setEnvDefault("GOFLOW_FILE_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("file_tools")))
 	setEnvDefault("GOFLOW_WEB_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("web_tools")))
+	setEnvDefault("GOFLOW_NETWORK_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("network_tools")))
 	setEnvDefault("GOFLOW_PYTHON_CMD", defaultPythonCommand())
 	setEnvDefault("GOFLOW_PYTHON_NOTES_PATH", filepath.Join(info.Root, "mcp_servers", "python_notes.py"))
 }
@@ -2589,6 +2590,9 @@ func loadCLIKitSummaries(runtimeHome string) ([]kitDisplayRow, []string) {
 			Category:    doc.Category,
 			Tags:        append([]string(nil), doc.Tags...),
 			Path:        doc.Path,
+			Maturity:    doc.VerticalPack.Maturity,
+			Domain:      doc.VerticalPack.Domain,
+			DomainBrief: doc.VerticalPack.Summary,
 			Providers:   len(doc.Providers),
 			Agents:      len(doc.Agents),
 			Skills:      len(doc.Skills),
@@ -2994,6 +2998,9 @@ type kitDisplayRow struct {
 	Category    string
 	Tags        []string
 	Path        string
+	Maturity    string
+	Domain      string
+	DomainBrief string
 	Agents      int
 	Providers   int
 	Skills      int
@@ -3003,27 +3010,47 @@ type kitDisplayRow struct {
 }
 
 type cliKitDocument struct {
-	Kind              string            `yaml:"kind"`
-	Version           int               `yaml:"version"`
-	MinVersion        int               `yaml:"min_supported_version"`
-	Name              string            `yaml:"name"`
-	Title             string            `yaml:"title"`
-	Description       string            `yaml:"description"`
-	Category          string            `yaml:"category"`
-	Tags              []string          `yaml:"tags"`
-	Providers         []string          `yaml:"providers"`
-	Agents            []string          `yaml:"agents"`
-	Skills            []string          `yaml:"skills"`
-	Tools             []string          `yaml:"tools"`
-	Workflows         []string          `yaml:"workflows"`
-	WorkflowTemplates []string          `yaml:"workflow_templates"`
-	TeamTemplates     []string          `yaml:"team_templates"`
-	PolicyRules       []string          `yaml:"policy_rules"`
-	RequiredEnv       []string          `yaml:"required_env"`
-	Examples          []cliKitExample   `yaml:"examples"`
-	Metadata          map[string]string `yaml:"metadata"`
-	Path              string            `yaml:"-"`
-	Warnings          []string          `yaml:"-"`
+	Kind              string             `yaml:"kind"`
+	Version           int                `yaml:"version"`
+	MinVersion        int                `yaml:"min_supported_version"`
+	Name              string             `yaml:"name"`
+	Title             string             `yaml:"title"`
+	Description       string             `yaml:"description"`
+	Category          string             `yaml:"category"`
+	Tags              []string           `yaml:"tags"`
+	Providers         []string           `yaml:"providers"`
+	Agents            []string           `yaml:"agents"`
+	Skills            []string           `yaml:"skills"`
+	Tools             []string           `yaml:"tools"`
+	Workflows         []string           `yaml:"workflows"`
+	WorkflowTemplates []string           `yaml:"workflow_templates"`
+	TeamTemplates     []string           `yaml:"team_templates"`
+	PolicyRules       []string           `yaml:"policy_rules"`
+	RequiredEnv       []string           `yaml:"required_env"`
+	Examples          []cliKitExample    `yaml:"examples"`
+	Metadata          map[string]string  `yaml:"metadata"`
+	VerticalPack      cliKitVerticalPack `yaml:"vertical_pack"`
+	Path              string             `yaml:"-"`
+	Warnings          []string           `yaml:"-"`
+}
+
+type cliKitVerticalPack struct {
+	Domain         string   `yaml:"domain"`
+	Maturity       string   `yaml:"maturity"`
+	Summary        string   `yaml:"summary"`
+	SupportedTasks []string `yaml:"supported_tasks"`
+	RequiredInputs []string `yaml:"required_inputs"`
+	ToolBoundaries []string `yaml:"tool_boundaries"`
+	QualityGates   []string `yaml:"quality_gates"`
+	Evidence       []string `yaml:"evidence_artifacts"`
+	SimpleMode     []string `yaml:"simple_mode"`
+	ExpertMode     []string `yaml:"expert_mode"`
+	TokenStrategy  []string `yaml:"token_strategy"`
+	ModelRoutes    struct {
+		Strong   []string `yaml:"strong"`
+		Worker   []string `yaml:"worker"`
+		Verifier []string `yaml:"verifier"`
+	} `yaml:"model_routes"`
 }
 
 type cliKitExample struct {
@@ -3092,7 +3119,7 @@ func formatHelpOutput() string {
 		{Command: "/team-state [run-id] [team]", Description: "Show live collaboration state for a workflow team"},
 		{Command: "/cost", Description: "Show prompt/token cost diagnostics and tuning hints"},
 		{Command: "/compact [reason]", Description: "Summarize current session context into memory without deleting full history"},
-		{Command: "/memory [project|search <query>|rebuild|errors|context]", Description: "Inspect project memory, task summaries, file index, compacted context, and error knowledge"},
+		{Command: "/memory [project|search <query>|rebuild|errors|solutions|solution|context]", Description: "Inspect project memory, task summaries, learned solutions, file index, compacted context, and error knowledge"},
 		{Command: "/artifacts [query]", Description: "List recent summary-first artifacts and hash refs"},
 		{Command: "/config-diagnostics [--json]", Description: "Validate saved config modules and show setup/safety diagnostics"},
 		{Command: "/status", Description: "Show runtime, routing, workflow, and MCP state"},
@@ -3180,6 +3207,41 @@ func handleMemoryCommand(ctx context.Context, fields []string, agentRuntime *age
 			return true
 		}
 		fmt.Print(formatMemoryErrorsOutput(errorsKB))
+	case "solutions", "decisions":
+		solutionsKB, err := store.Solutions()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "memory solutions error: %v\n", err)
+			return true
+		}
+		fmt.Print(formatMemorySolutionsOutput(solutionsKB))
+	case "solution":
+		if len(fields) < 4 {
+			fmt.Fprintln(os.Stderr, "usage: /memory solution retire <id> [--reason <text>] [--superseded-by <id>] or /memory solution restore <id>")
+			return true
+		}
+		action := strings.ToLower(strings.TrimSpace(fields[2]))
+		id := strings.TrimSpace(fields[3])
+		switch action {
+		case "retire":
+			reason, supersededBy := parseMemorySolutionLifecycleArgs(fields[4:])
+			solutionsKB, err := store.RetireSolution(id, reason, supersededBy)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "memory solution retire error: %v\n", err)
+				return true
+			}
+			fmt.Println(formatCommandSuccess("solution retired", id))
+			fmt.Print(formatMemorySolutionsOutput(solutionsKB))
+		case "restore":
+			solutionsKB, err := store.RestoreSolution(id)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "memory solution restore error: %v\n", err)
+				return true
+			}
+			fmt.Println(formatCommandSuccess("solution restored", id))
+			fmt.Print(formatMemorySolutionsOutput(solutionsKB))
+		default:
+			fmt.Fprintln(os.Stderr, "usage: /memory solution retire <id> [--reason <text>] [--superseded-by <id>] or /memory solution restore <id>")
+		}
 	case "context", "compact":
 		contextSummary, err := store.Context()
 		if err != nil {
@@ -3188,9 +3250,34 @@ func handleMemoryCommand(ctx context.Context, fields []string, agentRuntime *age
 		}
 		fmt.Print(formatContextSummaryOutput(contextSummary))
 	default:
-		fmt.Fprintln(os.Stderr, "usage: /memory [project|search <query>|rebuild|errors|context]")
+		fmt.Fprintln(os.Stderr, "usage: /memory [project|search <query>|rebuild|errors|solutions|solution|context]")
 	}
 	return true
+}
+
+func parseMemorySolutionLifecycleArgs(fields []string) (string, string) {
+	reasonParts := make([]string, 0, len(fields))
+	supersededBy := ""
+	for i := 0; i < len(fields); i++ {
+		field := strings.TrimSpace(fields[i])
+		switch field {
+		case "--superseded-by", "--replace-with":
+			if i+1 < len(fields) {
+				supersededBy = strings.TrimSpace(fields[i+1])
+				i++
+			}
+		case "--reason":
+			if i+1 < len(fields) {
+				reasonParts = append(reasonParts, strings.TrimSpace(fields[i+1]))
+				i++
+			}
+		default:
+			if field != "" {
+				reasonParts = append(reasonParts, field)
+			}
+		}
+	}
+	return strings.TrimSpace(strings.Join(reasonParts, " ")), supersededBy
 }
 
 func handleArtifactsCommand(fields []string, agentRuntime *agent.Runtime) bool {
@@ -3219,11 +3306,41 @@ func formatMemoryDashboardOutput(dashboard memory.Dashboard) string {
 	b.WriteString(fmt.Sprintf(" %d retained\n", len(dashboard.Tasks)))
 	b.WriteString(styleLabel("errors"))
 	b.WriteString(fmt.Sprintf(" %d known\n", len(dashboard.Errors.Errors)))
+	b.WriteString(styleLabel("solutions"))
+	activeSolutions, retiredSolutions := countCLISolutionsByStatus(dashboard.Solutions.Solutions)
+	b.WriteString(fmt.Sprintf(" %d active", activeSolutions))
+	if retiredSolutions > 0 {
+		b.WriteString(fmt.Sprintf(" / %d retired", retiredSolutions))
+	}
+	b.WriteString("\n")
 	b.WriteString(styleLabel("files"))
 	b.WriteString(fmt.Sprintf(" %d indexed (%d bytes)\n", dashboard.FileIndex.TotalFiles, dashboard.FileIndex.IndexedBytes))
 	if strings.TrimSpace(dashboard.Context.Summary) != "" {
 		b.WriteString(styleLabel("context"))
 		b.WriteString(fmt.Sprintf(" saved=%d updated=%s\n", dashboard.Context.EstimatedSavedTokens, firstNonEmptyString(dashboard.Context.UpdatedAt, "-")))
+	}
+	if len(dashboard.Solutions.Solutions) > 0 {
+		b.WriteString("\n")
+		b.WriteString(styleHeader("Learned Solutions"))
+		b.WriteString("\n")
+		limit := len(dashboard.Solutions.Solutions)
+		if limit > 5 {
+			limit = 5
+		}
+		for _, item := range dashboard.Solutions.Solutions[:limit] {
+			b.WriteString("  ")
+			b.WriteString(styleLabel(firstNonEmptyString(item.ID, "solution")))
+			b.WriteString(" ")
+			b.WriteString(truncateCLISummaryValue(firstNonEmptyString(item.ProblemSignature, item.Problem, item.Decision, item.Solution)))
+			if item.Retired {
+				b.WriteString(" ")
+				b.WriteString(styleStatus("retired", "pending"))
+			}
+			if item.UseCount > 0 {
+				b.WriteString(fmt.Sprintf(" used=%d", item.UseCount))
+			}
+			b.WriteString("\n")
+		}
 	}
 	if len(dashboard.Tasks) > 0 {
 		b.WriteString("\n")
@@ -3238,7 +3355,7 @@ func formatMemoryDashboardOutput(dashboard memory.Dashboard) string {
 		}
 	}
 	b.WriteString("\n")
-	b.WriteString(styleMuted("Use /compact, /memory search <query>, /memory project, /memory rebuild, /memory context, or /memory errors.\n"))
+	b.WriteString(styleMuted("Use /compact, /memory search <query>, /memory project, /memory rebuild, /memory context, /memory errors, /memory solutions, or /memory solution retire <id>.\n"))
 	return b.String()
 }
 
@@ -3403,6 +3520,90 @@ func formatMemoryErrorsOutput(errorsKB memory.ErrorKnowledgeBase) string {
 		}
 	}
 	return b.String()
+}
+
+func formatMemorySolutionsOutput(solutionsKB memory.SolutionKnowledgeBase) string {
+	var b strings.Builder
+	b.WriteString(styleHeader("Memory Solutions"))
+	b.WriteString("\n")
+	if len(solutionsKB.Solutions) == 0 {
+		b.WriteString(styleMuted("no reusable solutions recorded\n"))
+		return b.String()
+	}
+	active, retired := countCLISolutionsByStatus(solutionsKB.Solutions)
+	b.WriteString(styleLabel("active"))
+	b.WriteString(fmt.Sprintf(" %d ", active))
+	b.WriteString(styleLabel("retired"))
+	b.WriteString(fmt.Sprintf(" %d\n\n", retired))
+	for _, item := range solutionsKB.Solutions {
+		b.WriteString(styleLabel(firstNonEmptyString(item.ID, "solution")))
+		b.WriteString(" ")
+		b.WriteString(truncateCLISummaryValue(firstNonEmptyString(item.ProblemSignature, item.Problem, item.Decision, item.Solution)))
+		if item.Retired {
+			b.WriteString(" ")
+			b.WriteString(styleStatus("retired", "pending"))
+		} else {
+			b.WriteString(" ")
+			b.WriteString(styleStatus("active", "ready"))
+		}
+		if item.Confidence != "" {
+			b.WriteString(" confidence=")
+			b.WriteString(item.Confidence)
+		}
+		if item.UseCount > 0 {
+			b.WriteString(fmt.Sprintf(" used=%d", item.UseCount))
+		}
+		b.WriteString("\n")
+		if item.Decision != "" {
+			b.WriteString("  decision: ")
+			b.WriteString(truncateCLISummaryValue(item.Decision))
+			b.WriteString("\n")
+		}
+		if item.Solution != "" {
+			b.WriteString("  solution: ")
+			b.WriteString(truncateCLISummaryValue(item.Solution))
+			b.WriteString("\n")
+		}
+		if item.VerificationCommand != "" {
+			b.WriteString("  verify: ")
+			b.WriteString(truncateCLISummaryValue(item.VerificationCommand))
+			b.WriteString("\n")
+		}
+		if item.RetiredReason != "" {
+			b.WriteString("  retired reason: ")
+			b.WriteString(truncateCLISummaryValue(item.RetiredReason))
+			b.WriteString("\n")
+		}
+		if item.SupersededBy != "" {
+			b.WriteString("  superseded by: ")
+			b.WriteString(truncateCLISummaryValue(item.SupersededBy))
+			b.WriteString("\n")
+		}
+		if len(item.Applicability) > 0 {
+			b.WriteString("  use when: ")
+			b.WriteString(truncateCLISummaryValue(strings.Join(item.Applicability, "; ")))
+			b.WriteString("\n")
+		}
+		if len(item.InvalidWhen) > 0 {
+			b.WriteString("  invalid when: ")
+			b.WriteString(truncateCLISummaryValue(strings.Join(item.InvalidWhen, "; ")))
+			b.WriteString("\n")
+		}
+	}
+	return b.String()
+}
+
+func countCLISolutionsByStatus(items []memory.SolutionMemory) (int, int) {
+	active := 0
+	retired := 0
+	for _, item := range items {
+		if item.Retired {
+			retired++
+			continue
+		}
+		active++
+	}
+	return active, retired
 }
 
 func formatArtifactListOutput(artifacts []session.SessionArtifactSnapshot) string {
@@ -4300,6 +4501,12 @@ func formatKitsOutput(rows []kitDisplayRow) string {
 		if len(row.Tags) > 0 {
 			fmt.Fprintf(&b, "  %s %s\n", styleLabel("tags"), strings.Join(row.Tags, ", "))
 		}
+		if strings.TrimSpace(row.Maturity) != "" || strings.TrimSpace(row.Domain) != "" {
+			fmt.Fprintf(&b, "  %s maturity=%s domain=%s\n", styleLabel("vertical"), fallbackDisplayText(row.Maturity, "-"), fallbackDisplayText(row.Domain, "-"))
+		}
+		if strings.TrimSpace(row.DomainBrief) != "" {
+			fmt.Fprintf(&b, "  %s %s\n", styleLabel("contract"), truncateCLISummaryValue(row.DomainBrief))
+		}
 		fmt.Fprintf(&b, "  %s providers=%d agents=%d skills=%d tools=%d workflows=%d\n", styleLabel("contains"), row.Providers, row.Agents, row.Skills, row.Tools, row.Workflows)
 		if strings.TrimSpace(row.Path) != "" {
 			fmt.Fprintf(&b, "  %s %s\n", styleLabel("path"), row.Path)
@@ -4334,6 +4541,7 @@ func formatKitDetailOutput(doc cliKitDocument) string {
 	if len(doc.Tags) > 0 {
 		fmt.Fprintf(&b, "%s %s\n", styleLabel("tags"), strings.Join(doc.Tags, ", "))
 	}
+	writeKitVerticalPackSection(&b, doc.VerticalPack)
 	writeKitReferenceSection(&b, "providers", doc.Providers)
 	writeKitReferenceSection(&b, "agents", doc.Agents)
 	writeKitReferenceSection(&b, "skills", doc.Skills)
@@ -4461,6 +4669,88 @@ func writeKitReferenceSection(b *strings.Builder, label string, values []string)
 	items := append([]string(nil), values...)
 	sort.Strings(items)
 	fmt.Fprintf(b, "%s %s\n", styleLabel(label), strings.Join(items, ", "))
+}
+
+func writeKitVerticalPackSection(b *strings.Builder, pack cliKitVerticalPack) {
+	if b == nil || !cliKitVerticalPackHasContent(pack) {
+		return
+	}
+	b.WriteString(styleLabel("vertical"))
+	if strings.TrimSpace(pack.Maturity) != "" || strings.TrimSpace(pack.Domain) != "" {
+		fmt.Fprintf(b, " maturity=%s domain=%s", fallbackDisplayText(pack.Maturity, "-"), fallbackDisplayText(pack.Domain, "-"))
+	}
+	b.WriteString("\n")
+	if strings.TrimSpace(pack.Summary) != "" {
+		fmt.Fprintf(b, "  %s %s\n", styleLabel("summary"), truncateCLISummaryValue(pack.Summary))
+	}
+	writeKitVerticalPackList(b, "tasks", pack.SupportedTasks, 4)
+	writeKitVerticalPackList(b, "inputs", pack.RequiredInputs, 4)
+	writeKitVerticalPackList(b, "boundaries", pack.ToolBoundaries, 3)
+	writeKitVerticalPackList(b, "quality_gates", pack.QualityGates, 3)
+	writeKitVerticalPackList(b, "evidence", pack.Evidence, 3)
+	writeKitVerticalPackList(b, "simple_mode", pack.SimpleMode, 2)
+	writeKitVerticalPackList(b, "expert_mode", pack.ExpertMode, 2)
+	writeKitVerticalPackList(b, "token_strategy", pack.TokenStrategy, 3)
+	writeKitVerticalPackList(b, "strong_model", pack.ModelRoutes.Strong, 3)
+	writeKitVerticalPackList(b, "worker_model", pack.ModelRoutes.Worker, 3)
+	writeKitVerticalPackList(b, "verifier_model", pack.ModelRoutes.Verifier, 2)
+}
+
+func writeKitVerticalPackList(b *strings.Builder, label string, values []string, limit int) {
+	values = compactCLIStringList(values)
+	if b == nil || len(values) == 0 {
+		return
+	}
+	if limit <= 0 || limit > len(values) {
+		limit = len(values)
+	}
+	items := make([]string, 0, limit)
+	for _, value := range values[:limit] {
+		items = append(items, truncateCLISummaryValue(value))
+	}
+	suffix := ""
+	if len(values) > limit {
+		suffix = fmt.Sprintf(" (+%d)", len(values)-limit)
+	}
+	fmt.Fprintf(b, "  %s %s%s\n", styleLabel(label), strings.Join(items, "; "), suffix)
+}
+
+func cliKitVerticalPackHasContent(pack cliKitVerticalPack) bool {
+	return strings.TrimSpace(pack.Domain) != "" ||
+		strings.TrimSpace(pack.Maturity) != "" ||
+		strings.TrimSpace(pack.Summary) != "" ||
+		len(compactCLIStringList(pack.SupportedTasks)) > 0 ||
+		len(compactCLIStringList(pack.RequiredInputs)) > 0 ||
+		len(compactCLIStringList(pack.ToolBoundaries)) > 0 ||
+		len(compactCLIStringList(pack.QualityGates)) > 0 ||
+		len(compactCLIStringList(pack.Evidence)) > 0 ||
+		len(compactCLIStringList(pack.SimpleMode)) > 0 ||
+		len(compactCLIStringList(pack.ExpertMode)) > 0 ||
+		len(compactCLIStringList(pack.TokenStrategy)) > 0 ||
+		len(compactCLIStringList(pack.ModelRoutes.Strong)) > 0 ||
+		len(compactCLIStringList(pack.ModelRoutes.Worker)) > 0 ||
+		len(compactCLIStringList(pack.ModelRoutes.Verifier)) > 0
+}
+
+func compactCLIStringList(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(values))
+	seen := make(map[string]struct{}, len(values))
+	for _, value := range values {
+		trimmed := strings.TrimSpace(value)
+		if trimmed == "" {
+			continue
+		}
+		key := strings.ToLower(trimmed)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 func formatTeamStateOutput(state agent.TeamState) string {

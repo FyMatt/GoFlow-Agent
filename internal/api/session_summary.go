@@ -6,6 +6,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
+	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
 const (
@@ -14,6 +15,7 @@ const (
 
 func sessionSnapshotForAPI(snapshot session.Snapshot, details bool) session.Snapshot {
 	stripSessionArtifactContent(&snapshot)
+	stripSessionProviderMetadata(&snapshot)
 	if details {
 		return snapshot
 	}
@@ -25,6 +27,48 @@ func sessionSnapshotForAPI(snapshot session.Snapshot, details bool) session.Snap
 	snapshot.Messages = nil
 	snapshot.Blackboard = nil
 	return snapshot
+}
+
+func stripSessionProviderMetadata(snapshot *session.Snapshot) {
+	if snapshot == nil {
+		return
+	}
+	stripMessageProviderFields(&snapshot.Workflow.PendingResponseMessage)
+	for i := range snapshot.WorkflowRuns {
+		stripMessageProviderFields(&snapshot.WorkflowRuns[i].PendingResponseMessage)
+		for j := range snapshot.WorkflowRuns[i].CompletedStages {
+			stripAgentResultProviderFields(&snapshot.WorkflowRuns[i].CompletedStages[j].Result)
+		}
+	}
+	for i := range snapshot.AgentRuns {
+		stripAgentResultProviderFieldsValue(snapshot.AgentRuns[i].Result)
+		if snapshot.AgentRuns[i].ResumeContext != nil {
+			for j := range snapshot.AgentRuns[i].ResumeContext.Messages {
+				stripMessageProviderFields(&snapshot.AgentRuns[i].ResumeContext.Messages[j])
+			}
+		}
+	}
+}
+
+func stripAgentResultProviderFieldsValue(result *schema.AgentResult) {
+	if result == nil {
+		return
+	}
+	stripAgentResultProviderFields(result)
+}
+
+func stripAgentResultProviderFields(result *schema.AgentResult) {
+	if result == nil {
+		return
+	}
+	stripMessageProviderFields(&result.ResponseMessage)
+}
+
+func stripMessageProviderFields(message *schema.Message) {
+	if message == nil {
+		return
+	}
+	message.ProviderFields = nil
 }
 
 func requestWantsFullSession(r *http.Request) bool {

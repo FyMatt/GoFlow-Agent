@@ -45,44 +45,45 @@ type runtimeStatusResponse struct {
 }
 
 type costDiagnostics struct {
-	Latest                       *schema.PromptBudget      `json:"latest,omitempty"`
-	History                      []schema.PromptBudget     `json:"history,omitempty"`
-	TokenUsageHistory            []schema.TokenUsageSample `json:"token_usage_history,omitempty"`
-	Features                     []costControlFeature      `json:"features,omitempty"`
-	AuxiliaryRoutes              []auxiliarySummary        `json:"auxiliary_routes,omitempty"`
-	Tuning                       []costRouteTuning         `json:"tuning,omitempty"`
-	Samples                      int                       `json:"samples"`
-	TokenUsageSamples            int                       `json:"token_usage_samples,omitempty"`
-	TotalPromptTokens            int                       `json:"total_prompt_tokens,omitempty"`
-	TotalOutputTokens            int                       `json:"total_output_tokens,omitempty"`
-	TotalCachedTokens            int                       `json:"total_cached_tokens,omitempty"`
-	TotalTokens                  int                       `json:"total_tokens,omitempty"`
-	AverageEstimatedPromptTokens int                       `json:"average_estimated_prompt_tokens,omitempty"`
-	MaxEstimatedPromptTokens     int                       `json:"max_estimated_prompt_tokens,omitempty"`
-	AverageCacheablePrefixTokens int                       `json:"average_cacheable_prefix_tokens,omitempty"`
-	AverageNonCacheableTokens    int                       `json:"average_non_cacheable_tokens,omitempty"`
-	HistoryEstimatedSavedTokens  int                       `json:"history_estimated_saved_tokens,omitempty"`
-	HistoryDeduplicatedItems     int                       `json:"history_deduplicated_items,omitempty"`
-	HistoryCompactedOlderItems   int                       `json:"history_compacted_older_items,omitempty"`
-	ToolSchemaDiagnosticSamples  int                       `json:"tool_schema_diagnostic_samples,omitempty"`
-	ToolSchemaDiagnosticOmitted  int                       `json:"tool_schema_diagnostic_omitted,omitempty"`
-	MemoryBlockSamples           int                       `json:"memory_block_samples,omitempty"`
-	MemoryOmittedCount           int                       `json:"memory_omitted_count,omitempty"`
-	MemoryEstimatedSavedTokens   int                       `json:"memory_estimated_saved_tokens,omitempty"`
-	ArtifactRefSamples           int                       `json:"artifact_ref_samples,omitempty"`
-	CompactedToolResultCount     int                       `json:"compacted_tool_result_count,omitempty"`
-	ArtifactOmittedTokens        int                       `json:"artifact_omitted_tokens,omitempty"`
-	SkillOmittedTokens           int                       `json:"skill_omitted_tokens,omitempty"`
-	OmittedContextCount          int                       `json:"omitted_context_count,omitempty"`
-	UniquePromptPrefixes         int                       `json:"unique_prompt_prefixes,omitempty"`
-	PromptPrefixReuseSamples     int                       `json:"prompt_prefix_reuse_samples,omitempty"`
-	PromptPrefixReuseRate        float64                   `json:"prompt_prefix_reuse_rate,omitempty"`
-	ProviderCacheHitRate         float64                   `json:"provider_cache_hit_rate,omitempty"`
-	LatestPromptPrefixHash       string                    `json:"latest_prompt_prefix_hash,omitempty"`
-	ByAgent                      []costTrend               `json:"by_agent,omitempty"`
-	ByMode                       []costTrend               `json:"by_mode,omitempty"`
-	ByStage                      []costTrend               `json:"by_stage,omitempty"`
-	Recommendations              []costRecommendation      `json:"recommendations,omitempty"`
+	Latest                         *schema.PromptBudget      `json:"latest,omitempty"`
+	History                        []schema.PromptBudget     `json:"history,omitempty"`
+	TokenUsageHistory              []schema.TokenUsageSample `json:"token_usage_history,omitempty"`
+	Features                       []costControlFeature      `json:"features,omitempty"`
+	AuxiliaryRoutes                []auxiliarySummary        `json:"auxiliary_routes,omitempty"`
+	Tuning                         []costRouteTuning         `json:"tuning,omitempty"`
+	Samples                        int                       `json:"samples"`
+	TokenUsageSamples              int                       `json:"token_usage_samples,omitempty"`
+	TotalPromptTokens              int                       `json:"total_prompt_tokens,omitempty"`
+	TotalOutputTokens              int                       `json:"total_output_tokens,omitempty"`
+	TotalCachedTokens              int                       `json:"total_cached_tokens,omitempty"`
+	TotalTokens                    int                       `json:"total_tokens,omitempty"`
+	AverageEstimatedPromptTokens   int                       `json:"average_estimated_prompt_tokens,omitempty"`
+	MaxEstimatedPromptTokens       int                       `json:"max_estimated_prompt_tokens,omitempty"`
+	AverageCacheablePrefixTokens   int                       `json:"average_cacheable_prefix_tokens,omitempty"`
+	AverageNonCacheableTokens      int                       `json:"average_non_cacheable_tokens,omitempty"`
+	HistoryEstimatedSavedTokens    int                       `json:"history_estimated_saved_tokens,omitempty"`
+	HistoryDeduplicatedItems       int                       `json:"history_deduplicated_items,omitempty"`
+	HistoryCompactedOlderItems     int                       `json:"history_compacted_older_items,omitempty"`
+	ToolSchemaDiagnosticSamples    int                       `json:"tool_schema_diagnostic_samples,omitempty"`
+	ToolSchemaDiagnosticOmitted    int                       `json:"tool_schema_diagnostic_omitted,omitempty"`
+	ToolSchemaEstimatedSavedTokens int                       `json:"tool_schema_estimated_saved_tokens,omitempty"`
+	MemoryBlockSamples             int                       `json:"memory_block_samples,omitempty"`
+	MemoryOmittedCount             int                       `json:"memory_omitted_count,omitempty"`
+	MemoryEstimatedSavedTokens     int                       `json:"memory_estimated_saved_tokens,omitempty"`
+	ArtifactRefSamples             int                       `json:"artifact_ref_samples,omitempty"`
+	CompactedToolResultCount       int                       `json:"compacted_tool_result_count,omitempty"`
+	ArtifactOmittedTokens          int                       `json:"artifact_omitted_tokens,omitempty"`
+	SkillOmittedTokens             int                       `json:"skill_omitted_tokens,omitempty"`
+	OmittedContextCount            int                       `json:"omitted_context_count,omitempty"`
+	UniquePromptPrefixes           int                       `json:"unique_prompt_prefixes,omitempty"`
+	PromptPrefixReuseSamples       int                       `json:"prompt_prefix_reuse_samples,omitempty"`
+	PromptPrefixReuseRate          float64                   `json:"prompt_prefix_reuse_rate,omitempty"`
+	ProviderCacheHitRate           float64                   `json:"provider_cache_hit_rate,omitempty"`
+	LatestPromptPrefixHash         string                    `json:"latest_prompt_prefix_hash,omitempty"`
+	ByAgent                        []costTrend               `json:"by_agent,omitempty"`
+	ByMode                         []costTrend               `json:"by_mode,omitempty"`
+	ByStage                        []costTrend               `json:"by_stage,omitempty"`
+	Recommendations                []costRecommendation      `json:"recommendations,omitempty"`
 }
 
 type costControlFeature struct {
@@ -110,36 +111,37 @@ type costControlFeature struct {
 }
 
 type costTrend struct {
-	Key                          string  `json:"key"`
-	AgentID                      string  `json:"agent_id,omitempty"`
-	Mode                         string  `json:"mode,omitempty"`
-	WorkflowName                 string  `json:"workflow_name,omitempty"`
-	TaskStage                    string  `json:"task_stage,omitempty"`
-	PromptBudgetSamples          int     `json:"prompt_budget_samples,omitempty"`
-	TokenUsageSamples            int     `json:"token_usage_samples,omitempty"`
-	AverageEstimatedPromptTokens int     `json:"average_estimated_prompt_tokens,omitempty"`
-	MaxEstimatedPromptTokens     int     `json:"max_estimated_prompt_tokens,omitempty"`
-	AverageCacheablePrefixTokens int     `json:"average_cacheable_prefix_tokens,omitempty"`
-	AverageNonCacheableTokens    int     `json:"average_non_cacheable_tokens,omitempty"`
-	HistoryEstimatedSavedTokens  int     `json:"history_estimated_saved_tokens,omitempty"`
-	HistoryDeduplicatedItems     int     `json:"history_deduplicated_items,omitempty"`
-	HistoryCompactedOlderItems   int     `json:"history_compacted_older_items,omitempty"`
-	ToolSchemaDiagnosticSamples  int     `json:"tool_schema_diagnostic_samples,omitempty"`
-	ToolSchemaDiagnosticOmitted  int     `json:"tool_schema_diagnostic_omitted,omitempty"`
-	MemoryBlockSamples           int     `json:"memory_block_samples,omitempty"`
-	MemoryEstimatedSavedTokens   int     `json:"memory_estimated_saved_tokens,omitempty"`
-	ArtifactRefSamples           int     `json:"artifact_ref_samples,omitempty"`
-	ArtifactOmittedTokens        int     `json:"artifact_omitted_tokens,omitempty"`
-	SkillOmittedTokens           int     `json:"skill_omitted_tokens,omitempty"`
-	OmittedContextCount          int     `json:"omitted_context_count,omitempty"`
-	TotalPromptTokens            int     `json:"total_prompt_tokens,omitempty"`
-	TotalOutputTokens            int     `json:"total_output_tokens,omitempty"`
-	TotalCachedTokens            int     `json:"total_cached_tokens,omitempty"`
-	TotalTokens                  int     `json:"total_tokens,omitempty"`
-	UniquePromptPrefixes         int     `json:"unique_prompt_prefixes,omitempty"`
-	PromptPrefixReuseSamples     int     `json:"prompt_prefix_reuse_samples,omitempty"`
-	PromptPrefixReuseRate        float64 `json:"prompt_prefix_reuse_rate,omitempty"`
-	ProviderCacheHitRate         float64 `json:"provider_cache_hit_rate,omitempty"`
+	Key                            string  `json:"key"`
+	AgentID                        string  `json:"agent_id,omitempty"`
+	Mode                           string  `json:"mode,omitempty"`
+	WorkflowName                   string  `json:"workflow_name,omitempty"`
+	TaskStage                      string  `json:"task_stage,omitempty"`
+	PromptBudgetSamples            int     `json:"prompt_budget_samples,omitempty"`
+	TokenUsageSamples              int     `json:"token_usage_samples,omitempty"`
+	AverageEstimatedPromptTokens   int     `json:"average_estimated_prompt_tokens,omitempty"`
+	MaxEstimatedPromptTokens       int     `json:"max_estimated_prompt_tokens,omitempty"`
+	AverageCacheablePrefixTokens   int     `json:"average_cacheable_prefix_tokens,omitempty"`
+	AverageNonCacheableTokens      int     `json:"average_non_cacheable_tokens,omitempty"`
+	HistoryEstimatedSavedTokens    int     `json:"history_estimated_saved_tokens,omitempty"`
+	HistoryDeduplicatedItems       int     `json:"history_deduplicated_items,omitempty"`
+	HistoryCompactedOlderItems     int     `json:"history_compacted_older_items,omitempty"`
+	ToolSchemaDiagnosticSamples    int     `json:"tool_schema_diagnostic_samples,omitempty"`
+	ToolSchemaDiagnosticOmitted    int     `json:"tool_schema_diagnostic_omitted,omitempty"`
+	ToolSchemaEstimatedSavedTokens int     `json:"tool_schema_estimated_saved_tokens,omitempty"`
+	MemoryBlockSamples             int     `json:"memory_block_samples,omitempty"`
+	MemoryEstimatedSavedTokens     int     `json:"memory_estimated_saved_tokens,omitempty"`
+	ArtifactRefSamples             int     `json:"artifact_ref_samples,omitempty"`
+	ArtifactOmittedTokens          int     `json:"artifact_omitted_tokens,omitempty"`
+	SkillOmittedTokens             int     `json:"skill_omitted_tokens,omitempty"`
+	OmittedContextCount            int     `json:"omitted_context_count,omitempty"`
+	TotalPromptTokens              int     `json:"total_prompt_tokens,omitempty"`
+	TotalOutputTokens              int     `json:"total_output_tokens,omitempty"`
+	TotalCachedTokens              int     `json:"total_cached_tokens,omitempty"`
+	TotalTokens                    int     `json:"total_tokens,omitempty"`
+	UniquePromptPrefixes           int     `json:"unique_prompt_prefixes,omitempty"`
+	PromptPrefixReuseSamples       int     `json:"prompt_prefix_reuse_samples,omitempty"`
+	PromptPrefixReuseRate          float64 `json:"prompt_prefix_reuse_rate,omitempty"`
+	ProviderCacheHitRate           float64 `json:"provider_cache_hit_rate,omitempty"`
 }
 
 type costRecommendation struct {
@@ -236,17 +238,18 @@ type agentSummary struct {
 }
 
 type providerSummary struct {
-	ID               string  `json:"id"`
-	Provider         string  `json:"provider,omitempty"`
-	BaseURL          string  `json:"base_url,omitempty"`
-	Model            string  `json:"model,omitempty"`
-	FallbackProvider string  `json:"fallback_provider,omitempty"`
-	Timeout          string  `json:"timeout,omitempty"`
-	Temperature      float64 `json:"temperature,omitempty"`
-	MaxTokens        int     `json:"max_tokens,omitempty"`
-	RetryCount       int     `json:"retry_count,omitempty"`
-	RetryBackoff     string  `json:"retry_backoff,omitempty"`
-	APIKeySet        bool    `json:"api_key_set"`
+	ID                    string   `json:"id"`
+	Provider              string   `json:"provider,omitempty"`
+	BaseURL               string   `json:"base_url,omitempty"`
+	Model                 string   `json:"model,omitempty"`
+	FallbackProvider      string   `json:"fallback_provider,omitempty"`
+	ProviderMessageFields []string `json:"provider_message_fields,omitempty"`
+	Timeout               string   `json:"timeout,omitempty"`
+	Temperature           float64  `json:"temperature,omitempty"`
+	MaxTokens             int      `json:"max_tokens,omitempty"`
+	RetryCount            int      `json:"retry_count,omitempty"`
+	RetryBackoff          string   `json:"retry_backoff,omitempty"`
+	APIKeySet             bool     `json:"api_key_set"`
 }
 
 type skillSummary struct {
@@ -1267,6 +1270,7 @@ func summarizePromptCostSamples(history []schema.PromptBudget, tokenUsages []sch
 		diagnostics.HistoryCompactedOlderItems += budget.HistoryPromptCompactedOlderItems + budget.HistoryToolCompactedOlderItems
 		diagnostics.ToolSchemaDiagnosticSamples += budget.ToolSchemaDiagnosticCount
 		diagnostics.ToolSchemaDiagnosticOmitted += budget.ToolSchemaDiagnosticOmitted
+		diagnostics.ToolSchemaEstimatedSavedTokens += budget.ToolSchemaEstimatedSavedTokens
 		diagnostics.MemoryBlockSamples += budget.MemoryBlockCount
 		diagnostics.MemoryOmittedCount += budget.MemoryOmittedCount
 		diagnostics.MemoryEstimatedSavedTokens += budget.MemoryEstimatedSavedTokens
@@ -1344,8 +1348,9 @@ func buildCostControlFeatures(diagnostics costDiagnostics, snapshot session.Snap
 			FilteredTools:   latestFilteredToolCount(diagnostics),
 			InjectedTools:   latestInjectedToolCount(diagnostics),
 			OmittedItems:    diagnostics.ToolSchemaDiagnosticOmitted,
+			SavedTokens:     diagnostics.ToolSchemaEstimatedSavedTokens,
 			Description:     "Only exposes tools allowed by the active agent and matched skill while executor policy still enforces hidden tools.",
-			Measurement:     "injected_tools and filtered_tools summarize the tool schemas visible or hidden for the latest provider request.",
+			Measurement:     "injected_tools, filtered_tools, and saved_tokens summarize the latest tool-surface budget.",
 			Recommendation:  "Use narrower agent allowed_tools or skill tool declarations when tool_schema_high appears.",
 		},
 		{
@@ -1786,7 +1791,7 @@ func buildCostRecommendations(diagnostics costDiagnostics) []costRecommendation 
 				WorkflowName:        latest.WorkflowName,
 				TaskStage:           latest.TaskStage,
 				EstimatedTokens:     latest.ToolSchemaTokens,
-				Measurement:         fmt.Sprintf("latest exposed tool schema estimate is %d tokens after filtering %d tools", latest.ToolSchemaTokens, latest.FilteredToolCount),
+				Measurement:         fmt.Sprintf("latest exposed tool schema estimate is %d tokens after filtering %d tools and saving about %d tokens", latest.ToolSchemaTokens, latest.FilteredToolCount, latest.ToolSchemaEstimatedSavedTokens),
 				Action:              "move broad tool access into narrower agents or skills and expose exact allowed_tools for this workflow",
 				RequiresConfig:      true,
 				ExpectedSavingsKind: "tool_schema_reduction",
@@ -1976,6 +1981,7 @@ func buildCostTrends(budgets []schema.PromptBudget, usages []schema.TokenUsageSa
 		item.HistoryCompactedOlderItems += budget.HistoryPromptCompactedOlderItems + budget.HistoryToolCompactedOlderItems
 		item.ToolSchemaDiagnosticSamples += budget.ToolSchemaDiagnosticCount
 		item.ToolSchemaDiagnosticOmitted += budget.ToolSchemaDiagnosticOmitted
+		item.ToolSchemaEstimatedSavedTokens += budget.ToolSchemaEstimatedSavedTokens
 		item.MemoryBlockSamples += budget.MemoryBlockCount
 		item.MemoryEstimatedSavedTokens += budget.MemoryEstimatedSavedTokens
 		item.ArtifactRefSamples += budget.ArtifactRefCount
@@ -2101,17 +2107,18 @@ func (s *Server) providerSummaries() []providerSummary {
 			continue
 		}
 		out = append(out, providerSummary{
-			ID:               id,
-			Provider:         provider.Provider,
-			BaseURL:          provider.BaseURL,
-			Model:            provider.Model,
-			FallbackProvider: provider.FallbackProvider,
-			Timeout:          provider.Timeout.String(),
-			Temperature:      provider.Temperature,
-			MaxTokens:        provider.MaxTokens,
-			RetryCount:       provider.RetryCount,
-			RetryBackoff:     provider.RetryBackoff.String(),
-			APIKeySet:        strings.TrimSpace(provider.APIKey) != "",
+			ID:                    id,
+			Provider:              provider.Provider,
+			BaseURL:               provider.BaseURL,
+			Model:                 provider.Model,
+			FallbackProvider:      provider.FallbackProvider,
+			ProviderMessageFields: append([]string(nil), provider.ProviderMessageFields...),
+			Timeout:               provider.Timeout.String(),
+			Temperature:           provider.Temperature,
+			MaxTokens:             provider.MaxTokens,
+			RetryCount:            provider.RetryCount,
+			RetryBackoff:          provider.RetryBackoff.String(),
+			APIKeySet:             strings.TrimSpace(provider.APIKey) != "",
 		})
 	}
 	return out

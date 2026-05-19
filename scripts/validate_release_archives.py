@@ -29,6 +29,7 @@ COMMON_ARCHIVE_MEMBERS = [
     "configs/mcp_servers/python_notes.yaml",
     "configs/mcp_servers/skill_runner.yaml",
     "configs/mcp_servers/web_tools.yaml",
+    "configs/mcp_servers/network_tools.yaml",
     "skills/execution-plan/SKILL.md",
     "docs/install.md",
     "docs/install.zh-CN.md",
@@ -37,6 +38,7 @@ COMMON_ARCHIVE_MEMBERS = [
     "kits/multi-domain-agent-kit/kit.yaml",
     "kits/software-engineering-kit/kit.yaml",
     "kits/binary-analysis-kit/kit.yaml",
+    "templates/workflows/engineering-parallel-delivery.yaml",
     "examples/README.md",
     "examples/README.zh-CN.md",
     "examples/extension-workflow/README.md",
@@ -57,7 +59,7 @@ COMMON_ARCHIVE_MEMBERS = [
     "examples/binary-analysis-kit/workflows/binary-analysis-kit-workflow/workflow.yaml",
     "mcp_servers/python_notes.py",
 ]
-BINARIES = ["goflow", "file_tools", "skill_runner", "web_tools"]
+BINARIES = ["goflow", "file_tools", "skill_runner", "web_tools", "network_tools"]
 FORBIDDEN_ARCHIVE_MARKERS = ["/__pycache__/", ".pyc"]
 
 

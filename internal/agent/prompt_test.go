@@ -1,6 +1,7 @@
 package agent
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -66,13 +67,16 @@ func TestDynamicContextCompactsSessionHistory(t *testing.T) {
 	if strings.Contains(prompt, "old-1") || strings.Contains(prompt, "old-2") {
 		t.Fatalf("expected older prompts to be compacted out, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "[compacted 2 older prompts; latest 4 retained]") {
+	if strings.Contains(prompt, "recent-1") {
+		t.Fatalf("expected one more older prompt to be compacted out, got:\n%s", prompt)
+	}
+	if !strings.Contains(prompt, "[compacted 3 older prompts; latest 3 retained]") {
 		t.Fatalf("expected older prompt compaction marker, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "recent-1") || !strings.Contains(prompt, "recent-long-") {
+	if !strings.Contains(prompt, "recent-2") || !strings.Contains(prompt, "recent-long-") {
 		t.Fatalf("expected recent prompts retained, got:\n%s", prompt)
 	}
-	if !strings.Contains(prompt, "[compacted 200 bytes]") {
+	if !strings.Contains(prompt, "[compacted ") || !strings.Contains(prompt, " bytes]") {
 		t.Fatalf("expected oversized history item compaction marker, got:\n%s", prompt)
 	}
 	systemPrompt := BuildSystemPrompt(config.AgentProfile{Name: "Agent", Mode: "chat"}, nil, session.Snapshot{
@@ -136,5 +140,111 @@ func TestBuildSystemPromptSummarizesLargeSkillInstructions(t *testing.T) {
 	}
 	if strings.Contains(prompt, strings.Repeat("- Keep detailed procedure text out of the default prompt.\n", 20)) {
 		t.Fatalf("expected repeated full skill instructions to be omitted, got:\n%s", prompt)
+	}
+}
+
+func TestCompactMessagesForSummaryPromptDropsOlderConversation(t *testing.T) {
+	messages := make([]schema.Message, 0, 14)
+	for i := 0; i < 14; i++ {
+		messages = append(messages, schema.Message{Role: "user", Content: fmt.Sprintf("message-%02d %s", i, strings.Repeat("x", 80))})
+	}
+	compacted := compactMessagesForSummaryPrompt(messages)
+	if len(compacted) != 11 {
+		t.Fatalf("expected leading context plus marker plus latest eight messages, got %d: %#v", len(compacted), compacted)
+	}
+	if !strings.Contains(compacted[2].Content, "compacted 4 earlier conversation messages") {
+		t.Fatalf("expected compaction marker, got %#v", compacted[2])
+	}
+	if compacted[0].Content == "" || compacted[1].Content == "" || !strings.Contains(compacted[0].Content, "message-00") || !strings.Contains(compacted[1].Content, "message-01") {
+		t.Fatalf("expected leading context preserved, got %#v", compacted[:2])
+	}
+	for _, message := range compacted[2:] {
+		if strings.Contains(message.Content, "message-02") || strings.Contains(message.Content, "message-05") {
+			t.Fatalf("expected older tail messages omitted, got %#v", compacted)
+		}
+	}
+	if !strings.Contains(compacted[len(compacted)-1].Content, "message-13") {
+		t.Fatalf("expected newest message retained, got %#v", compacted[len(compacted)-1])
+	}
+}
+
+func TestCompactMessagesForResumePromptStartsAtAssistantBeforeTool(t *testing.T) {
+	messages := []schema.Message{
+		{Role: "user", Content: "old-0"},
+		{Role: "assistant", Content: "old-1"},
+		{Role: "tool", Content: "old-tool"},
+	}
+	for i := 0; i < 12; i++ {
+		messages = append(messages, schema.Message{Role: "user", Content: fmt.Sprintf("new-%02d", i)})
+	}
+	compacted := compactMessagesForPrompt(messages, 2, 12, 200, 200)
+	if len(compacted) < 2 {
+		t.Fatalf("expected compacted messages, got %#v", compacted)
+	}
+	if compacted[1].Role == "tool" {
+		t.Fatalf("expected compacted suffix not to start with bare tool message, got %#v", compacted)
+	}
+}
+
+func TestCompactMessagesForConversationRetainsLeadingContext(t *testing.T) {
+	messages := []schema.Message{
+		{Role: "system", Content: "stable system"},
+		{Role: "user", Content: "original request"},
+	}
+	for i := 0; i < 18; i++ {
+		messages = append(messages, schema.Message{Role: "assistant", Content: fmt.Sprintf("assistant-%02d", i)})
+	}
+	compacted := compactMessagesForConversation(messages)
+	if len(compacted) < 3 {
+		t.Fatalf("expected preserved leading context plus compacted tail, got %#v", compacted)
+	}
+	if compacted[0].Role != "system" || compacted[1].Role != "user" {
+		t.Fatalf("expected leading context preserved, got %#v", compacted[:2])
+	}
+	if !strings.Contains(compacted[2].Content, "compacted") {
+		t.Fatalf("expected compacted marker after leading context, got %#v", compacted)
+	}
+}
+
+func TestCompactMessagesForConversationIsIdempotent(t *testing.T) {
+	messages := []schema.Message{
+		{Role: "user", Content: "context"},
+		{Role: "user", Content: "request"},
+	}
+	for i := 0; i < 22; i++ {
+		messages = append(messages, schema.Message{Role: "assistant", Content: fmt.Sprintf("turn-%02d", i)})
+	}
+	once := compactMessagesForConversation(messages)
+	twice := compactMessagesForConversation(once)
+	markers := 0
+	latestMarker := ""
+	for _, message := range twice {
+		if isGoFlowConversationCompactionMarker(message.Content) {
+			markers++
+			latestMarker = message.Content
+		}
+	}
+	if markers != 1 {
+		t.Fatalf("expected one compaction marker after repeated compaction, got %d: %#v", markers, twice)
+	}
+	if !strings.Contains(latestMarker, "earlier conversation messages") || !strings.Contains(latestMarker, "latest") {
+		t.Fatalf("expected readable compaction marker, got %q", latestMarker)
+	}
+}
+
+func TestToolObservationDigestSummarizesRecentResults(t *testing.T) {
+	results := make([]schema.ToolResult, 0, 7)
+	for i := 0; i < 7; i++ {
+		results = append(results, schema.ToolResult{ToolName: "read_file", Content: fmt.Sprintf("result-%02d %s", i, strings.Repeat("x", 200))})
+	}
+	digest := toolObservationDigestMessage(results)
+	if !strings.Contains(digest, "Tool observation digest:") || !strings.Contains(digest, "1 earlier tool observations omitted") {
+		t.Fatalf("expected digest with omitted count, got %q", digest)
+	}
+	if strings.Contains(digest, "result-00") {
+		t.Fatalf("expected oldest result omitted from digest, got %q", digest)
+	}
+	if !strings.Contains(digest, "result-06") {
+		t.Fatalf("expected newest result retained in digest, got %q", digest)
 	}
 }

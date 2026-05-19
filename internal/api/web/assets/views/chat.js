@@ -1375,6 +1375,10 @@ function bindRunTimelineHeightSync(root) {
       clear();
       return;
     }
+    if (timeline.classList.contains("has-workflow-input")) {
+      clear();
+      return;
+    }
     const height = Math.max(1, Math.ceil(setup.getBoundingClientRect().height));
     timeline.style.setProperty("--run-setup-height", `${height}px`);
   };
@@ -6713,6 +6717,7 @@ function renderWorkflowInputAttention(state, request) {
   const title = t("chat.awaitingInputTitle");
   const detail = request?.detail || t("chat.awaitingInputHelp");
   const summary = workflowInputSummary(request);
+  setRunTimelineWorkflowInput(state, true);
   state.runAttention.className = "run-attention workflow-input";
   state.runAttention.innerHTML = `
     <div class="run-attention-head">
@@ -6738,6 +6743,15 @@ function renderWorkflowInputAttention(state, request) {
     event.preventDefault();
     state.submitWorkflowInput?.(request);
   });
+}
+
+function setRunTimelineWorkflowInput(state, enabled) {
+  const timeline = state?.root?.querySelector(".run-timeline");
+  if (!timeline) return;
+  timeline.classList.toggle("has-workflow-input", Boolean(enabled));
+  if (enabled) {
+    timeline.style.removeProperty("--run-setup-height");
+  }
 }
 
 function renderWorkflowInputFields(fields) {
@@ -7009,6 +7023,7 @@ function showWorkflowInputWorkspaceRequirement(state, message) {
 }
 
 function clearRunAttention(state) {
+  setRunTimelineWorkflowInput(state, false);
   state.runAttention.innerHTML = "";
   state.runAttention.className = "run-attention hidden";
   state.syncContextGuide?.();
@@ -7478,6 +7493,7 @@ function warnBeforeLeavingActiveRun(event) {
 }
 
 function showRunAttention(state, title, body, tone, withLink = false) {
+  setRunTimelineWorkflowInput(state, false);
   state.runAttention.className = `run-attention ${tone || "neutral"}`;
   state.runAttention.innerHTML = `
     <strong>${escapeHTML(title)}</strong>
@@ -7492,6 +7508,7 @@ function showRunAttention(state, title, body, tone, withLink = false) {
 
 function showWorkspaceRequirementAttention(state, requirement) {
   const message = workspaceRequirementBody(requirement);
+  setRunTimelineWorkflowInput(state, false);
   state.runAttention.className = "run-attention approval workspace-required";
   state.runAttention.innerHTML = `
     <strong>${escapeHTML(t("chat.workspacePreflightTitle"))}</strong>

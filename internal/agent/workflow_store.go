@@ -27,6 +27,7 @@ type WorkflowGraphStageDocument struct {
 	Agent              string                                     `json:"agent" yaml:"agent"`
 	Skill              string                                     `json:"skill" yaml:"skill"`
 	Tool               string                                     `json:"tool,omitempty" yaml:"tool,omitempty"`
+	Model              WorkflowGraphStageModelDocument            `json:"model,omitempty" yaml:"model,omitempty"`
 	Params             map[string]string                          `json:"params,omitempty" yaml:"params,omitempty"`
 	Input              map[string]string                          `json:"input,omitempty" yaml:"input,omitempty"`
 	Outputs            map[string]string                          `json:"outputs,omitempty" yaml:"outputs,omitempty"`
@@ -51,12 +52,25 @@ type WorkflowGraphRetry struct {
 	MaxAttempts int `json:"max_attempts,omitempty" yaml:"max_attempts,omitempty"`
 }
 
+// WorkflowGraphStageModelDocument optionally overrides the selected Agent's
+// model route for one executable workflow stage.
+type WorkflowGraphStageModelDocument struct {
+	Provider    string   `json:"provider,omitempty" yaml:"provider,omitempty"`
+	Model       string   `json:"model,omitempty" yaml:"model,omitempty"`
+	MaxTokens   int      `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+	Temperature *float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
+}
+
 // WorkflowGraphStageContextDocument controls which context a stage receives.
 type WorkflowGraphStageContextDocument struct {
-	Include   []string                              `json:"include,omitempty" yaml:"include,omitempty"`
-	Exclude   []string                              `json:"exclude,omitempty" yaml:"exclude,omitempty"`
-	MaxTokens int                                   `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
-	Retrieval WorkflowGraphContextRetrievalDocument `json:"retrieval,omitempty" yaml:"retrieval,omitempty"`
+	Include             []string                              `json:"include,omitempty" yaml:"include,omitempty"`
+	Exclude             []string                              `json:"exclude,omitempty" yaml:"exclude,omitempty"`
+	MaxTokens           int                                   `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+	PromptMaxTokens     int                                   `json:"prompt_max_tokens,omitempty" yaml:"prompt_max_tokens,omitempty"`
+	RequestMaxTokens    int                                   `json:"request_max_tokens,omitempty" yaml:"request_max_tokens,omitempty"`
+	InputsMaxTokens     int                                   `json:"inputs_max_tokens,omitempty" yaml:"inputs_max_tokens,omitempty"`
+	ParametersMaxTokens int                                   `json:"parameters_max_tokens,omitempty" yaml:"parameters_max_tokens,omitempty"`
+	Retrieval           WorkflowGraphContextRetrievalDocument `json:"retrieval,omitempty" yaml:"retrieval,omitempty"`
 }
 
 // WorkflowGraphContextRetrievalDocument reserves retrieval settings for a stage context contract.
@@ -198,6 +212,7 @@ type WorkflowExpressionSuggestion struct {
 // WorkflowOptionSet exposes available agents and skills for workflow editors.
 type WorkflowOptionSet struct {
 	Agents              []WorkflowAgentOption              `json:"agents"`
+	Providers           []WorkflowProviderOption           `json:"providers,omitempty"`
 	Skills              []WorkflowSkillOption              `json:"skills"`
 	Tools               []string                           `json:"tools"`
 	WorkflowExecutors   []WorkflowExecutorOption           `json:"workflow_executors,omitempty"`
@@ -211,6 +226,13 @@ type WorkflowOptionSet struct {
 type WorkflowAgentOption struct {
 	Name string `json:"name"`
 	Mode string `json:"mode,omitempty"`
+}
+
+type WorkflowProviderOption struct {
+	Name      string `json:"name"`
+	Provider  string `json:"provider,omitempty"`
+	Model     string `json:"model,omitempty"`
+	MaxTokens int    `json:"max_tokens,omitempty"`
 }
 
 type WorkflowSkillOption struct {
@@ -567,6 +589,18 @@ func (w *WorkflowRunner) WorkflowOptions() WorkflowOptionSet {
 		}
 		options.Agents = append(options.Agents, WorkflowAgentOption{Name: name, Mode: profile.Mode})
 	}
+	for _, name := range w.runtime.ProviderNames() {
+		provider, ok := w.runtime.Provider(name)
+		if !ok {
+			continue
+		}
+		options.Providers = append(options.Providers, WorkflowProviderOption{
+			Name:      name,
+			Provider:  provider.Provider,
+			Model:     provider.Model,
+			MaxTokens: provider.MaxTokens,
+		})
+	}
 	for _, skill := range w.runtime.SkillList() {
 		options.Skills = append(options.Skills, WorkflowSkillOption{
 			Name:           skill.Name,
@@ -597,6 +631,7 @@ func (d WorkflowGraphDocument) toInternalGraph() workflowGraph {
 			Agent:              stage.Agent,
 			Skill:              stage.Skill,
 			Tool:               stage.Tool,
+			Model:              workflowGraphStageModelToInternal(stage.Model),
 			Params:             copyStringMap(stage.Params),
 			Input:              copyStringMap(stage.Input),
 			Outputs:            copyStringMap(stage.Outputs),
@@ -619,11 +654,24 @@ func (d WorkflowGraphDocument) toInternalGraph() workflowGraph {
 	return workflowGraph{Name: d.Name, Description: d.Description, Stages: stages}
 }
 
+func workflowGraphStageModelToInternal(model WorkflowGraphStageModelDocument) workflowGraphStageModel {
+	return workflowGraphStageModel{
+		Provider:    strings.TrimSpace(model.Provider),
+		Model:       strings.TrimSpace(model.Model),
+		MaxTokens:   model.MaxTokens,
+		Temperature: model.Temperature,
+	}
+}
+
 func workflowGraphContextToInternal(context WorkflowGraphStageContextDocument) workflowGraphStageContext {
 	return workflowGraphStageContext{
-		Include:   trimWorkflowGraphStringList(context.Include),
-		Exclude:   trimWorkflowGraphStringList(context.Exclude),
-		MaxTokens: context.MaxTokens,
+		Include:             trimWorkflowGraphStringList(context.Include),
+		Exclude:             trimWorkflowGraphStringList(context.Exclude),
+		MaxTokens:           context.MaxTokens,
+		PromptMaxTokens:     context.PromptMaxTokens,
+		RequestMaxTokens:    context.RequestMaxTokens,
+		InputsMaxTokens:     context.InputsMaxTokens,
+		ParametersMaxTokens: context.ParametersMaxTokens,
 		Retrieval: workflowGraphContextRetrieval{
 			Enabled: context.Retrieval.Enabled,
 			Query:   strings.TrimSpace(context.Retrieval.Query),
@@ -766,8 +814,22 @@ func (w *WorkflowRunner) validateWorkflowGraphDocumentIssues(name string, doc Wo
 		if stage.Retry.MaxAttempts < 0 {
 			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "retry.max_attempts", Message: fmt.Sprintf("workflow graph %s stage %s retry.max_attempts must not be negative", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
 		}
+		issues = append(issues, w.validateWorkflowGraphStageModelIssues(fallbackWorkflowGraphValue(doc.Name, name), stage.Name, stage.Model)...)
+		issues = append(issues, w.validateWorkflowGraphStageToolIssues(fallbackWorkflowGraphValue(doc.Name, name), stage.Name, stage.Tool, stage.Params)...)
 		if stage.Context.MaxTokens < 0 {
 			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "context.max_tokens", Message: fmt.Sprintf("workflow graph %s stage %s context.max_tokens must not be negative", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
+		}
+		if stage.Context.PromptMaxTokens < 0 {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "context.prompt_max_tokens", Message: fmt.Sprintf("workflow graph %s stage %s context.prompt_max_tokens must not be negative", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
+		}
+		if stage.Context.RequestMaxTokens < 0 {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "context.request_max_tokens", Message: fmt.Sprintf("workflow graph %s stage %s context.request_max_tokens must not be negative", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
+		}
+		if stage.Context.InputsMaxTokens < 0 {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "context.inputs_max_tokens", Message: fmt.Sprintf("workflow graph %s stage %s context.inputs_max_tokens must not be negative", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
+		}
+		if stage.Context.ParametersMaxTokens < 0 {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "context.parameters_max_tokens", Message: fmt.Sprintf("workflow graph %s stage %s context.parameters_max_tokens must not be negative", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
 		}
 	}
 	for _, stage := range doc.Stages {
@@ -796,6 +858,54 @@ func (w *WorkflowRunner) validateWorkflowGraphDocumentIssues(name string, doc Wo
 	}
 	issues = append(issues, workflowGraphQualityDesignWarnings(fallbackWorkflowGraphValue(doc.Name, name), doc)...)
 	return issues
+}
+
+func (w *WorkflowRunner) validateWorkflowGraphStageModelIssues(graphName, stageName string, model WorkflowGraphStageModelDocument) []WorkflowGraphValidationIssue {
+	if !workflowGraphStageModelDocumentConfigured(model) {
+		return nil
+	}
+	issues := make([]WorkflowGraphValidationIssue, 0, 2)
+	if model.MaxTokens < 0 {
+		issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stageName, Field: "model.max_tokens", Message: fmt.Sprintf("workflow graph %s stage %s model.max_tokens must not be negative", graphName, stageName)})
+	}
+	provider := strings.TrimSpace(model.Provider)
+	if provider != "" && w != nil && w.runtime != nil {
+		if _, ok := w.runtime.Provider(provider); !ok {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stageName, Field: "model.provider", Message: fmt.Sprintf("workflow graph %s stage %s references unknown model provider %s", graphName, stageName, provider)})
+		}
+	}
+	return issues
+}
+
+func workflowGraphStageModelDocumentConfigured(model WorkflowGraphStageModelDocument) bool {
+	return strings.TrimSpace(model.Provider) != "" || strings.TrimSpace(model.Model) != "" || model.MaxTokens != 0 || model.Temperature != nil
+}
+
+func (w *WorkflowRunner) validateWorkflowGraphStageToolIssues(graphName, stageName, tool string, params map[string]string) []WorkflowGraphValidationIssue {
+	tools := workflowGraphStageAllowedTools(workflowGraphStage{Tool: tool, Params: copyStringMap(params)})
+	if len(tools) == 0 || w == nil || w.runtime == nil {
+		return nil
+	}
+	available := w.runtime.ToolNames()
+	if len(available) == 0 {
+		return nil
+	}
+	issues := make([]WorkflowGraphValidationIssue, 0)
+	for _, wanted := range tools {
+		if !workflowGraphToolNameAvailable(wanted, available) {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stageName, Field: "tool", Message: fmt.Sprintf("workflow graph %s stage %s references unknown tool %s", graphName, stageName, wanted)})
+		}
+	}
+	return issues
+}
+
+func workflowGraphToolNameAvailable(wanted string, available []string) bool {
+	for _, candidate := range available {
+		if toolNameEquivalent(wanted, candidate) {
+			return true
+		}
+	}
+	return false
 }
 
 func workflowGraphQualityDesignWarnings(graphName string, doc WorkflowGraphDocument) []WorkflowGraphValidationIssue {

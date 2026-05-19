@@ -93,6 +93,7 @@ type pendingApproval struct {
 	stage           WorkflowStage
 	request         string
 	responseContent string
+	responseMessage schema.Message
 	completed       []WorkflowStageResult
 	skillChain      []schema.Skill
 	skillIndex      int
@@ -177,7 +178,7 @@ func (s *approvalStore) Get(id string) (pendingApproval, bool) {
 	return pending, ok
 }
 
-func (s *approvalStore) Annotate(id, workflow string, stage WorkflowStage, request, responseContent string, completed []WorkflowStageResult) bool {
+func (s *approvalStore) Annotate(id, workflow string, stage WorkflowStage, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult) bool {
 	if s == nil {
 		return false
 	}
@@ -191,6 +192,7 @@ func (s *approvalStore) Annotate(id, workflow string, stage WorkflowStage, reque
 	pending.stage = stage
 	pending.request = request
 	pending.responseContent = responseContent
+	pending.responseMessage = schema.CopyMessage(responseMessageForApproval(responseContent, pending.call, responseMessage))
 	pending.completed = append([]WorkflowStageResult(nil), completed...)
 	s.pending[id] = pending
 	return true
@@ -555,6 +557,44 @@ func (r *Runtime) Provider(name string) (config.LLMConfig, bool) {
 	return provider, ok
 }
 
+func (r *Runtime) workflowStageRunnerWithModel(agentID string, runner *AgentRunner, model workflowGraphStageModel) *AgentRunner {
+	if r == nil || runner == nil || !workflowGraphStageModelConfigured(model) {
+		return runner
+	}
+	profile := runner.profile
+	client := runner.llm
+	if provider := strings.TrimSpace(model.Provider); provider != "" {
+		if overrideClient, ok := r.clients[provider]; ok {
+			client = overrideClient
+			profile.Provider = provider
+		}
+	}
+	if name := strings.TrimSpace(model.Model); name != "" {
+		profile.Model = name
+	} else if strings.TrimSpace(model.Provider) != "" && strings.TrimSpace(model.Provider) != strings.TrimSpace(runner.profile.Provider) {
+		if providerCfg, ok := r.Provider(model.Provider); ok && strings.TrimSpace(providerCfg.Model) != "" {
+			profile.Model = strings.TrimSpace(providerCfg.Model)
+		}
+	}
+	if model.MaxTokens > 0 {
+		profile.MaxTokens = model.MaxTokens
+	}
+	if model.Temperature != nil {
+		profile.Temperature = *model.Temperature
+	}
+	return &AgentRunner{
+		id:           agentID,
+		profile:      profile,
+		llm:          client,
+		executor:     runner.executor,
+		fallbackUsed: runner.fallbackUsed,
+	}
+}
+
+func workflowGraphStageModelConfigured(model workflowGraphStageModel) bool {
+	return strings.TrimSpace(model.Provider) != "" || strings.TrimSpace(model.Model) != "" || model.MaxTokens != 0 || model.Temperature != nil
+}
+
 // MCPServerRefs returns configured MCP server refs from the active runtime config.
 func (r *Runtime) MCPServerRefs() []config.MCPServerRef {
 	if r == nil || r.cfg == nil {
@@ -616,6 +656,16 @@ func (r *Runtime) Mode() string {
 		return runner.profile.Mode
 	}
 	return "chat"
+}
+
+func (r *Runtime) activeModel() string {
+	if r == nil {
+		return ""
+	}
+	if runner, ok := r.runners[r.ActiveAgent()]; ok {
+		return strings.TrimSpace(runner.profile.Model)
+	}
+	return ""
 }
 
 // SetTrace toggles CLI trace visibility.
@@ -1116,6 +1166,7 @@ func (r *Runtime) handlePendingOrdinaryChatHandoff(ctx context.Context, input st
 			Output:     fmt.Sprintf("Cancelled pending implementation handoff for %s.", requestSummary),
 			AgentID:    r.ActiveAgent(),
 			Mode:       r.Mode(),
+			Model:      r.activeModel(),
 			AuditTrail: r.AuditTrail(),
 		}, true, nil
 	case ordinaryHandoffDecisionRevise, ordinaryHandoffDecisionQuestion:
@@ -1141,6 +1192,7 @@ func (r *Runtime) handlePendingOrdinaryChatHandoff(ctx context.Context, input st
 			Output:     "A plan is waiting for confirmation before execution. Reply with yes / continue / go ahead to proceed, or describe the change you want.",
 			AgentID:    r.ActiveAgent(),
 			Mode:       r.Mode(),
+			Model:      r.activeModel(),
 			AuditTrail: r.AuditTrail(),
 		}, true, nil
 	default:
@@ -1348,6 +1400,20 @@ func pendingApprovalSnapshot(item pendingApproval) session.PendingApprovalSnapsh
 	}
 }
 
+func responseMessageForApproval(responseContent string, call schema.ToolCall, message schema.Message) schema.Message {
+	message = schema.CopyMessage(message)
+	if strings.TrimSpace(message.Role) == "" {
+		message.Role = "assistant"
+	}
+	if strings.TrimSpace(message.Content) == "" {
+		message.Content = responseContent
+	}
+	if len(message.ToolCalls) == 0 && strings.TrimSpace(call.ID) != "" {
+		message.ToolCalls = []schema.ToolCall{schema.CopyToolCall(call)}
+	}
+	return message
+}
+
 func summarizeApprovalArguments(arguments []byte) string {
 	return summarizeToolArguments(arguments)
 }
@@ -1493,11 +1559,11 @@ func (r *Runtime) CanApprovePendingToolApprovals(ids []string) (bool, string) {
 	return true, ""
 }
 
-func (r *Runtime) AnnotatePendingApproval(id, workflow string, stage WorkflowStage, request, responseContent string, completed []WorkflowStageResult) bool {
+func (r *Runtime) AnnotatePendingApproval(id, workflow string, stage WorkflowStage, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult) bool {
 	if r == nil || r.approvals == nil {
 		return false
 	}
-	updated := r.approvals.Annotate(id, workflow, stage, request, responseContent, completed)
+	updated := r.approvals.Annotate(id, workflow, stage, request, responseContent, responseMessage, completed)
 	if updated {
 		if pending, ok := r.approvals.Get(id); ok && r.shouldAutoApproveWorkflowCall(pending) {
 			r.ResolvePendingApproval(id, true)
@@ -1510,11 +1576,11 @@ func (r *Runtime) AnnotatePendingApproval(id, workflow string, stage WorkflowSta
 	return updated
 }
 
-func (r *Runtime) AnnotateSkillChainPendingApproval(id, workflow string, stage WorkflowStage, request, responseContent string, completed []WorkflowStageResult, chain []schema.Skill, index int, stagePrompt string) bool {
+func (r *Runtime) AnnotateSkillChainPendingApproval(id, workflow string, stage WorkflowStage, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult, chain []schema.Skill, index int, stagePrompt string) bool {
 	if r == nil || r.approvals == nil {
 		return false
 	}
-	updated := r.approvals.Annotate(id, workflow, stage, request, responseContent, completed)
+	updated := r.approvals.Annotate(id, workflow, stage, request, responseContent, responseMessage, completed)
 	if updated {
 		_ = r.approvals.AnnotateSkillChain(id, chain, index, stagePrompt)
 		if pending, ok := r.approvals.Get(id); ok && r.shouldAutoApproveWorkflowCall(pending) {
@@ -1528,11 +1594,11 @@ func (r *Runtime) AnnotateSkillChainPendingApproval(id, workflow string, stage W
 	return updated
 }
 
-func (r *Runtime) AnnotateWorkflowGraphPendingApproval(id, workflow string, stage WorkflowStage, request, responseContent string, completed []WorkflowStageResult, index int, stagePrompt string) bool {
+func (r *Runtime) AnnotateWorkflowGraphPendingApproval(id, workflow string, stage WorkflowStage, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult, index int, stagePrompt string) bool {
 	if r == nil || r.approvals == nil {
 		return false
 	}
-	updated := r.approvals.Annotate(id, workflow, stage, request, responseContent, completed)
+	updated := r.approvals.Annotate(id, workflow, stage, request, responseContent, responseMessage, completed)
 	if updated {
 		_ = r.approvals.AnnotateSkillChain(id, nil, index, stagePrompt)
 		if pending, ok := r.approvals.Get(id); ok && r.shouldAutoApproveWorkflowCall(pending) {
@@ -1546,11 +1612,11 @@ func (r *Runtime) AnnotateWorkflowGraphPendingApproval(id, workflow string, stag
 	return updated
 }
 
-func (r *Runtime) AnnotateWorkflowGraphRepeatPendingApproval(id, workflow string, stage WorkflowStage, request, responseContent string, completed []WorkflowStageResult, index int, stagePrompt string, repeat workflowGraphRepeatContext) bool {
+func (r *Runtime) AnnotateWorkflowGraphRepeatPendingApproval(id, workflow string, stage WorkflowStage, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult, index int, stagePrompt string, repeat workflowGraphRepeatContext) bool {
 	if r == nil || r.approvals == nil {
 		return false
 	}
-	updated := r.approvals.Annotate(id, workflow, stage, request, responseContent, completed)
+	updated := r.approvals.Annotate(id, workflow, stage, request, responseContent, responseMessage, completed)
 	if updated {
 		_ = r.approvals.AnnotateSkillChain(id, nil, index, stagePrompt)
 		_ = r.approvals.AnnotateWorkflowGraphRepeat(id, repeat)
@@ -1582,6 +1648,9 @@ func (r *Runtime) CaptureOrdinaryApprovalContext(agentRunID, agentID string, pro
 	if r.ordinaryResumeResults == nil {
 		r.ordinaryResumeResults = make(map[string]map[string]schema.ToolResult)
 	}
+	messages = schema.CopyMessages(messages)
+	suspendedCalls = schema.CopyToolCalls(suspendedCalls)
+	collectedResults = append([]schema.ToolResult(nil), collectedResults...)
 	var skillCopy *schema.Skill
 	if matchedSkill != nil {
 		copied := *matchedSkill
@@ -1594,9 +1663,9 @@ func (r *Runtime) CaptureOrdinaryApprovalContext(agentRunID, agentID string, pro
 		MatchedSkill:     skillCopy,
 		SystemPrompt:     systemPrompt,
 		Mode:             mode,
-		Messages:         append([]schema.Message(nil), messages...),
-		SuspendedCalls:   append([]schema.ToolCall(nil), suspendedCalls...),
-		CollectedResults: append([]schema.ToolResult(nil), collectedResults...),
+		Messages:         messages,
+		SuspendedCalls:   suspendedCalls,
+		CollectedResults: collectedResults,
 	}
 	r.ordinaryApprovalResumes[resumeID] = resume
 	for _, call := range suspendedCalls {
@@ -1629,17 +1698,31 @@ func (r *Runtime) restoreOrdinaryApprovalsFromSession() {
 	restored := make(map[string]struct{})
 	for _, run := range snapshot.AgentRuns {
 		for _, pending := range run.PendingApprovals {
-			r.restorePendingApprovalSnapshot(pending, tools, restored)
+			r.restorePendingApprovalSnapshot(pending, tools, restored, schema.Message{})
 		}
 		r.restoreOrdinaryResumeContext(run)
 	}
+	workflowMessages := workflowPendingResponseMessages(snapshot.WorkflowRuns)
 	for _, pending := range snapshot.PendingApprovals {
-		if strings.TrimSpace(pending.AgentRunID) == "" {
-			continue
-		}
-		r.restorePendingApprovalSnapshot(pending, tools, restored)
+		r.restorePendingApprovalSnapshot(pending, tools, restored, workflowMessages[strings.TrimSpace(pending.CallID)])
 	}
 	r.syncPendingApprovals()
+}
+
+func workflowPendingResponseMessages(runs []session.WorkflowRunSnapshot) map[string]schema.Message {
+	out := make(map[string]schema.Message)
+	for _, run := range runs {
+		callID := strings.TrimSpace(run.PendingCallID)
+		if callID == "" {
+			continue
+		}
+		message := schema.CopyMessage(run.PendingResponseMessage)
+		if strings.TrimSpace(message.Role) == "" && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 && len(message.ProviderFields) == 0 {
+			continue
+		}
+		out[callID] = message
+	}
+	return out
 }
 
 func (r *Runtime) restoreToolCatalog() map[string]schema.Tool {
@@ -1670,7 +1753,7 @@ func (r *Runtime) restoreToolCatalog() map[string]schema.Tool {
 	return tools
 }
 
-func (r *Runtime) restorePendingApprovalSnapshot(pending session.PendingApprovalSnapshot, tools map[string]schema.Tool, restored map[string]struct{}) {
+func (r *Runtime) restorePendingApprovalSnapshot(pending session.PendingApprovalSnapshot, tools map[string]schema.Tool, restored map[string]struct{}, responseMessage schema.Message) {
 	if r == nil || r.approvals == nil || strings.TrimSpace(pending.CallID) == "" || strings.TrimSpace(pending.AgentRunID) == "" {
 		return
 	}
@@ -1693,10 +1776,16 @@ func (r *Runtime) restorePendingApprovalSnapshot(pending session.PendingApproval
 			Name:      toolName,
 			Arguments: json.RawMessage([]byte(pending.Arguments)),
 		},
-		tool:       tool,
-		agent:      strings.TrimSpace(pending.AgentID),
-		agentRunID: strings.TrimSpace(pending.AgentRunID),
+		tool:            tool,
+		agent:           strings.TrimSpace(pending.AgentID),
+		workflow:        strings.TrimSpace(pending.WorkflowName),
+		stage:           WorkflowStage(strings.TrimSpace(pending.Stage)),
+		request:         strings.TrimSpace(pending.Request),
+		responseContent: strings.TrimSpace(responseMessage.Content),
+		responseMessage: schema.CopyMessage(responseMessage),
+		agentRunID:      strings.TrimSpace(pending.AgentRunID),
 	}
+	item.responseMessage = responseMessageForApproval(item.responseContent, item.call, item.responseMessage)
 	r.approvals.Add(item)
 }
 
@@ -1746,8 +1835,8 @@ func (r *Runtime) restoreOrdinaryResumeContext(run session.AgentRunSnapshot) {
 		MatchedSkill:     matchedSkill,
 		SystemPrompt:     context.SystemPrompt,
 		Mode:             fallbackText(context.Mode, fallbackText(run.Mode, runner.profile.Mode)),
-		Messages:         append([]schema.Message(nil), context.Messages...),
-		SuspendedCalls:   append([]schema.ToolCall(nil), context.SuspendedCalls...),
+		Messages:         schema.CopyMessages(context.Messages),
+		SuspendedCalls:   schema.CopyToolCalls(context.SuspendedCalls),
 		CollectedResults: append([]schema.ToolResult(nil), context.CollectedResults...),
 	}
 	for _, call := range context.SuspendedCalls {
@@ -1902,7 +1991,7 @@ func (r *Runtime) resumeOrdinaryRun(ctx context.Context, resume ordinaryApproval
 	if err := r.SetActiveAgent(resume.AgentID); err != nil {
 		return schema.AgentResult{}, err
 	}
-	messages := append([]schema.Message(nil), resume.Messages...)
+	messages := compactMessagesForResumePrompt(resume.Messages)
 	collectedResults := append([]schema.ToolResult(nil), resume.CollectedResults...)
 	for _, result := range approvedResults {
 		artifactRef := storeCompactedToolResultArtifact(r.session, result, resume.AgentID, resume.Mode)
@@ -2677,6 +2766,9 @@ func (r *Runtime) RunStream(ctx context.Context, input string, handler func(even
 	result.AgentID = runner.id
 	if strings.TrimSpace(result.Mode) == "" {
 		result.Mode = r.Mode()
+	}
+	if strings.TrimSpace(result.Model) == "" {
+		result.Model = strings.TrimSpace(runner.profile.Model)
 	}
 	if strings.EqualFold(result.Mode, "plan") && !strings.EqualFold(intent.Mode, "plan") && len(result.ToolResults) == 0 {
 		r.queueOrdinaryChatHandoff(input, result.Output, workflowAgentFixer, "fix")

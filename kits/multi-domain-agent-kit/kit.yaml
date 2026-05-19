@@ -3,7 +3,7 @@ version: 1
 min_supported_version: 1
 name: multi-domain-agent-kit
 title: Multi-Domain Agent Starter Kit
-description: One connected starter kit that routes mixed requests into software, security, binary, documentation, operations, support, or framework-extension workflows.
+description: One connected starter kit that decomposes mixed requests, runs only the selected domain workers in parallel, then joins, audits, and hands off a compact multi-domain report.
 category: starter
 tags:
     - starter
@@ -41,6 +41,11 @@ tools:
     - web_tools/web_search
     - web_tools/fetch_url
     - web_tools/fetch_page_assets
+    - web_tools/browser_snapshot
+    - web_tools/browser_probe_points
+    - network_tools/device_discovery_plan
+    - network_tools/device_command_plan
+    - network_tools/device_config_dry_run
     - python_notes/binary_file_info
     - python_notes/binary_strings
     - python_notes/hex_preview
@@ -49,6 +54,7 @@ workflows:
     - skill-chain
 workflow_templates:
     - multi-domain-intake-router
+    - engineering-parallel-delivery
     - task-decomposition-plan
     - plan-fix-audit
     - software-quality-gate
@@ -77,7 +83,7 @@ policy_rules:
     - team_approval_gate
 examples:
     - title: Route a mixed request
-      description: Collect the user's domain, target, and desired output, route to a domain team, and quality-check the handoff.
+      description: Collect the user's goal, decompose it into bounded domain slices, run selected domain workers in parallel, and quality-check the handoff.
       request: Help me decide how to handle this project request and route it to the right workflow.
       workflow: multi-domain-intake-router
       agent: chat
@@ -86,6 +92,65 @@ examples:
       request: Create a vertical Agent kit for security operations handoff.
       workflow: agent-framework-extension
       agent: framework-extension-architect
+vertical_pack:
+    domain: multi-domain
+    maturity: guided
+    summary: Routes mixed user requests through structured intake, strong-model task decomposition, selected parallel domain workers, artifact-first join, audit, quality gate, and final report.
+    supported_tasks:
+        - domain routing
+        - task intake
+        - task decomposition
+        - selected parallel domain execution
+        - team handoff
+        - starter kit selection
+        - multi-domain report synthesis
+    required_inputs:
+        - primary domain or auto routing
+        - user goal
+        - target context
+        - desired output
+        - risk tolerance
+        - maximum parallel domains
+    tool_boundaries:
+        - Uses only selected domain worker tools and linked team template refs.
+        - Unselected domain workers do not run, reducing token and tool exposure.
+        - Keeps decomposition, worker handoffs, join, audit, and synthesis summary-first.
+        - Network-device work is routed to operations tools with authorized scope, host allowlists, dry-run plans, and evidence refs.
+    safety_gates:
+        - Route risky domains to approval-aware workflows.
+        - Require explicit authorization and scope for security, web, operations, and binary analysis work.
+        - Preserve unresolved decisions for operator review.
+    quality_gates:
+        - Requires decomposition with selected active branches.
+        - Requires selected worker summaries or explicit blockers.
+        - Requires integrated report, audit decision, token discipline, and risk handoff.
+    evidence_artifacts:
+        - intake summary
+        - multi-domain task graph
+        - selected domain worker reports
+        - integrated multi-domain report
+        - audit report
+        - final handoff report
+    simple_mode:
+        - Show goal, target, desired output, risk tolerance, selected domains, approvals, quality status, and final handoff.
+    expert_mode:
+        - Show active_branches, branch contracts, team template refs, policy refs, model routes, context budgets, artifacts, and audit evidence.
+    token_strategy:
+        - Route with compact intake fields.
+        - Use strong-model decomposition once, then run only selected domain workers.
+        - Pass branch contracts, summaries, structured fields, and artifact refs instead of full transcripts.
+        - Keep unselected branches out of execution, join, audit, and final handoff.
+    model_routes:
+        strong:
+            - task decomposition
+            - selected branch arbitration
+            - cross-domain aggregation
+            - final audit synthesis
+        worker:
+            - selected domain worker execution
+            - bounded domain analysis
+        verifier:
+            - quality gate review
 metadata:
     preset: multi-domain-agent
     recommended_agent: chat

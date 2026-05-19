@@ -67,6 +67,7 @@ GoFlow 内置了一组可以直接联动的领域资源：
 | 软件研发 | `software-engineering-kit` | 规划、实现、审计和质量门禁式代码变更流程 |
 | Web 安全 | `web-security-kit` | 页面与前端资源采集、证据化安全审查和风险报告 |
 | 二进制初筛 | `binary-analysis-kit` | 静态元数据、字符串、十六进制预览、团队评审和报告交接 |
+| 运维与网络设备规划 | `operations-runbook-kit` | 运维手册起草，以及带授权范围、设备发现、命令计划、干跑、回滚和审计证据的设备操作规划 |
 | 框架二开 | `agent-framework-kit` | 创建新 Agent、Skill、Tool、Workflow、Team、Policy、Kit 的起步资源 |
 
 ## 快速开始
@@ -309,7 +310,7 @@ Release 工作流会构建 Windows/Linux 二进制压缩包、生成 SBOM、签�
 
 复杂项目可以从 `complex-project-delivery` 工作流模板开始。它会先分析用户需求，产出功能需求和项目计划，等待用户确认后进入实现循环：每轮实现一个计划切片、验证、审查、更新计划，直到计划完成；最后执行整体验证并输出完成报告。单个边界任务可以使用 `plan-implement-audit`，它会完成澄清、规划、实现、验证、审计、质量门禁和最终报告。
 
-内置 Kit preset 包括 `multi-domain-agent`、`software-engineering`、`agent-framework`、`web-security`、`security-research`、`binary-analysis`、`documentation`、`operations-runbook` 和 `customer-support`。其中 `agent-framework` 用于二开 GoFlow 本身：创建新的垂直 Agent、Skill、Tool、Workflow、Team、Policy 或 Kit。
+内置 Kit preset 包括 `multi-domain-agent`、`software-engineering`、`agent-framework`、`web-security`、`security-research`、`binary-analysis`、`documentation`、`operations-runbook` 和 `customer-support`。其中 `operations-runbook` 会引用 `network_tools` 生成网络设备发现、命令计划和配置干跑的安全规划边界，但不会直接连接设备或下发配置；`agent-framework` 用于二开 GoFlow 本身：创建新的垂直 Agent、Skill、Tool、Workflow、Team、Policy 或 Kit。
 
 `binary-analysis` 在 materialize 时会生成静态二进制分析 MCP helper，内置 `binary_file_info`、`binary_strings` 和 `hex_preview`。二进制输入应使用普通路径，例如 `sample.bin`；`@file` 只用于 UTF-8 文本内容。这个 helper 也已经模板化：内置模板位于
 `internal/scaffold/templates/tools/python/binary-analysis-server.py.tmpl`，运行目录可以通过

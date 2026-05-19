@@ -3,6 +3,8 @@ primary:
   base_url: ${GOFLOW_BASE_URL}
   api_key: ${GOFLOW_API_KEY}
   model: ${GOFLOW_MODEL}
+  provider_message_fields:
+    - reasoning_content
   # Optional: set to backup after configs/providers/backup.yaml is configured.
   # fallback_provider: backup
   timeout: 60s

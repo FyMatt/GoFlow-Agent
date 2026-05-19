@@ -226,6 +226,10 @@ export function rebuildMemoryIndex() {
   return postJSON("/api/memory/rebuild", {});
 }
 
+export function updateMemorySolutionLifecycle(id, action, body = {}) {
+  return postJSON(`/api/memory/solutions/${encodeURIComponent(id)}/${encodeURIComponent(action)}`, body);
+}
+
 export function compactSessionContext(reason = "") {
   return postJSON("/api/session/compact", { reason });
 }

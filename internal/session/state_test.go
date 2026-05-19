@@ -403,8 +403,11 @@ func TestStateAgentRunResumeContextUsesContentAddressedStore(t *testing.T) {
 		Mode:         "chat",
 		SystemPrompt: "system",
 		Messages: []schema.Message{{
-			Role:    "user",
+			Role:    "assistant",
 			Content: messageContent,
+			ProviderFields: map[string]json.RawMessage{
+				"reasoning_content": json.RawMessage(`"private reasoning"`),
+			},
 		}},
 		SuspendedCalls: []schema.ToolCall{{
 			ID:        "call-1",
@@ -441,6 +444,9 @@ func TestStateAgentRunResumeContextUsesContentAddressedStore(t *testing.T) {
 	hydrated := *run.ResumeContext
 	if len(hydrated.Messages) != 1 || hydrated.Messages[0].Content != messageContent {
 		t.Fatalf("expected hydrated resume messages, got %#v", hydrated.Messages)
+	}
+	if got := string(hydrated.Messages[0].ProviderFields["reasoning_content"]); got != `"private reasoning"` {
+		t.Fatalf("expected hydrated provider fields, got %#v", hydrated.Messages[0].ProviderFields)
 	}
 	if len(hydrated.SuspendedCalls) != 1 || string(hydrated.SuspendedCalls[0].Arguments) != args {
 		t.Fatalf("expected hydrated suspended calls, got %#v", hydrated.SuspendedCalls)

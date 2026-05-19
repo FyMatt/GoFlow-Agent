@@ -230,10 +230,11 @@ func summarizeWorkflowTemplateGraph(graph WorkflowGraphDocument) workflowTemplat
 
 func workflowTemplateStageTeamTemplate(stage WorkflowGraphStageDocument) string {
 	nodeType := normalizeWorkflowSkillName(stage.NodeType)
-	if nodeType != "team" && nodeType != "agent_team" && nodeType != "team_template" {
-		return ""
+	keys := []string{"team_template_ref", "recommended_team"}
+	if nodeType == "team" || nodeType == "agent_team" || nodeType == "team_template" {
+		keys = append([]string{"team", "team_template", "template"}, keys...)
 	}
-	for _, key := range []string{"team", "team_template", "template"} {
+	for _, key := range keys {
 		if value := strings.TrimSpace(stage.Params[key]); value != "" {
 			return value
 		}

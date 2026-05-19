@@ -946,35 +946,15 @@ func copyAgentRunResumeContext(context AgentRunResumeContextSnapshot) AgentRunRe
 }
 
 func copyAgentRunMessages(messages []schema.Message) []schema.Message {
-	if len(messages) == 0 {
-		return nil
-	}
-	copied := make([]schema.Message, len(messages))
-	for i, message := range messages {
-		copied[i] = message
-		if message.ToolCall != nil {
-			call := copyAgentRunToolCall(*message.ToolCall)
-			copied[i].ToolCall = &call
-		}
-		copied[i].ToolCalls = copyAgentRunToolCalls(message.ToolCalls)
-	}
-	return copied
+	return schema.CopyMessages(messages)
 }
 
 func copyAgentRunToolCalls(calls []schema.ToolCall) []schema.ToolCall {
-	if len(calls) == 0 {
-		return nil
-	}
-	copied := make([]schema.ToolCall, len(calls))
-	for i, call := range calls {
-		copied[i] = copyAgentRunToolCall(call)
-	}
-	return copied
+	return schema.CopyToolCalls(calls)
 }
 
 func copyAgentRunToolCall(call schema.ToolCall) schema.ToolCall {
-	call.Arguments = append([]byte(nil), call.Arguments...)
-	return call
+	return schema.CopyToolCall(call)
 }
 
 func copyAgentRunSkill(skill schema.Skill) schema.Skill {

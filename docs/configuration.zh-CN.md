@@ -124,6 +124,14 @@ isolation_options:
 
 只要工具是第三方、生成的、写文件、执行命令、访问网络或处理不可信输入，就优先使用 Docker/Podman container isolation。
 
+内置 MCP server 包括：
+
+- `file_tools`：工作区文件读写和搜索。
+- `web_tools`：Web 搜索、URL 抓取、页面资源和浏览器证据采集。
+- `network_tools`：网络设备发现、命令计划和配置干跑规划；要求授权范围、主机白名单、命令白名单、回滚和审计证据，不直接连接设备或下发配置。
+- `skill_runner`：执行 Skill 中声明的确定性脚本。
+- `python_notes`：笔记、Python AST、JSON 查询和二进制初筛辅助工具。
+
 ## 工作区确认
 
 如果没有显式指定 workspace，GoFlow 会把当前执行目录作为默认 workspace，但在以下操作前要求确认：
@@ -251,3 +259,26 @@ CLI 可使用：
 - 可操作警告。
 - 可选目录为空这类 info。
 - 需要重启才生效的变更。
+## 工作流阶段级模型路由与预算
+
+复杂工程工作流可以在单个 stage 上覆盖模型路由，同时仍然保留 Agent
+自己的权限、工具策略和审批策略。例如：
+
+```yaml
+model:
+  provider: primary
+  model: strong-planner
+  max_tokens: 1600
+  temperature: 0.1
+context:
+  include: [previous.summary, files.changed]
+  max_tokens: 1800
+  prompt_max_tokens: 4200
+  request_max_tokens: 800
+  inputs_max_tokens: 1400
+  parameters_max_tokens: 600
+params:
+  worker_contract: engineering_v1
+```
+
+推荐做法是：强模型负责拆解、汇总、审计和恢复；低成本 worker 阶段执行边界清晰的小任务，并使用 `worker_contract: engineering_v1` 输出 `summary`、`changed_files`、`evidence`、`verification`、`blockers`、`next_actions`。`context.max_tokens` 控制选中的上游上下文，`prompt_max_tokens`、`request_max_tokens`、`inputs_max_tokens`、`parameters_max_tokens` 控制整个提示词、原始请求、映射输入和参数块。运行时会用明确标记截断，而不是静默丢失上下文。

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"testing"
 
+	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
@@ -35,6 +36,35 @@ func TestBuildCostRecommendationsUsesRecentWindow(t *testing.T) {
 	}
 	if hasCostRecommendation(recommendations, "agent_prompt_high") {
 		t.Fatalf("expected recent lighter samples to suppress stale agent-prompt warning, got %#v", recommendations)
+	}
+}
+
+func TestPromptCostDiagnosticsAggregatesToolSchemaSavings(t *testing.T) {
+	latest := schema.PromptBudget{
+		EstimatedPromptTokens:          1800,
+		ToolSchemaTokens:               700,
+		ExposedToolCount:               2,
+		FilteredToolCount:              3,
+		ToolSchemaEstimatedSavedTokens: 1200,
+		ToolSchemaDiagnosticCount:      5,
+		PromptPrefixHash:               "stable",
+	}
+	diagnostics := promptCostDiagnostics(session.Snapshot{
+		PromptBudget:  &latest,
+		PromptBudgets: []schema.PromptBudget{latest},
+	})
+	if diagnostics.ToolSchemaEstimatedSavedTokens != 1200 {
+		t.Fatalf("expected aggregate tool schema savings, got %#v", diagnostics)
+	}
+	var feature *costControlFeature
+	for i := range diagnostics.Features {
+		if diagnostics.Features[i].Code == "tool_schema_minimization" {
+			feature = &diagnostics.Features[i]
+			break
+		}
+	}
+	if feature == nil || feature.SavedTokens != 1200 || feature.FilteredTools != 3 {
+		t.Fatalf("expected tool schema minimization feature to expose savings, got %#v", diagnostics.Features)
 	}
 }
 

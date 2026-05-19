@@ -88,8 +88,11 @@ Web Studio 应把返回的 field-level issue 显示到对应表单字段上。
 可以参考这些内置 MCP server 的实现方式：
 
 - `mcp_servers/file_tools/main.go`
+- `mcp_servers/network_tools/main.go`
 - `mcp_servers/skill_runner/main.go`
 - `mcp_servers/python_notes.py`
+
+如果要扩展运维或网络设备类工具，优先参考 `network_tools` 的契约。它只返回设备发现、命令计划和配置干跑计划，不打开网络连接。真实 SSH/API 连接器应继续保留授权范围、主机白名单、命令白名单、干跑、回滚、审批和证据引用字段，这样工作流仍能保持可审计和节省 token。
 
 ## 生效方式
 

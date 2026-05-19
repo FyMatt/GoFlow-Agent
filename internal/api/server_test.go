@@ -1373,13 +1373,22 @@ func TestServerMemoryEndpoints(t *testing.T) {
 	}
 	runtimeRef.SetMemoryStore(store)
 	if _, err := store.RecordTask(memory.TaskSummary{
-		UserGoal:      "fix login validation",
-		KeyDecisions:  []string{"validate email before saving"},
-		ModifiedFiles: []string{"internal/auth/login.go"},
-		TestResults:   []string{"go test ./internal/auth passed"},
+		UserGoal:        "fix login validation",
+		KeyDecisions:    []string{"validate email before saving"},
+		ModifiedFiles:   []string{"internal/auth/login.go"},
+		TestResults:     []string{"go test ./internal/auth passed"},
+		ReusableLessons: []string{"store validation decisions as reusable solution memory"},
 	}); err != nil {
 		t.Fatalf("RecordTask: %v", err)
 	}
+	solutions, err := store.Solutions()
+	if err != nil {
+		t.Fatalf("Solutions: %v", err)
+	}
+	if len(solutions.Solutions) == 0 {
+		t.Fatalf("expected learned solution")
+	}
+	solutionID := solutions.Solutions[0].ID
 	server := NewServer(runtimeRef)
 
 	updateReq := httptest.NewRequest(http.MethodPut, "/api/memory/project", strings.NewReader(`{"content":"# Project Memory\n\n## Project Goal\n- Ship login flow\n"}`))
@@ -1402,6 +1411,21 @@ func TestServerMemoryEndpoints(t *testing.T) {
 	server.ServeHTTP(dashboardResp, dashboardReq)
 	if dashboardResp.Code != http.StatusOK || !strings.Contains(dashboardResp.Body.String(), `"project"`) || !strings.Contains(dashboardResp.Body.String(), `"file_index"`) {
 		t.Fatalf("expected memory dashboard, got %d body=%s", dashboardResp.Code, dashboardResp.Body.String())
+	}
+
+	retireReq := httptest.NewRequest(http.MethodPost, "/api/memory/solutions/"+solutionID+"/retire", strings.NewReader(`{"reason":"schema changed","superseded_by":"sol-next"}`))
+	retireReq.Header.Set("Content-Type", "application/json")
+	retireResp := httptest.NewRecorder()
+	server.ServeHTTP(retireResp, retireReq)
+	if retireResp.Code != http.StatusOK || !strings.Contains(retireResp.Body.String(), `"retired":true`) || !strings.Contains(retireResp.Body.String(), `"superseded_by":"sol-next"`) {
+		t.Fatalf("expected retired solution response, got %d body=%s", retireResp.Code, retireResp.Body.String())
+	}
+
+	restoreReq := httptest.NewRequest(http.MethodPost, "/api/memory/solutions/"+solutionID+"/restore", nil)
+	restoreResp := httptest.NewRecorder()
+	server.ServeHTTP(restoreResp, restoreReq)
+	if restoreResp.Code != http.StatusOK || strings.Contains(restoreResp.Body.String(), `"retired":true`) {
+		t.Fatalf("expected restored solution response, got %d body=%s", restoreResp.Code, restoreResp.Body.String())
 	}
 }
 
@@ -1817,6 +1841,7 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 	if !strings.Contains(templateListResponse.Body.String(), `"web-research-risk"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"human-input-security-review"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"software-quality-gate"`) ||
+		!strings.Contains(templateListResponse.Body.String(), `"engineering-parallel-delivery"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"security-audit-evidence-gate"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"task-decomposition-plan"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"multi-domain-intake-router"`) {
@@ -1828,6 +1853,12 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 		!strings.Contains(templateListResponse.Body.String(), `"has_control_flow":true`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"has_data_flow":true`) {
 		t.Fatalf("expected workflow template composition metadata, got %s", templateListResponse.Body.String())
+	}
+	workflowOptionsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-options", nil)
+	workflowOptionsResponse := httptest.NewRecorder()
+	server.ServeHTTP(workflowOptionsResponse, workflowOptionsRequest)
+	if workflowOptionsResponse.Code != http.StatusOK || !strings.Contains(workflowOptionsResponse.Body.String(), `"providers"`) || !strings.Contains(workflowOptionsResponse.Body.String(), `"name":"primary"`) {
+		t.Fatalf("expected workflow options to include provider choices, got %d body=%s", workflowOptionsResponse.Code, workflowOptionsResponse.Body.String())
 	}
 
 	templateRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-templates/human-input-security-review", nil)
@@ -1860,17 +1891,34 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 	server.ServeHTTP(multiDomainTemplateResponse, multiDomainTemplateRequest)
 	if multiDomainTemplateResponse.Code != http.StatusOK ||
 		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"category":"starter"`) ||
-		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"domain-router"`) ||
-		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"software-task-team"`) ||
-		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"customer-support-team"`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"decompose"`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"active_branches_ref"`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"wait_for_ref"`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"software-worker"`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"ops-worker"`) ||
 		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"quality_gate"`) {
 		t.Fatalf("expected multi-domain starter template graph, got %d body=%s", multiDomainTemplateResponse.Code, multiDomainTemplateResponse.Body.String())
 	}
 	if !strings.Contains(multiDomainTemplateResponse.Body.String(), `"team_templates":["`) ||
-		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"software-task-team"`) ||
 		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"agents":["`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"software-engineer"`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"web-security-researcher"`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"node_type":"parallel"`) ||
+		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"node_type":"join"`) ||
 		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"has_quality_gate":true`) {
 		t.Fatalf("expected multi-domain starter template detail metadata, got %d body=%s", multiDomainTemplateResponse.Code, multiDomainTemplateResponse.Body.String())
+	}
+	parallelDeliveryTemplateRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-templates/engineering-parallel-delivery", nil)
+	parallelDeliveryTemplateResponse := httptest.NewRecorder()
+	server.ServeHTTP(parallelDeliveryTemplateResponse, parallelDeliveryTemplateRequest)
+	if parallelDeliveryTemplateResponse.Code != http.StatusOK ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"model":{"provider":"primary"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"model":{"provider":"backup"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"node_type":"parallel"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"node_type":"join"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"node_type":"quality_gate"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"quality-resolution-plan"`) {
+		t.Fatalf("expected parallel engineering delivery template with model routes, got %d body=%s", parallelDeliveryTemplateResponse.Code, parallelDeliveryTemplateResponse.Body.String())
 	}
 
 	forkTemplateRequest := httptest.NewRequest(http.MethodPost, "/api/resources/workflow-templates/forked-security-review/fork", strings.NewReader(`{
@@ -2731,6 +2779,9 @@ examples:
 		materialized.Kit.Metadata["recommended_team"] != "acme-linked-team" {
 		t.Fatalf("expected generated recommended metadata, got %#v", materialized.Kit.Metadata)
 	}
+	if !containsString(materialized.Kit.Tools, "acme-linked-helper") || containsString(materialized.Kit.Tools, "network_tools/device_discovery_plan") {
+		t.Fatalf("expected software materialized kit to keep only software-relevant tools plus helper, got %#v", materialized.Kit.Tools)
+	}
 	for _, want := range []string{"kit", "agent", "skill", "tool", "workflow", "workflow_template", "team_template", "policy_rule"} {
 		if !kitBundleSavedResourceKindExists(materialized.Resources, want) {
 			t.Fatalf("expected materialized resources to include %s, got %#v", want, materialized.Resources)
@@ -2781,11 +2832,43 @@ examples:
 	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "mcp_servers", "acme-binary-helper.py"), "\"name\": \"hex_preview\"")
 	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "templates", "teams", "acme-binary-team.yaml"), "acme-binary-helper/binary_file_info")
 	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "templates", "teams", "acme-binary-team.yaml"), "acme-binary-helper/hex_preview")
+
+	operationsRequest := httptest.NewRequest(http.MethodPost, "/api/resources/kits/scaffolds/operations-runbook?materialize=1", strings.NewReader(`{
+		"name": "acme-ops",
+		"title": "ACME Operations Kit"
+	}`))
+	operationsRequest.Header.Set("Content-Type", "application/json")
+	operationsResponse := httptest.NewRecorder()
+	server.ServeHTTP(operationsResponse, operationsRequest)
+	if operationsResponse.Code != http.StatusCreated {
+		t.Fatalf("expected operations materialized scaffold create 201, got %d body=%s", operationsResponse.Code, operationsResponse.Body.String())
+	}
+	var operationsMaterialized kitScaffoldResponse
+	if err := json.NewDecoder(operationsResponse.Body).Decode(&operationsMaterialized); err != nil {
+		t.Fatalf("decode operations materialized scaffold response: %v", err)
+	}
+	for _, want := range []string{"acme-ops-helper", "network_tools/device_discovery_plan", "network_tools/device_command_plan", "network_tools/device_config_dry_run"} {
+		if !containsString(operationsMaterialized.Kit.Tools, want) {
+			t.Fatalf("expected operations materialized kit tools to include %q, got %#v", want, operationsMaterialized.Kit.Tools)
+		}
+	}
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "configs", "agents", "acme-ops-agent.yaml"), "network_tools/device_discovery_plan")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "skills", "acme-ops-skill", "SKILL.md"), "network_tools/device_config_dry_run")
+	assertFileContains(t, filepath.Join(runtimeRef.RuntimeHome(), "templates", "workflows", "acme-ops-template.yaml"), "domain_tool_boundaries")
 }
 
 func kitBundleSavedResourceKindExists(items []kitBundleSavedResource, kind string) bool {
 	for _, item := range items {
 		if item.Kind == kind {
+			return true
+		}
+	}
+	return false
+}
+
+func containsString(values []string, want string) bool {
+	for _, value := range values {
+		if value == want {
 			return true
 		}
 	}
@@ -8524,13 +8607,20 @@ func TestSessionSnapshotForAPIStripsHeavyRunDetailsByDefault(t *testing.T) {
 			PendingArgumentsSummary: large,
 		},
 		AgentRuns: []session.AgentRunSnapshot{{
-			ID:      "agent-1",
-			Status:  "completed",
-			Output:  large,
-			Events:  []session.AgentRunEventSnapshot{{Seq: 1, Content: large}},
-			Result:  &schema.AgentResult{Output: large, ToolResults: []schema.ToolResult{{CallID: "call-1", ToolName: "read_file", Content: large}}},
+			ID:     "agent-1",
+			Status: "completed",
+			Output: large,
+			Events: []session.AgentRunEventSnapshot{{Seq: 1, Content: large}},
+			Result: &schema.AgentResult{Output: large, ToolResults: []schema.ToolResult{{CallID: "call-1", ToolName: "read_file", Content: large}}, ResponseMessage: schema.Message{
+				Role:           "assistant",
+				ProviderFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`"private agent reasoning"`)},
+			}},
 			Mode:    "fix",
 			AgentID: "fixer",
+			ResumeContext: &session.AgentRunResumeContextSnapshot{Messages: []schema.Message{{
+				Role:           "assistant",
+				ProviderFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`"private resume reasoning"`)},
+			}}},
 		}},
 		WorkflowRuns: []session.WorkflowRunSnapshot{{
 			ID:              "wf-1",
@@ -8540,9 +8630,16 @@ func TestSessionSnapshotForAPIStripsHeavyRunDetailsByDefault(t *testing.T) {
 			PendingCallID:   "call-4",
 			PendingToolName: "write_file",
 			PendingArgs:     large,
+			PendingResponseMessage: schema.Message{
+				Role:           "assistant",
+				ProviderFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`"private workflow reasoning"`)},
+			},
 			CompletedStages: []session.WorkflowRunStageSnapshot{{
-				Stage:  "plan",
-				Result: schema.AgentResult{Output: large, ToolResults: []schema.ToolResult{{CallID: "call-2", ToolName: "read_file", Content: large}}},
+				Stage: "plan",
+				Result: schema.AgentResult{Output: large, ToolResults: []schema.ToolResult{{CallID: "call-2", ToolName: "read_file", Content: large}}, ResponseMessage: schema.Message{
+					Role:           "assistant",
+					ProviderFields: map[string]json.RawMessage{"reasoning_content": json.RawMessage(`"private stage reasoning"`)},
+				}},
 			}},
 			Artifacts: []session.WorkflowRunArtifact{{ID: "artifact-1", Content: large}},
 			Events:    []session.WorkflowRunEventSnapshot{{Seq: 3, Content: large}},
@@ -8588,6 +8685,12 @@ func TestSessionSnapshotForAPIStripsHeavyRunDetailsByDefault(t *testing.T) {
 	}
 	if full.Artifacts[0].Content != "" {
 		t.Fatalf("expected top-level session artifact content hidden even in full runtime snapshot")
+	}
+	if len(full.AgentRuns[0].Result.ResponseMessage.ProviderFields) != 0 || len(full.AgentRuns[0].ResumeContext.Messages[0].ProviderFields) != 0 {
+		t.Fatalf("expected agent provider metadata hidden from API snapshot, got %#v", full.AgentRuns[0])
+	}
+	if len(full.WorkflowRuns[0].PendingResponseMessage.ProviderFields) != 0 || len(full.WorkflowRuns[0].CompletedStages[0].Result.ResponseMessage.ProviderFields) != 0 {
+		t.Fatalf("expected workflow provider metadata hidden from API snapshot, got %#v", full.WorkflowRuns[0])
 	}
 }
 

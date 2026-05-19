@@ -482,6 +482,7 @@ tier=default`)}"></textarea></label>
                 <label class="span-6 stack"><span>${t("catalog.providerBaseURL")}</span><input id="providerBaseURL" placeholder="${examplePlaceholder("https://api.example.com")}"></label>
                 <label class="span-6 stack"><span>${t("catalog.providerAPIKey")}</span><input id="providerAPIKey" type="password" autocomplete="off" placeholder="${examplePlaceholder("sk-... or ${OPENAI_API_KEY}")}"></label>
                 <label class="span-6 stack"><span>${t("catalog.providerModels")}</span><input id="providerModels" placeholder="${examplePlaceholder("claude-opus-4-6, claude-sonnet-4-5")}"></label>
+                <label class="span-6 stack"><span>${t("catalog.providerMessageFields")}</span><input id="providerMessageFields" placeholder="${examplePlaceholder("reasoning_content")}"></label>
                 <label class="span-6 stack"><span>${t("catalog.metadata")}</span><textarea id="providerMetadata" class="compact-textarea" placeholder="${examplePlaceholder(`owner=platform
 tier=default`)}"></textarea></label>
                 <div class="span-12 item muted">${t("catalog.providerSetupHelp")}</div>
@@ -2805,6 +2806,51 @@ function renderKitSummaryLinks(kit = {}) {
   </div>`;
 }
 
+function kitVerticalPack(source = {}) {
+  return source?.vertical_pack && typeof source.vertical_pack === "object" ? source.vertical_pack : null;
+}
+
+function renderKitDomainContract(source = {}) {
+  const pack = kitVerticalPack(source);
+  if (!pack) return "";
+  const tasks = Array.isArray(pack.supported_tasks) ? pack.supported_tasks.slice(0, 3) : [];
+  const inputs = Array.isArray(pack.required_inputs) ? pack.required_inputs.slice(0, 3) : [];
+  const boundaries = Array.isArray(pack.tool_boundaries) ? pack.tool_boundaries.slice(0, 2) : [];
+  const quality = Array.isArray(pack.quality_gates) ? pack.quality_gates.slice(0, 2) : [];
+  const evidence = Array.isArray(pack.evidence_artifacts) ? pack.evidence_artifacts.slice(0, 2) : [];
+  const simple = Array.isArray(pack.simple_mode) ? pack.simple_mode.slice(0, 1) : [];
+  const expert = Array.isArray(pack.expert_mode) ? pack.expert_mode.slice(0, 1) : [];
+  const token = Array.isArray(pack.token_strategy) ? pack.token_strategy.slice(0, 2) : [];
+  const routes = pack.model_routes && typeof pack.model_routes === "object" ? pack.model_routes : {};
+  const strongRoutes = Array.isArray(routes.strong) ? routes.strong.slice(0, 2) : [];
+  const workerRoutes = Array.isArray(routes.worker) ? routes.worker.slice(0, 2) : [];
+  const rows = [
+    { label: t("catalog.verticalMaturity"), value: pack.maturity || "" },
+    { label: t("catalog.verticalSupportedTasks"), value: tasks.join(", ") },
+    { label: t("catalog.verticalRequiredInputs"), value: inputs.join(", ") },
+    { label: t("catalog.verticalToolBoundaries"), value: boundaries.join(" ") },
+    { label: t("catalog.verticalQualityGates"), value: quality.join(" ") },
+    { label: t("catalog.verticalEvidence"), value: evidence.join(", ") },
+    { label: t("catalog.verticalSimpleMode"), value: simple.join(" ") },
+    { label: t("catalog.verticalExpertMode"), value: expert.join(" ") },
+    { label: t("catalog.verticalTokenStrategy"), value: token.join(" ") },
+    { label: t("catalog.verticalModelRoutes"), value: [...strongRoutes, ...workerRoutes].join(", ") }
+  ].filter(row => row.value);
+  if (!rows.length) return "";
+  return `<div class="kit-domain-contract">
+    <div>
+      <strong>${escapeHTML(t("catalog.verticalContractTitle"))}</strong>
+      <span>${escapeHTML(localizedText(pack.summary || pack.domain || t("catalog.verticalContractHelp")))}</span>
+    </div>
+    <div class="kit-domain-contract-grid">
+      ${rows.map(row => `<span title="${escapeHTML(localizedText(row.value))}">
+        <small>${escapeHTML(row.label)}</small>
+        <b>${escapeHTML(localizedText(row.value))}</b>
+      </span>`).join("")}
+    </div>
+  </div>`;
+}
+
 function kitScaffoldRank(scaffold) {
   const name = kitScaffoldName(scaffold);
   const ranks = {
@@ -2858,6 +2904,7 @@ function renderKitScaffold(scaffold) {
       </div>
       <p>${escapeHTML(localizedText(scaffold?.description || t("catalog.kitDescriptionDefault")))}</p>
       ${recommendation.length ? `<div class="kit-scaffold-recommendation">${recommendation.map(item => `<span>${escapeHTML(localizedText(item))}</span>`).join("")}</div>` : ""}
+      ${renderKitDomainContract(scaffold)}
       ${renderKitRunPath(scaffold)}
       ${renderKitResourceChain(scaffold)}
       ${renderKitScaffoldLinks(scaffold)}
@@ -3009,6 +3056,7 @@ function renderKit(kit) {
     <strong>${escapeHTML(title)}</strong>
     ${resourceKicker([sourceChip("custom", true), name, localizedText(kit?.category || t("catalog.resourceKit"))])}
     <div class="muted kit-resource-description">${escapeHTML(localizedText(kit?.description || t("catalog.kitDescriptionDefault")))}</div>
+    ${renderKitDomainContract(kit)}
     ${renderKitRunPath(kit, { saved: true })}
     ${renderKitResourceChain(kit, { saved: true })}
     ${renderKitSummaryLinks(kit)}
@@ -5008,6 +5056,7 @@ function collectProviderForm(root) {
     base_url: root.querySelector("#providerBaseURL").value.trim(),
     api_key: root.querySelector("#providerAPIKey").value.trim(),
     models: splitList(root.querySelector("#providerModels").value),
+    provider_message_fields: splitList(root.querySelector("#providerMessageFields").value),
     metadata: parseMap(root.querySelector("#providerMetadata").value),
     description: root.querySelector("#providerDescription").value.trim()
   };
@@ -5240,6 +5289,7 @@ function loadProviderForm(root, doc) {
   root.querySelector("#providerBaseURL").value = doc?.base_url || doc?.baseURL || "";
   root.querySelector("#providerAPIKey").value = doc?.api_key || doc?.env_key || doc?.api_key_env || doc?.envKey || "";
   root.querySelector("#providerModels").value = (doc?.models || doc?.supported_models || []).join(", ");
+  root.querySelector("#providerMessageFields").value = (doc?.provider_message_fields || doc?.providerMessageFields || []).join(", ");
   root.querySelector("#providerMetadata").value = formatMap(doc?.metadata);
 }
 
@@ -7060,7 +7110,8 @@ function resourceValidationNormalizedFacts(normalized, type) {
     "outputs",
     "examples",
     "args",
-    "models"
+    "models",
+    "provider_message_fields"
   ];
   const facts = [];
   for (const field of fields) {
@@ -7108,7 +7159,8 @@ function resourceValidationNormalizedLabel(field, type) {
     outputs: t("catalog.nodeOutputsJSON"),
     examples: t("catalog.nodeExamplesJSON"),
     args: t("catalog.expressionArgsJSON"),
-    models: t("catalog.providerModels")
+    models: t("catalog.providerModels"),
+    provider_message_fields: t("catalog.providerMessageFields")
   };
   return labels[field] || localizedText(field || type || t("catalog.resourceBuilder"));
 }
@@ -7598,6 +7650,7 @@ function resourceValidationFieldDisplay(field, type = "") {
     api_key: t("catalog.providerAPIKey"),
     env_key: t("catalog.providerAPIKey"),
     fallback_provider: t("settings.field.fallbackProvider"),
+    provider_message_fields: t("catalog.providerMessageFields"),
     default_model: t("catalog.providerDefaultModel"),
     base_url: t("catalog.providerBaseURL"),
     allowed_tool_kinds: t("settings.field.allowedToolKinds"),

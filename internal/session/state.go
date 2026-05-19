@@ -541,6 +541,7 @@ type WorkflowSnapshot struct {
 	PendingArgumentsBytes        int                     `json:"pending_arguments_bytes,omitempty"`
 	PendingArgumentsStoredBytes  int                     `json:"pending_arguments_stored_bytes,omitempty"`
 	PendingArgumentsExternalized bool                    `json:"pending_arguments_externalized,omitempty"`
+	PendingResponseMessage       schema.Message          `json:"pending_response_message,omitempty"`
 	PendingSubWorkflowName       string                  `json:"pending_sub_workflow_name,omitempty"`
 	PendingSubWorkflowRunID      string                  `json:"pending_sub_workflow_run_id,omitempty"`
 	PendingSubWorkflowStatus     string                  `json:"pending_sub_workflow_status,omitempty"`
@@ -573,6 +574,7 @@ type WorkflowRunSnapshot struct {
 	PendingArgsBytes         int                         `json:"pending_arguments_bytes,omitempty"`
 	PendingArgsStoredBytes   int                         `json:"pending_arguments_stored_bytes,omitempty"`
 	PendingArgsExternalized  bool                        `json:"pending_arguments_externalized,omitempty"`
+	PendingResponseMessage   schema.Message              `json:"pending_response_message,omitempty"`
 	PendingSubWorkflowName   string                      `json:"pending_sub_workflow_name,omitempty"`
 	PendingSubWorkflowRunID  string                      `json:"pending_sub_workflow_run_id,omitempty"`
 	PendingSubWorkflowStatus string                      `json:"pending_sub_workflow_status,omitempty"`
@@ -766,6 +768,7 @@ func copyWorkflowSnapshot(snapshot WorkflowSnapshot) WorkflowSnapshot {
 		risk := copyToolRiskProfile(*snapshot.PendingToolRisk)
 		snapshot.PendingToolRisk = &risk
 	}
+	snapshot.PendingResponseMessage = schema.CopyMessage(snapshot.PendingResponseMessage)
 	return snapshot
 }
 

@@ -9,7 +9,7 @@ stages:
         - intake
       position:
         x: 180
-        "y": 330
+        "y": 289
     - name: intake
       node_type: agent
       agent: planner
@@ -44,8 +44,8 @@ stages:
       next:
         - plan
       position:
-        x: 460
-        "y": 290
+        x: 640
+        "y": 271
     - name: plan
       node_type: skill
       agent: planner
@@ -93,8 +93,8 @@ stages:
       next:
         - implement
       position:
-        x: 820
-        "y": 290
+        x: 1160
+        "y": 271
     - name: implement
       node_type: agent
       agent: fixer
@@ -140,8 +140,8 @@ stages:
       next:
         - verify
       position:
-        x: 1180
-        "y": 290
+        x: 1680
+        "y": 271
     - name: verify
       node_type: skill
       agent: auditor
@@ -182,8 +182,8 @@ stages:
       next:
         - audit
       position:
-        x: 1540
-        "y": 290
+        x: 2200
+        "y": 271
     - name: audit
       node_type: skill
       agent: auditor
@@ -226,8 +226,8 @@ stages:
       next:
         - quality
       position:
-        x: 1900
-        "y": 290
+        x: 2720
+        "y": 271
     - name: quality
       node_type: quality_gate
       agent: ""
@@ -245,8 +245,8 @@ stages:
         pass: final-handoff
         warning: operator-review
       position:
-        x: 2260
-        "y": 290
+        x: 3240
+        "y": 271
     - name: operator-review
       node_type: checkpoint
       agent: ""
@@ -256,7 +256,7 @@ stages:
       next:
         - final-handoff
       position:
-        x: 2620
+        x: 3760
         "y": 150
     - name: revise
       node_type: skill
@@ -282,8 +282,8 @@ stages:
       next:
         - final-handoff
       position:
-        x: 2620
-        "y": 430
+        x: 3760
+        "y": 392
     - name: final-handoff
       node_type: skill
       agent: planner
@@ -337,12 +337,12 @@ stages:
       next:
         - output
       position:
-        x: 2980
-        "y": 290
+        x: 4280
+        "y": 271
     - name: output
       node_type: end
       agent: ""
       skill: ""
       position:
-        x: 3340
-        "y": 310
+        x: 4800
+        "y": 289

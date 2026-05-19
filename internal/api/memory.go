@@ -11,6 +11,11 @@ type memoryProjectUpdateRequest struct {
 	Content string `json:"content"`
 }
 
+type memorySolutionLifecycleRequest struct {
+	Reason       string `json:"reason,omitempty"`
+	SupersededBy string `json:"superseded_by,omitempty"`
+}
+
 func (s *Server) handleMemoryDashboard(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
@@ -111,6 +116,67 @@ func (s *Server) handleMemoryRebuild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, index)
+}
+
+func (s *Server) handleMemorySolutionAction(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	store := s.runtime.MemoryStore()
+	if store == nil {
+		http.Error(w, "memory store not configured", http.StatusServiceUnavailable)
+		return
+	}
+	id, action := parseMemorySolutionActionPath(r.URL.Path)
+	if id == "" || action == "" {
+		http.NotFound(w, r)
+		return
+	}
+	var req memorySolutionLifecycleRequest
+	if r.Body != nil {
+		decoder := json.NewDecoder(r.Body)
+		if err := decoder.Decode(&req); err != nil && err.Error() != "EOF" {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+	}
+	var (
+		kb  any
+		err error
+	)
+	switch action {
+	case "retire":
+		kb, err = store.RetireSolution(id, req.Reason, req.SupersededBy)
+	case "restore":
+		kb, err = store.RestoreSolution(id)
+	default:
+		http.NotFound(w, r)
+		return
+	}
+	if err != nil {
+		if strings.Contains(err.Error(), "not found") {
+			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, kb)
+}
+
+func parseMemorySolutionActionPath(rawPath string) (string, string) {
+	rest := strings.TrimPrefix(rawPath, "/api/memory/solutions/")
+	parts := strings.Split(strings.Trim(rest, "/"), "/")
+	if len(parts) != 2 {
+		return "", ""
+	}
+	id := strings.TrimSpace(parts[0])
+	action := strings.ToLower(strings.TrimSpace(parts[1]))
+	if id == "" || action == "" {
+		return "", ""
+	}
+	return id, action
 }
 
 func (s *Server) handleArtifactObjectItem(w http.ResponseWriter, r *http.Request) {

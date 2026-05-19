@@ -188,13 +188,15 @@ Team 模板用于多 Agent 协作组合，Kit 用于打包领域资源。它们�
 
 `--materialize` / `--full` 会一次生成互相关联的 Kit、Agent、Skill、Docker/Podman 容器化 MCP Tool、Workflow、Workflow Template、Team Template 和 Policy Rule。生成的 Workflow 会把前一个节点的输出传给后一个节点：Team 上下文进入 Plan 节点，Plan 输出进入 Policy Gate，通过后进入 Report，未通过进入 Revise。
 
-如果需要最适合新手的通用入口，优先使用 `multi-domain-agent`。它会创建或引用一套互相关联的多领域 starter：软件研发、Web 安全、安全研究、二进制分析、文档、运维、客服和框架二开请求都会被路由到对应的 Workflow Template 与 Team Template。这个 preset 的目标是让用户直观看到 Agent、Skill、Tool、Team、Workflow Template、Policy Rule 和 Kit 如何联动，而不是只看到彼此孤立的样例。
+如果需要最适合新手的通用入口，优先使用 `multi-domain-agent`。它会创建或引用一套互相关联的多领域 starter：先用强模型拆解宽泛请求，再只激活被选中的软件研发、Web 安全、安全研究、二进制分析、文档、运维、客服、平台或通用 worker 分支，并保留对应的 Team Template 引用供专家模式检查。这个 preset 的目标是让用户直观看到 Agent、Skill、Tool、Team、Workflow Template、Policy Rule 和 Kit 如何联动，而不是只看到彼此孤立的样例。
+
+`operations-runbook` 是当前运维领域的专业 starter。它的垂直包会包含网络设备规划契约，用于在引入任何真实执行型连接器前，先收集授权范围、允许主机、凭据引用、命令白名单、回滚步骤和证据引用。
 
 `agent-framework` preset 专门用于二开 GoFlow 本身。它会引用 `agent-framework-extension` 工作流模板和 `framework-extension-team` 团队模板，用来设计、审查并生成新的垂直 Agent、Skill、Tool、Workflow、Team、Policy 或 Kit。
 
 Workflow Template 已经从 Go 代码硬编码迁移为文件化资源。发布二进制会内嵌 `internal/agent/templates/workflows/*.yaml` 作为默认模板目录；运行目录可以通过 `templates/workflows/*.yaml` 添加或覆盖工作流模板。例如 `templates/workflows/plan-fix-audit.yaml` 会覆盖内置 `plan-fix-audit` 模板，并同时影响 `/workflow-templates`、Workflow 创建、校验、fork 和 Studio 模板选择。
 
-复杂实现任务优先使用 `complex-project-delivery` 工作流模板。它会先分析用户需求、整理功能需求和验收标准，生成项目计划并等待用户确认；确认后循环执行“实现一个计划切片 -> 验证 -> 审查 -> 更新计划”，直到计划全部完成，再执行整体验证并输出最终完成报告。边界清晰的单个交付任务可以使用 `plan-implement-audit`，它会完成澄清、规划、实现、验证、审计、质量门禁和最终报告。
+复杂实现任务优先使用 `complex-project-delivery` 工作流模板。它会先分析用户需求、整理功能需求和验收标准，生成项目计划并等待用户确认；确认后循环执行“实现一个计划切片 -> 验证 -> 审查 -> 更新计划”，直到计划全部完成，再执行整体验证并输出最终完成报告。需要拆分成多个小任务并行执行、再汇总报告的工程任务，可以使用 `engineering-parallel-delivery`：强模型负责拆解、汇总和审计，轻量模型执行边界清晰的工作切片，并通过 `model.max_tokens` 与 `context.max_tokens` 控制 token。边界清晰的单个交付任务可以使用 `plan-implement-audit`，它会完成澄清、规划、实现、验证、审计、质量门禁和最终报告。
 
 内置 Workflow Template 和 Team Template 现在也有质量校验：工作流模板必须能通过图校验，产出可回放产物，声明验收标准，经过质量门禁或策略门禁，并最终输出报告、交接、发布摘要或工作流草案；团队模板必须包含角色职责、交接关系、共享黑板引用和输出契约。
 

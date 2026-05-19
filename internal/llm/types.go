@@ -23,11 +23,36 @@ type openAIStreamOptions struct {
 }
 
 type openAIMessage struct {
-	Role       string           `json:"role"`
-	Content    string           `json:"content,omitempty"`
-	Name       string           `json:"name,omitempty"`
-	ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID string           `json:"tool_call_id,omitempty"`
+	Role           string           `json:"role"`
+	Content        string           `json:"content,omitempty"`
+	Name           string           `json:"name,omitempty"`
+	ToolCalls      []openAIToolCall `json:"tool_calls,omitempty"`
+	ToolCallID     string           `json:"tool_call_id,omitempty"`
+	ProviderFields providerFields   `json:"-"`
+}
+
+func (m openAIMessage) MarshalJSON() ([]byte, error) {
+	type alias openAIMessage
+	payload := struct {
+		alias
+		ProviderFields providerFields `json:"-"`
+	}{alias: alias(m)}
+	data, err := json.Marshal(payload)
+	if err != nil {
+		return nil, err
+	}
+	return mergeProviderFields(data, m.ProviderFields)
+}
+
+func (m *openAIMessage) UnmarshalJSON(data []byte) error {
+	type alias openAIMessage
+	var decoded alias
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		return err
+	}
+	*m = openAIMessage(decoded)
+	m.ProviderFields = extractProviderFields(data, nil)
+	return nil
 }
 
 type openAITool struct {
@@ -63,13 +88,56 @@ type openAIResponse struct {
 type openAIStreamChunk struct {
 	Choices []struct {
 		Delta struct {
-			Role      string                 `json:"role"`
-			Content   string                 `json:"content"`
-			ToolCalls []openAIStreamToolCall `json:"tool_calls"`
+			Role           string                 `json:"role"`
+			Content        string                 `json:"content"`
+			ToolCalls      []openAIStreamToolCall `json:"tool_calls"`
+			ProviderFields providerFields         `json:"-"`
 		} `json:"delta"`
 		FinishReason string `json:"finish_reason"`
 	} `json:"choices"`
 	Usage openAIUsage `json:"usage,omitempty"`
+}
+
+func (c *openAIStreamChunk) UnmarshalJSON(data []byte) error {
+	var raw struct {
+		Choices []struct {
+			Delta        json.RawMessage `json:"delta"`
+			FinishReason string          `json:"finish_reason"`
+		} `json:"choices"`
+		Usage openAIUsage `json:"usage,omitempty"`
+	}
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return err
+	}
+	c.Usage = raw.Usage
+	c.Choices = make([]struct {
+		Delta struct {
+			Role           string                 `json:"role"`
+			Content        string                 `json:"content"`
+			ToolCalls      []openAIStreamToolCall `json:"tool_calls"`
+			ProviderFields providerFields         `json:"-"`
+		} `json:"delta"`
+		FinishReason string `json:"finish_reason"`
+	}, len(raw.Choices))
+	for i, choice := range raw.Choices {
+		c.Choices[i].FinishReason = choice.FinishReason
+		if len(choice.Delta) == 0 {
+			continue
+		}
+		var delta struct {
+			Role      string                 `json:"role"`
+			Content   string                 `json:"content"`
+			ToolCalls []openAIStreamToolCall `json:"tool_calls"`
+		}
+		if err := json.Unmarshal(choice.Delta, &delta); err != nil {
+			return err
+		}
+		c.Choices[i].Delta.Role = delta.Role
+		c.Choices[i].Delta.Content = delta.Content
+		c.Choices[i].Delta.ToolCalls = delta.ToolCalls
+		c.Choices[i].Delta.ProviderFields = extractProviderFields(choice.Delta, nil)
+	}
+	return nil
 }
 
 type openAIUsage struct {
@@ -98,25 +166,60 @@ type partialToolCall struct {
 }
 
 type streamAssembler struct {
-	role         string
-	content      strings.Builder
-	toolCalls    []partialToolCall
-	finishReason string
-	usage        openAIUsage
+	role                  string
+	content               strings.Builder
+	toolCalls             []partialToolCall
+	providerFields        map[string]*strings.Builder
+	allowedProviderFields map[string]struct{}
+	finishReason          string
+	usage                 openAIUsage
 }
 
-func newOpenAIRequest(req schema.ChatRequest) openAIRequest {
+type providerFields map[string]json.RawMessage
+
+var reservedOpenAIMessageFields = map[string]struct{}{
+	"role":         {},
+	"content":      {},
+	"name":         {},
+	"tool_call_id": {},
+	"tool_call":    {},
+	"tool_calls":   {},
+}
+
+func providerMessageFieldSet(fields []string) map[string]struct{} {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make(map[string]struct{}, len(fields))
+	for _, field := range fields {
+		field = strings.TrimSpace(field)
+		if field == "" {
+			continue
+		}
+		if !isProviderMessageFieldName(field) {
+			continue
+		}
+		out[field] = struct{}{}
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func newOpenAIRequest(req schema.ChatRequest, allowedProviderFields map[string]struct{}) openAIRequest {
 	messages := make([]openAIMessage, 0, len(req.Messages)+1)
 	if req.System != "" {
 		messages = append(messages, openAIMessage{Role: "system", Content: req.System})
 	}
 	for _, msg := range req.Messages {
 		messages = append(messages, openAIMessage{
-			Role:       msg.Role,
-			Content:    msg.Content,
-			Name:       msg.Name,
-			ToolCallID: msg.ToolCallID,
-			ToolCalls:  toOpenAIToolCalls(msg.ToolCalls),
+			Role:           msg.Role,
+			Content:        msg.Content,
+			Name:           msg.Name,
+			ToolCallID:     msg.ToolCallID,
+			ToolCalls:      toOpenAIToolCalls(msg.ToolCalls),
+			ProviderFields: providerFieldsForRequest(msg.ProviderFields, allowedProviderFields),
 		})
 	}
 
@@ -156,7 +259,7 @@ func toOpenAIToolCalls(calls []schema.ToolCall) []openAIToolCall {
 	return converted
 }
 
-func normalizeResponse(resp openAIResponse) (schema.ChatResponse, error) {
+func normalizeResponse(resp openAIResponse, allowedProviderFields map[string]struct{}) (schema.ChatResponse, error) {
 	if len(resp.Choices) == 0 {
 		return schema.ChatResponse{}, nil
 	}
@@ -174,9 +277,10 @@ func normalizeResponse(resp openAIResponse) (schema.ChatResponse, error) {
 	}
 	return schema.ChatResponse{
 		Message: schema.Message{
-			Role:      choice.Message.Role,
-			Content:   choice.Message.Content,
-			ToolCalls: toolCalls,
+			Role:           choice.Message.Role,
+			Content:        choice.Message.Content,
+			ToolCalls:      toolCalls,
+			ProviderFields: providerFieldsForSchema(choice.Message.ProviderFields, allowedProviderFields),
 		},
 		StopReason: choice.FinishReason,
 		ToolCalls:  toolCalls,
@@ -184,8 +288,8 @@ func normalizeResponse(resp openAIResponse) (schema.ChatResponse, error) {
 	}, nil
 }
 
-func newStreamAssembler() *streamAssembler {
-	return &streamAssembler{}
+func newStreamAssembler(allowedProviderFields map[string]struct{}) *streamAssembler {
+	return &streamAssembler{allowedProviderFields: allowedProviderFields}
 }
 
 func (a *streamAssembler) ingest(chunk openAIStreamChunk) ([]schema.StreamEvent, bool, error) {
@@ -204,6 +308,7 @@ func (a *streamAssembler) ingest(chunk openAIStreamChunk) ([]schema.StreamEvent,
 		a.content.WriteString(choice.Delta.Content)
 		events = append(events, schema.StreamEvent{Type: schema.StreamEventText, Content: choice.Delta.Content})
 	}
+	a.appendProviderFields(choice.Delta.ProviderFields)
 	for _, call := range choice.Delta.ToolCalls {
 		for len(a.toolCalls) <= call.Index {
 			a.toolCalls = append(a.toolCalls, partialToolCall{})
@@ -230,6 +335,33 @@ func (a *streamAssembler) ingest(chunk openAIStreamChunk) ([]schema.StreamEvent,
 	return events, false, nil
 }
 
+func (a *streamAssembler) appendProviderFields(fields providerFields) {
+	if len(fields) == 0 || len(a.allowedProviderFields) == 0 {
+		return
+	}
+	for key, raw := range fields {
+		if _, ok := a.allowedProviderFields[key]; !ok {
+			continue
+		}
+		if len(raw) == 0 {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err != nil || value == "" {
+			continue
+		}
+		if a.providerFields == nil {
+			a.providerFields = make(map[string]*strings.Builder)
+		}
+		builder := a.providerFields[key]
+		if builder == nil {
+			builder = &strings.Builder{}
+			a.providerFields[key] = builder
+		}
+		builder.WriteString(value)
+	}
+}
+
 func (a *streamAssembler) response() schema.ChatResponse {
 	toolCalls := make([]schema.ToolCall, 0, len(a.toolCalls))
 	for _, call := range a.toolCalls {
@@ -245,14 +377,164 @@ func (a *streamAssembler) response() schema.ChatResponse {
 	}
 	return schema.ChatResponse{
 		Message: schema.Message{
-			Role:      defaultString(a.role, "assistant"),
-			Content:   a.content.String(),
-			ToolCalls: toolCalls,
+			Role:           defaultString(a.role, "assistant"),
+			Content:        a.content.String(),
+			ToolCalls:      toolCalls,
+			ProviderFields: streamProviderFieldsForSchema(a.providerFields, a.allowedProviderFields),
 		},
 		StopReason: a.finishReason,
 		ToolCalls:  toolCalls,
 		Usage:      a.usage.tokenUsage(),
 	}
+}
+
+func providerFieldsForRequest(fields map[string]json.RawMessage, allowed map[string]struct{}) providerFields {
+	if len(fields) == 0 || len(allowed) == 0 {
+		return nil
+	}
+	out := make(providerFields, len(fields))
+	for key, value := range fields {
+		if _, ok := allowed[key]; !ok {
+			continue
+		}
+		if !isProviderMessageFieldName(key) {
+			continue
+		}
+		if len(value) == 0 {
+			continue
+		}
+		out[key] = append(json.RawMessage(nil), value...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func providerFieldsForSchema(fields providerFields, allowed map[string]struct{}) map[string]json.RawMessage {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(fields))
+	for key, value := range fields {
+		if len(allowed) == 0 {
+			continue
+		}
+		if _, ok := allowed[key]; !ok {
+			continue
+		}
+		if !isProviderMessageFieldName(key) {
+			continue
+		}
+		if len(value) == 0 {
+			continue
+		}
+		out[key] = append(json.RawMessage(nil), value...)
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func streamProviderFieldsForSchema(fields map[string]*strings.Builder, allowed map[string]struct{}) map[string]json.RawMessage {
+	if len(fields) == 0 {
+		return nil
+	}
+	out := make(map[string]json.RawMessage, len(fields))
+	for key, builder := range fields {
+		if builder == nil || builder.Len() == 0 {
+			continue
+		}
+		if len(allowed) == 0 {
+			continue
+		}
+		if _, ok := allowed[key]; !ok {
+			continue
+		}
+		if !isProviderMessageFieldName(key) {
+			continue
+		}
+		raw, err := json.Marshal(builder.String())
+		if err != nil {
+			continue
+		}
+		out[key] = raw
+	}
+	if len(out) == 0 {
+		return nil
+	}
+	return out
+}
+
+func extractProviderFields(data []byte, allowed map[string]struct{}) providerFields {
+	var raw map[string]json.RawMessage
+	if err := json.Unmarshal(data, &raw); err != nil {
+		return nil
+	}
+	fields := make(providerFields)
+	for key, value := range raw {
+		if len(allowed) > 0 {
+			if _, ok := allowed[key]; !ok {
+				continue
+			}
+		}
+		if !isProviderMessageFieldName(key) {
+			continue
+		}
+		if len(value) == 0 || string(value) == "null" {
+			continue
+		}
+		fields[key] = append(json.RawMessage(nil), value...)
+	}
+	if len(fields) == 0 {
+		return nil
+	}
+	return fields
+}
+
+func mergeProviderFields(data []byte, fields providerFields) ([]byte, error) {
+	if len(fields) == 0 {
+		return data, nil
+	}
+	var payload map[string]json.RawMessage
+	if err := json.Unmarshal(data, &payload); err != nil {
+		return nil, err
+	}
+	for key, value := range fields {
+		if !isProviderMessageFieldName(key) {
+			continue
+		}
+		if len(value) == 0 {
+			continue
+		}
+		payload[key] = append(json.RawMessage(nil), value...)
+	}
+	return json.Marshal(payload)
+}
+
+func isProviderMessageFieldName(field string) bool {
+	field = strings.TrimSpace(field)
+	if field == "" || len(field) > 128 {
+		return false
+	}
+	if _, reserved := reservedOpenAIMessageFields[field]; reserved {
+		return false
+	}
+	hasLetter := false
+	for _, r := range field {
+		switch {
+		case r >= 'a' && r <= 'z':
+			hasLetter = true
+		case r >= 'A' && r <= 'Z':
+			hasLetter = true
+		case r >= '0' && r <= '9':
+		case r == '_' || r == '-':
+		default:
+			return false
+		}
+	}
+	return hasLetter
 }
 
 func (u openAIUsage) hasUsage() bool {

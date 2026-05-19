@@ -1,4 +1,4 @@
-import { checkWorkspaceRequirement, escapeHTML, fetchWorkflowRun, fetchWorkflowRunActions, fetchWorkflowRuns, renderSafeMarkdown, request, startWorkflowRun, streamWorkflowRunEvents, workflowRunEventsURL } from "../api.js";
+import { checkWorkspaceRequirement, escapeHTML, fetchWorkflowRun, fetchWorkflowRunActions, fetchWorkflowRuns, renderSafeMarkdown, request, startWorkflowRun, streamWorkflowRunEvents, submitWorkflowRunInput, workflowRunEventsURL } from "../api.js";
 import { currentLanguage, localizedText, t } from "../i18n.js";
 import { loadResourceCapabilities, resourceAction, resourceActionLabel, resourceActionMethod, resourceActionPath, resourceCapability } from "../resource_actions.js";
 
@@ -564,6 +564,21 @@ export async function renderWorkflows(root) {
                   <label data-field="outputs"><span>${t("workflow.outputsMap")}</span><textarea id="stageOutputsMap" class="compact-textarea" placeholder="${escapeHTML(t("workflow.outputsMapPlaceholder"))}"></textarea><small class="workflow-field-hint">${t("workflow.outputsMapHelp")}</small></label>
                   <div data-field="outputs" id="stageOutputsMapBuilder" class="workflow-map-builder"></div>
                 </div>
+                <div data-field="model" id="stageModelRoute" class="workflow-model-route">
+                  <div class="workflow-model-route-head">
+                    <div>
+                      <strong>${t("workflow.modelRouteTitle")}</strong>
+                      <span>${t("workflow.modelRouteHelp")}</span>
+                    </div>
+                    <span id="stageModelRouteBadge">${t("workflow.modelRouteDefault")}</span>
+                  </div>
+                  <div class="workflow-model-route-grid">
+                    <label><span>${t("workflow.modelRouteProvider")}</span><select id="stageModelProvider">${workflowProviderOptions().map(option => `<option value="${escapeHTML(option.name)}">${escapeHTML(workflowProviderLabel(option))}</option>`).join("")}</select><small class="workflow-field-hint">${t("workflow.modelRouteProviderHelp")}</small></label>
+                    <label><span>${t("workflow.modelRouteModel")}</span><input id="stageModelName" placeholder="${escapeHTML(t("workflow.modelRouteModelPlaceholder"))}"><small class="workflow-field-hint">${t("workflow.modelRouteModelHelp")}</small></label>
+                    <label><span>${t("workflow.modelRouteMaxTokens")}</span><input id="stageModelMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("900")}"><small class="workflow-field-hint">${t("workflow.modelRouteMaxTokensHelp")}</small></label>
+                    <label><span>${t("workflow.modelRouteTemperature")}</span><input id="stageModelTemperature" type="number" min="0" max="2" step="0.1" placeholder="${examplePlaceholder("0.1")}"><small class="workflow-field-hint">${t("workflow.modelRouteTemperatureHelp")}</small></label>
+                  </div>
+                </div>
                   <div id="stageContextContract" class="workflow-context-contract">
                   <div class="workflow-context-contract-head">
                     <div>
@@ -581,6 +596,12 @@ export async function renderWorkflows(root) {
                   <div class="workflow-context-controls">
                     <label><span>${t("workflow.contextMaxTokens")}</span><input id="stageContextMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("4000")}"><small class="workflow-field-hint">${t("workflow.contextMaxTokensHelp")}</small></label>
                     <label class="check workflow-context-retrieval"><input id="stageContextRetrievalEnabled" type="checkbox"> ${t("workflow.contextRetrievalEnabled")}</label>
+                  </div>
+                  <div class="workflow-context-budget-grid expert-mode-section">
+                    <label><span>${t("workflow.contextPromptMaxTokens")}</span><input id="stageContextPromptMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("6000")}"><small class="workflow-field-hint">${t("workflow.contextPromptMaxTokensHelp")}</small></label>
+                    <label><span>${t("workflow.contextRequestMaxTokens")}</span><input id="stageContextRequestMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("1200")}"><small class="workflow-field-hint">${t("workflow.contextRequestMaxTokensHelp")}</small></label>
+                    <label><span>${t("workflow.contextInputsMaxTokens")}</span><input id="stageContextInputsMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("1600")}"><small class="workflow-field-hint">${t("workflow.contextInputsMaxTokensHelp")}</small></label>
+                    <label><span>${t("workflow.contextParametersMaxTokens")}</span><input id="stageContextParametersMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("800")}"><small class="workflow-field-hint">${t("workflow.contextParametersMaxTokensHelp")}</small></label>
                   </div>
                   <label><span>${t("workflow.contextRetrievalQuery")}</span><input id="stageContextRetrievalQuery" placeholder="${escapeHTML(t("workflow.contextRetrievalQueryPlaceholder"))}"><small class="workflow-field-hint">${t("workflow.contextRetrievalQueryHelp")}</small></label>
                 </div>
@@ -704,6 +725,11 @@ function createRuntimeState() {
     actionsRunID: "",
     actionInFlight: false,
     activeActionName: "",
+    pendingInput: null,
+    inputSubmitting: false,
+    inputError: "",
+    inputDraftKey: "",
+    inputDraft: {},
     lastRevealKey: "",
     lastRevealAt: 0,
     timeline: [],
@@ -895,15 +921,55 @@ function selectedStageRuntime() {
   return runtimeForStage(stage);
 }
 
+function workflowRunSnapshotFromWorkflowEvent(event = {}) {
+  const result = workflowResultPayloadFromEvent(event);
+  const status = String(event.workflow_status || result?.status || "").trim();
+  const runID = String(event.run_id || result?.run_id || state.runtime.runID || "").trim();
+  if (!status && !result) return null;
+  return {
+    id: runID,
+    name: event.workflow_name || result?.name || state.runtime.workflowName || state.graph.name || "",
+    status,
+    request: result?.request || state.runtime.runInput || "",
+    next_stage: event.next_stage || result?.next_stage || state.runtime.currentStage || "",
+    approval_prompt: result?.approval_prompt || event.content || "",
+    pending_input: Boolean(result?.pending_input) || status === "awaiting_input",
+    pending_input_fields: result?.pending_input_fields || [],
+    completed_stages: result?.completed_stages || [],
+    summary: result?.final_summary || result?.summary || ""
+  };
+}
+
+function workflowResultPayloadFromEvent(event = {}) {
+  if (event.workflow_result && typeof event.workflow_result === "object") return event.workflow_result;
+  const content = String(event.content || "").trim();
+  if (!content || !/^[\[{]/.test(content)) return null;
+  try {
+    const parsed = JSON.parse(content);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
 function ingestRuntimeEvent(event) {
   if (!event || typeof event !== "object") return false;
   state.runtime.timeline.push(event);
   if (state.runtime.timeline.length > 80) state.runtime.timeline.shift();
 
   if (event.type === "workflow_result") {
-    state.runtime.workflowName = event.workflow_name || state.graph.name || "";
-    state.runtime.workflowStatus = event.workflow_status || "";
-    state.runtime.status = workflowStatusState(event.workflow_status);
+    const run = workflowRunSnapshotFromWorkflowEvent(event);
+    if (run) {
+      applyWorkflowStudioRunSnapshot(run);
+    } else {
+      state.runtime.workflowName = event.workflow_name || state.graph.name || "";
+      state.runtime.workflowStatus = event.workflow_status || "";
+      state.runtime.status = workflowStatusState(event.workflow_status);
+    }
+    if (workflowStudioShouldFollowStatus(state.runtime.workflowStatus)) {
+      invalidateWorkflowRuntimeActions();
+      return true;
+    }
     const finalText = workflowFinalOutputFromEvent(event);
     if (finalText) {
       state.runtime.finalOutput = finalText;
@@ -968,7 +1034,17 @@ function ingestRuntimeEvent(event) {
 }
 
 function workflowFinalOutputFromEvent(event = {}) {
-  return workflowDisplayText(event.final_message || event.output || event.summary || event.content || "");
+  const result = workflowResultPayloadFromEvent(event);
+  const content = workflowDisplayText(event.content || "");
+  const contentLooksStructured = /^[\[{]/.test(content.trim());
+  return workflowDisplayText(
+    event.final_message ||
+    event.output ||
+    event.summary ||
+    result?.final_summary ||
+    result?.summary ||
+    (contentLooksStructured ? "" : content)
+  );
 }
 
 function workflowRuntimeStageOutputText(runtime = {}) {
@@ -1314,6 +1390,177 @@ function workflowRuntimeNeedsAction() {
   return ["waiting", "paused", "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow"].includes(status);
 }
 
+function workflowRuntimeStatusIsAwaitingInput(status) {
+  return String(status || "").toLowerCase() === "awaiting_input";
+}
+
+function workflowRuntimePendingInputFromRun(run = {}) {
+  const snapshotFields = normalizeWorkflowInputFields(run.pending_input_fields || run.input_fields || []);
+  const fallbackFields = snapshotFields.length ? [] : workflowRuntimeFallbackInputFields(run);
+  const fields = snapshotFields.length ? snapshotFields : fallbackFields;
+  const awaiting = workflowRuntimeStatusIsAwaitingInput(run.status) || Boolean(run.pending_input) || fields.length > 0;
+  if (!awaiting) return null;
+  return {
+    runID: String(run.id || run.run_id || run.runID || state.runtime.runID || "").trim(),
+    workflowName: String(run.name || run.workflow_name || state.runtime.workflowName || state.graph.name || "").trim(),
+    stage: String(run.next_stage || run.current_stage || state.runtime.currentStage || "").trim(),
+    fields,
+    detail: run.approval_prompt || run.prompt || t("chat.awaitingInputHelp"),
+    summary: run.summary || run.final_summary || "",
+    status: run.status || "awaiting_input"
+  };
+}
+
+function workflowRuntimeFallbackInputFields(run = {}) {
+  const stage = workflowRuntimeFallbackInputStage(run);
+  if (!stage?.params) return [];
+  for (const key of ["fields_json", "input_fields", "input_fields_json", "input_schema", "schema"]) {
+    const fields = workflowRuntimeInputFieldsFromJSON(stage.params[key]);
+    if (fields.length) return fields;
+  }
+  const csvFields = String(stage.params.fields || "")
+    .split(",")
+    .map(item => item.trim())
+    .filter(Boolean)
+    .map(item => {
+      const [name, type] = item.split(":").map(part => part.trim());
+      return name ? { name, label: name, type: type || "string" } : null;
+    })
+    .filter(Boolean);
+  return normalizeWorkflowInputFields(csvFields);
+}
+
+function workflowRuntimeFallbackInputStage(run = {}) {
+  const wanted = String(run.next_stage || run.current_stage || state.runtime.currentStage || "").trim();
+  const stages = Array.isArray(state.graph?.stages) ? state.graph.stages : [];
+  if (wanted) {
+    const exact = stages.find(stage => stage?.name === wanted);
+    if (exact) return exact;
+  }
+  return stages.find(stage => normalizedNodeType(stage) === "input_gate" && workflowGraphStageHasInputFields(stage)) || null;
+}
+
+function workflowGraphStageHasInputFields(stage = {}) {
+  const params = stage.params || {};
+  return Boolean(params.fields_json || params.input_fields || params.input_fields_json || params.input_schema || params.schema || params.fields);
+}
+
+function workflowRuntimeInputFieldsFromJSON(raw) {
+  const text = String(raw || "").trim();
+  if (!text) return [];
+  try {
+    const parsed = JSON.parse(text);
+    if (Array.isArray(parsed)) return normalizeWorkflowInputFields(parsed);
+    if (Array.isArray(parsed?.fields)) return normalizeWorkflowInputFields(parsed.fields);
+    if (parsed?.properties && typeof parsed.properties === "object") {
+      const required = new Set(Array.isArray(parsed.required) ? parsed.required.map(item => String(item)) : []);
+      return normalizeWorkflowInputFields(Object.entries(parsed.properties).map(([name, prop]) => ({
+        ...(prop && typeof prop === "object" ? prop : {}),
+        name,
+        label: prop?.label || prop?.title || name,
+        type: prop?.type || prop?.format || "string",
+        options: prop?.options || prop?.enum || [],
+        min: prop?.minimum ?? prop?.minLength ?? "",
+        max: prop?.maximum ?? prop?.maxLength ?? "",
+        required: required.has(name)
+      })));
+    }
+  } catch {
+    return [];
+  }
+  return [];
+}
+
+function workflowRuntimeInputKey(request) {
+  if (!request) return "";
+  const fields = (request.fields || []).map(field => `${field.name}:${field.type}:${field.defaultValue ?? ""}`).join("|");
+  return `${request.runID || ""}:${request.stage || ""}:${fields}`;
+}
+
+function clearWorkflowRuntimeInputDraft() {
+  state.runtime.inputDraftKey = "";
+  state.runtime.inputDraft = {};
+}
+
+function workflowRuntimeInputFormFromTarget(target) {
+  if (!target) return null;
+  if (target.matches?.("[data-workflow-runtime-input-form]")) return target;
+  return target.querySelector?.("[data-workflow-runtime-input-form]") || null;
+}
+
+function workflowRuntimeInputFormContainsFocus(container) {
+  const form = workflowRuntimeInputFormFromTarget(container);
+  return Boolean(form && form.contains(document.activeElement));
+}
+
+function workflowRuntimeInputFormIsActive(container, inputKey) {
+  if (!inputKey || container?.dataset?.workflowRuntimeInputKey !== inputKey) return false;
+  return workflowRuntimeInputFormContainsFocus(container);
+}
+
+function captureWorkflowRuntimeInputDraft(target) {
+  const form = workflowRuntimeInputFormFromTarget(target);
+  const key = workflowRuntimeInputKey(state.runtime.pendingInput);
+  if (!form || !key) return;
+  const draft = {};
+  form.querySelectorAll("[data-field-name]").forEach(node => {
+    const name = node.dataset.fieldName || "";
+    if (!name) return;
+    if (node.dataset.fieldType === "boolean") {
+      draft[name] = Boolean(node.checked);
+    } else if (node.multiple) {
+      draft[name] = Array.from(node.selectedOptions || []).map(option => option.value);
+    } else {
+      draft[name] = node.value ?? "";
+    }
+  });
+  state.runtime.inputDraftKey = key;
+  state.runtime.inputDraft = draft;
+}
+
+function workflowRuntimeFieldsWithDraft(fields) {
+  const key = workflowRuntimeInputKey(state.runtime.pendingInput);
+  const draft = state.runtime.inputDraft || {};
+  if (!key || state.runtime.inputDraftKey !== key || !draft || typeof draft !== "object") return fields;
+  return fields.map(field => {
+    if (!Object.prototype.hasOwnProperty.call(draft, field.name)) return field;
+    return {
+      ...field,
+      defaultValue: draft[field.name]
+    };
+  });
+}
+
+function syncWorkflowRuntimeInputFormState(container) {
+  const form = workflowRuntimeInputFormFromTarget(container);
+  if (!form) return;
+  const busy = Boolean(state.runtime.inputSubmitting);
+  form.setAttribute("aria-busy", busy ? "true" : "false");
+  const error = form.querySelector("[data-workflow-runtime-input-error]");
+  if (error) {
+    if (state.runtime.inputError) {
+      error.textContent = state.runtime.inputError;
+      error.classList.remove("hidden");
+    } else {
+      error.textContent = "";
+      error.classList.add("hidden");
+    }
+  }
+  form.querySelectorAll("input, select, textarea, button").forEach(node => {
+    node.disabled = busy;
+    node.setAttribute("aria-disabled", busy ? "true" : "false");
+  });
+  const submit = form.querySelector("[data-workflow-runtime-input-submit]");
+  if (submit) {
+    submit.textContent = busy ? t("common.loading") : t("chat.submitWorkflowInput");
+    if (busy) {
+      submit.setAttribute("aria-busy", "true");
+    } else {
+      submit.removeAttribute("aria-busy");
+    }
+  }
+}
+
 function renderWorkflowRuntimeActions(root) {
   const containers = root.querySelectorAll("#workflowRuntimeActions, #workflowRuntimeActionsAside");
   if (!containers.length) return;
@@ -1323,15 +1570,22 @@ function renderWorkflowRuntimeActions(root) {
       container.classList.add("hidden");
       container.innerHTML = "";
       container.dataset.runtimeActionsHtml = "";
+      container.dataset.workflowRuntimeInputKey = "";
     });
+    clearWorkflowRuntimeInputDraft();
     return;
   }
+  containers.forEach(container => {
+    if (workflowRuntimeInputFormContainsFocus(container)) captureWorkflowRuntimeInputDraft(container);
+  });
   const visible = workflowVisibleRuntimeActions();
-  if (!visible.length && state.runtime.actionsStatus !== "loading" && !state.runtime.actionsError) {
+  const inputForm = renderWorkflowRuntimeInputForm();
+  if (!inputForm && !visible.length && state.runtime.actionsStatus !== "loading" && !state.runtime.actionsError) {
     containers.forEach(container => {
       container.classList.add("hidden");
       container.innerHTML = "";
       container.dataset.runtimeActionsHtml = "";
+      container.dataset.workflowRuntimeInputKey = "";
     });
     return;
   }
@@ -1359,21 +1613,379 @@ function renderWorkflowRuntimeActions(root) {
       </div>
       ${state.runtime.actionsStatus === "loading" && visible.length ? `<span>${escapeHTML(t("workflow.runtimeActionsRefreshing"))}</span>` : ""}
     </div>
+    ${inputForm}
     ${body}
     ${unavailable ? `<p class="workflow-runtime-action-help">${escapeHTML(unavailable)}</p>` : ""}
     ${error}`;
+  const currentInputKey = workflowRuntimeInputKey(state.runtime.pendingInput);
   containers.forEach(container => {
     container.classList.remove("hidden");
     container.classList.toggle("is-action-pending", !!state.runtime.actionInFlight);
     container.setAttribute("aria-busy", state.runtime.actionInFlight || state.runtime.actionsStatus === "loading" ? "true" : "false");
-    if (container.dataset.runtimeActionsHtml !== nextHTML || container.innerHTML !== nextHTML) {
+    if (workflowRuntimeInputFormIsActive(container, currentInputKey)) {
+      syncWorkflowRuntimeActionButtons(container);
+      return;
+    }
+    if (container.dataset.runtimeActionsHtml !== nextHTML) {
       container.innerHTML = nextHTML;
       container.dataset.runtimeActionsHtml = nextHTML;
+      container.dataset.workflowRuntimeInputKey = currentInputKey;
       bindWorkflowRuntimeActionButtons(root, container);
     } else {
+      container.dataset.workflowRuntimeInputKey = currentInputKey;
       syncWorkflowRuntimeActionButtons(container);
     }
   });
+}
+
+function renderWorkflowRuntimeInputForm() {
+  const request = state.runtime.pendingInput;
+  if (!request || !workflowRuntimeStatusIsAwaitingInput(state.runtime.workflowStatus)) return "";
+  const fields = workflowRuntimeFieldsWithDraft(request.fields || []);
+  const summary = workflowRuntimeInputSummary(request);
+  const error = state.runtime.inputError
+    ? `<div class="workflow-input-error" data-workflow-runtime-input-error>${escapeHTML(state.runtime.inputError)}</div>`
+    : `<div class="workflow-input-error hidden" data-workflow-runtime-input-error></div>`;
+  return `<section class="workflow-runtime-input">
+    <div class="workflow-runtime-input-head">
+      <div>
+        <strong>${escapeHTML(t("chat.awaitingInputTitle"))}</strong>
+        <small>${escapeHTML(localizedText(request.detail || t("chat.awaitingInputHelp")))}</small>
+      </div>
+      <span>${escapeHTML(summary)}</span>
+    </div>
+    <form class="workflow-input-form" data-workflow-runtime-input-form novalidate aria-busy="${state.runtime.inputSubmitting ? "true" : "false"}">
+      <div class="workflow-input-grid">
+        ${fields.length ? renderWorkflowInputFields(fields) : `<div class="workflow-runtime-actions-loading">${escapeHTML(t("chat.awaitingInputDetail"))}</div>`}
+      </div>
+      ${error}
+      <div class="workflow-input-actions">
+        <span class="muted">${escapeHTML(t("chat.awaitingInputDetail"))}</span>
+        <button type="submit" class="primary" data-workflow-runtime-input-submit${state.runtime.inputSubmitting ? " disabled aria-disabled=\"true\" aria-busy=\"true\"" : ""}>${escapeHTML(state.runtime.inputSubmitting ? t("common.loading") : t("chat.submitWorkflowInput"))}</button>
+      </div>
+    </form>
+  </section>`;
+}
+
+function workflowRuntimeInputSummary(request = {}) {
+  const parts = [];
+  if (request.workflowName) parts.push(request.workflowName);
+  if (request.stage) parts.push(request.stage);
+  const count = Array.isArray(request.fields) ? request.fields.length : 0;
+  if (count) parts.push(t("chat.workflowInputCount", { count }));
+  return parts.join(" / ") || t("chat.awaitingInputDetail");
+}
+
+function normalizeWorkflowInputFields(fields) {
+  if (!Array.isArray(fields)) return [];
+  return fields
+    .map(field => normalizeWorkflowInputField(field))
+    .filter(Boolean);
+}
+
+function normalizeWorkflowInputField(field) {
+  if (!field) return null;
+  if (typeof field === "string") {
+    const name = field.trim();
+    return name ? {
+      name,
+      type: "string",
+      label: name,
+      description: "",
+      placeholder: "",
+      required: false,
+      defaultValue: "",
+      options: [],
+      rows: 4,
+      min: "",
+      max: "",
+      step: "",
+      pattern: "",
+      multiple: false,
+      advanced: false,
+      group: ""
+    } : null;
+  }
+  if (typeof field !== "object") return null;
+  const name = String(field.name || field.key || field.id || "").trim();
+  if (!name) return null;
+  const options = normalizeWorkflowInputOptions(field.options || field.enum || field.values || []);
+  const type = normalizeWorkflowInputType(field.type || field.kind || field.format || "string", options);
+  return {
+    name,
+    type,
+    label: String(field.label || field.title || name).trim(),
+    description: String(field.description || field.help || "").trim(),
+    placeholder: String(field.placeholder || "").trim(),
+    required: Boolean(field.required),
+    defaultValue: field.default ?? field.default_value ?? "",
+    options,
+    rows: Number.parseInt(field.rows, 10) || (["json", "array", "object"].includes(type) ? 6 : 4),
+    min: field.min ?? field.minimum ?? "",
+    max: field.max ?? field.maximum ?? "",
+    step: field.step ?? "",
+    pattern: String(field.pattern || "").trim(),
+    multiple: Boolean(field.multiple),
+    advanced: Boolean(field.advanced),
+    group: String(field.group || "").trim()
+  };
+}
+
+function normalizeWorkflowInputOptions(options) {
+  if (!Array.isArray(options)) return [];
+  return options.map(option => {
+    if (option && typeof option === "object") {
+      const rawValue = option.value ?? option.id ?? option.name ?? option.label;
+      const value = rawValue == null ? "" : String(rawValue).trim();
+      const label = String(option.label ?? option.name ?? value).trim();
+      return value ? { value, label: label || value } : null;
+    }
+    const value = String(option ?? "").trim();
+    return value ? { value, label: value } : null;
+  }).filter(Boolean);
+}
+
+function normalizeWorkflowInputType(type, options = []) {
+  const normalized = String(type || "string").trim().toLowerCase();
+  if (normalized === "enum" || options.length) return "select";
+  if (normalized === "multiline") return "textarea";
+  if (normalized === "int") return "integer";
+  if (normalized === "float" || normalized === "double") return "number";
+  if (normalized === "bool" || normalized === "checkbox") return "boolean";
+  if (normalized === "datetime-local") return "datetime";
+  if (["string", "text", "textarea", "number", "integer", "select", "url", "path", "file", "json", "password", "email", "date", "time", "datetime", "hidden", "boolean", "array", "object"].includes(normalized)) {
+    return normalized;
+  }
+  return "string";
+}
+
+function renderWorkflowInputFields(fields) {
+  const hidden = fields.filter(field => field.type === "hidden").map(renderWorkflowInputField).join("");
+  const primaryFields = fields.filter(field => field.type !== "hidden" && !field.advanced);
+  const advancedFields = fields.filter(field => field.type !== "hidden" && field.advanced);
+  const primary = renderWorkflowInputFieldGroups(primaryFields);
+  const advanced = advancedFields.length
+    ? `<details class="workflow-input-advanced"><summary><span>${escapeHTML(t("chat.workflowInputAdvanced"))}</span><small>${escapeHTML(t("chat.workflowInputAdvancedHelp"))}</small></summary>${renderWorkflowInputFieldGroups(advancedFields)}</details>`
+    : "";
+  return `${hidden}${primary}${advanced}`;
+}
+
+function renderWorkflowInputFieldGroups(fields) {
+  if (!fields.length) return "";
+  const groups = [];
+  const byGroup = new Map();
+  for (const field of fields) {
+    const group = field.group || "";
+    if (!byGroup.has(group)) {
+      byGroup.set(group, []);
+      groups.push(group);
+    }
+    byGroup.get(group).push(field);
+  }
+  return groups.map(group => {
+    const body = byGroup.get(group).map(renderWorkflowInputField).join("");
+    if (!group) return body;
+    return `
+      <section class="workflow-input-group">
+        <div class="workflow-input-group-head">
+          <strong>${escapeHTML(group)}</strong>
+          <span>${escapeHTML(t("chat.workflowInputGroupCount", { count: byGroup.get(group).length }))}</span>
+        </div>
+        <div>${body}</div>
+      </section>`;
+  }).join("");
+}
+
+function renderWorkflowInputField(field) {
+  const name = escapeHTML(field.name);
+  const label = escapeHTML(localizedText(field.label || field.name));
+  const description = field.description ? `<small>${escapeHTML(localizedText(field.description))}</small>` : "";
+  const required = field.required ? `<em>${escapeHTML(t("common.required"))}</em>` : `<em>${escapeHTML(t("common.optional"))}</em>`;
+  const value = workflowInputDefaultValue(field);
+  const meta = workflowInputFieldMeta(field);
+  if (field.type === "hidden") {
+    return `<input type="hidden" value="${escapeHTML(String(value || ""))}" data-field-name="${name}" data-field-type="hidden">`;
+  }
+  const attrs = workflowInputFieldAttrs(field);
+  if (field.type === "select") {
+    const multiple = field.multiple ? " multiple" : "";
+    const selectedValues = workflowInputSelectedValues(field, value);
+    const options = [
+      field.required ? "" : `<option value="">${escapeHTML(t("common.none"))}</option>`,
+      ...field.options.map(option => `<option value="${escapeHTML(option.value)}"${selectedValues.has(option.value) ? " selected" : ""}>${escapeHTML(localizedText(option.label || option.value))}</option>`)
+    ].filter(Boolean).join("");
+    return `<label class="workflow-input-field"><span class="workflow-input-field-title"><span>${label}</span>${required}</span>${description}<select data-field-name="${name}" data-field-type="select"${multiple}${attrs}>${options}</select>${meta}</label>`;
+  }
+  if (["text", "textarea", "json", "array", "object"].includes(field.type)) {
+    const dataType = ["json", "array", "object"].includes(field.type) ? field.type : "textarea";
+    return `<label class="workflow-input-field workflow-input-field-wide"><span class="workflow-input-field-title"><span>${label}</span>${required}</span>${description}<textarea rows="${field.rows}" placeholder="${escapeHTML(localizedText(field.placeholder || workflowInputPlaceholder(field)))}" data-field-name="${name}" data-field-type="${escapeHTML(dataType)}"${attrs}>${escapeHTML(String(value || ""))}</textarea>${meta}</label>`;
+  }
+  if (field.type === "boolean") {
+    const checked = value === true || String(value).toLowerCase() === "true";
+    return `<label class="workflow-input-toggle"><input type="checkbox" data-field-name="${name}" data-field-type="boolean"${checked ? " checked" : ""}><span><strong>${label}</strong>${description || ""}${meta}</span></label>`;
+  }
+  const inputType = workflowInputHTMLType(field.type);
+  return `<label class="workflow-input-field"><span class="workflow-input-field-title"><span>${label}</span>${required}</span>${description}<input type="${inputType}" placeholder="${escapeHTML(localizedText(field.placeholder || ""))}" value="${escapeHTML(String(value || ""))}" data-field-name="${name}" data-field-type="${escapeHTML(field.type || "string")}"${attrs}>${meta}</label>`;
+}
+
+function workflowInputDefaultValue(field) {
+  const value = field.defaultValue ?? "";
+  if (value && typeof value === "object") {
+    try {
+      return JSON.stringify(value, null, 2);
+    } catch {
+      return "";
+    }
+  }
+  return value;
+}
+
+function workflowInputSelectedValues(field, value) {
+  if (Array.isArray(value)) return new Set(value.map(item => String(item)));
+  const normalized = String(value ?? "");
+  if (field.multiple) {
+    return new Set(normalized.split(",").map(item => item.trim()).filter(Boolean));
+  }
+  return new Set(normalized ? [normalized] : []);
+}
+
+function workflowInputPlaceholder(field) {
+  if (field.type === "array") return "[\n  \"item\"\n]";
+  if (field.type === "object" || field.type === "json") return "{\n  \"key\": \"value\"\n}";
+  return "";
+}
+
+function workflowInputFieldMeta(field) {
+  const chips = [workflowInputTypeLabel(field)];
+  if (field.multiple) chips.push(t("chat.workflowInputMetaMultiple"));
+  if (field.min !== "" || field.max !== "") {
+    chips.push(t("chat.workflowInputMetaRange", {
+      min: field.min !== "" ? field.min : "-",
+      max: field.max !== "" ? field.max : "-"
+    }));
+  }
+  if (field.pattern) chips.push(t("chat.workflowInputMetaPattern"));
+  return `<span class="workflow-input-meta">${chips.map(chip => `<span>${escapeHTML(chip)}</span>`).join("")}</span>`;
+}
+
+function workflowInputTypeLabel(field) {
+  const type = field.multiple ? "multiple" : field.type || "string";
+  return t(`chat.workflowInputType.${type}`);
+}
+
+function workflowInputHTMLType(type) {
+  if (type === "number" || type === "integer") return "number";
+  if (["url", "password", "email", "date", "time"].includes(type)) return type;
+  if (type === "datetime") return "datetime-local";
+  if (type === "file" || type === "path") return "text";
+  return "text";
+}
+
+function workflowInputFieldAttrs(field) {
+  const attrs = [];
+  if (field.required) attrs.push("required");
+  if (field.type === "number" || field.type === "integer") {
+    if (field.min !== "") attrs.push(`min="${escapeHTML(field.min)}"`);
+    if (field.max !== "") attrs.push(`max="${escapeHTML(field.max)}"`);
+    if (field.step !== "") attrs.push(`step="${escapeHTML(field.step)}"`);
+    if (field.type === "integer" && field.step === "") attrs.push('step="1"');
+  } else {
+    if (isIntegerString(field.min)) attrs.push(`minlength="${escapeHTML(field.min)}"`);
+    if (isIntegerString(field.max)) attrs.push(`maxlength="${escapeHTML(field.max)}"`);
+    if (field.pattern) attrs.push(`pattern="${escapeHTML(field.pattern)}"`);
+  }
+  return attrs.length ? ` ${attrs.join(" ")}` : "";
+}
+
+function isIntegerString(value) {
+  return /^-?\d+$/.test(String(value ?? "").trim());
+}
+
+function collectWorkflowInputValues(container, fields) {
+  const values = {};
+  container.querySelectorAll(".workflow-input-invalid").forEach(node => node.classList.remove("workflow-input-invalid"));
+  for (const field of fields || []) {
+    const node = container.querySelector(`[data-field-name="${cssEscape(field.name)}"]`);
+    if (!node) continue;
+    const isBoolean = node.dataset.fieldType === "boolean";
+    const isMultiple = node.multiple;
+    let value;
+    if (isBoolean) {
+      value = Boolean(node.checked);
+    } else if (isMultiple) {
+      value = Array.from(node.selectedOptions || []).map(option => option.value).filter(Boolean);
+    } else {
+      value = String(node.value ?? "").trim();
+    }
+    if (field.required) {
+      const missing = isBoolean ? false : Array.isArray(value) ? value.length === 0 : !value;
+      if (missing) {
+        markWorkflowInputInvalid(node);
+        throw new Error(`${field.label || field.name} ${t("chat.workflowInputRequiredSuffix")}`);
+      }
+    }
+    if (!isBoolean && value !== "" && typeof node.checkValidity === "function" && !node.checkValidity()) {
+      markWorkflowInputInvalid(node);
+      throw new Error(`${field.label || field.name} ${t("chat.workflowInputInvalidSuffix")}`);
+    }
+    if (!isBoolean && value !== "" && field.pattern && !workflowInputPatternMatches(field.pattern, value)) {
+      markWorkflowInputInvalid(node);
+      throw new Error(`${field.label || field.name} ${t("chat.workflowInputInvalidSuffix")}`);
+    }
+    if (!isBoolean && !Array.isArray(value) && value === "" && !field.required) continue;
+    if (Array.isArray(value) && !value.length && !field.required) continue;
+    try {
+      values[field.name] = coerceWorkflowInputValue(field, value);
+    } catch (error) {
+      markWorkflowInputInvalid(node);
+      throw error;
+    }
+  }
+  return values;
+}
+
+function coerceWorkflowInputValue(field, value) {
+  if (value == null) return value;
+  if (field.type === "boolean") return Boolean(value);
+  if (field.multiple || Array.isArray(value)) return value;
+  if (field.type === "number") {
+    const parsed = Number.parseFloat(value);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  if (field.type === "integer") {
+    const parsed = Number.parseInt(value, 10);
+    return Number.isFinite(parsed) ? parsed : value;
+  }
+  if (["json", "array", "object"].includes(field.type)) {
+    try {
+      const parsed = JSON.parse(value);
+      if (field.type === "array" && !Array.isArray(parsed)) throw new Error(t("chat.workflowInputJSONInvalid"));
+      if (field.type === "object" && (!parsed || Array.isArray(parsed) || typeof parsed !== "object")) throw new Error(t("chat.workflowInputJSONInvalid"));
+      return parsed;
+    } catch {
+      throw new Error(`${field.label || field.name} ${t("chat.workflowInputJSONInvalid")}`);
+    }
+  }
+  return value;
+}
+
+function markWorkflowInputInvalid(node) {
+  const field = node.closest(".workflow-input-field, .workflow-input-toggle");
+  field?.classList.add("workflow-input-invalid");
+  if (typeof node.focus === "function") node.focus();
+}
+
+function workflowInputPatternMatches(pattern, value) {
+  try {
+    return new RegExp(pattern).test(String(value ?? ""));
+  } catch {
+    return true;
+  }
+}
+
+function cssEscape(value) {
+  if (window.CSS?.escape) return window.CSS.escape(value);
+  return String(value).replace(/([\\"\]])/g, "\\$1");
 }
 
 function workflowVisibleRuntimeActions() {
@@ -1383,6 +1995,15 @@ function workflowVisibleRuntimeActions() {
 
 function bindWorkflowRuntimeActionButtons(root, container) {
   syncWorkflowRuntimeActionButtons(container);
+  container.querySelectorAll("[data-workflow-runtime-input-form]").forEach(form => {
+    form.addEventListener("input", () => captureWorkflowRuntimeInputDraft(form));
+    form.addEventListener("change", () => captureWorkflowRuntimeInputDraft(form));
+    form.addEventListener("submit", event => {
+      event.preventDefault();
+      captureWorkflowRuntimeInputDraft(form);
+      submitWorkflowRuntimeInput(root, form);
+    });
+  });
   container.querySelectorAll("[data-workflow-run-action]").forEach(button => {
     button.addEventListener("click", event => {
       event.preventDefault();
@@ -1406,6 +2027,7 @@ function syncWorkflowRuntimeActionButtons(container) {
     button.disabled = disabled;
     button.setAttribute("aria-disabled", disabled ? "true" : "false");
   });
+  syncWorkflowRuntimeInputFormState(container);
 }
 
 function workflowRuntimeActionButton(action) {
@@ -1415,6 +2037,53 @@ function workflowRuntimeActionButton(action) {
   const classes = action.destructive || action.name === "deny_tool" ? "danger" : primary ? "primary" : "";
   const title = reason ? ` title="${escapeHTML(reason)}"` : "";
   return `<button type="button" class="${escapeHTML(classes)}" data-workflow-run-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}${title}>${escapeHTML(workflowRunActionLabel(action.name, action.label))}</button>`;
+}
+
+async function submitWorkflowRuntimeInput(root, form) {
+  const request = state.runtime.pendingInput;
+  if (!request || !state.runtime.runID || state.runtime.inputSubmitting) return;
+  captureWorkflowRuntimeInputDraft(form);
+  let values = {};
+  try {
+    values = collectWorkflowInputValues(form, request.fields || []);
+  } catch (error) {
+    state.runtime.inputError = workflowDisplayText(error?.message || t("chat.resumeFailed"));
+    renderWorkflowRuntimeActions(root);
+    return;
+  }
+  state.runtime.inputSubmitting = true;
+  state.runtime.inputError = "";
+  renderWorkflowRuntimeActions(root);
+  const output = root.querySelector("#runOutput");
+  try {
+    if (output) appendWorkflowStudioLog(output, `${t("chat.resumeRun")}: ${workflowRuntimeInputSummary(request)}`);
+    const response = await submitWorkflowRunInput(state.runtime.runID, values, { background: true });
+    applyWorkflowRuntimeActionResponse(response, { name: "submit_input" });
+    state.runtime.pendingInput = null;
+    state.runtime.inputError = "";
+    clearWorkflowRuntimeInputDraft();
+    state.runtime.workflowStatus = state.runtime.workflowStatus === "awaiting_input" ? "running" : state.runtime.workflowStatus;
+    state.runtime.status = workflowStatusState(state.runtime.workflowStatus || "running");
+    invalidateWorkflowRuntimeActions();
+    renderRuntime(root);
+    renderStageForm(root);
+    scheduleWorkflowRepaint(root);
+    const runID = state.runtime.runID;
+    if (runID) {
+      await startWorkflowStudioEventStream(root, output, {
+        runID,
+        eventsURL: state.runtime.eventsURL || workflowRunEventsURL(runID)
+      });
+    }
+  } catch (error) {
+    state.runtime.inputError = workflowRunErrorMessage(error, t("chat.resumeFailed"));
+    if (output) appendWorkflowStudioLog(output, `${t("chat.resumeFailed")}: ${state.runtime.inputError}`);
+  } finally {
+    state.runtime.inputSubmitting = false;
+    ensureWorkflowRuntimeActions(root, { force: true });
+    renderRuntime(root);
+    scheduleWorkflowRepaint(root);
+  }
 }
 
 async function executeWorkflowRuntimeAction(root, action) {
@@ -2459,6 +3128,10 @@ function bind(root) {
     "stageParamPrompt",
     "stageInputMap",
     "stageOutputsMap",
+    "stageModelProvider",
+    "stageModelName",
+    "stageModelMaxTokens",
+    "stageModelTemperature",
     "stageContextInclude",
     "stageContextExclude",
     "stageContextMaxTokens",
@@ -3275,13 +3948,14 @@ function workflowTemplateRank(template) {
   const priority = {
     "multi-domain-intake-router": 0,
     "complex-project-delivery": 1,
-    "plan-implement-audit": 2,
-    "agent-framework-extension": 3,
-    "task-decomposition-plan": 4,
-    "plan-fix-audit": 5,
-    "operations-runbook": 6,
-    "customer-support-triage": 7,
-    "software-team-review-gate": 8
+    "engineering-parallel-delivery": 2,
+    "plan-implement-audit": 3,
+    "agent-framework-extension": 4,
+    "task-decomposition-plan": 5,
+    "plan-fix-audit": 6,
+    "operations-runbook": 7,
+    "customer-support-triage": 8,
+    "software-team-review-gate": 9
   };
   if (Object.prototype.hasOwnProperty.call(priority, name)) return priority[name];
   const category = String(template?.category || template?.source || "").toLowerCase();
@@ -3295,6 +3969,7 @@ function workflowTemplateBadge(template) {
   const name = workflowTemplateName(template);
   if (name === "multi-domain-intake-router") return { tone: "primary", label: t("workflow.templateDefaultStarter") };
   if (name === "complex-project-delivery") return { tone: "builder", label: t("workflow.templateComplexDelivery") };
+  if (name === "engineering-parallel-delivery") return { tone: "builder", label: t("workflow.templateParallelDelivery") };
   if (name === "plan-implement-audit") return { tone: "quality", label: t("workflow.templateDeliveryAudit") };
   if (name === "agent-framework-extension") return { tone: "builder", label: t("workflow.templateBuilderStarter") };
   if (name === "operations-runbook" || name === "customer-support-triage") return { tone: "domain", label: t("workflow.templateDomainStarter") };
@@ -3307,6 +3982,7 @@ function workflowTemplateBadge(template) {
 function workflowTemplateHint(template) {
   const name = workflowTemplateName(template);
   if (name === "multi-domain-intake-router") return t("workflow.templateDefaultStarterHint");
+  if (name === "engineering-parallel-delivery") return t("workflow.templateParallelDeliveryHint");
   if (name === "plan-implement-audit") return t("workflow.templateDeliveryAuditHint");
   if (name === "agent-framework-extension") return t("workflow.templateBuilderStarterHint");
   if (name === "operations-runbook") return t("workflow.templateOperationsStarterHint");
@@ -4136,9 +4812,20 @@ function renderStageForm(root) {
   root.querySelector("#stageParamPrompt").value = params.prompt || "";
   root.querySelector("#stageInputMap").value = formatMap(stage.input);
   root.querySelector("#stageOutputsMap").value = formatMap(stage.outputs);
+  const model = normalizeStageModelRoute(stage.model);
+  ensureSelectOption(root.querySelector("#stageModelProvider"), model.provider, model.provider);
+  root.querySelector("#stageModelProvider").value = model.provider;
+  root.querySelector("#stageModelName").value = model.model || "";
+  root.querySelector("#stageModelMaxTokens").value = model.max_tokens || "";
+  root.querySelector("#stageModelTemperature").value = model.temperature === null ? "" : model.temperature;
+  updateStageModelRouteBadge(root, model);
   root.querySelector("#stageContextInclude").value = formatContextList(stage.context?.include);
   root.querySelector("#stageContextExclude").value = formatContextList(stage.context?.exclude);
   root.querySelector("#stageContextMaxTokens").value = stage.context?.max_tokens || "";
+  root.querySelector("#stageContextPromptMaxTokens").value = stage.context?.prompt_max_tokens || "";
+  root.querySelector("#stageContextRequestMaxTokens").value = stage.context?.request_max_tokens || "";
+  root.querySelector("#stageContextInputsMaxTokens").value = stage.context?.inputs_max_tokens || "";
+  root.querySelector("#stageContextParametersMaxTokens").value = stage.context?.parameters_max_tokens || "";
   root.querySelector("#stageContextRetrievalEnabled").checked = !!stage.context?.retrieval?.enabled;
   root.querySelector("#stageContextRetrievalQuery").value = stage.context?.retrieval?.query || "";
   root.querySelector("#stageParams").value = formatParams(genericStageParams(stage, nodeType));
@@ -4168,6 +4855,7 @@ function renderStageForm(root) {
   updateStageRoutePreview(root, stage, nodeType);
   updateStageGuidance(root, stage, nodeType);
   updateStageDataFlow(root, stage, nodeType);
+  updateStageModelRoute(root, stage, nodeType);
   updateStageContextContract(root, stage, nodeType);
   if (workflowInspectorTabIs("advanced")) {
     updateStageContextPresetBuilder(root, stage, nodeType);
@@ -4917,6 +5605,7 @@ function advancedGuideItems(nodeType, visible) {
       fillable: Boolean(exampleKey && advancedGuideExampleTarget(field))
     });
   };
+  add("model", "workflow.advancedGuide.modelTitle", "workflow.advancedGuide.modelBody", "workflow.advancedGuide.modelExample");
   add("next_strategy", "workflow.advancedGuide.nextStrategyTitle", "workflow.advancedGuide.nextStrategyBody", "workflow.advancedGuide.nextStrategyExample");
   add("condition", "workflow.advancedGuide.conditionTitle", "workflow.advancedGuide.conditionBody", "workflow.advancedGuide.conditionExample");
   add("switch_on", "workflow.advancedGuide.switchTitle", "workflow.advancedGuide.switchBody", "workflow.advancedGuide.switchExample");
@@ -4948,6 +5637,7 @@ function advancedGuideItems(nodeType, visible) {
 
 function advancedGuideExampleTarget(field) {
   return {
+    model: "stageModelMaxTokens",
     next_strategy: "stageNextStrategy",
     condition: "stageCondition",
     switch_on: "stageSwitchOn",
@@ -4969,6 +5659,7 @@ function advancedGuideExampleTarget(field) {
 
 function advancedGuideExampleValue(field) {
   const keys = {
+    model: "workflow.advancedGuide.modelExample",
     next_strategy: "workflow.advancedGuide.nextStrategyExample",
     condition: "workflow.advancedGuide.conditionExample",
     switch_on: "workflow.advancedGuide.switchExample",
@@ -4990,6 +5681,19 @@ function advancedGuideExampleValue(field) {
 }
 
 function applyAdvancedGuideExample(root, field) {
+  if (field === "model") {
+    const provider = root.querySelector("#stageModelProvider");
+    const model = root.querySelector("#stageModelName");
+    const maxTokens = root.querySelector("#stageModelMaxTokens");
+    const temperature = root.querySelector("#stageModelTemperature");
+    if (provider && workflowProviderOptions().some(option => option.name === "backup")) provider.value = "backup";
+    if (model && !model.value) model.value = "small-worker";
+    if (maxTokens) maxTokens.value = "900";
+    if (temperature) temperature.value = "0.1";
+    syncStageFromForm(root);
+    maxTokens?.focus?.();
+    return;
+  }
   const targetId = advancedGuideExampleTarget(field);
   if (!targetId) return;
   const input = root.querySelector(`#${targetId}`);
@@ -6631,11 +7335,21 @@ function updateStageContextContract(root, stage, nodeType) {
   const context = normalizeStageContext(stage.context);
   const includeCount = context.include.length;
   const excludeCount = context.exclude.length;
+  const budgetCount = ["max_tokens", "prompt_max_tokens", "request_max_tokens", "inputs_max_tokens", "parameters_max_tokens"].filter(key => context[key] > 0).length;
   const configured = hasStageContextContract(context);
   panel.classList.toggle("configured", configured);
   badge.textContent = configured
-    ? t("workflow.contextContractCount", { count: includeCount + excludeCount + (context.max_tokens ? 1 : 0) + (context.retrieval.enabled || context.retrieval.query ? 1 : 0) })
+    ? t("workflow.contextContractCount", { count: includeCount + excludeCount + budgetCount + (context.retrieval.enabled || context.retrieval.query ? 1 : 0) })
     : t("workflow.contextContractDefault");
+}
+
+function updateStageModelRoute(root, stage, nodeType) {
+  const panel = root.querySelector("#stageModelRoute");
+  if (!panel || !stage) return;
+  const supported = ["agent", "skill"].includes(nodeType);
+  panel.classList.toggle("hidden", !supported);
+  if (!supported) return;
+  updateStageModelRouteBadge(root, stage.model);
 }
 
 function updateStageContextPresetBuilder(root, stage, nodeType) {
@@ -8620,7 +9334,7 @@ function advancedFieldSet(nodeType) {
   const fields = nodeFieldNames(nodeType);
   for (const field of fields) {
     const base = field.split(".")[0];
-    if (["condition", "policy", "switch_on", "routes", "cases", "input", "outputs"].includes(base)) {
+    if (["condition", "policy", "switch_on", "routes", "cases", "input", "outputs", "model"].includes(base)) {
       visible.add(base);
     }
   }
@@ -8635,6 +9349,7 @@ function advancedFieldSet(nodeType) {
     visible.add("routes");
   }
   if (isQualityGateType(nodeType)) visible.add("routes");
+  if (["agent", "skill"].includes(nodeType)) visible.add("model");
   if (!fields.size) {
     if (executableTypes.has(nodeType)) {
       visible.add("input");
@@ -9251,6 +9966,7 @@ function syncStageFromForm(root) {
   stage.cases = parseMap(root.querySelector("#stageCases").value);
   stage.input = parseMap(root.querySelector("#stageInputMap").value);
   stage.outputs = parseMap(root.querySelector("#stageOutputsMap").value);
+  stage.model = readStageModelRoute(root);
   stage.context = readStageContextContract(root);
   stage.params = parseParams(root.querySelector("#stageParams").value);
   applyDedicatedParamsFromForm(root, stage, normalizedNodeType(stage));
@@ -9314,6 +10030,7 @@ function syncStageFromForm(root) {
   updateStageRoutePreview(root, stage, nodeType);
   updateStageGuidance(root, stage, nodeType);
   updateStageDataFlow(root, stage, nodeType);
+  updateStageModelRoute(root, stage, nodeType);
   updateStageContextContract(root, stage, nodeType);
   if (workflowInspectorTabIs("advanced")) {
     updateStageContextPresetBuilder(root, stage, nodeType);
@@ -9368,6 +10085,7 @@ function pruneUnsupportedStageFields(stage, nodeType) {
   if (!baseVisible.has("agent")) delete stage.agent;
   if (!baseVisible.has("skill")) delete stage.skill;
   if (!baseVisible.has("tool")) delete stage.tool;
+  if (!advancedVisible.has("model")) delete stage.model;
   if (!baseVisible.has("approval")) delete stage.approval;
   if (!baseVisible.has("artifacts")) delete stage.artifacts;
   if (!baseVisible.has("acceptance_criteria")) delete stage.acceptance_criteria;
@@ -9397,6 +10115,7 @@ function pruneEmptyStageFields(stage) {
   for (const key of ["routes", "cases", "input", "outputs", "params"]) {
     if (!stage[key] || !Object.keys(stage[key]).length) delete stage[key];
   }
+  if (!hasStageModelRoute(stage.model)) delete stage.model;
   if (!Array.isArray(stage.artifacts) || !stage.artifacts.length) delete stage.artifacts;
   if (!Array.isArray(stage.acceptance_criteria) || !stage.acceptance_criteria.length) delete stage.acceptance_criteria;
   if (!hasStageContextContract(stage.context)) delete stage.context;
@@ -10304,6 +11023,10 @@ function workflowValidationFieldLabel(field) {
     "context.include": t("workflow.contextInclude"),
     "context.exclude": t("workflow.contextExclude"),
     "context.max_tokens": t("workflow.contextMaxTokens"),
+    "context.prompt_max_tokens": t("workflow.contextPromptMaxTokens"),
+    "context.request_max_tokens": t("workflow.contextRequestMaxTokens"),
+    "context.inputs_max_tokens": t("workflow.contextInputsMaxTokens"),
+    "context.parameters_max_tokens": t("workflow.contextParametersMaxTokens"),
     "context.retrieval": t("workflow.contextRetrievalEnabled"),
     "context.retrieval.query": t("workflow.contextRetrievalQuery"),
     approval: t("workflow.approvalGate"),
@@ -10891,6 +11614,24 @@ function applyWorkflowStudioRunSnapshot(run) {
   state.runtime.runInput = run.request || state.runtime.runInput || "";
   state.runtime.currentStage = run.next_stage || state.runtime.currentStage || "";
   if (previousStage !== state.runtime.currentStage || previousStatus !== state.runtime.workflowStatus) invalidateWorkflowRuntimeActions();
+  const pendingInput = workflowRuntimePendingInputFromRun(run);
+  if (pendingInput) {
+    const previousKey = workflowRuntimeInputKey(state.runtime.pendingInput);
+    const nextKey = workflowRuntimeInputKey(pendingInput);
+    state.runtime.pendingInput = pendingInput;
+    state.runtime.inputSubmitting = false;
+    if (previousKey !== nextKey) {
+      state.runtime.inputError = "";
+      clearWorkflowRuntimeInputDraft();
+    } else if (state.runtime.inputDraftKey && state.runtime.inputDraftKey !== nextKey) {
+      clearWorkflowRuntimeInputDraft();
+    }
+  } else if (!workflowRuntimeStatusIsAwaitingInput(run.status || state.runtime.workflowStatus)) {
+    state.runtime.pendingInput = null;
+    state.runtime.inputSubmitting = false;
+    state.runtime.inputError = "";
+    clearWorkflowRuntimeInputDraft();
+  }
   ensureCurrentStageRuntimePlaceholder(run);
   state.runtime.lastEventSeq = Math.max(state.runtime.lastEventSeq || 0, workflowStudioLatestSeq(run));
   let artifactCount = Array.isArray(run.artifacts) ? run.artifacts.length : 0;
@@ -12000,6 +12741,21 @@ function fillSelect(select, values) {
   if ((values || []).includes(previous)) select.value = previous;
 }
 
+function workflowProviderOptions() {
+  const providers = (state.options?.providers || [])
+    .map(provider => provider && typeof provider === "object" ? provider : { name: String(provider || "").trim() })
+    .map(provider => ({ ...provider, name: String(provider.name || provider.id || "").trim() }))
+    .filter(provider => provider.name);
+  return [{ name: "", model: "" }, ...providers];
+}
+
+function workflowProviderLabel(provider = {}) {
+  const name = String(provider.name || "").trim();
+  if (!name) return "-";
+  const model = String(provider.model || "").trim();
+  return model ? `${name} / ${model}` : name;
+}
+
 function fillTeamTemplateSelect(select) {
   if (!select) return;
   const previous = select.value;
@@ -12113,6 +12869,45 @@ function setParamValue(params, key, value) {
   }
 }
 
+function readStageModelRoute(root) {
+  const maxTokens = Number.parseInt(root.querySelector("#stageModelMaxTokens")?.value || "", 10);
+  const temperatureRaw = String(root.querySelector("#stageModelTemperature")?.value || "").trim();
+  const temperature = temperatureRaw === "" ? null : Number.parseFloat(temperatureRaw);
+  const model = {
+    provider: String(root.querySelector("#stageModelProvider")?.value || "").trim(),
+    model: String(root.querySelector("#stageModelName")?.value || "").trim(),
+    max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 0,
+    temperature: Number.isFinite(temperature) ? temperature : null
+  };
+  return hasStageModelRoute(model) ? model : undefined;
+}
+
+function normalizeStageModelRoute(value) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  const maxTokens = Number.parseInt(raw.max_tokens || raw.maxTokens || "", 10);
+  const temperature = raw.temperature === undefined || raw.temperature === null || raw.temperature === "" ? null : Number.parseFloat(raw.temperature);
+  return {
+    provider: String(raw.provider || "").trim(),
+    model: String(raw.model || "").trim(),
+    max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 0,
+    temperature: Number.isFinite(temperature) ? temperature : null
+  };
+}
+
+function hasStageModelRoute(value) {
+  const model = normalizeStageModelRoute(value);
+  return Boolean(model.provider || model.model || model.max_tokens > 0 || model.temperature !== null);
+}
+
+function updateStageModelRouteBadge(root, model) {
+  const badge = root.querySelector("#stageModelRouteBadge");
+  if (!badge) return;
+  const normalized = normalizeStageModelRoute(model);
+  badge.textContent = normalized.provider || normalized.model || normalized.max_tokens > 0 || normalized.temperature !== null
+    ? t("workflow.modelRouteConfigured")
+    : t("workflow.modelRouteDefault");
+}
+
 function parseParams(raw) {
   return parseMap(raw);
 }
@@ -12121,6 +12916,10 @@ function readStageContextContract(root) {
   const include = parseContextList(root.querySelector("#stageContextInclude")?.value || "");
   const exclude = parseContextList(root.querySelector("#stageContextExclude")?.value || "");
   const maxTokens = Number.parseInt(root.querySelector("#stageContextMaxTokens")?.value || "", 10);
+  const promptMaxTokens = Number.parseInt(root.querySelector("#stageContextPromptMaxTokens")?.value || "", 10);
+  const requestMaxTokens = Number.parseInt(root.querySelector("#stageContextRequestMaxTokens")?.value || "", 10);
+  const inputsMaxTokens = Number.parseInt(root.querySelector("#stageContextInputsMaxTokens")?.value || "", 10);
+  const parametersMaxTokens = Number.parseInt(root.querySelector("#stageContextParametersMaxTokens")?.value || "", 10);
   const retrieval = {
     enabled: !!root.querySelector("#stageContextRetrievalEnabled")?.checked,
     query: String(root.querySelector("#stageContextRetrievalQuery")?.value || "").trim()
@@ -12129,6 +12928,10 @@ function readStageContextContract(root) {
     include,
     exclude,
     max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 0,
+    prompt_max_tokens: Number.isFinite(promptMaxTokens) && promptMaxTokens > 0 ? promptMaxTokens : 0,
+    request_max_tokens: Number.isFinite(requestMaxTokens) && requestMaxTokens > 0 ? requestMaxTokens : 0,
+    inputs_max_tokens: Number.isFinite(inputsMaxTokens) && inputsMaxTokens > 0 ? inputsMaxTokens : 0,
+    parameters_max_tokens: Number.isFinite(parametersMaxTokens) && parametersMaxTokens > 0 ? parametersMaxTokens : 0,
     retrieval
   };
   return hasStageContextContract(context) ? context : undefined;
@@ -12154,10 +12957,18 @@ function normalizeStageContext(value) {
   const context = value && typeof value === "object" && !Array.isArray(value) ? value : {};
   const retrieval = context.retrieval && typeof context.retrieval === "object" && !Array.isArray(context.retrieval) ? context.retrieval : {};
   const maxTokens = Number.parseInt(context.max_tokens || context.maxTokens || "", 10);
+  const promptMaxTokens = Number.parseInt(context.prompt_max_tokens || context.promptMaxTokens || "", 10);
+  const requestMaxTokens = Number.parseInt(context.request_max_tokens || context.requestMaxTokens || "", 10);
+  const inputsMaxTokens = Number.parseInt(context.inputs_max_tokens || context.inputsMaxTokens || "", 10);
+  const parametersMaxTokens = Number.parseInt(context.parameters_max_tokens || context.parametersMaxTokens || "", 10);
   return {
     include: normalizeContextList(context.include),
     exclude: normalizeContextList(context.exclude),
     max_tokens: Number.isFinite(maxTokens) && maxTokens > 0 ? maxTokens : 0,
+    prompt_max_tokens: Number.isFinite(promptMaxTokens) && promptMaxTokens > 0 ? promptMaxTokens : 0,
+    request_max_tokens: Number.isFinite(requestMaxTokens) && requestMaxTokens > 0 ? requestMaxTokens : 0,
+    inputs_max_tokens: Number.isFinite(inputsMaxTokens) && inputsMaxTokens > 0 ? inputsMaxTokens : 0,
+    parameters_max_tokens: Number.isFinite(parametersMaxTokens) && parametersMaxTokens > 0 ? parametersMaxTokens : 0,
     retrieval: {
       enabled: !!retrieval.enabled,
       query: String(retrieval.query || "").trim()
@@ -12171,6 +12982,10 @@ function hasStageContextContract(value) {
     context.include.length ||
     context.exclude.length ||
     context.max_tokens > 0 ||
+    context.prompt_max_tokens > 0 ||
+    context.request_max_tokens > 0 ||
+    context.inputs_max_tokens > 0 ||
+    context.parameters_max_tokens > 0 ||
     context.retrieval.enabled ||
     context.retrieval.query
   );

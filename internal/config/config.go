@@ -48,16 +48,17 @@ type AgentProfile struct {
 
 // LLMConfig configures the model provider.
 type LLMConfig struct {
-	Provider         string        `yaml:"provider"`
-	BaseURL          string        `yaml:"base_url"`
-	APIKey           string        `yaml:"api_key"`
-	Model            string        `yaml:"model"`
-	FallbackProvider string        `yaml:"fallback_provider"`
-	Timeout          time.Duration `yaml:"timeout"`
-	Temperature      float64       `yaml:"temperature"`
-	MaxTokens        int           `yaml:"max_tokens"`
-	RetryCount       int           `yaml:"retry_count"`
-	RetryBackoff     time.Duration `yaml:"retry_backoff"`
+	Provider              string        `yaml:"provider"`
+	BaseURL               string        `yaml:"base_url"`
+	APIKey                string        `yaml:"api_key"`
+	Model                 string        `yaml:"model"`
+	FallbackProvider      string        `yaml:"fallback_provider"`
+	ProviderMessageFields []string      `yaml:"provider_message_fields"`
+	Timeout               time.Duration `yaml:"timeout"`
+	Temperature           float64       `yaml:"temperature"`
+	MaxTokens             int           `yaml:"max_tokens"`
+	RetryCount            int           `yaml:"retry_count"`
+	RetryBackoff          time.Duration `yaml:"retry_backoff"`
 }
 
 // MCPServerRef declares a configured MCP server.

@@ -838,7 +838,7 @@ func TestContinueAgentRunSummarizesWorkflowStageWhenFinalTurnStillCallsReadTool(
 		approvals: newApprovalStore(),
 	}
 
-	result, err := continueAgentRunWithSkill(context.Background(), runtimeRef, workflowAgentPlanner, "read files then summarize", nil, schema.ToolCall{}, "", schema.ToolResult{}, nil)
+	result, err := continueAgentRunWithSkill(context.Background(), runtimeRef, workflowAgentPlanner, "read files then summarize", nil, schema.ToolCall{}, "", schema.Message{}, schema.ToolResult{}, nil)
 	if err != nil {
 		t.Fatalf("expected workflow stage budget summary, got %v", err)
 	}

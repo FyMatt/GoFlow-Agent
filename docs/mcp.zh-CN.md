@@ -82,6 +82,8 @@ GOFLOW_WORKSPACE_ROOT=<workspace path>
 - `web_search`
 - `fetch_url`
 - `fetch_page_assets`
+- `browser_snapshot`
+- `browser_probe_points`
 
 特性：
 
@@ -89,6 +91,34 @@ GOFLOW_WORKSPACE_ROOT=<workspace path>
 - 支持搜索、抓取 URL、抓取网页及其 JS/CSS 资源。
 - 仅允许 HTTP(S) URL。
 - 适合 Web 代码分析和安全研究前置采集。
+- `browser_snapshot` 和 `browser_probe_points` 要求 `authorized_scope=true`
+  和非空 `allowed_hosts`，目标主机必须在白名单内。
+- `browser_probe_points` 默认只枚举 GET 查询、GET 表单和同源链接等探测面；
+  只有 `active_probe_approved=true` 时才会运行受限 GET canary 探测。
+- 主动探测必须保持非破坏性、受限速率、可审计，并把证据摘要或截图哈希作为
+  artifact 引用交给后续审计阶段。
+
+## 内置 `network_tools`
+
+工具：
+
+- `device_discovery_plan`
+- `device_command_plan`
+- `device_config_dry_run`
+
+特性：
+
+- 工具类型标记为 `network`。
+- 接收设备 IP 或主机名、平台、连接方式、凭据引用、授权标记、主机白名单和命令白名单。
+- 要求 `authorized_scope=true`，并拒绝不在 `allowed_hosts` 内的目标。
+- 生成只读发现计划、命令执行计划和配置变更干跑计划。
+- 校验命令是否在操作者提供的白名单内。
+- 配置变更规划必须带回滚、预检、后检、审批和审计证据要求。
+- 不会连接设备，也不会下发配置。
+
+`network_tools` 是运维领域默认的网络设备边界。它是规划与策略检查工具，不是原始
+SSH/API 执行器。未来如果增加真实设备连接器，仍应沿用同一套契约：授权范围、
+允许主机、凭据引用、命令白名单、干跑 diff、审批信息、回滚计划和变更后证据引用。
 
 ## 内置 `python_notes`
 

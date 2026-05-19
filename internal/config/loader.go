@@ -511,6 +511,7 @@ func applyLLMDefaults(cfg *LLMConfig) {
 	if cfg.Provider == "" {
 		cfg.Provider = "openai-compatible"
 	}
+	cfg.ProviderMessageFields = normalizeProviderMessageFields(cfg.ProviderMessageFields)
 }
 
 func expandEnv(cfg *Config) {
@@ -571,6 +572,30 @@ func expandLLMEnv(cfg *LLMConfig) {
 	cfg.BaseURL = os.ExpandEnv(cfg.BaseURL)
 	cfg.APIKey = os.ExpandEnv(cfg.APIKey)
 	cfg.Model = os.ExpandEnv(cfg.Model)
+	for i := range cfg.ProviderMessageFields {
+		cfg.ProviderMessageFields[i] = os.ExpandEnv(cfg.ProviderMessageFields[i])
+	}
+}
+
+func normalizeProviderMessageFields(values []string) []string {
+	if len(values) == 0 {
+		return nil
+	}
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func expandAuxiliaryModelEnv(cfg *AuxiliaryModelConfig) {

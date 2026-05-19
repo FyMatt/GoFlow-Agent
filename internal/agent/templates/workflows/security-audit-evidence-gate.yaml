@@ -43,24 +43,34 @@ graph:
             "y": 210
         - name: collect
           node_type: skill
-          agent: auditor
+          agent: web-security-researcher
           skill: web-vulnerability-research
+          params:
+            output_contract: Emit sections named Scope Summary, Evidence Summary, Browser Evidence, Probe Surface, Findings, Confidence, Limitations, and Recommended Verification.
+            evidence_rule: Keep evidence tied to the operator-provided scope, require authorized_scope=true and allowed_hosts before browser_snapshot, and use browser_probe_points only for scoped probe surface enumeration unless active_probe_approved=true.
+            allowed_tools: web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points,web_tools/fetch_url,web_tools/web_search
           input:
             scope: stages.scope.outputs.scope
             target: stages.scope.outputs.target
           outputs:
             evidence: result.output
             findings: result.findings
+            summary: result.summary
           artifacts:
             - name: web-evidence
               kind: evidence
               title: Collected web evidence
               ref: result.output
+              summary: Scope-bound web, browser, and probe-surface evidence.
           acceptance_criteria:
             - name: target-covered
               ref: result.output
               contains: http
               expected: evidence references fetched target material
+            - name: browser-boundary-stated
+              ref: result.output
+              contains: Browser Evidence
+              expected: evidence states browser automation scope, authorization, or limitations
           next:
             - audit
           position:

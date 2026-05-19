@@ -60,6 +60,10 @@ graph:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 3000
+            prompt_max_tokens: 5200
+            request_max_tokens: 1400
+            inputs_max_tokens: 900
+            parameters_max_tokens: 700
             retrieval:
                 enabled: true
                 query: "{{input.goal}}"
@@ -109,6 +113,10 @@ graph:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 3600
+            prompt_max_tokens: 5800
+            request_max_tokens: 1200
+            inputs_max_tokens: 1600
+            parameters_max_tokens: 800
             retrieval:
                 enabled: true
                 query: "{{input.goal}}"
@@ -123,12 +131,17 @@ graph:
           skill: code-writing
           params:
             edit_policy: Apply only the approved plan, preserve user edits, keep changes scoped, and explain any deviation before proceeding.
-            output_contract: Emit sections named Implementation Summary, Files Changed, Verification Attempted, Deviations, Remaining Work, and Risk Notes.
+            worker_contract: engineering_v1
+            output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, and next_actions. Keep detailed notes in the implementation artifact.
           input:
             clarified_request: stages.clarify.outputs.clarified_request
             plan: stages.plan.outputs.plan
           outputs:
+            changed_files: result.changed_files
             changes: result.changes
+            verification: result.verification
+            blockers: result.blockers
+            next_actions: result.next_actions
             implementation_report: result.output
             summary: result.summary
           artifacts:
@@ -163,6 +176,10 @@ graph:
                 - raw_tool_logs
                 - unrelated_session_history
             max_tokens: 4600
+            prompt_max_tokens: 5600
+            request_max_tokens: 900
+            inputs_max_tokens: 1800
+            parameters_max_tokens: 700
           next:
             - verify
           position:
@@ -177,7 +194,9 @@ graph:
             output_contract: Emit sections named Verification Result, Commands Run, Coverage, Failures, Evidence, and Residual Risk.
             verification_command: go test ./...
           input:
-            implementation: stages.implement.outputs.implementation_report
+            implementation: stages.implement.outputs.summary
+            changed_files: stages.implement.outputs.changed_files
+            implementation_verification: stages.implement.outputs.verification
             plan: stages.plan.outputs.plan
           outputs:
             summary: result.summary
@@ -201,11 +220,16 @@ graph:
             include:
                 - previous.summary
                 - previous.artifacts.implementation-report
-                - stages.implement.outputs.implementation_report
+                - stages.implement.outputs.changed_files
+                - stages.implement.outputs.verification
                 - files.changed
             exclude:
                 - raw_tool_logs
             max_tokens: 3800
+            prompt_max_tokens: 5000
+            request_max_tokens: 800
+            inputs_max_tokens: 1500
+            parameters_max_tokens: 700
           next:
             - audit
           position:
@@ -220,7 +244,8 @@ graph:
             severity_order: Lead with bugs, regressions, data loss, security risk, or broken acceptance criteria before summaries.
           input:
             clarified_request: stages.clarify.outputs.clarified_request
-            implementation: stages.implement.outputs.implementation_report
+            implementation: stages.implement.outputs.summary
+            changed_files: stages.implement.outputs.changed_files
             plan: stages.plan.outputs.plan
             verification: stages.verify.outputs.verification
           outputs:
@@ -250,11 +275,16 @@ graph:
             include:
                 - previous.summary
                 - previous.artifacts.verification-report
-                - stages.implement.outputs.implementation_report
+                - stages.implement.outputs.changed_files
+                - stages.implement.outputs.blockers
                 - stages.verify.outputs.verification
             exclude:
                 - raw_tool_logs
             max_tokens: 4200
+            prompt_max_tokens: 5200
+            request_max_tokens: 800
+            inputs_max_tokens: 1700
+            parameters_max_tokens: 700
           next:
             - quality
           position:
@@ -325,6 +355,10 @@ graph:
             exclude:
                 - raw_tool_logs
             max_tokens: 3600
+            prompt_max_tokens: 4600
+            request_max_tokens: 700
+            inputs_max_tokens: 1500
+            parameters_max_tokens: 650
           next:
             - final-report
           position:
@@ -339,7 +373,8 @@ graph:
             purpose: Produce the final user-facing delivery report from all prior evidence.
           input:
             audit: stages.audit.outputs.audit
-            implementation: stages.implement.outputs.implementation_report
+            implementation_summary: stages.implement.outputs.summary
+            changed_files: stages.implement.outputs.changed_files
             quality_status: stages.quality.outputs.quality_status
             revision_summary: stages.revision-summary.outputs.revision_summary
             verification: stages.verify.outputs.verification
@@ -372,6 +407,7 @@ graph:
                 - previous.artifacts.verification-report
                 - previous.artifacts.revision-summary
                 - stages.audit.outputs.audit
+                - stages.implement.outputs.changed_files
                 - stages.verify.outputs.verification
                 - stages.revision-summary.outputs.revision_summary
                 - files.changed
@@ -379,6 +415,10 @@ graph:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 4200
+            prompt_max_tokens: 5200
+            request_max_tokens: 700
+            inputs_max_tokens: 1600
+            parameters_max_tokens: 650
           next:
             - end
           position:

@@ -117,6 +117,7 @@ func (s *State) StartWorkflowRunFromSnapshot(snapshot WorkflowSnapshot) string {
 		PendingArgsBytes:         snapshot.PendingArgumentsBytes,
 		PendingArgsStoredBytes:   snapshot.PendingArgumentsStoredBytes,
 		PendingArgsExternalized:  snapshot.PendingArgumentsExternalized,
+		PendingResponseMessage:   schema.CopyMessage(snapshot.PendingResponseMessage),
 		PendingSubWorkflowName:   strings.TrimSpace(snapshot.PendingSubWorkflowName),
 		PendingSubWorkflowRunID:  strings.TrimSpace(snapshot.PendingSubWorkflowRunID),
 		PendingSubWorkflowStatus: strings.TrimSpace(snapshot.PendingSubWorkflowStatus),
@@ -190,6 +191,7 @@ func (s *State) CancelWorkflowRun(runID, reason string) (WorkflowRunSnapshot, bo
 	run.PendingArgsBytes = 0
 	run.PendingArgsStoredBytes = 0
 	run.PendingArgsExternalized = false
+	run.PendingResponseMessage = schema.Message{}
 	run.PendingSubWorkflowName = ""
 	run.PendingSubWorkflowRunID = ""
 	run.PendingSubWorkflowStatus = ""
@@ -222,6 +224,7 @@ func (s *State) CancelWorkflowRun(runID, reason string) (WorkflowRunSnapshot, bo
 		s.workflow.PendingArgumentsBytes = 0
 		s.workflow.PendingArgumentsStoredBytes = 0
 		s.workflow.PendingArgumentsExternalized = false
+		s.workflow.PendingResponseMessage = schema.Message{}
 		s.workflow.PendingSubWorkflowName = ""
 		s.workflow.PendingSubWorkflowRunID = ""
 		s.workflow.PendingSubWorkflowStatus = ""
@@ -277,6 +280,7 @@ func (s *State) UpdateWorkflowRunState(snapshot WorkflowSnapshot) {
 	run.PendingArgsBytes = snapshot.PendingArgumentsBytes
 	run.PendingArgsStoredBytes = snapshot.PendingArgumentsStoredBytes
 	run.PendingArgsExternalized = snapshot.PendingArgumentsExternalized
+	run.PendingResponseMessage = schema.CopyMessage(snapshot.PendingResponseMessage)
 	run.PendingSubWorkflowName = strings.TrimSpace(snapshot.PendingSubWorkflowName)
 	run.PendingSubWorkflowRunID = strings.TrimSpace(snapshot.PendingSubWorkflowRunID)
 	run.PendingSubWorkflowStatus = strings.TrimSpace(snapshot.PendingSubWorkflowStatus)
@@ -328,6 +332,7 @@ func (s *State) CompleteWorkflowRun(runID, status, summary, nextStage, approvalP
 		run.PendingToolName = ""
 		run.PendingAgentID = ""
 		run = clearWorkflowRunPendingArguments(run)
+		run.PendingResponseMessage = schema.Message{}
 	}
 	if !strings.EqualFold(run.Status, "awaiting_sub_workflow") {
 		run.PendingSubWorkflowName = ""
@@ -515,6 +520,7 @@ func copyWorkflowRunSnapshot(run WorkflowRunSnapshot) WorkflowRunSnapshot {
 		risk := copyToolRiskProfile(*run.PendingToolRisk)
 		run.PendingToolRisk = &risk
 	}
+	run.PendingResponseMessage = schema.CopyMessage(run.PendingResponseMessage)
 	run.CompletedStages = copyWorkflowRunStageSnapshots(run.CompletedStages)
 	if len(run.Events) > 0 {
 		run.Events = append([]WorkflowRunEventSnapshot(nil), run.Events...)
@@ -1156,5 +1162,6 @@ func copyAgentResult(result schema.AgentResult) schema.AgentResult {
 	result.Findings = append([]schema.Finding(nil), result.Findings...)
 	result.Changes = append([]schema.Change(nil), result.Changes...)
 	result.Verification = append([]schema.Verification(nil), result.Verification...)
+	result.ResponseMessage = schema.CopyMessage(result.ResponseMessage)
 	return result
 }

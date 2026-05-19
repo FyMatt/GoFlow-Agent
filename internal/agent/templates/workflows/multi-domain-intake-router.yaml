@@ -2,20 +2,22 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: multi-domain-intake-router
-title: Multi-Domain Intake Router
-description: Collect task context, route it to a domain team, then synthesize a quality-gated handoff. Use this as the default Studio starter for mixed software, security, docs, ops, support, and platform requests.
+title: Multi-Domain Parallel Intake Router
+description: Collect task context, let a strong planner decompose the request into bounded domain slices, run only the selected domain workers in parallel, then join, audit, and hand off a compact final report.
 category: starter
 tags:
     - starter
     - multi-domain
-    - team
-    - router
+    - decomposition
+    - parallel
+    - model-routing
+    - token-budget
     - quality_gate
     - handoff
-stages: 18
+stages: 21
 graph:
     name: multi-domain-intake-router
-    description: A practical entry workflow that links reusable team templates with a common intake, routing, synthesis, and quality gate.
+    description: Default entry workflow for broad tasks. It uses a strong planning route for decomposition, cheaper bounded domain workers for parallel execution, an artifact-first join, and a quality-gated final handoff.
     stages:
         - name: start
           node_type: start
@@ -25,355 +27,866 @@ graph:
             - intake
           position:
             x: 60
-            "y": 330
+            "y": 360
         - name: intake
           node_type: input_gate
           agent: ""
           skill: ""
           params:
-            fields_json: '{"fields":[{"name":"domain","type":"select","label":"Task domain","required":true,"options":["software","web_security","security","binary","documentation","operations","support","platform","general"],"default":"general"},{"name":"goal","type":"textarea","label":"Goal","required":true},{"name":"target","type":"text","label":"Target file, URL, binary, system, or customer context"},{"name":"desired_output","type":"select","label":"Desired output","options":["implementation","review_report","runbook","customer_reply","extension_kit","plan"],"default":"plan"},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","options":["low","medium","high"],"default":"medium"}]}'
+            fields_json: '{"fields":[{"name":"domain","type":"select","label":"Primary domain","required":true,"options":["auto","software","web_security","security","binary","documentation","operations","support","platform","general"],"default":"auto"},{"name":"goal","type":"textarea","label":"Goal","required":true},{"name":"target","type":"text","label":"Target file, URL, binary, system, device scope, customer context, or platform area"},{"name":"desired_output","type":"select","label":"Desired output","options":["implementation","review_report","runbook","customer_reply","extension_kit","plan","multi_domain_report"],"default":"multi_domain_report"},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","options":["low","medium","high"],"default":"medium"},{"name":"max_parallel_domains","type":"number","label":"Max parallel domains","default":3}]}'
             manual: "true"
-            prompt: Confirm the domain, goal, target, desired output, and risk tolerance before routing to a domain team.
+            prompt: Confirm the goal, target, desired output, risk tolerance, and maximum parallel domain slices before decomposition.
           outputs:
             desired_output: params.desired_output
             domain: params.domain
             goal: params.goal
             intake_summary: result.summary
-            recommended_kit: params.domain
+            max_parallel_domains: params.max_parallel_domains
             risk_tolerance: params.risk_tolerance
             target: params.target
           next:
-            - domain-router
+            - decompose
           position:
-            x: 340
-            "y": 330
-        - name: domain-router
-          node_type: switch
-          agent: ""
-          skill: ""
-          switch_on: stages.intake.outputs.domain
-          cases:
-            binary: binary-team
-            default: general-plan
-            documentation: docs-team
-            general: general-plan
-            operations: ops-team
-            platform: platform-team
-            security: security-team
-            software: software-team
-            support: support-team
-            web_security: web-security-team
-          position:
-            x: 640
-            "y": 330
-        - name: software-team
-          node_type: team
-          agent: planner
-          skill: ""
-          params:
-            approval_preset: software-review
-            execute: "true"
-            team: software-task-team
-          input:
-            desired_output: stages.intake.outputs.desired_output
-            domain: stages.intake.outputs.domain
-            goal: stages.intake.outputs.goal
-            risk_tolerance: stages.intake.outputs.risk_tolerance
-            target: stages.intake.outputs.target
-          outputs:
-            summary: result.summary
-            team: result.structured
-          next:
-            - synthesize
-          position:
-            x: 940
-            "y": 40
-        - name: web-security-team
-          node_type: team
-          agent: planner
-          skill: ""
-          params:
-            approval_preset: security-review
-            execute: "true"
-            team: web-research-team
-          input:
-            desired_output: stages.intake.outputs.desired_output
-            domain: stages.intake.outputs.domain
-            goal: stages.intake.outputs.goal
-            risk_tolerance: stages.intake.outputs.risk_tolerance
-            target: stages.intake.outputs.target
-          outputs:
-            summary: result.summary
-            team: result.structured
-          next:
-            - synthesize
-          position:
-            x: 940
-            "y": 160
-        - name: security-team
-          node_type: team
-          agent: planner
-          skill: ""
-          params:
-            approval_preset: security-review
-            execute: "true"
-            team: audit-security-team
-          input:
-            desired_output: stages.intake.outputs.desired_output
-            domain: stages.intake.outputs.domain
-            goal: stages.intake.outputs.goal
-            risk_tolerance: stages.intake.outputs.risk_tolerance
-            target: stages.intake.outputs.target
-          outputs:
-            summary: result.summary
-            team: result.structured
-          next:
-            - synthesize
-          position:
-            x: 940
-            "y": 280
-        - name: binary-team
-          node_type: team
-          agent: planner
-          skill: ""
-          params:
-            approval_preset: security-review
-            execute: "true"
-            team: binary-triage-team
-          input:
-            desired_output: stages.intake.outputs.desired_output
-            domain: stages.intake.outputs.domain
-            goal: stages.intake.outputs.goal
-            risk_tolerance: stages.intake.outputs.risk_tolerance
-            target: stages.intake.outputs.target
-          outputs:
-            summary: result.summary
-            team: result.structured
-          next:
-            - synthesize
-          position:
-            x: 940
-            "y": 400
-        - name: docs-team
-          node_type: team
-          agent: planner
-          skill: ""
-          params:
-            approval_preset: docs-review
-            execute: "true"
-            team: documentation-team
-          input:
-            desired_output: stages.intake.outputs.desired_output
-            domain: stages.intake.outputs.domain
-            goal: stages.intake.outputs.goal
-            risk_tolerance: stages.intake.outputs.risk_tolerance
-            target: stages.intake.outputs.target
-          outputs:
-            summary: result.summary
-            team: result.structured
-          next:
-            - synthesize
-          position:
-            x: 940
-            "y": 520
-        - name: ops-team
-          node_type: team
-          agent: planner
-          skill: ""
-          params:
-            approval_preset: ops-review
-            execute: "true"
-            team: operations-runbook-team
-          input:
-            desired_output: stages.intake.outputs.desired_output
-            domain: stages.intake.outputs.domain
-            goal: stages.intake.outputs.goal
-            risk_tolerance: stages.intake.outputs.risk_tolerance
-            target: stages.intake.outputs.target
-          outputs:
-            summary: result.summary
-            team: result.structured
-          next:
-            - synthesize
-          position:
-            x: 940
-            "y": 640
-        - name: support-team
-          node_type: team
-          agent: planner
-          skill: ""
-          params:
-            approval_preset: support-review
-            execute: "true"
-            team: customer-support-team
-          input:
-            desired_output: stages.intake.outputs.desired_output
-            domain: stages.intake.outputs.domain
-            goal: stages.intake.outputs.goal
-            risk_tolerance: stages.intake.outputs.risk_tolerance
-            target: stages.intake.outputs.target
-          outputs:
-            summary: result.summary
-            team: result.structured
-          next:
-            - synthesize
-          position:
-            x: 940
-            "y": 760
-        - name: platform-team
-          node_type: team
-          agent: planner
-          skill: ""
-          params:
-            approval_preset: extension-review
-            execute: "true"
-            team: framework-extension-team
-          input:
-            desired_output: stages.intake.outputs.desired_output
-            domain: stages.intake.outputs.domain
-            goal: stages.intake.outputs.goal
-            risk_tolerance: stages.intake.outputs.risk_tolerance
-            target: stages.intake.outputs.target
-          outputs:
-            summary: result.summary
-            team: result.structured
-          next:
-            - synthesize
-          position:
-            x: 940
-            "y": 880
-        - name: general-plan
+            x: 330
+            "y": 360
+        - name: decompose
           node_type: agent
           agent: planner
           skill: execution-plan
+          model:
+            provider: primary
+            max_tokens: 1500
+            temperature: 0.1
           params:
-            output_contract: Emit sections named Summary, Recommended Agent, Recommended Skill, Required Tools, Suggested Workflow, Risks, Acceptance Criteria, and Next Steps.
-            purpose: Plan a general task when no specialized domain team was selected.
+            output_contract: Return compact JSON with summary, active_branches, branch_contracts, shared_context, acceptance_criteria, risk_gates, model_routes, token_budget, and final_report_contract. active_branches must contain only stage names from software-worker, web-security-worker, security-worker, binary-worker, docs-worker, ops-worker, support-worker, platform-worker, or general-worker.
+            purpose: Decompose the request into only the domain slices needed for this task, then select bounded parallel worker branches.
+            token_policy: Select the fewest useful branches, normally one to three. Do not copy raw files, logs, transcripts, secrets, or long evidence. Put details in artifacts or refs.
           input:
             desired_output: stages.intake.outputs.desired_output
             domain: stages.intake.outputs.domain
             goal: stages.intake.outputs.goal
+            max_parallel_domains: stages.intake.outputs.max_parallel_domains
             risk_tolerance: stages.intake.outputs.risk_tolerance
             target: stages.intake.outputs.target
           outputs:
-            output: result.output
+            active_branches: result.active_branches
+            branch_contracts: result.branch_contracts
+            shared_context: result.shared_context
             summary: result.summary
+            task_graph: result.output
           artifacts:
-            - name: general-domain-plan
+            - name: multi-domain-task-graph
               kind: plan
-              title: General domain plan
+              title: Multi-domain task graph
               ref: result.output
+              summary: Selected domain branches, branch contracts, shared context, acceptance criteria, risk gates, model routes, and token budget.
+          acceptance_criteria:
+            - name: has-active-branches
+              ref: result.output
+              contains: active_branches
+              expected: decomposition selects bounded worker branches
+            - name: has-branch-contracts
+              ref: result.output
+              contains: branch_contracts
+              expected: each selected branch has a compact contract
+            - name: has-token-budget
+              ref: result.output
+              contains: token_budget
+              expected: decomposition declares token discipline
+          context:
+            include:
+                - workflow.input
+                - memory.project
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1800
+            prompt_max_tokens: 4300
+            request_max_tokens: 1000
+            inputs_max_tokens: 900
+            parameters_max_tokens: 800
+            retrieval:
+                enabled: true
+                query: "{{input.goal}} {{input.target}}"
           next:
-            - synthesize
+            - dispatch
           position:
-            x: 940
-            "y": 1000
-        - name: synthesize
-          node_type: skill
-          agent: chat
-          skill: execution-plan
+            x: 640
+            "y": 360
+        - name: dispatch
+          node_type: parallel
+          agent: ""
+          skill: ""
           params:
-            output_contract: Emit sections named Domain Routed, Team Output Summary, Recommended Workflow Template, Required Agent/Skill/Tool Resources, Risks, Acceptance Criteria, and Final Handoff.
-            purpose: Convert the selected domain team's output into a user-facing handoff and a reusable next-step plan.
-            quality_bar: The handoff must name the routed domain, the team/template used, what artifact was produced, and what the user should run next.
-          input:
-            branch_summary: previous.summary
-            desired_output: stages.intake.outputs.desired_output
-            domain: stages.intake.outputs.domain
-            goal: stages.intake.outputs.goal
-            target: stages.intake.outputs.target
+            concurrent: "true"
+            active_branches_ref: stages.decompose.outputs.active_branches
+            token_policy: Fan out only selected branches. Unselected domain workers must not run.
           outputs:
-            handoff: result.output
-            recommended_workflow: result.findings
+            branches: result.branches
+            branch_count: result.branch_count
+          next:
+            - software-worker
+            - web-security-worker
+            - security-worker
+            - binary-worker
+            - docs-worker
+            - ops-worker
+            - support-worker
+            - platform-worker
+            - general-worker
+          position:
+            x: 970
+            "y": 360
+        - name: software-worker
+          node_type: agent
+          agent: software-engineer
+          skill: code-writing
+          model:
+            provider: backup
+            max_tokens: 850
+            temperature: 0.1
+          params:
+            domain: software-engineering
+            team_template_ref: software-task-team
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, evidence, changed_files, verification, blockers, next_actions, recommended_workflow, and artifact_refs.
+            token_policy: Use branch_contracts only. Summarize discovery and verification; do not paste full diffs or large files.
+            tools: file_tools/read_file,file_tools/search_files,file_tools/write_file
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            changed_files: result.changed_files
+            report: result.output
+            summary: result.summary
+            verification: result.verification
+          artifacts:
+            - name: software-domain-report
+              kind: report
+              title: Software domain report
+              ref: result.output
+          acceptance_criteria:
+            - name: has-domain-summary
+              ref: result.output
+              contains: summary
+              expected: worker returns compact summary
+            - name: has-evidence
+              ref: result.output
+              contains: evidence
+              expected: worker records evidence or blocker
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+                - memory.project
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1000
+            prompt_max_tokens: 3000
+            request_max_tokens: 500
+            inputs_max_tokens: 900
+            parameters_max_tokens: 600
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 20
+        - name: web-security-worker
+          node_type: agent
+          agent: web-security-researcher
+          skill: web-vulnerability-research
+          model:
+            provider: backup
+            max_tokens: 850
+            temperature: 0.1
+          params:
+            domain: web-security
+            team_template_ref: web-research-team
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, evidence, target_scope, findings, verification, blockers, next_actions, recommended_workflow, and artifact_refs.
+            token_policy: Use passive or explicitly authorized browser evidence only. Summarize screenshots/assets by ref, never inline large pages or scripts.
+            tools: web_tools/fetch_url,web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            findings: result.findings
+            report: result.output
+            summary: result.summary
+            verification: result.verification
+          artifacts:
+            - name: web-security-domain-report
+              kind: evidence
+              title: Web security domain report
+              ref: result.output
+          acceptance_criteria:
+            - name: has-target-scope
+              ref: result.output
+              contains: target_scope
+              expected: web worker states authorized target scope
+            - name: has-evidence
+              ref: result.output
+              contains: evidence
+              expected: web worker records evidence or limitations
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 900
+            prompt_max_tokens: 2800
+            request_max_tokens: 500
+            inputs_max_tokens: 850
+            parameters_max_tokens: 650
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 140
+        - name: security-worker
+          node_type: agent
+          agent: security-researcher
+          skill: vulnerability-research
+          model:
+            provider: backup
+            max_tokens: 800
+            temperature: 0.1
+          params:
+            domain: security-research
+            team_template_ref: audit-security-team
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, authorized_scope, findings, evidence, verification, blockers, next_actions, and artifact_refs.
+            token_policy: Stay defensive and evidence-first. Do not provide exploit steps beyond authorized scope.
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            findings: result.findings
+            report: result.output
+            summary: result.summary
+            verification: result.verification
+          artifacts:
+            - name: security-domain-report
+              kind: report
+              title: Security domain report
+              ref: result.output
+          acceptance_criteria:
+            - name: has-scope
+              ref: result.output
+              contains: authorized_scope
+              expected: worker states authorized scope or blocker
+            - name: has-evidence
+              ref: result.output
+              contains: evidence
+              expected: worker records evidence
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 850
+            prompt_max_tokens: 2700
+            request_max_tokens: 500
+            inputs_max_tokens: 800
+            parameters_max_tokens: 600
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 260
+        - name: binary-worker
+          node_type: agent
+          agent: binary-analyst
+          skill: reverse-engineering
+          model:
+            provider: backup
+            max_tokens: 800
+            temperature: 0.1
+          params:
+            domain: binary-analysis
+            team_template_ref: binary-triage-team
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, sample_scope, static_evidence, findings, blockers, next_actions, and artifact_refs.
+            token_policy: Prefer metadata, strings, and bounded previews. Do not execute untrusted binaries.
+            tools: python_notes/binary_file_info,python_notes/binary_strings,python_notes/hex_preview
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            findings: result.findings
+            report: result.output
             summary: result.summary
           artifacts:
-            - name: multi-domain-handoff
+            - name: binary-domain-report
               kind: report
-              title: Multi-domain handoff
+              title: Binary domain report
               ref: result.output
-              summary: Routed domain output and recommended next workflow.
           acceptance_criteria:
-            - name: has-domain
+            - name: has-static-evidence
               ref: result.output
-              contains: Domain Routed
-              expected: handoff names the routed domain
-            - name: has-template
+              contains: static_evidence
+              expected: binary worker records static evidence or blocker
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 850
+            prompt_max_tokens: 2700
+            request_max_tokens: 500
+            inputs_max_tokens: 800
+            parameters_max_tokens: 600
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 380
+        - name: docs-worker
+          node_type: agent
+          agent: documentation-specialist
+          skill: execution-plan
+          model:
+            provider: backup
+            max_tokens: 750
+            temperature: 0.1
+          params:
+            domain: documentation
+            team_template_ref: documentation-team
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, doc_scope, proposed_changes, evidence, blockers, next_actions, and artifact_refs.
+            token_policy: Summarize doc impact and cite sections or files by ref.
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            report: result.output
+            summary: result.summary
+          artifacts:
+            - name: documentation-domain-report
+              kind: report
+              title: Documentation domain report
               ref: result.output
-              contains: Recommended Workflow Template
-              expected: handoff recommends a concrete template
-            - name: has-acceptance
+          acceptance_criteria:
+            - name: has-doc-scope
               ref: result.output
-              contains: Acceptance Criteria
-              expected: handoff includes acceptance criteria
+              contains: doc_scope
+              expected: docs worker states documentation scope
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 800
+            prompt_max_tokens: 2500
+            request_max_tokens: 450
+            inputs_max_tokens: 750
+            parameters_max_tokens: 550
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 500
+        - name: ops-worker
+          node_type: agent
+          agent: operations-specialist
+          skill: execution-plan
+          model:
+            provider: backup
+            max_tokens: 800
+            temperature: 0.1
+          params:
+            domain: operations-runbook
+            team_template_ref: operations-runbook-team
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, authorized_scope, prechecks, dry_run_plan, rollback, evidence, blockers, next_actions, and artifact_refs.
+            token_policy: Plan device/system work with authorized scope, credential refs, allowlists, dry-run and rollback evidence. Do not apply changes directly.
+            tools: network_tools/device_discovery_plan,network_tools/device_command_plan,network_tools/device_config_dry_run
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            report: result.output
+            summary: result.summary
+            verification: result.verification
+          artifacts:
+            - name: operations-domain-report
+              kind: runbook
+              title: Operations domain report
+              ref: result.output
+          acceptance_criteria:
+            - name: has-authorized-scope
+              ref: result.output
+              contains: authorized_scope
+              expected: ops worker states authorized scope
+            - name: has-rollback
+              ref: result.output
+              contains: rollback
+              expected: ops worker includes rollback or blocker
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 850
+            prompt_max_tokens: 2700
+            request_max_tokens: 500
+            inputs_max_tokens: 800
+            parameters_max_tokens: 650
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 620
+        - name: support-worker
+          node_type: agent
+          agent: support-specialist
+          skill: execution-plan
+          model:
+            provider: backup
+            max_tokens: 700
+            temperature: 0.1
+          params:
+            domain: customer-support
+            team_template_ref: customer-support-team
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, customer_context, answer_draft, internal_notes, escalation, blockers, next_actions, and artifact_refs.
+            token_policy: Separate customer-facing answer from internal notes. Do not invent policy commitments.
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            report: result.output
+            summary: result.summary
+          artifacts:
+            - name: support-domain-report
+              kind: report
+              title: Support domain report
+              ref: result.output
+          acceptance_criteria:
+            - name: has-answer-draft
+              ref: result.output
+              contains: answer_draft
+              expected: support worker drafts an answer or asks for context
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 750
+            prompt_max_tokens: 2400
+            request_max_tokens: 450
+            inputs_max_tokens: 700
+            parameters_max_tokens: 550
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 740
+        - name: platform-worker
+          node_type: agent
+          agent: framework-extension-architect
+          skill: execution-plan
+          model:
+            provider: backup
+            max_tokens: 850
+            temperature: 0.1
+          params:
+            domain: agent-framework
+            team_template_ref: framework-extension-team
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, resource_graph, contracts, validation_plan, activation_steps, blockers, next_actions, and artifact_refs.
+            token_policy: Describe resource contracts and validation refs, not generated full files.
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            report: result.output
+            summary: result.summary
+          artifacts:
+            - name: platform-domain-report
+              kind: plan
+              title: Platform domain report
+              ref: result.output
+          acceptance_criteria:
+            - name: has-resource-graph
+              ref: result.output
+              contains: resource_graph
+              expected: platform worker describes resource graph
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+                - memory.project
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 900
+            prompt_max_tokens: 2800
+            request_max_tokens: 500
+            inputs_max_tokens: 850
+            parameters_max_tokens: 650
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 860
+        - name: general-worker
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          model:
+            provider: backup
+            max_tokens: 700
+            temperature: 0.1
+          params:
+            domain: general
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, plan, risks, acceptance_criteria, blockers, next_actions, recommended_workflow, and artifact_refs.
+            token_policy: Produce a concise fallback plan when no specialized domain branch is required.
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            report: result.output
+            summary: result.summary
+          artifacts:
+            - name: general-domain-report
+              kind: plan
+              title: General domain report
+              ref: result.output
+          acceptance_criteria:
+            - name: has-plan
+              ref: result.output
+              contains: plan
+              expected: general worker produces a plan
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 750
+            prompt_max_tokens: 2400
+            request_max_tokens: 450
+            inputs_max_tokens: 700
+            parameters_max_tokens: 550
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 980
+        - name: join
+          node_type: join
+          agent: ""
+          skill: ""
+          params:
+            wait_for_ref: stages.dispatch.outputs.branches
+          outputs:
+            active_branches: result.wait_for
+            branch_count: result.completed_count
+          next:
+            - aggregate
+          position:
+            x: 1670
+            "y": 360
+        - name: aggregate
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          model:
+            provider: primary
+            max_tokens: 1300
+            temperature: 0.1
+          params:
+            output_contract: Emit sections named Integrated Multi-Domain Report, Active Branches, Domain Outputs, Conflicts, Missing Evidence, Verification Matrix, Recommended Workflow, Residual Risks, and Audit Request.
+            purpose: Merge only the selected worker summaries and artifact refs into one compact multi-domain report.
+            token_policy: Use summaries, structured fields, and artifact refs. Do not copy full branch reports unless needed for a blocker.
+          input:
+            active_branches: stages.join.outputs.active_branches
+            binary_summary: stages.binary-worker.outputs.summary
+            docs_summary: stages.docs-worker.outputs.summary
+            general_summary: stages.general-worker.outputs.summary
+            ops_summary: stages.ops-worker.outputs.summary
+            platform_summary: stages.platform-worker.outputs.summary
+            security_summary: stages.security-worker.outputs.summary
+            software_summary: stages.software-worker.outputs.summary
+            support_summary: stages.support-worker.outputs.summary
+            task_graph: stages.decompose.outputs.task_graph
+            web_security_summary: stages.web-security-worker.outputs.summary
+          outputs:
+            integrated_report: result.output
+            summary: result.summary
+          artifacts:
+            - name: integrated-multi-domain-report
+              kind: report
+              title: Integrated multi-domain report
+              ref: result.output
+          acceptance_criteria:
+            - name: has-integrated-report
+              ref: result.output
+              contains: Integrated Multi-Domain Report
+              expected: aggregate produces integrated report
+            - name: has-active-branches
+              ref: result.output
+              contains: Active Branches
+              expected: aggregate names active branches
+            - name: has-verification-matrix
+              ref: result.output
+              contains: Verification Matrix
+              expected: aggregate records evidence or verification coverage
+          context:
+            include:
+                - stages.decompose.outputs.summary
+                - stages.join.outputs.active_branches
+                - stages.software-worker.outputs.summary
+                - stages.web-security-worker.outputs.summary
+                - stages.security-worker.outputs.summary
+                - stages.binary-worker.outputs.summary
+                - stages.docs-worker.outputs.summary
+                - stages.ops-worker.outputs.summary
+                - stages.support-worker.outputs.summary
+                - stages.platform-worker.outputs.summary
+                - stages.general-worker.outputs.summary
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1500
+            prompt_max_tokens: 3600
+            request_max_tokens: 500
+            inputs_max_tokens: 1300
+            parameters_max_tokens: 700
+          next:
+            - audit
+          position:
+            x: 1980
+            "y": 360
+        - name: audit
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          model:
+            provider: primary
+            max_tokens: 1000
+            temperature: 0.1
+          params:
+            output_contract: Emit sections named Audit Decision, Coverage, Blocking Findings, Safety Notes, Token Discipline, Evidence Gaps, and Recommendation.
+            review_scope: Check decomposition fit, selected branch coverage, unsafe tool assumptions, missing evidence, cross-domain conflicts, and token-heavy handoffs.
+          input:
+            active_branches: stages.join.outputs.active_branches
+            integrated_report: stages.aggregate.outputs.integrated_report
+            task_graph: stages.decompose.outputs.task_graph
+          outputs:
+            audit: result.output
+            findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: multi-domain-audit
+              kind: audit
+              title: Multi-domain audit
+              ref: result.output
+          acceptance_criteria:
+            - name: has-audit-decision
+              ref: result.output
+              contains: Audit Decision
+              expected: audit declares decision
+            - name: has-token-discipline
+              ref: result.output
+              contains: Token Discipline
+              expected: audit checks compact handoffs
+          context:
+            include:
+                - stages.aggregate.outputs.summary
+                - stages.decompose.outputs.summary
+                - stages.join.outputs.active_branches
+                - previous.artifacts.integrated-multi-domain-report
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1400
+            prompt_max_tokens: 3300
+            request_max_tokens: 500
+            inputs_max_tokens: 1100
+            parameters_max_tokens: 700
           next:
             - quality
           position:
-            x: 1360
-            "y": 330
+            x: 2290
+            "y": 360
         - name: quality
           node_type: quality_gate
           agent: ""
           skill: ""
           params:
-            min_score: "75"
-            reason: multi-domain handoff is missing domain routing evidence or acceptance criteria
+            stages: decompose,dispatch,aggregate,audit
+            min_score: "85"
+            reason: multi-domain delivery lacks decomposition, selected branch evidence, integrated report, audit coverage, or token discipline
             require_acceptance: "true"
             require_evidence: "true"
+            require_verification: "true"
+            allow_unknown: "false"
           routes:
             fail: revise
-            pass: handoff
+            pass: final-report
             warning: operator-check
           position:
-            x: 1680
-            "y": 330
+            x: 2600
+            "y": 360
         - name: operator-check
           node_type: checkpoint
           agent: ""
           skill: ""
           params:
-            prompt: Review the routed team output and final handoff before continuing.
+            prompt: Review the active branches, integrated report, audit decision, and unresolved risks before final handoff.
           next:
-            - handoff
+            - final-report
           position:
-            x: 1980
-            "y": 180
-        - name: handoff
+            x: 2900
+            "y": 210
+        - name: final-report
           node_type: skill
           agent: chat
           skill: execution-plan
+          model:
+            provider: backup
+            max_tokens: 750
+            temperature: 0.1
+          params:
+            output_contract: Emit sections named Final Handoff, Active Domains, What Was Done, Evidence, Quality Decision, Remaining Risks, Recommended Next Workflow, and Next Steps.
+            purpose: Produce a concise ordinary-user handoff while preserving artifact refs for expert inspection.
+            token_policy: Keep the final response short and reference artifacts instead of copying branch reports.
           input:
-            handoff: stages.synthesize.outputs.handoff
-            quality: stages.quality.outputs.quality_status
+            active_branches: stages.join.outputs.active_branches
+            audit_summary: stages.audit.outputs.summary
+            integrated_summary: stages.aggregate.outputs.summary
+            quality_status: stages.quality.outputs.quality_status
           outputs:
             final: result.output
+            summary: result.summary
           artifacts:
             - name: multi-domain-final
               kind: report
               title: Final multi-domain response
               ref: result.output
+          acceptance_criteria:
+            - name: has-final-handoff
+              ref: result.output
+              contains: Final Handoff
+              expected: final report has a user-facing handoff
+            - name: has-active-domains
+              ref: result.output
+              contains: Active Domains
+              expected: final report names active domains
+            - name: has-next-steps
+              ref: result.output
+              contains: Next Steps
+              expected: final report gives concrete next steps
+          context:
+            include:
+                - stages.join.outputs.active_branches
+                - stages.aggregate.outputs.summary
+                - stages.audit.outputs.summary
+                - stages.quality.outputs.quality_status
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1000
+            prompt_max_tokens: 2600
+            request_max_tokens: 400
+            inputs_max_tokens: 850
+            parameters_max_tokens: 550
           next:
             - end
           position:
-            x: 2280
-            "y": 260
+            x: 3200
+            "y": 300
         - name: revise
           node_type: skill
           agent: planner
           skill: execution-plan
+          model:
+            provider: primary
+            max_tokens: 850
+            temperature: 0.1
+          params:
+            output_contract: Emit sections named Revision Plan, Missing Evidence, Minimal Branch Rerun, Verification Needed, and Handoff.
+            purpose: Convert quality failures into a bounded repair plan without rerunning unrelated domains.
+            token_policy: Reference active branches and artifact refs; do not copy full branch reports.
           input:
-            failures: stages.quality.outputs.failures
-            handoff: stages.synthesize.outputs.handoff
+            active_branches: stages.join.outputs.active_branches
+            audit_summary: stages.audit.outputs.summary
+            quality_status: stages.quality.outputs.quality_status
           outputs:
             revision_plan: result.output
+            summary: result.summary
+          artifacts:
+            - name: multi-domain-revision-plan
+              kind: plan
+              title: Multi-domain revision plan
+              ref: result.output
+          acceptance_criteria:
+            - name: has-revision-plan
+              ref: result.output
+              contains: Revision Plan
+              expected: revision plan names bounded repair work
+          context:
+            include:
+                - stages.join.outputs.active_branches
+                - stages.audit.outputs.summary
+                - stages.quality.outputs.quality_status
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 900
+            prompt_max_tokens: 2500
+            request_max_tokens: 400
+            inputs_max_tokens: 750
+            parameters_max_tokens: 550
           next:
             - end
           position:
-            x: 1980
-            "y": 500
+            x: 2900
+            "y": 540
         - name: end
           node_type: end
           agent: ""
           skill: ""
           position:
-            x: 2580
-            "y": 330
+            x: 3500
+            "y": 360

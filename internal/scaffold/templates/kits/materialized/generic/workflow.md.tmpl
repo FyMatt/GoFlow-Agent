@@ -7,10 +7,21 @@ Generated linked starter workflow for {{.Names.Kit}}.
 - Agent: {{.Names.Agent}}
 - Skill: {{.Names.Skill}}
 - Tool: {{.Names.Tool}}
+{{ range .BuiltinTools }}
+- Built-in domain tool: {{.}}
+{{ end }}
 - Workflow template: {{.Names.WorkflowTemplate}}
 - Team template: {{.Names.TeamTemplate}}
 - Policy rule: {{.Names.PolicyRule}}
 
+{{ if .DomainToolNotes }}
+## Domain Boundaries
+
+{{ range .DomainToolNotes }}
+- {{.}}
+{{ end }}
+
+{{ end }}
 ## Next Steps
 
 1. Restart GoFlow so the generated agent and MCP server config are loaded.

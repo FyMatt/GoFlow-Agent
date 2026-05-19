@@ -22,27 +22,28 @@ const kitBundleKind = "goflow.kit_bundle"
 const kitBundleVersion = 1
 
 type kitResourceDocument struct {
-	Kind              string              `json:"kind,omitempty" yaml:"kind,omitempty"`
-	Version           int                 `json:"version,omitempty" yaml:"version,omitempty"`
-	MinVersion        int                 `json:"min_supported_version,omitempty" yaml:"min_supported_version,omitempty"`
-	Name              string              `json:"name" yaml:"name"`
-	Title             string              `json:"title,omitempty" yaml:"title,omitempty"`
-	Description       string              `json:"description,omitempty" yaml:"description,omitempty"`
-	Category          string              `json:"category,omitempty" yaml:"category,omitempty"`
-	Tags              []string            `json:"tags,omitempty" yaml:"tags,omitempty"`
-	Agents            []string            `json:"agents,omitempty" yaml:"agents,omitempty"`
-	Providers         []string            `json:"providers,omitempty" yaml:"providers,omitempty"`
-	Skills            []string            `json:"skills,omitempty" yaml:"skills,omitempty"`
-	Tools             []string            `json:"tools,omitempty" yaml:"tools,omitempty"`
-	Workflows         []string            `json:"workflows,omitempty" yaml:"workflows,omitempty"`
-	WorkflowTemplates []string            `json:"workflow_templates,omitempty" yaml:"workflow_templates,omitempty"`
-	TeamTemplates     []string            `json:"team_templates,omitempty" yaml:"team_templates,omitempty"`
-	PolicyRules       []string            `json:"policy_rules,omitempty" yaml:"policy_rules,omitempty"`
-	RequiredEnv       []string            `json:"required_env,omitempty" yaml:"required_env,omitempty"`
-	Examples          []kitExample        `json:"examples,omitempty" yaml:"examples,omitempty"`
-	Metadata          map[string]string   `json:"metadata,omitempty" yaml:"metadata,omitempty"`
-	Path              string              `json:"path,omitempty" yaml:"-"`
-	Validation        kitValidationResult `json:"validation,omitempty" yaml:"-"`
+	Kind              string                    `json:"kind,omitempty" yaml:"kind,omitempty"`
+	Version           int                       `json:"version,omitempty" yaml:"version,omitempty"`
+	MinVersion        int                       `json:"min_supported_version,omitempty" yaml:"min_supported_version,omitempty"`
+	Name              string                    `json:"name" yaml:"name"`
+	Title             string                    `json:"title,omitempty" yaml:"title,omitempty"`
+	Description       string                    `json:"description,omitempty" yaml:"description,omitempty"`
+	Category          string                    `json:"category,omitempty" yaml:"category,omitempty"`
+	Tags              []string                  `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Agents            []string                  `json:"agents,omitempty" yaml:"agents,omitempty"`
+	Providers         []string                  `json:"providers,omitempty" yaml:"providers,omitempty"`
+	Skills            []string                  `json:"skills,omitempty" yaml:"skills,omitempty"`
+	Tools             []string                  `json:"tools,omitempty" yaml:"tools,omitempty"`
+	Workflows         []string                  `json:"workflows,omitempty" yaml:"workflows,omitempty"`
+	WorkflowTemplates []string                  `json:"workflow_templates,omitempty" yaml:"workflow_templates,omitempty"`
+	TeamTemplates     []string                  `json:"team_templates,omitempty" yaml:"team_templates,omitempty"`
+	PolicyRules       []string                  `json:"policy_rules,omitempty" yaml:"policy_rules,omitempty"`
+	RequiredEnv       []string                  `json:"required_env,omitempty" yaml:"required_env,omitempty"`
+	Examples          []kitExample              `json:"examples,omitempty" yaml:"examples,omitempty"`
+	Metadata          map[string]string         `json:"metadata,omitempty" yaml:"metadata,omitempty"`
+	VerticalPack      *scaffold.KitVerticalPack `json:"vertical_pack,omitempty" yaml:"vertical_pack,omitempty"`
+	Path              string                    `json:"path,omitempty" yaml:"-"`
+	Validation        kitValidationResult       `json:"validation,omitempty" yaml:"-"`
 }
 
 type kitExample struct {
@@ -70,74 +71,77 @@ type kitValidationItem struct {
 }
 
 type kitSummary struct {
-	Name                 string              `json:"name"`
-	Title                string              `json:"title,omitempty"`
-	Description          string              `json:"description,omitempty"`
-	Category             string              `json:"category,omitempty"`
-	Tags                 []string            `json:"tags,omitempty"`
-	Path                 string              `json:"path,omitempty"`
-	Agents               int                 `json:"agents,omitempty"`
-	Skills               int                 `json:"skills,omitempty"`
-	Tools                int                 `json:"tools,omitempty"`
-	Workflows            int                 `json:"workflows,omitempty"`
-	Providers            int                 `json:"providers,omitempty"`
-	WorkflowTemplates    int                 `json:"workflow_templates,omitempty"`
-	TeamTemplates        int                 `json:"team_templates,omitempty"`
-	PolicyRules          int                 `json:"policy_rules,omitempty"`
-	ProviderRefs         []string            `json:"provider_refs,omitempty"`
-	AgentRefs            []string            `json:"agent_refs,omitempty"`
-	SkillRefs            []string            `json:"skill_refs,omitempty"`
-	ToolRefs             []string            `json:"tool_refs,omitempty"`
-	WorkflowRefs         []string            `json:"workflow_refs,omitempty"`
-	WorkflowTemplateRefs []string            `json:"workflow_template_refs,omitempty"`
-	TeamTemplateRefs     []string            `json:"team_template_refs,omitempty"`
-	PolicyRuleRefs       []string            `json:"policy_rule_refs,omitempty"`
-	Valid                bool                `json:"valid"`
-	Issues               []kitValidationItem `json:"issues,omitempty"`
+	Name                 string                    `json:"name"`
+	Title                string                    `json:"title,omitempty"`
+	Description          string                    `json:"description,omitempty"`
+	Category             string                    `json:"category,omitempty"`
+	Tags                 []string                  `json:"tags,omitempty"`
+	Path                 string                    `json:"path,omitempty"`
+	Agents               int                       `json:"agents,omitempty"`
+	Skills               int                       `json:"skills,omitempty"`
+	Tools                int                       `json:"tools,omitempty"`
+	Workflows            int                       `json:"workflows,omitempty"`
+	Providers            int                       `json:"providers,omitempty"`
+	WorkflowTemplates    int                       `json:"workflow_templates,omitempty"`
+	TeamTemplates        int                       `json:"team_templates,omitempty"`
+	PolicyRules          int                       `json:"policy_rules,omitempty"`
+	ProviderRefs         []string                  `json:"provider_refs,omitempty"`
+	AgentRefs            []string                  `json:"agent_refs,omitempty"`
+	SkillRefs            []string                  `json:"skill_refs,omitempty"`
+	ToolRefs             []string                  `json:"tool_refs,omitempty"`
+	WorkflowRefs         []string                  `json:"workflow_refs,omitempty"`
+	WorkflowTemplateRefs []string                  `json:"workflow_template_refs,omitempty"`
+	TeamTemplateRefs     []string                  `json:"team_template_refs,omitempty"`
+	PolicyRuleRefs       []string                  `json:"policy_rule_refs,omitempty"`
+	VerticalPack         *scaffold.KitVerticalPack `json:"vertical_pack,omitempty"`
+	Valid                bool                      `json:"valid"`
+	Issues               []kitValidationItem       `json:"issues,omitempty"`
 }
 
 type kitScaffoldPreset struct {
-	Name                string              `json:"name"`
-	DefaultKitName      string              `json:"default_kit_name"`
-	Title               string              `json:"title"`
-	Description         string              `json:"description,omitempty"`
-	Category            string              `json:"category,omitempty"`
-	Tags                []string            `json:"tags,omitempty"`
-	Providers           []string            `json:"providers,omitempty"`
-	Agents              []string            `json:"agents,omitempty"`
-	Skills              []string            `json:"skills,omitempty"`
-	Tools               []string            `json:"tools,omitempty"`
-	Workflows           []string            `json:"workflows,omitempty"`
-	WorkflowTemplates   []string            `json:"workflow_templates,omitempty"`
-	TeamTemplates       []string            `json:"team_templates,omitempty"`
-	PolicyRules         []string            `json:"policy_rules,omitempty"`
-	RequiredEnv         []string            `json:"required_env,omitempty"`
-	Examples            []kitExample        `json:"examples,omitempty"`
-	Metadata            map[string]string   `json:"metadata,omitempty"`
-	RecommendedWorkflow string              `json:"recommended_workflow,omitempty"`
-	RecommendedAgent    string              `json:"recommended_agent,omitempty"`
-	Validation          kitValidationResult `json:"validation,omitempty"`
+	Name                string                    `json:"name"`
+	DefaultKitName      string                    `json:"default_kit_name"`
+	Title               string                    `json:"title"`
+	Description         string                    `json:"description,omitempty"`
+	Category            string                    `json:"category,omitempty"`
+	Tags                []string                  `json:"tags,omitempty"`
+	Providers           []string                  `json:"providers,omitempty"`
+	Agents              []string                  `json:"agents,omitempty"`
+	Skills              []string                  `json:"skills,omitempty"`
+	Tools               []string                  `json:"tools,omitempty"`
+	Workflows           []string                  `json:"workflows,omitempty"`
+	WorkflowTemplates   []string                  `json:"workflow_templates,omitempty"`
+	TeamTemplates       []string                  `json:"team_templates,omitempty"`
+	PolicyRules         []string                  `json:"policy_rules,omitempty"`
+	RequiredEnv         []string                  `json:"required_env,omitempty"`
+	Examples            []kitExample              `json:"examples,omitempty"`
+	Metadata            map[string]string         `json:"metadata,omitempty"`
+	VerticalPack        *scaffold.KitVerticalPack `json:"vertical_pack,omitempty"`
+	RecommendedWorkflow string                    `json:"recommended_workflow,omitempty"`
+	RecommendedAgent    string                    `json:"recommended_agent,omitempty"`
+	Validation          kitValidationResult       `json:"validation,omitempty"`
 }
 
 type kitScaffoldRequest struct {
-	Name              string            `json:"name,omitempty"`
-	Title             string            `json:"title,omitempty"`
-	Description       string            `json:"description,omitempty"`
-	Category          string            `json:"category,omitempty"`
-	Tags              []string          `json:"tags,omitempty"`
-	Providers         []string          `json:"providers,omitempty"`
-	Agents            []string          `json:"agents,omitempty"`
-	Skills            []string          `json:"skills,omitempty"`
-	Tools             []string          `json:"tools,omitempty"`
-	Workflows         []string          `json:"workflows,omitempty"`
-	WorkflowTemplates []string          `json:"workflow_templates,omitempty"`
-	TeamTemplates     []string          `json:"team_templates,omitempty"`
-	PolicyRules       []string          `json:"policy_rules,omitempty"`
-	RequiredEnv       []string          `json:"required_env,omitempty"`
-	Examples          []kitExample      `json:"examples,omitempty"`
-	Metadata          map[string]string `json:"metadata,omitempty"`
-	Overwrite         bool              `json:"overwrite,omitempty"`
-	Materialize       bool              `json:"materialize,omitempty"`
+	Name              string                    `json:"name,omitempty"`
+	Title             string                    `json:"title,omitempty"`
+	Description       string                    `json:"description,omitempty"`
+	Category          string                    `json:"category,omitempty"`
+	Tags              []string                  `json:"tags,omitempty"`
+	Providers         []string                  `json:"providers,omitempty"`
+	Agents            []string                  `json:"agents,omitempty"`
+	Skills            []string                  `json:"skills,omitempty"`
+	Tools             []string                  `json:"tools,omitempty"`
+	Workflows         []string                  `json:"workflows,omitempty"`
+	WorkflowTemplates []string                  `json:"workflow_templates,omitempty"`
+	TeamTemplates     []string                  `json:"team_templates,omitempty"`
+	PolicyRules       []string                  `json:"policy_rules,omitempty"`
+	RequiredEnv       []string                  `json:"required_env,omitempty"`
+	Examples          []kitExample              `json:"examples,omitempty"`
+	Metadata          map[string]string         `json:"metadata,omitempty"`
+	VerticalPack      *scaffold.KitVerticalPack `json:"vertical_pack,omitempty"`
+	Overwrite         bool                      `json:"overwrite,omitempty"`
+	Materialize       bool                      `json:"materialize,omitempty"`
 }
 
 type kitScaffoldResponse struct {
@@ -598,6 +602,7 @@ func kitResourceListForRuntime(runtimeRef *agent.Runtime) []kitSummary {
 			WorkflowTemplateRefs: append([]string(nil), doc.WorkflowTemplates...),
 			TeamTemplateRefs:     append([]string(nil), doc.TeamTemplates...),
 			PolicyRuleRefs:       append([]string(nil), doc.PolicyRules...),
+			VerticalPack:         cloneKitVerticalPack(doc.VerticalPack),
 			Valid:                validation.Valid,
 			Issues:               validation.Issues,
 		})
@@ -783,6 +788,7 @@ func kitScaffoldPresetFromShared(preset scaffold.KitPreset) kitScaffoldPreset {
 		RecommendedAgent:    preset.RecommendedAgent,
 		Examples:            examples,
 		Metadata:            cloneKitStringMap(preset.Metadata),
+		VerticalPack:        cloneKitVerticalPack(preset.VerticalPack),
 	}
 }
 
@@ -816,6 +822,7 @@ func kitDocumentFromScaffold(preset kitScaffoldPreset, req kitScaffoldRequest) k
 		RequiredEnv:       mergeKitStringRefs(preset.RequiredEnv, req.RequiredEnv, true),
 		Examples:          append([]kitExample(nil), preset.Examples...),
 		Metadata:          mergeKitMetadata(preset.Metadata, req.Metadata),
+		VerticalPack:      overrideKitVerticalPack(preset.VerticalPack, req.VerticalPack),
 	}
 	if len(req.Examples) > 0 {
 		doc.Examples = append(doc.Examples, req.Examples...)
@@ -915,7 +922,7 @@ func (s *Server) materializedKitBundle(preset kitScaffoldPreset, req kitScaffold
 	doc.Providers = providers
 	doc.Agents = []string{names.Agent}
 	doc.Skills = []string{names.Skill}
-	doc.Tools = []string{names.Tool}
+	doc.Tools = mergeKitStringRefs([]string{names.Tool}, doc.Tools, true)
 	doc.Workflows = []string{names.Workflow}
 	doc.WorkflowTemplates = []string{names.WorkflowTemplate}
 	doc.TeamTemplates = []string{names.TeamTemplate}
@@ -1226,6 +1233,7 @@ func materializedKitPresetForTemplate(preset kitScaffoldPreset, doc kitResourceD
 		RecommendedAgent:    doc.Metadata["recommended_agent"],
 		Examples:            examples,
 		Metadata:            copyMap(doc.Metadata),
+		VerticalPack:        cloneKitVerticalPack(doc.VerticalPack),
 	}
 }
 
@@ -1893,6 +1901,9 @@ func (s *Server) validateKitResource(doc kitResourceDocument) kitValidationResul
 			add("warning", "env_missing", "environment variable "+name+" is not set", name)
 		}
 	}
+	for _, issue := range validateKitVerticalPack(doc.VerticalPack) {
+		add(issue.Severity, issue.Code, issue.Message, issue.Ref)
+	}
 	return result
 }
 
@@ -1922,6 +1933,12 @@ func kitValidationFieldForCode(code string) string {
 		return "policy_rules"
 	case "env_missing":
 		return "required_env"
+	case "vertical_pack_missing":
+		return "vertical_pack"
+	case "vertical_pack_field_missing":
+		return "vertical_pack"
+	case "vertical_pack_maturity_invalid":
+		return "vertical_pack.maturity"
 	default:
 		return ""
 	}
@@ -1953,6 +1970,12 @@ func kitValidationRecommendationForCode(code string) string {
 		return "create or import the referenced policy rule, or remove it from the kit"
 	case "env_missing":
 		return "set the required environment variable before activating this kit"
+	case "vertical_pack_missing":
+		return "add vertical_pack metadata before marking this kit as a professional domain pack"
+	case "vertical_pack_field_missing":
+		return "complete the vertical_pack contract: supported tasks, inputs, tool boundaries, safety gates, quality gates, evidence, Simple mode, Expert mode, token strategy, and model routes"
+	case "vertical_pack_maturity_invalid":
+		return "use one of generic, guided, professional, or production-ready"
 	default:
 		return "review the kit validation issue before activation"
 	}
@@ -1998,7 +2021,153 @@ func normalizeKitResource(doc kitResourceDocument, fallbackName string) kitResou
 	doc.TeamTemplates = normalizeKitRefs(doc.TeamTemplates)
 	doc.PolicyRules = normalizeKitRefs(doc.PolicyRules)
 	doc.RequiredEnv = normalizeKitEnvRefs(doc.RequiredEnv)
+	doc.VerticalPack = normalizeKitVerticalPack(doc.VerticalPack)
 	return doc
+}
+
+func validateKitVerticalPack(pack *scaffold.KitVerticalPack) []kitValidationItem {
+	if pack == nil {
+		return nil
+	}
+	pack = normalizeKitVerticalPack(pack)
+	if pack == nil {
+		return []kitValidationItem{{
+			Severity: "warning",
+			Code:     "vertical_pack_missing",
+			Message:  "vertical_pack is empty",
+			Ref:      "vertical_pack",
+		}}
+	}
+	issues := make([]kitValidationItem, 0)
+	maturity := strings.TrimSpace(pack.Maturity)
+	switch maturity {
+	case "", "generic", "guided", "professional", "production-ready":
+	default:
+		issues = append(issues, kitValidationItem{
+			Severity: "error",
+			Code:     "vertical_pack_maturity_invalid",
+			Message:  "vertical_pack maturity must be generic, guided, professional, or production-ready",
+			Ref:      "vertical_pack.maturity",
+		})
+	}
+	if maturity != "professional" && maturity != "production-ready" {
+		return issues
+	}
+	requireText := func(value, field string) {
+		if strings.TrimSpace(value) == "" {
+			issues = append(issues, kitValidationItem{
+				Severity: "error",
+				Code:     "vertical_pack_field_missing",
+				Message:  field + " is required for professional vertical packs",
+				Ref:      "vertical_pack." + field,
+			})
+		}
+	}
+	requireList := func(values []string, field string) {
+		if len(values) == 0 {
+			issues = append(issues, kitValidationItem{
+				Severity: "error",
+				Code:     "vertical_pack_field_missing",
+				Message:  field + " is required for professional vertical packs",
+				Ref:      "vertical_pack." + field,
+			})
+		}
+	}
+	requireText(pack.Domain, "domain")
+	requireText(pack.Summary, "summary")
+	requireList(pack.SupportedTasks, "supported_tasks")
+	requireList(pack.RequiredInputs, "required_inputs")
+	requireList(pack.ToolBoundaries, "tool_boundaries")
+	requireList(pack.SafetyGates, "safety_gates")
+	requireList(pack.QualityGates, "quality_gates")
+	requireList(pack.EvidenceArtifacts, "evidence_artifacts")
+	requireList(pack.SimpleMode, "simple_mode")
+	requireList(pack.ExpertMode, "expert_mode")
+	requireList(pack.TokenStrategy, "token_strategy")
+	requireList(pack.ModelRoutes.Strong, "model_routes.strong")
+	requireList(pack.ModelRoutes.Worker, "model_routes.worker")
+	return issues
+}
+
+func overrideKitVerticalPack(defaults, overrides *scaffold.KitVerticalPack) *scaffold.KitVerticalPack {
+	if overrides != nil {
+		return cloneKitVerticalPack(overrides)
+	}
+	return cloneKitVerticalPack(defaults)
+}
+
+func cloneKitVerticalPack(pack *scaffold.KitVerticalPack) *scaffold.KitVerticalPack {
+	if pack == nil {
+		return nil
+	}
+	normalized := normalizeKitVerticalPack(pack)
+	if normalized == nil {
+		return nil
+	}
+	clone := *normalized
+	clone.SupportedTasks = append([]string(nil), normalized.SupportedTasks...)
+	clone.RequiredInputs = append([]string(nil), normalized.RequiredInputs...)
+	clone.ToolBoundaries = append([]string(nil), normalized.ToolBoundaries...)
+	clone.SafetyGates = append([]string(nil), normalized.SafetyGates...)
+	clone.QualityGates = append([]string(nil), normalized.QualityGates...)
+	clone.EvidenceArtifacts = append([]string(nil), normalized.EvidenceArtifacts...)
+	clone.SimpleMode = append([]string(nil), normalized.SimpleMode...)
+	clone.ExpertMode = append([]string(nil), normalized.ExpertMode...)
+	clone.TokenStrategy = append([]string(nil), normalized.TokenStrategy...)
+	clone.ModelRoutes.Strong = append([]string(nil), normalized.ModelRoutes.Strong...)
+	clone.ModelRoutes.Worker = append([]string(nil), normalized.ModelRoutes.Worker...)
+	clone.ModelRoutes.Verifier = append([]string(nil), normalized.ModelRoutes.Verifier...)
+	return &clone
+}
+
+func normalizeKitVerticalPack(pack *scaffold.KitVerticalPack) *scaffold.KitVerticalPack {
+	if pack == nil {
+		return nil
+	}
+	normalized := *pack
+	normalized.Domain = normalizeResourceName(normalized.Domain)
+	normalized.Maturity = normalizeResourceName(normalized.Maturity)
+	normalized.Summary = strings.TrimSpace(normalized.Summary)
+	normalized.SupportedTasks = normalizeKitFreeformRefs(normalized.SupportedTasks)
+	normalized.RequiredInputs = normalizeKitFreeformRefs(normalized.RequiredInputs)
+	normalized.ToolBoundaries = normalizeKitFreeformRefs(normalized.ToolBoundaries)
+	normalized.SafetyGates = normalizeKitFreeformRefs(normalized.SafetyGates)
+	normalized.QualityGates = normalizeKitFreeformRefs(normalized.QualityGates)
+	normalized.EvidenceArtifacts = normalizeKitFreeformRefs(normalized.EvidenceArtifacts)
+	normalized.SimpleMode = normalizeKitFreeformRefs(normalized.SimpleMode)
+	normalized.ExpertMode = normalizeKitFreeformRefs(normalized.ExpertMode)
+	normalized.TokenStrategy = normalizeKitFreeformRefs(normalized.TokenStrategy)
+	normalized.ModelRoutes.Strong = normalizeKitFreeformRefs(normalized.ModelRoutes.Strong)
+	normalized.ModelRoutes.Worker = normalizeKitFreeformRefs(normalized.ModelRoutes.Worker)
+	normalized.ModelRoutes.Verifier = normalizeKitFreeformRefs(normalized.ModelRoutes.Verifier)
+	if normalized.Domain == "" && normalized.Maturity == "" && normalized.Summary == "" &&
+		len(normalized.SupportedTasks) == 0 && len(normalized.RequiredInputs) == 0 &&
+		len(normalized.ToolBoundaries) == 0 && len(normalized.SafetyGates) == 0 &&
+		len(normalized.QualityGates) == 0 && len(normalized.EvidenceArtifacts) == 0 &&
+		len(normalized.SimpleMode) == 0 && len(normalized.ExpertMode) == 0 &&
+		len(normalized.TokenStrategy) == 0 && len(normalized.ModelRoutes.Strong) == 0 &&
+		len(normalized.ModelRoutes.Worker) == 0 && len(normalized.ModelRoutes.Verifier) == 0 {
+		return nil
+	}
+	return &normalized
+}
+
+func normalizeKitFreeformRefs(values []string) []string {
+	seen := make(map[string]struct{}, len(values))
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value == "" {
+			continue
+		}
+		key := strings.ToLower(value)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		out = append(out, value)
+	}
+	return out
 }
 
 func normalizeKitRefs(values []string) []string {

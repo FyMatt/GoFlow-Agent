@@ -873,7 +873,7 @@ function renderProviderSetup(runtime, providerResources) {
   const status = providerSetupState(provider);
   const preset = providerSetupPreset(provider.provider);
   const missing = providerSetupMissing(provider);
-  return `<form class="settings-provider-setup ${status.tone}" data-provider-setup-form data-provider-setup-api-key-set="${provider.api_key_set ? "true" : "false"}" data-provider-setup-reusable-key="${provider.reusable_api_key ? "true" : "false"}">
+  return `<form class="settings-provider-setup ${status.tone}" data-provider-setup-form data-provider-setup-api-key-set="${provider.api_key_set ? "true" : "false"}" data-provider-setup-reusable-key="${provider.reusable_api_key ? "true" : "false"}" data-provider-setup-message-fields="${escapeHTML(JSON.stringify(provider.provider_message_fields || []))}">
     <div class="settings-provider-setup-head">
       <div>
         <strong>${escapeHTML(t("settings.providerSetupTitle"))}</strong>
@@ -940,6 +940,7 @@ function selectProviderSetup(runtime = {}, providerResources) {
     provider,
     base_url: String(first.base_url || first.baseURL || "").trim(),
     model: String(first.model || first.default_model || first.defaultModel || "").trim(),
+    provider_message_fields: Array.isArray(first.provider_message_fields) ? first.provider_message_fields : [],
     api_key_set: Boolean(first.api_key_set || first.apiKeySet || String(first.api_key || "").trim()),
     reusable_api_key: Boolean((first.apply_state || first.restart_required || first.api_key) && (first.api_key_set || first.apiKeySet || String(first.api_key || "").trim()))
   };
@@ -1153,8 +1154,20 @@ function collectProviderSetupForm(form) {
     provider,
     base_url: String(form.querySelector("[data-provider-setup-base-url]")?.value || "").trim(),
     model: String(form.querySelector("[data-provider-setup-model]")?.value || "").trim(),
-    api_key: String(form.querySelector("[data-provider-setup-api-key]")?.value || "").trim()
+    api_key: String(form.querySelector("[data-provider-setup-api-key]")?.value || "").trim(),
+    provider_message_fields: providerSetupExistingMessageFields(form)
   };
+}
+
+function providerSetupExistingMessageFields(form) {
+  if (!form) return [];
+  try {
+    const raw = form.dataset.providerSetupMessageFields || "[]";
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.map(value => String(value || "").trim()).filter(Boolean) : [];
+  } catch {
+    return [];
+  }
 }
 
 function normalizeProviderSetupID(value) {

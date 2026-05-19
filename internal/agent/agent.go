@@ -41,6 +41,10 @@ type agentConversationState struct {
 	StreamedText     bool
 }
 
+type agentRunOptions struct {
+	AllowedTools []string
+}
+
 // New constructs a new agent instance.
 func New(cfg *config.Config, llm interfaces.LLMClient, skills interfaces.SkillManager, mcp interfaces.MCPClient) *Agent {
 	return &Agent{
@@ -76,6 +80,10 @@ func (a *Agent) RunStream(ctx context.Context, input string, handler func(event 
 
 // RunStream executes a request for one configured agent runner.
 func (r *AgentRunner) RunStream(ctx context.Context, input string, skills interfaces.SkillManager, mcp interfaces.MCPClient, state *session.State, audit *runtime.AuditLogger, runtimeRef *Runtime, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	return r.runStreamWithOptions(ctx, input, skills, mcp, state, audit, runtimeRef, agentRunOptions{}, handler)
+}
+
+func (r *AgentRunner) runStreamWithOptions(ctx context.Context, input string, skills interfaces.SkillManager, mcp interfaces.MCPClient, state *session.State, audit *runtime.AuditLogger, runtimeRef *Runtime, options agentRunOptions, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
 	if runtimeRef != nil && !runtimeRef.WorkspaceConfirmed() {
 		mcp = workspaceGatedMCP{mcp: mcp}
 	}
@@ -89,6 +97,7 @@ func (r *AgentRunner) RunStream(ctx context.Context, input string, skills interf
 	}
 	profile := r.profile
 	profile = applySkillToProfile(profile, matchedSkill)
+	profile = applyWorkflowStageAllowedTools(profile, options.AllowedTools)
 	profile = ensureMinimumToolIterations(profile)
 	if state != nil {
 		state.SetActiveAgent(r.id)
@@ -333,6 +342,32 @@ func filterPromptTools(profile config.AgentProfile, tools []schema.Tool) []schem
 	return filtered
 }
 
+func applyWorkflowStageAllowedTools(profile config.AgentProfile, allowed []string) config.AgentProfile {
+	allowed = dedupeToolNames(allowed)
+	if len(allowed) == 0 {
+		return profile
+	}
+	if len(profile.AllowedTools) == 0 {
+		profile.AllowedTools = allowed
+		return profile
+	}
+	intersected := make([]string, 0, len(allowed))
+	for _, stageTool := range allowed {
+		for _, profileTool := range profile.AllowedTools {
+			if toolNameEquivalent(stageTool, profileTool) {
+				intersected = append(intersected, stageTool)
+				break
+			}
+		}
+	}
+	if len(intersected) == 0 {
+		profile.AllowedTools = []string{"__none__"}
+		return profile
+	}
+	profile.AllowedTools = dedupeToolNames(intersected)
+	return profile
+}
+
 func intersectProfileToolKinds(existing []config.ToolKind, requested []string) []config.ToolKind {
 	requestedKinds := make([]config.ToolKind, 0, len(requested))
 	seenRequested := map[config.ToolKind]struct{}{}
@@ -446,16 +481,18 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 			}
 			structured := buildStructuredSections(resp.Message.Content, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 			findings, changes, verification := buildStructuredArtifacts(resp.Message.Content, collectedResults, mode)
-			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
+			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: profile.Model, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
 		}
 		runFinalToolCalls := finalResponseTurn && shouldRunFinalTurnToolCalls(execCtx, resp.ToolCalls)
 		if finalResponseTurn && !runFinalToolCalls {
 			return r.finalizeAfterIterationBudget(ctx, state, messages, collectedResults, fallbackUsed, iteration, handler, audit, runtimeRef)
 		}
 
-		messages = append(messages, schema.Message{Role: "assistant", Content: resp.Message.Content, ToolCalls: resp.ToolCalls})
+		assistantMessage := assistantToolMessage(resp)
+		messages = append(messages, assistantMessage)
+		messages = compactMessagesForConversation(messages)
 		batchProfile := classifyToolCallBatch(resp.ToolCalls, execCtx)
-		resumeMessages := append([]schema.Message(nil), messages...)
+		resumeMessages := schema.CopyMessages(messages)
 		resumeCollected := append([]schema.ToolResult(nil), collectedResults...)
 		emitTaskStage(handler, sessionState, r.id, mode, taskStageForToolCalls(resp.ToolCalls, execCtx), summarizeToolCallStage(resp.ToolCalls, execCtx))
 		results, err := r.executor.RunToolCalls(ctx, execCtx, resp.ToolCalls, runtimeRef, handler)
@@ -495,12 +532,15 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 			}
 			structured := buildStructuredSections(resp.Message.Content, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 			findings, changes, verification := buildStructuredArtifacts(resp.Message.Content, collectedResults, mode)
-			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
+			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: profile.Model, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification, ResponseMessage: assistantMessage}, nil
 		}
 		if runFinalToolCalls {
 			return r.finalizeAfterIterationBudget(ctx, state, messages, collectedResults, fallbackUsed, iteration, handler, audit, runtimeRef)
 		}
 		if nudge, ok := actionNudge.Next(batchProfile, len(results)); ok {
+			if summary := toolObservationDigestMessage(collectedResults); strings.TrimSpace(summary) != "" {
+				messages = append(messages, schema.Message{Role: "user", Content: summary})
+			}
 			messages = append(messages, schema.Message{Role: "user", Content: nudge})
 			if handler != nil {
 				_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "enough context gathered; nudging model to act", AgentID: r.id, Mode: mode, NeedsAction: true})
@@ -541,7 +581,7 @@ func (r *AgentRunner) finalizeAfterIterationBudget(ctx context.Context, state ag
 		emitTaskStage(handler, sessionState, r.id, mode, "summarize", "iteration budget reached")
 		_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "tool iteration budget reached; requesting final summary without additional tool calls", AgentID: r.id, Mode: mode, NeedsAction: true})
 	}
-	finalMessages := append([]schema.Message(nil), messages...)
+	finalMessages := compactMessagesForSummaryPrompt(messages)
 	finalMessages = append(finalMessages, schema.Message{Role: "user", Content: "Tool iteration budget has been reached. Do not call more tools. Do not repeat earlier planning text. Produce a concise final summary from the observations already in this conversation: completed work, verification already available, remaining risk, and the next concrete step if any."})
 	streamedText := false
 	request := schema.ChatRequest{
@@ -582,7 +622,7 @@ func (r *AgentRunner) finalizeAfterIterationBudget(ctx context.Context, state ag
 	}
 	structured := buildStructuredSections(resp.Message.Content, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 	findings, changes, verification := buildStructuredArtifacts(resp.Message.Content, collectedResults, mode)
-	return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
+	return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: summaryModel, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
 }
 
 func (r *AgentRunner) finalizeWithLocalBudgetSummary(state agentConversationState, collectedResults []schema.ToolResult, fallbackUsed bool, iteration int, handler func(event schema.StreamEvent) error, audit *runtime.AuditLogger) (schema.AgentResult, error) {
@@ -601,7 +641,7 @@ func (r *AgentRunner) finalizeWithLocalBudgetSummary(state agentConversationStat
 	}
 	structured := buildStructuredSections(output, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 	findings, changes, verification := buildStructuredArtifacts(output, collectedResults, mode)
-	return schema.AgentResult{Output: output, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
+	return schema.AgentResult{Output: output, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: state.Profile.Model, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
 }
 
 func (r *AgentRunner) finalizeWithInvalidToolArguments(state agentConversationState, collectedResults []schema.ToolResult, fallbackUsed bool, iteration int, handler func(event schema.StreamEvent) error, audit *runtime.AuditLogger) (schema.AgentResult, error) {
@@ -623,7 +663,7 @@ func (r *AgentRunner) finalizeWithInvalidToolArguments(state agentConversationSt
 	}
 	structured := buildStructuredSections(output, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 	findings, changes, verification := buildStructuredArtifacts(output, collectedResults, mode)
-	return schema.AgentResult{Output: output, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
+	return schema.AgentResult{Output: output, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: state.Profile.Model, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
 }
 
 func dynamicContextMessages(memoryText string, snapshot session.Snapshot, currentInput string, messages []schema.Message) []schema.Message {
@@ -671,6 +711,34 @@ func buildLocalBudgetSummary(results []schema.ToolResult) string {
 		parts = append(parts, fmt.Sprintf("%s x%d", name, counts[name]))
 	}
 	return fmt.Sprintf("Tool iteration budget reached before the model produced a final no-tool summary. Completed tool calls: %s. I stopped before making additional tool calls.", strings.Join(parts, ", "))
+}
+
+func toolObservationDigestMessage(results []schema.ToolResult) string {
+	if len(results) < 3 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Tool observation digest:\n")
+	start := len(results) - 6
+	if start < 0 {
+		start = 0
+	}
+	if start > 0 {
+		fmt.Fprintf(&builder, "- %d earlier tool observations omitted from this digest; full observations remain above or in artifacts.\n", start)
+	}
+	for _, result := range results[start:] {
+		status := "ok"
+		if result.Suspended {
+			status = "suspended"
+		} else if result.Denied {
+			status = "denied"
+		} else if result.IsError {
+			status = "error"
+		}
+		fmt.Fprintf(&builder, "- %s (%s): %s\n", fallbackToolResultName(result.ToolName), status, truncateSummary(result.Content))
+	}
+	builder.WriteString("Use this digest to avoid rereading or restating earlier tool output unless exact artifact content is needed.")
+	return builder.String()
 }
 
 func toolCallByID(calls []schema.ToolCall, id string) (schema.ToolCall, bool) {
@@ -1064,8 +1132,19 @@ func runAgentChatWithRecovery(ctx context.Context, llm interfaces.LLMClient, req
 			currentRequest.Messages = *messages
 			continue
 		}
-		currentRequest.Messages = append(append([]schema.Message(nil), currentRequest.Messages...), recoveryMessage)
+		currentRequest.Messages = append(schema.CopyMessages(currentRequest.Messages), recoveryMessage)
 	}
+}
+
+func assistantToolMessage(resp schema.ChatResponse) schema.Message {
+	message := schema.CopyMessage(resp.Message)
+	if strings.TrimSpace(message.Role) == "" {
+		message.Role = "assistant"
+	}
+	if len(message.ToolCalls) == 0 && len(resp.ToolCalls) > 0 {
+		message.ToolCalls = schema.CopyToolCalls(resp.ToolCalls)
+	}
+	return message
 }
 
 func isRecoverableToolArgumentError(err error) bool {

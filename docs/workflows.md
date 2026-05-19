@@ -176,6 +176,10 @@ stages:
     node_type: agent
     agent: planner
     skill: execution-plan
+    model:
+      provider: primary
+      max_tokens: 1600
+      temperature: 0.1
     approval: false
     outputs:
       plan: result.output
@@ -220,10 +224,32 @@ Fields:
 - `stage.node_type`: optional type. Supported values include `start`, `agent`, `skill`, `tool`, `custom`, `condition`, `switch`, `router`, `policy_guard`, `quality_gate`, `parallel`, `join`, `for_each`, `loop`, `sub_workflow`, `checkpoint`, `input_gate`, `team`, and `end`.
 - `stage.agent`: configured agent profile to run the stage.
 - `stage.skill`: loaded skill name whose instructions are applied to the stage.
-- `stage.tool`: optional tool metadata for a tool-focused stage.
+- `stage.tool`: optional tool metadata for a tool-focused stage. For executable
+  workflow stages this also narrows the tool schemas exposed to the model for
+  that stage. Use `params.tools` or `params.allowed_tools` for a comma-separated
+  list when a stage should expose several exact tools.
+  The resulting `prompt_budget` event records
+  `tool_schema_estimated_saved_tokens`, so operators can see how much schema
+  context the stage scope avoided.
+- `stage.model`: optional per-stage model route override. `provider` selects a
+  configured provider/client, `model` overrides the provider default model,
+  `max_tokens` caps that stage response, and `temperature` overrides sampling.
+  The Agent profile still owns mode, tool permissions, approval policy, and
+  iteration limits. Use this for strong-model decomposition/audit stages and
+  cheaper, lower-token worker stages.
 - `stage.params`: optional key/value metadata included in the stage prompt.
+  For bounded worker stages, set `worker_contract: engineering_v1` to request a
+  compact JSON handoff with `summary`, `changed_files`, `evidence`,
+  `verification`, `blockers`, and `next_actions`. The runtime extracts those
+  keys as stable outputs when the model returns JSON.
 - `stage.input`: optional map of input names to references such as `workflow.input`, `stages.plan.outputs.summary`, `stages.plan.outputs.<name>`, or `stages.plan.result.output`.
-- `stage.outputs`: optional map of output names to result references such as `result.output`, `result.summary`, `result.findings`, `result.tool_results`, `result.changes`, or `result.verification`.
+- `stage.outputs`: optional map of output names to result references such as `result.output`, `result.summary`, `result.findings`, `result.tool_results`, `result.changes`, `result.verification`, or JSON keys returned by the model such as `result.changed_files` and `result.blockers`.
+- `stage.context`: optional context and prompt budget contract. `include`,
+  `exclude`, and `max_tokens` select and cap upstream context. Expert budget
+  fields `prompt_max_tokens`, `request_max_tokens`, `inputs_max_tokens`, and
+  `parameters_max_tokens` cap the whole prompt, original request block, mapped
+  input block, and parameter block. Truncation uses explicit markers and keeps
+  final execution constraints intact.
 - `stage.artifacts`: optional replay artifact declarations. Each item supports `name`, `kind`, `title`, `ref`, `summary`, `content`, and `metadata`. `ref`, `summary`, and `content` can use result references such as `result.output`, `result.summary`, `result.findings`, `result.tool_results`, `result.changes`, or `result.verification`.
 - `stage.acceptance_criteria`: optional stage acceptance checks. Each item can
   declare `name`, `description`, `ref`, `contains`, `equals`, `exists`, and
@@ -255,9 +281,11 @@ guide:
 | `agent` | Which configured Agent profile runs an executable stage | `planner`, `software-engineer`, `web-security-researcher`, `binary-analyst` |
 | `skill` | Which reusable procedure guides the stage | `execution-plan`, `code-writing`, `code-audit`, `web-vulnerability-research` |
 | `tool` | Preferred MCP tool metadata for a tool-focused stage | `file_tools/write_file`, `web_tools/fetch_page_assets`, `python_notes/binary_strings` |
+| `model` | Optional stage route and output budget override | `provider: primary`, `provider: backup`, `max_tokens: 900` |
 | `input` | Map local input names to workflow references or literals | `plan: stages.plan.outputs.plan`, `target: workflow.input` |
 | `outputs` | Publish stable names for later stages | `summary: result.summary`, `report: result.output`, `findings: result.findings` |
-| `params` | Stable node settings, output contracts, team names, form metadata | `team: software-task-team`, `rule: risk_at_least`, `fields: target:string:Target:required` |
+| `params` | Stable node settings, output contracts, team names, form metadata | `worker_contract: engineering_v1`, `rule: risk_at_least`, `fields: target:string:Target:required` |
+| `context` | Selected context and prompt budget controls | `include: [previous.summary]`, `prompt_max_tokens: 4200` |
 | `artifacts` | Mark first-class deliverables for replay/UI | `name: audit-report, kind: report, ref: result.output` |
 | `acceptance_criteria` | Define checks for quality gates and replay evidence | `name: has-risk, ref: result.output, contains: risk` |
 | `approval` | Pause before risky or high-impact stages | `true` for write, exec, external side-effect, or release stages |
@@ -274,6 +302,9 @@ Reference patterns:
 - `result.output`, `result.summary`, `result.findings`,
   `result.tool_results`, `result.changes`, `result.verification`: current
   executable stage result references for `outputs`, artifacts, and criteria.
+- `result.<json_key>`: when a stage returns a JSON object, named keys such as
+  `result.changed_files`, `result.blockers`, or `result.next_actions` can be
+  published directly.
 
 Practical authoring pattern:
 
@@ -285,6 +316,29 @@ Practical authoring pattern:
 4. Route on structured outputs with `condition`, `switch`, or `policy_guard`.
 5. Declare final reports, findings, diffs, or evidence as artifacts so replay
    and Studio do not have to parse prose.
+
+For complex engineering tasks, the built-in `engineering-parallel-delivery`
+template applies the same rule at model-routing level: a stronger route
+decomposes the task and audits the integrated result, while cheaper worker
+routes execute bounded slices in parallel with tight `context.max_tokens` and
+`model.max_tokens` budgets. This improves reliability without copying full
+history, raw logs, or large file contents into every worker prompt.
+
+Use the quality-first token pattern for complex work:
+
+1. Strong planner stage: decompose the request into independent slices,
+   ownership boundaries, acceptance checks, and verification commands.
+2. Bounded worker stages: run cheaper routes with `worker_contract:
+   engineering_v1`, stage-scoped tools, and prompt budgets.
+3. Artifact-first join: persist full worker reports as artifacts but pass only
+   summaries, changed files, verification, blockers, and artifact refs forward.
+4. Strong aggregate/audit stage: merge worker evidence, detect conflicts, and
+   gate on acceptance, verification, and evidence before the final handoff.
+
+Studio keeps this usable for both audiences. Simple mode exposes templates,
+task cards, resource pickers, context presets, and run status. Expert mode
+shows model routes, raw maps, context include/exclude lists, prompt budget
+fields, artifacts, acceptance criteria, and run diagnostics for developers.
 
 ## How To Use Each Node Type
 
@@ -1633,7 +1687,7 @@ and any custom metadata file path.
 
 `/api/workflow-templates` returns reusable graph blueprints such as
 `multi-domain-intake-router`, `complex-project-delivery`,
-`task-decomposition-plan`, `plan-implement-audit`, `plan-fix-audit`,
+`engineering-parallel-delivery`, `task-decomposition-plan`, `plan-implement-audit`, `plan-fix-audit`,
 `software-quality-gate`, `web-research-risk`,
 `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`,
 `docs-review-publish`, `operations-runbook`, `customer-support-triage`,
@@ -1656,15 +1710,16 @@ This keeps simple starters useful while still making them safe foundations for
 larger tasks.
 
 `multi-domain-intake-router` is the recommended built-in entry template for new
-users and broad deployments. It starts with a structured intake form, routes the
-declared domain to one of the reusable team templates, expands that team into
-executable role stages, synthesizes the selected domain result, passes it
-through a quality gate, and then produces a final handoff. The route targets
-cover software engineering, web security, general security research, binary
-analysis, documentation, operations, customer support, platform/framework
-extension work, and a general fallback. Use it to demonstrate how Agents,
-Skills, Tools, Teams, Workflow Templates, Policy Rules, and Kits are connected
-in a realistic graph.
+users and broad deployments. It starts with a structured intake form, uses a
+strong planner route to decompose the request, activates only the selected
+domain worker branches, joins their compact reports, audits cross-domain
+coverage and token discipline, then produces a final handoff. The selectable
+branches cover software engineering, web security, general security research,
+binary analysis, documentation, operations, customer support,
+platform/framework extension work, and a general fallback. Expert fields expose
+`active_branches_ref`, `wait_for_ref`, model routes, context budgets, branch
+contracts, artifact refs, and linked team template refs so developers can
+extend the orchestration without making ordinary users edit raw maps.
 
 `complex-project-delivery` is the recommended template for broad implementation
 work that should continue until the accepted requirements are satisfied. It
@@ -1674,6 +1729,15 @@ loop until the iteration output declares `PROJECT_COMPLETE`. After the loop it
 runs final validation and produces a completion report with delivered
 requirements, changed files, verification evidence, residual risks, and artifact
 references.
+
+`engineering-parallel-delivery` is the recommended template for complex
+engineering work where quality should come from orchestration rather than one
+large prompt. It uses a strong planning route to decompose the task into owned
+work slices, fans out bounded worker stages on cheaper routes, joins their
+reports, audits the integrated result, and keeps both `model.max_tokens` and
+`context.max_tokens` tight so workers exchange summaries and artifact refs
+instead of raw logs or full history. Warnings or failures route through a
+compact resolver pass before the final handoff.
 
 `plan-implement-audit` is the recommended template for a bounded delivery task
 that still needs a full handoff: clarify, plan, implement, verify, audit,

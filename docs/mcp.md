@@ -89,6 +89,8 @@ This means:
 - `web_search`
 - `fetch_url`
 - `fetch_page_assets`
+- `browser_snapshot`
+- `browser_probe_points`
 
 ### Behavior
 
@@ -96,7 +98,53 @@ This means:
 - searches the public web through DuckDuckGo Lite and returns compact result metadata
 - fetches HTTP(S) URLs with byte limits, status, content type, title, text preview, and truncated content
 - fetches an HTML page plus referenced JavaScript and CSS assets for source-oriented web security review
+- opens authorized HTTP(S) targets in a local headless browser for compact DOM,
+  form, link, script, storage, signal, and optional screenshot evidence through
+  `browser_snapshot`
+- enumerates scoped XSS/SQLi-oriented GET query, link, and form probe surfaces
+  through `browser_probe_points`
+- requires `authorized_scope=true` and a non-empty `allowed_hosts` list before
+  either browser automation tool runs
+- only runs active GET canary probes when `active_probe_approved=true`; without
+  that approval, `browser_probe_points` remains passive surface enumeration
+- never brute-forces, broadly crawls, submits POST forms, or probes hosts
+  outside `allowed_hosts`
 - rejects non-HTTP(S) URL schemes
+
+Set `GOFLOW_BROWSER_PATH` when Chrome, Edge, or Chromium is not discoverable on
+the host. `configs/mcp_servers/web_tools.yaml` already allowlists this
+environment variable for the built-in server. Browser automation is intended
+for explicitly authorized defensive testing and evidence collection; workflow
+templates should carry the authorization boundary, allowed host list, and active
+probe approval as explicit inputs.
+
+## Built-in `network_tools` server (Go)
+
+### Tools
+
+- `device_discovery_plan`
+- `device_command_plan`
+- `device_config_dry_run`
+
+### Behavior
+
+- classifies tools as `network`
+- accepts device IP or hostname, platform, connection type, credential ref,
+  authorized-scope flag, host allowlist, and command allowlists
+- validates `authorized_scope=true` and rejects targets outside `allowed_hosts`
+- builds a read-only discovery plan with compact default show/display commands
+- checks read-only command requests against the operator-provided allowlist
+- builds configuration dry-run plans with rollback, precheck, postcheck,
+  approval, and audit evidence requirements
+- never opens a device connection and never applies configuration changes
+
+`network_tools` is the default operations-domain boundary for network-device
+workflows. It is intentionally a planning and policy-check server, not a raw
+SSH/API executor. A future device connector should consume the same contracts:
+authorized scope, allowed hosts, credential refs, command allowlists, dry-run
+diff, approval metadata, rollback plan, and post-change evidence refs. This
+keeps ordinary users on a safe path while giving expert users enough structure
+to add a real connector without changing the workflow evidence shape.
 
 ## Built-in `python_notes` server (Python)
 
@@ -257,6 +305,23 @@ mcp_servers:
     max_request_bytes: 65536
     max_response_bytes: 2097152
 
+  - name: network_tools
+    command: go
+    args:
+      - run
+      - ./mcp_servers/network_tools
+    enabled: true
+    timeout: 30s
+    workdir: .
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
+    isolation: process_group
+    restart_limit: 3
+    cooldown: 10s
+    allowed_commands:
+      - go
+    max_request_bytes: 65536
+    max_response_bytes: 1048576
+
   - name: skill_runner
     command: go
     args:
@@ -306,6 +371,11 @@ Current built-in output should include entries for:
 - `web_tools/web_search`
 - `web_tools/fetch_url`
 - `web_tools/fetch_page_assets`
+- `web_tools/browser_snapshot`
+- `web_tools/browser_probe_points`
+- `network_tools/device_discovery_plan`
+- `network_tools/device_command_plan`
+- `network_tools/device_config_dry_run`
 - `skill_runner/run_script`
 - `python_notes/read_note`
 - `python_notes/write_note`

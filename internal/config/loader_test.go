@@ -1107,7 +1107,7 @@ func TestDockerConfigLoadsWithCompiledMCPCommands(t *testing.T) {
 	originalLookPath := execLookPath
 	execLookPath = func(file string) (string, error) {
 		switch file {
-		case "/app/bin/file_tools", "/app/bin/skill_runner", "/app/bin/web_tools":
+		case "/app/bin/file_tools", "/app/bin/skill_runner", "/app/bin/web_tools", "/app/bin/network_tools":
 			return file, nil
 		case "python3":
 			return "/usr/bin/python3", nil
@@ -1130,8 +1130,8 @@ func TestDockerConfigLoadsWithCompiledMCPCommands(t *testing.T) {
 	if cfg.Session.PersistPath != filepath.Clean("/workspace/.goflow/session.json") {
 		t.Fatalf("expected docker session path, got %q", cfg.Session.PersistPath)
 	}
-	if len(cfg.MCP) != 4 {
-		t.Fatalf("expected 4 docker MCP servers, got %d", len(cfg.MCP))
+	if len(cfg.MCP) != 5 {
+		t.Fatalf("expected 5 docker MCP servers, got %d", len(cfg.MCP))
 	}
 	servers := map[string]MCPServerRef{}
 	for _, server := range cfg.MCP {
@@ -1142,6 +1142,9 @@ func TestDockerConfigLoadsWithCompiledMCPCommands(t *testing.T) {
 	}
 	if servers["web_tools"].Command != "/app/bin/web_tools" {
 		t.Fatalf("expected compiled web_tools command, got %#v", servers["web_tools"])
+	}
+	if servers["network_tools"].Command != "/app/bin/network_tools" {
+		t.Fatalf("expected compiled network_tools command, got %#v", servers["network_tools"])
 	}
 	if servers["skill_runner"].Command != "/app/bin/skill_runner" {
 		t.Fatalf("expected compiled skill_runner command, got %#v", servers["skill_runner"])
@@ -1161,6 +1164,7 @@ func TestBinaryConfigLoadsWithLauncherEnv(t *testing.T) {
 	t.Setenv("GOFLOW_FILE_TOOLS_CMD", "/opt/goflow/bin/file_tools")
 	t.Setenv("GOFLOW_SKILL_RUNNER_CMD", "/opt/goflow/bin/skill_runner")
 	t.Setenv("GOFLOW_WEB_TOOLS_CMD", "/opt/goflow/bin/web_tools")
+	t.Setenv("GOFLOW_NETWORK_TOOLS_CMD", "/opt/goflow/bin/network_tools")
 	t.Setenv("GOFLOW_PYTHON_CMD", "python3")
 	t.Setenv("GOFLOW_PYTHON_NOTES_PATH", "/opt/goflow/mcp_servers/python_notes.py")
 
@@ -1180,6 +1184,9 @@ func TestBinaryConfigLoadsWithLauncherEnv(t *testing.T) {
 	}
 	if servers["web_tools"].Command != "/opt/goflow/bin/web_tools" {
 		t.Fatalf("expected binary web_tools command, got %#v", servers["web_tools"])
+	}
+	if servers["network_tools"].Command != "/opt/goflow/bin/network_tools" {
+		t.Fatalf("expected binary network_tools command, got %#v", servers["network_tools"])
 	}
 	if servers["skill_runner"].Command != "/opt/goflow/bin/skill_runner" {
 		t.Fatalf("expected binary skill_runner command, got %#v", servers["skill_runner"])

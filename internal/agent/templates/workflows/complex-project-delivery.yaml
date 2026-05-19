@@ -68,6 +68,10 @@ graph:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 3200
+            prompt_max_tokens: 5600
+            request_max_tokens: 1600
+            inputs_max_tokens: 1000
+            parameters_max_tokens: 800
             retrieval:
                 enabled: true
                 query: "{{input.goal}}"
@@ -118,6 +122,10 @@ graph:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 3800
+            prompt_max_tokens: 6200
+            request_max_tokens: 1400
+            inputs_max_tokens: 1800
+            parameters_max_tokens: 850
             retrieval:
                 enabled: true
                 query: "{{input.goal}}"
@@ -185,7 +193,8 @@ graph:
           agent: fixer
           skill: code-writing
           params:
-            output_contract: Emit sections named Iteration Number, Selected Work Slice, Implementation Summary, Files Changed, Verification Performed, Review Findings, Plan Update, Remaining Work, Completion Decision, and Next Action. Include the exact token PROJECT_COMPLETE only when every accepted requirement is implemented, verified, reviewed, and the plan has no remaining work.
+            worker_contract: engineering_v1
+            output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, next_actions, and plan_update. Plan Update must record completed slice status and remaining work. Include PROJECT_COMPLETE in summary only when every accepted requirement is implemented, verified, reviewed, and the plan has no remaining work.
             purpose: Execute one project delivery slice, verify it, review it, update the project plan, and decide whether another iteration is needed.
             iteration_policy: Use the project plan and previous iteration summaries to choose the next unfinished slice. Preserve user edits. Keep changes scoped. Run or describe the most relevant verification. Review your own result before declaring completion.
             failure_policy: If implementation or verification fails, update the plan with the failure, next fix, and required evidence instead of hiding it.
@@ -195,8 +204,13 @@ graph:
             project_plan: stages.plan.outputs.project_plan
             previous_iterations: stages.delivery-loop.outputs.loop_summaries
           outputs:
+            changed_files: result.changed_files
             iteration_report: result.output
+            plan_update: result.plan_update
             summary: result.summary
+            verification: result.verification
+            blockers: result.blockers
+            next_actions: result.next_actions
             changes: result.changes
             findings: result.findings
           artifacts:
@@ -238,6 +252,10 @@ graph:
                 - large_file_contents
                 - unrelated_session_history
             max_tokens: 5200
+            prompt_max_tokens: 6400
+            request_max_tokens: 1000
+            inputs_max_tokens: 2400
+            parameters_max_tokens: 900
             retrieval:
                 enabled: true
                 query: "{{input.goal}}"
@@ -283,7 +301,7 @@ graph:
             output_contract: Emit sections named Recovery Decision, Failed Iterations, Missing Evidence, Updated Plan, Recommended Next Action, and User Decision Needed.
             purpose: Explain why the delivery loop did not meet the bar and provide a safe recovery plan.
           input:
-            iteration_history: stages.delivery-loop.outputs.loop_outputs
+            iteration_history: stages.delivery-loop.outputs.loop_summaries
             loop_quality: stages.loop-quality.outputs.quality_status
             failures: stages.loop-quality.outputs.failures
           outputs:
@@ -304,12 +322,16 @@ graph:
             include:
                 - previous.summary
                 - previous.artifacts.iteration-history
-                - stages.delivery-loop.outputs.loop_outputs
+                - stages.delivery-loop.outputs.loop_summaries
                 - stages.loop-quality.outputs.failures
             exclude:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 4200
+            prompt_max_tokens: 5200
+            request_max_tokens: 800
+            inputs_max_tokens: 1700
+            parameters_max_tokens: 700
           next:
             - final-quality
           position:
@@ -326,7 +348,7 @@ graph:
           input:
             requirements: stages.intake.outputs.requirements
             project_plan: stages.plan.outputs.project_plan
-            iteration_history: stages.delivery-loop.outputs.loop_outputs
+            iteration_history: stages.delivery-loop.outputs.loop_summaries
           outputs:
             final_validation: result.output
             summary: result.summary
@@ -357,12 +379,16 @@ graph:
                 - previous.artifacts.iteration-history
                 - stages.intake.outputs.requirements
                 - stages.plan.outputs.project_plan
-                - stages.delivery-loop.outputs.loop_outputs
+                - stages.delivery-loop.outputs.loop_summaries
                 - files.changed
             exclude:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 5200
+            prompt_max_tokens: 6500
+            request_max_tokens: 900
+            inputs_max_tokens: 2400
+            parameters_max_tokens: 800
             retrieval:
                 enabled: true
                 query: "{{input.goal}}"
@@ -400,7 +426,7 @@ graph:
           input:
             requirements: stages.intake.outputs.requirements
             project_plan: stages.plan.outputs.project_plan
-            iteration_history: stages.delivery-loop.outputs.loop_outputs
+            iteration_history: stages.delivery-loop.outputs.loop_summaries
             final_validation: stages.final-validation.outputs.final_validation
             final_quality_status: stages.final-quality.outputs.quality_status
             recovery_plan: stages.recovery-plan.outputs.recovery_plan
@@ -440,6 +466,10 @@ graph:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 4600
+            prompt_max_tokens: 5600
+            request_max_tokens: 800
+            inputs_max_tokens: 1800
+            parameters_max_tokens: 700
           next:
             - end
           position:

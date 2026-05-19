@@ -29,8 +29,9 @@ GO_PROJECTS = [
     ("file_tools", "./mcp_servers/file_tools"),
     ("skill_runner", "./mcp_servers/skill_runner"),
     ("web_tools", "./mcp_servers/web_tools"),
+    ("network_tools", "./mcp_servers/network_tools"),
 ]
-COMMON_DIRS = ["configs", "skills", "docs", "kits", "examples"]
+COMMON_DIRS = ["configs", "skills", "docs", "kits", "templates", "examples"]
 COMMON_FILES = [
     ".env.example",
     "README.md",
@@ -103,6 +104,7 @@ set "ROOT=%~dp0"
 set "GOFLOW_FILE_TOOLS_CMD=%ROOT%bin\\file_tools.exe"
 set "GOFLOW_SKILL_RUNNER_CMD=%ROOT%bin\\skill_runner.exe"
 set "GOFLOW_WEB_TOOLS_CMD=%ROOT%bin\\web_tools.exe"
+set "GOFLOW_NETWORK_TOOLS_CMD=%ROOT%bin\\network_tools.exe"
 if "%GOFLOW_PYTHON_CMD%"=="" set "GOFLOW_PYTHON_CMD=python"
 set "GOFLOW_PYTHON_NOTES_PATH=%ROOT%mcp_servers\\python_notes.py"
 if "%GOFLOW_BACKUP_BASE_URL%"=="" set "GOFLOW_BACKUP_BASE_URL=%GOFLOW_BASE_URL%"
@@ -129,6 +131,7 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 export GOFLOW_FILE_TOOLS_CMD="$ROOT/bin/file_tools"
 export GOFLOW_SKILL_RUNNER_CMD="$ROOT/bin/skill_runner"
 export GOFLOW_WEB_TOOLS_CMD="$ROOT/bin/web_tools"
+export GOFLOW_NETWORK_TOOLS_CMD="$ROOT/bin/network_tools"
 export GOFLOW_PYTHON_CMD="${GOFLOW_PYTHON_CMD:-python3}"
 export GOFLOW_PYTHON_NOTES_PATH="$ROOT/mcp_servers/python_notes.py"
 export GOFLOW_BACKUP_BASE_URL="${GOFLOW_BACKUP_BASE_URL:-${GOFLOW_BASE_URL:-}}"

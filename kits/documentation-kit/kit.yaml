@@ -45,6 +45,52 @@ examples:
       request: Rewrite the operator guide and produce a publish checklist.
       workflow: docs-review-publish
       agent: documentation-specialist
+vertical_pack:
+    domain: documentation
+    maturity: guided
+    summary: Plans, edits, reviews, and prepares publish-ready technical documentation with accuracy and verification checks.
+    supported_tasks:
+        - documentation planning
+        - guide updates
+        - command verification notes
+        - publish checklist creation
+    required_inputs:
+        - target document
+        - audience
+        - desired change
+        - verification expectations
+    tool_boundaries:
+        - Read existing docs before edits.
+        - Write only scoped documentation files.
+        - Run commands only when verification is needed and approved.
+    safety_gates:
+        - Preserve existing bilingual conventions.
+        - Do not invent commands or behavior without source evidence.
+    quality_gates:
+        - Requires changed document summary.
+        - Requires accuracy review.
+        - Requires publish checklist or residual gaps.
+    evidence_artifacts:
+        - documentation plan
+        - changed file summary
+        - verification notes
+        - publish checklist
+    simple_mode:
+        - Show document target, audience, status, and publish readiness.
+    expert_mode:
+        - Show raw diffs, validation commands, style constraints, and artifact refs.
+    token_strategy:
+        - Use document summaries before full reads.
+        - Pass section-level summaries into review.
+    model_routes:
+        strong:
+            - structure planning
+            - final accuracy review
+        worker:
+            - scoped doc edits
+            - checklist drafting
+        verifier:
+            - command and link review
 metadata:
     preset: documentation
     recommended_agent: documentation-specialist

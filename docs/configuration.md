@@ -89,6 +89,8 @@ providers:
     api_key: ${GOFLOW_API_KEY}
     model: ${GOFLOW_MODEL}
     fallback_provider: backup
+    provider_message_fields:
+      - reasoning_content
     timeout: 60s
     temperature: 0.2
     max_tokens: 2048
@@ -100,6 +102,8 @@ providers:
     base_url: ${GOFLOW_BACKUP_BASE_URL}
     api_key: ${GOFLOW_BACKUP_API_KEY}
     model: ${GOFLOW_BACKUP_MODEL}
+    provider_message_fields:
+      - reasoning_content
     timeout: 60s
     temperature: 0.2
     max_tokens: 2048
@@ -117,6 +121,12 @@ run-goflow.example.cmd
 You can use `.env.example` as a starting point for environment variables and `run-goflow.example.cmd` as a safe bootstrap example.
 
 The bootstrap script fills in DeepSeek defaults without embedding credentials in the repo.
+
+`provider_message_fields` is an allow-list for provider-specific assistant
+message fields that must be captured from a response and replayed in later
+requests. DeepSeek thinking/tool-call mode requires `reasoning_content`; other
+OpenAI-compatible providers can add their own safe field names here without a
+code change.
 
 ```yaml
 agents:
@@ -307,6 +317,34 @@ executor still enforces the same policy if a model guesses a hidden tool name.
 Streaming clients receive a `prompt_budget` event before the provider call with
 estimated system, message, tool-schema, skill, exposed/filtered tool counts, and
 total prompt tokens so operators can see which context bucket is driving cost.
+When tool schemas are hidden by agent, skill, or workflow-stage scope,
+`tool_schema_estimated_saved_tokens` reports the estimated prompt tokens avoided
+by not sending those hidden schemas.
+Workflow stages can also override the model route without changing the Agent's
+permission envelope:
+
+```yaml
+model:
+  provider: primary
+  model: strong-planner
+  max_tokens: 1600
+  temperature: 0.1
+context:
+  include: [previous.summary, files.changed]
+  max_tokens: 1800
+  prompt_max_tokens: 4200
+  request_max_tokens: 800
+  inputs_max_tokens: 1400
+  parameters_max_tokens: 600
+params:
+  worker_contract: engineering_v1
+```
+
+Use this to reserve strong providers for decomposition, aggregation, audit, and
+recovery while cheaper worker stages execute bounded slices. The context budget
+fields cap selected context and prompt blocks with explicit truncation markers;
+`worker_contract: engineering_v1` asks worker stages to return compact JSON
+fields that downstream nodes can consume without replaying raw output.
 The event also includes stable hashes for the system prompt, visible tool
 schemas, matched skill context, and combined prompt prefix plus
 `cacheable_prefix_tokens`; these are diagnostics for provider-side prompt/KV
@@ -344,7 +382,8 @@ prompt budget telemetry, tool-schema minimization, session-history compaction,
 session artifact refs, provider prompt-cache signals, and optional auxiliary
 router/summarizer model routes. UI clients should use `features[].state`,
 `enabled`, `observed`, `requires_config`, `extra_model_call`, and measurement
-fields such as `samples`, `saved_tokens`, and `filtered_tools` for status
+fields such as `samples`, `saved_tokens`, `filtered_tools`, and
+`tool_schema_estimated_saved_tokens` for status
 badges instead of parsing recommendation text. Provider cached-token values are
 provider-reported prompt-cache telemetry; GoFlow does not store provider
 KV-cache tensors locally.
@@ -773,6 +812,9 @@ still treated as unsandboxed for risky tools.
 
 - `file_tools`: Go implementation for workspace file access
 - `web_tools`: Go implementation for web search, URL fetch, and page-plus-asset fetches
+- `network_tools`: Go implementation for network-device discovery, command,
+  and configuration dry-run planning with authorized scope, host allowlists,
+  command allowlists, rollback, and audit evidence contracts
 - `python_notes`: Python implementation for notes, Python AST summaries, JSON selection, and binary triage helpers
 
 ### `skill`

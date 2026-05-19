@@ -102,6 +102,10 @@ graph:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 3500
+            prompt_max_tokens: 5600
+            request_max_tokens: 1200
+            inputs_max_tokens: 1500
+            parameters_max_tokens: 750
             retrieval:
                 enabled: true
                 query: "{{input.goal}}"
@@ -115,13 +119,18 @@ graph:
           agent: fixer
           skill: code-writing
           params:
-            output_contract: Emit sections named Change Summary, Files Changed, Verification Notes, and Residual Risk.
+            worker_contract: engineering_v1
+            output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, and next_actions. Keep detailed notes in the implementation artifact.
             edit_policy: Apply the approved plan with focused code changes, preserve user edits, and keep unrelated files untouched.
           input:
             plan: stages.plan.outputs.plan
             intake: stages.intake.outputs.intake_report
           outputs:
+            changed_files: result.changed_files
             changes: result.changes
+            verification: result.verification
+            blockers: result.blockers
+            next_actions: result.next_actions
             summary: result.summary
             implementation_report: result.output
           artifacts:
@@ -152,6 +161,10 @@ graph:
                 - raw_tool_logs
                 - unrelated_session_history
             max_tokens: 4200
+            prompt_max_tokens: 5200
+            request_max_tokens: 800
+            inputs_max_tokens: 1700
+            parameters_max_tokens: 700
           next:
             - verify
           position:
@@ -166,7 +179,9 @@ graph:
             verification_command: go test ./...
             evidence: Include exact commands or checks performed. If a command was not run, explain why.
           input:
-            changes: stages.implement.outputs.implementation_report
+            changes: stages.implement.outputs.summary
+            changed_files: stages.implement.outputs.changed_files
+            implementation_verification: stages.implement.outputs.verification
             plan: stages.plan.outputs.plan
           outputs:
             verification: result.output
@@ -190,10 +205,15 @@ graph:
             include:
                 - previous.summary
                 - previous.artifacts.implementation-report
-                - stages.implement.outputs.implementation_report
+                - stages.implement.outputs.changed_files
+                - stages.implement.outputs.verification
             exclude:
                 - raw_tool_logs
             max_tokens: 3600
+            prompt_max_tokens: 4800
+            request_max_tokens: 700
+            inputs_max_tokens: 1500
+            parameters_max_tokens: 650
           next:
             - audit
           position:
@@ -207,7 +227,8 @@ graph:
             output_contract: Emit sections named Findings, Severity Order, Missed Requirements, Test Gaps, Safety Notes, and Recommendation.
             severity_order: Prioritize concrete bugs and risks before summaries.
           input:
-            implementation: stages.implement.outputs.implementation_report
+            implementation: stages.implement.outputs.summary
+            changed_files: stages.implement.outputs.changed_files
             verification: stages.verify.outputs.verification
             plan: stages.plan.outputs.plan
           outputs:
@@ -233,11 +254,16 @@ graph:
             include:
                 - previous.summary
                 - previous.artifacts.verification-report
-                - stages.implement.outputs.implementation_report
+                - stages.implement.outputs.changed_files
+                - stages.implement.outputs.blockers
                 - stages.verify.outputs.verification
             exclude:
                 - raw_tool_logs
             max_tokens: 4000
+            prompt_max_tokens: 5000
+            request_max_tokens: 700
+            inputs_max_tokens: 1600
+            parameters_max_tokens: 650
           next:
             - quality
           position:
@@ -342,6 +368,7 @@ graph:
                 - previous.artifacts.verification-report
                 - previous.artifacts.revision-plan
                 - stages.audit.outputs.audit
+                - stages.implement.outputs.changed_files
                 - stages.verify.outputs.verification
                 - stages.revise.outputs.revision_plan
                 - files.changed
@@ -349,6 +376,10 @@ graph:
                 - raw_tool_logs
                 - large_file_contents
             max_tokens: 4200
+            prompt_max_tokens: 5200
+            request_max_tokens: 700
+            inputs_max_tokens: 1600
+            parameters_max_tokens: 650
           next:
             - output
           position:

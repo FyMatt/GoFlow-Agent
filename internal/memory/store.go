@@ -19,11 +19,12 @@ import (
 )
 
 const (
-	projectMemoryRelativePath = ".goflow/memory/project.md"
-	taskMemoryDirRelativePath = ".goflow/memory/tasks"
-	errorMemoryRelativePath   = ".goflow/memory/errors.json"
-	contextMemoryRelativePath = ".goflow/memory/context.json"
-	fileIndexRelativePath     = ".goflow/index/files.json"
+	projectMemoryRelativePath  = ".goflow/memory/project.md"
+	taskMemoryDirRelativePath  = ".goflow/memory/tasks"
+	errorMemoryRelativePath    = ".goflow/memory/errors.json"
+	solutionMemoryRelativePath = ".goflow/memory/solutions.json"
+	contextMemoryRelativePath  = ".goflow/memory/context.json"
+	fileIndexRelativePath      = ".goflow/index/files.json"
 
 	maxProjectPromptBytes = 2400
 	maxSearchSummaryBytes = 900
@@ -393,6 +394,216 @@ func (s *Store) UpsertError(item ErrorMemory) (ErrorKnowledgeBase, error) {
 	return kb, nil
 }
 
+// Solutions reads the persistent reusable solution knowledge base.
+func (s *Store) Solutions() (SolutionKnowledgeBase, error) {
+	if err := s.ensureEnabled(); err != nil {
+		return SolutionKnowledgeBase{}, err
+	}
+	var kb SolutionKnowledgeBase
+	if err := readJSONFile(filepath.Join(s.workspaceRoot, solutionMemoryRelativePath), &kb); err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return SolutionKnowledgeBase{UpdatedAt: ""}, nil
+		}
+		return SolutionKnowledgeBase{}, err
+	}
+	return kb, nil
+}
+
+// Solution returns a single solution memory item by ID.
+func (s *Store) Solution(id string) (SolutionMemory, bool, error) {
+	if err := s.ensureEnabled(); err != nil {
+		return SolutionMemory{}, false, err
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return SolutionMemory{}, false, nil
+	}
+	kb, err := s.Solutions()
+	if err != nil {
+		return SolutionMemory{}, false, err
+	}
+	for _, item := range kb.Solutions {
+		if item.ID == id {
+			return item, true, nil
+		}
+	}
+	return SolutionMemory{}, false, nil
+}
+
+// UpsertSolution records a reusable problem decision and verified solution.
+func (s *Store) UpsertSolution(item SolutionMemory) (SolutionKnowledgeBase, error) {
+	if err := s.Ensure(); err != nil {
+		return SolutionKnowledgeBase{}, err
+	}
+	kb, err := s.Solutions()
+	if err != nil {
+		return SolutionKnowledgeBase{}, err
+	}
+	item = normalizeSolutionMemory(item)
+	if item.ProblemSignature == "" {
+		return kb, nil
+	}
+	if item.ID == "" {
+		item.ID = "sol-" + shortHash(normalizeSolutionSignature(item.ProblemSignature)+"\x00"+strings.Join(item.RelatedFiles, "\x00"))
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	replaced := false
+	for i := range kb.Solutions {
+		if kb.Solutions[i].ID != item.ID {
+			continue
+		}
+		if item.CreatedAt == "" {
+			item.CreatedAt = kb.Solutions[i].CreatedAt
+		}
+		if item.UseCount == 0 {
+			item.UseCount = kb.Solutions[i].UseCount
+		}
+		if item.LastUsedAt == "" {
+			item.LastUsedAt = kb.Solutions[i].LastUsedAt
+		}
+		if !item.Retired && strings.TrimSpace(item.RetiredAt) == "" && strings.TrimSpace(item.RetiredReason) == "" && strings.TrimSpace(item.SupersededBy) == "" && kb.Solutions[i].Retired {
+			item.Retired = true
+			item.RetiredAt = kb.Solutions[i].RetiredAt
+			item.RetiredReason = kb.Solutions[i].RetiredReason
+			item.SupersededBy = kb.Solutions[i].SupersededBy
+		}
+		if item.CreatedAt == "" {
+			item.CreatedAt = now
+		}
+		item.UpdatedAt = now
+		kb.Solutions[i] = item
+		replaced = true
+		break
+	}
+	if item.CreatedAt == "" {
+		item.CreatedAt = now
+	}
+	item.UpdatedAt = now
+	if !replaced {
+		kb.Solutions = append([]SolutionMemory{item}, kb.Solutions...)
+	}
+	if len(kb.Solutions) > 200 {
+		kb.Solutions = append([]SolutionMemory(nil), kb.Solutions[:200]...)
+	}
+	kb.UpdatedAt = now
+	if err := writeJSONFile(filepath.Join(s.workspaceRoot, solutionMemoryRelativePath), kb); err != nil {
+		return SolutionKnowledgeBase{}, err
+	}
+	return kb, nil
+}
+
+// RetireSolution marks a solution as retired and optionally points to a replacement.
+func (s *Store) RetireSolution(id, reason, supersededBy string) (SolutionKnowledgeBase, error) {
+	return s.updateSolutionLifecycle(id, func(item *SolutionMemory) {
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		item.Retired = true
+		if strings.TrimSpace(item.RetiredAt) == "" {
+			item.RetiredAt = now
+		}
+		item.RetiredReason = trimMemoryText(reason, 500)
+		item.SupersededBy = trimMemoryText(supersededBy, 200)
+	})
+}
+
+// RestoreSolution reactivates a retired solution.
+func (s *Store) RestoreSolution(id string) (SolutionKnowledgeBase, error) {
+	return s.updateSolutionLifecycle(id, func(item *SolutionMemory) {
+		item.Retired = false
+		item.RetiredAt = ""
+		item.RetiredReason = ""
+		item.SupersededBy = ""
+	})
+}
+
+func (s *Store) updateSolutionLifecycle(id string, mutate func(*SolutionMemory)) (SolutionKnowledgeBase, error) {
+	if err := s.Ensure(); err != nil {
+		return SolutionKnowledgeBase{}, err
+	}
+	id = strings.TrimSpace(id)
+	if id == "" {
+		return SolutionKnowledgeBase{}, fmt.Errorf("solution id is required")
+	}
+	kb, err := s.Solutions()
+	if err != nil {
+		return SolutionKnowledgeBase{}, err
+	}
+	for i := range kb.Solutions {
+		if kb.Solutions[i].ID != id {
+			continue
+		}
+		item := kb.Solutions[i]
+		mutate(&item)
+		item = normalizeSolutionMemory(item)
+		now := time.Now().UTC().Format(time.RFC3339Nano)
+		if strings.TrimSpace(item.CreatedAt) == "" {
+			item.CreatedAt = kb.Solutions[i].CreatedAt
+		}
+		if strings.TrimSpace(item.CreatedAt) == "" {
+			item.CreatedAt = now
+		}
+		if item.Retired {
+			if strings.TrimSpace(item.RetiredAt) == "" {
+				item.RetiredAt = now
+			}
+		} else {
+			item.RetiredAt = ""
+			item.RetiredReason = ""
+			item.SupersededBy = ""
+		}
+		item.UpdatedAt = now
+		kb.Solutions[i] = item
+		kb.UpdatedAt = now
+		if err := writeJSONFile(filepath.Join(s.workspaceRoot, solutionMemoryRelativePath), kb); err != nil {
+			return SolutionKnowledgeBase{}, err
+		}
+		return kb, nil
+	}
+	return kb, fmt.Errorf("solution %q not found", id)
+}
+
+// MarkSolutionsUsed updates lightweight usage metadata for retrieved solutions.
+func (s *Store) MarkSolutionsUsed(ids []string) error {
+	if s == nil || len(ids) == 0 {
+		return nil
+	}
+	if err := s.Ensure(); err != nil {
+		return err
+	}
+	kb, err := s.Solutions()
+	if err != nil {
+		return err
+	}
+	wanted := make(map[string]struct{}, len(ids))
+	for _, id := range ids {
+		id = strings.TrimSpace(id)
+		if id != "" {
+			wanted[id] = struct{}{}
+		}
+	}
+	if len(wanted) == 0 {
+		return nil
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	changed := false
+	for i := range kb.Solutions {
+		if _, ok := wanted[kb.Solutions[i].ID]; !ok {
+			continue
+		}
+		if kb.Solutions[i].Retired {
+			continue
+		}
+		kb.Solutions[i].UseCount++
+		kb.Solutions[i].LastUsedAt = now
+		kb.Solutions[i].UpdatedAt = now
+		changed = true
+	}
+	if !changed {
+		return nil
+	}
+	kb.UpdatedAt = now
+	return writeJSONFile(filepath.Join(s.workspaceRoot, solutionMemoryRelativePath), kb)
+}
+
 // RecordTask writes a task summary under .goflow/memory/tasks.
 func (s *Store) RecordTask(summary TaskSummary) (TaskSummary, error) {
 	if err := s.Ensure(); err != nil {
@@ -427,6 +638,9 @@ func (s *Store) RecordTask(summary TaskSummary) (TaskSummary, error) {
 			VerificationCommand: firstVerificationCommand(summary.TestResults),
 			Resolved:            false,
 		})
+	}
+	if solution, ok := solutionFromTaskSummary(summary); ok {
+		_, _ = s.UpsertSolution(solution)
 	}
 	return summary, nil
 }
@@ -517,6 +731,7 @@ func (s *Store) Dashboard(taskLimit int) (Dashboard, error) {
 	project, projectErr := s.Project()
 	tasks, taskErr := s.Tasks(taskLimit)
 	errorsKB, errorsErr := s.Errors()
+	solutionsKB, solutionsErr := s.Solutions()
 	fileIndex, indexErr := s.FileIndex()
 	contextSummary, contextErr := s.Context()
 	if projectErr != nil {
@@ -528,16 +743,19 @@ func (s *Store) Dashboard(taskLimit int) (Dashboard, error) {
 	if errorsErr != nil {
 		return Dashboard{}, errorsErr
 	}
+	if solutionsErr != nil {
+		return Dashboard{}, solutionsErr
+	}
 	if indexErr != nil {
 		return Dashboard{}, indexErr
 	}
 	if contextErr != nil {
 		return Dashboard{}, contextErr
 	}
-	return Dashboard{Project: project, Tasks: tasks, Errors: errorsKB, FileIndex: fileIndex, Context: contextSummary}, nil
+	return Dashboard{Project: project, Tasks: tasks, Errors: errorsKB, Solutions: solutionsKB, FileIndex: fileIndex, Context: contextSummary}, nil
 }
 
-// Search performs lightweight keyword retrieval over project, task, file, and error memory.
+// Search performs lightweight keyword retrieval over project, task, file, error, and solution memory.
 func (s *Store) Search(query string, limit int) (SearchResponse, error) {
 	if limit <= 0 {
 		limit = 20
@@ -657,6 +875,34 @@ func (s *Store) searchResultsWithIndex(query string, limit int, index FileIndex)
 			},
 		}, haystack)
 	}
+	solutionsKB, _ := s.Solutions()
+	for _, item := range solutionsKB.Solutions {
+		if item.Retired {
+			continue
+		}
+		haystack := strings.Join([]string{
+			item.ProblemSignature,
+			item.Problem,
+			item.Decision,
+			item.Solution,
+			strings.Join(item.Applicability, "\n"),
+			strings.Join(item.InvalidWhen, "\n"),
+			strings.Join(item.RelatedFiles, "\n"),
+			item.VerificationCommand,
+			item.Confidence,
+		}, "\n")
+		addScoredResult(SearchResult{
+			Kind:    "solution",
+			Title:   item.ProblemSignature,
+			Path:    filepath.ToSlash(solutionMemoryRelativePath),
+			Summary: item.SearchSummary(),
+			Metadata: map[string]string{
+				"solution_id": item.ID,
+				"resolved":    fmt.Sprintf("%t", item.Resolved),
+				"confidence":  item.Confidence,
+			},
+		}, haystack)
+	}
 	sort.SliceStable(response.Results, func(i, j int) bool {
 		if response.Results[i].Score != response.Results[j].Score {
 			return response.Results[i].Score > response.Results[j].Score
@@ -710,14 +956,18 @@ func (s *Store) PromptContextFresh(ctx context.Context, query, taskID string) (P
 	results, _ := s.searchWithFileIndex(query, 8, index)
 	retrievalBlocks := 0
 	fileRetrievalSeen := make(map[string]struct{})
+	solutionRetrievalIDs := make([]string, 0, 2)
 	for _, result := range results.Results {
 		if result.Kind == "project" || result.Kind == "context" {
+			continue
+		}
+		if result.Kind == "solution" && len(solutionRetrievalIDs) >= 2 {
 			continue
 		}
 		block := PromptBlock{
 			Kind:     result.Kind,
 			Title:    result.Title,
-			Ref:      firstString(result.Path, result.Metadata["task_id"], result.Metadata["error_id"]),
+			Ref:      firstString(result.Metadata["solution_id"], result.Metadata["task_id"], result.Metadata["error_id"], result.Path),
 			Summary:  trimMemoryText(result.Summary, 700),
 			Score:    result.Score,
 			Hash:     result.Metadata["hash"],
@@ -730,10 +980,21 @@ func (s *Store) PromptContextFresh(ctx context.Context, query, taskID string) (P
 				block.Score = result.Score
 			}
 		}
+		if result.Kind == "solution" {
+			block.ContentMode = "decision"
+			if id := strings.TrimSpace(result.Metadata["solution_id"]); id != "" {
+				solutionRetrievalIDs = append(solutionRetrievalIDs, id)
+			}
+		}
 		promptCtx.Blocks = append(promptCtx.Blocks, block)
 		retrievalBlocks++
 		if retrievalBlocks >= 4 {
 			break
+		}
+	}
+	if len(solutionRetrievalIDs) > 0 {
+		if err := s.MarkSolutionsUsed(solutionRetrievalIDs); err != nil {
+			promptCtx.Omitted = append(promptCtx.Omitted, "solution memory usage update failed: "+err.Error())
 		}
 	}
 	selectedFiles := selectedPromptFiles(index, query, maxPromptFileBlocks)
@@ -833,6 +1094,7 @@ func (c PromptContext) PromptText() string {
 	var b strings.Builder
 	b.WriteString("Memory context:\n")
 	b.WriteString("- Use these summaries and refs as lightweight context; load full artifacts/files only when needed.\n")
+	b.WriteString("- If a solution block matches the current problem and its invalid conditions do not apply, reuse that decision before asking the operator to decide again.\n")
 	for _, block := range c.Blocks {
 		title := strings.TrimSpace(block.Title)
 		if title == "" {
@@ -1616,6 +1878,101 @@ func cleanRelativeFilePath(path string) string {
 		return ""
 	}
 	return path
+}
+
+func normalizeSolutionMemory(item SolutionMemory) SolutionMemory {
+	item.ID = strings.TrimSpace(item.ID)
+	item.ProblemSignature = trimMemoryText(item.ProblemSignature, 500)
+	if item.ProblemSignature == "" {
+		item.ProblemSignature = trimMemoryText(firstString(item.Problem, item.Decision, item.Solution), 500)
+	}
+	item.Problem = trimMemoryText(item.Problem, 1200)
+	item.Decision = trimMemoryText(item.Decision, 1200)
+	item.Solution = trimMemoryText(item.Solution, 1400)
+	item.Applicability = trimStringList(item.Applicability, 500)
+	item.InvalidWhen = trimStringList(item.InvalidWhen, 500)
+	item.RelatedFiles = dedupeStrings(item.RelatedFiles)
+	item.VerificationCommand = trimMemoryText(item.VerificationCommand, 500)
+	item.Confidence = strings.ToLower(strings.TrimSpace(item.Confidence))
+	item.RetiredReason = trimMemoryText(item.RetiredReason, 500)
+	item.SupersededBy = trimMemoryText(item.SupersededBy, 200)
+	switch item.Confidence {
+	case "high", "medium", "low":
+	default:
+		if item.Resolved {
+			item.Confidence = "medium"
+		} else if item.Confidence != "" {
+			item.Confidence = trimMemoryText(item.Confidence, 80)
+		}
+	}
+	return item
+}
+
+func normalizeSolutionSignature(value string) string {
+	return strings.Join(strings.Fields(strings.ToLower(strings.TrimSpace(value))), " ")
+}
+
+func solutionFromTaskSummary(summary TaskSummary) (SolutionMemory, bool) {
+	if strings.TrimSpace(summary.UserGoal) == "" {
+		return SolutionMemory{}, false
+	}
+	decision := firstString(summary.KeyDecisions...)
+	solution := firstString(summary.ReusableLessons...)
+	if strings.TrimSpace(decision) == "" && strings.TrimSpace(solution) == "" {
+		return SolutionMemory{}, false
+	}
+	signature := strings.Join(nonEmptyStrings(
+		summary.UserGoal,
+		firstString(summary.ModifiedFiles...),
+		decision,
+	), " | ")
+	if signature == "" {
+		return SolutionMemory{}, false
+	}
+	return SolutionMemory{
+		ProblemSignature:    signature,
+		Problem:             summary.UserGoal,
+		Decision:            decision,
+		Solution:            solution,
+		Applicability:       nonEmptyStrings("same goal or failure signature recurs", "related files or workflow resources overlap"),
+		InvalidWhen:         nonEmptyStrings("requirements, provider behavior, or resource schema changed"),
+		RelatedFiles:        append([]string(nil), summary.ModifiedFiles...),
+		VerificationCommand: firstVerificationCommand(summary.TestResults),
+		Confidence:          solutionConfidence(summary),
+		Resolved:            len(summary.FailureReasons) == 0 && strings.TrimSpace(solution) != "",
+	}, true
+}
+
+func activeSolutionCount(items []SolutionMemory) (active, retired int) {
+	for _, item := range items {
+		if item.Retired {
+			retired++
+			continue
+		}
+		active++
+	}
+	return active, retired
+}
+
+func solutionConfidence(summary TaskSummary) string {
+	if len(summary.FailureReasons) > 0 {
+		return "low"
+	}
+	if strings.TrimSpace(firstVerificationCommand(summary.TestResults)) != "" {
+		return "high"
+	}
+	return "medium"
+}
+
+func nonEmptyStrings(values ...string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.TrimSpace(value)
+		if value != "" {
+			out = append(out, value)
+		}
+	}
+	return out
 }
 
 func skipIndexDir(name string) bool {

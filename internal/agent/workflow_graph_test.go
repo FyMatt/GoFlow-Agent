@@ -448,6 +448,134 @@ stages:
 	}
 }
 
+func TestWorkflowRunnerCustomWorkflowGraphStageModelOverrideRoutesRequest(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "model-route-flow", `
+name: model-route-flow
+stages:
+  - name: plan
+    agent: planner
+    skill: execution-plan
+    model:
+      provider: override
+      model: override-model
+      max_tokens: 123
+      temperature: 0.7
+    outputs:
+      plan: result.output
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "planner should not be called"}}}}
+	overrideLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "override route used"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":     &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner":  plannerLLM,
+		"fixer":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor":  &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+		"override": overrideLLM,
+	})
+	runtimeRef.cfg.Providers = map[string]config.LLMConfig{
+		"chat":     {Model: "chat-model"},
+		"planner":  {Model: "planner-model"},
+		"fixer":    {Model: "fixer-model"},
+		"auditor":  {Model: "auditor-model"},
+		"override": {Model: "override-default"},
+	}
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "model-route-flow", "plan with override", true, nil)
+	if err != nil {
+		t.Fatalf("Run model-route-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 1 {
+		t.Fatalf("expected one completed model route stage, got %#v", result)
+	}
+	if plannerLLM.calls != 0 {
+		t.Fatalf("expected planner provider not to be called, got %d calls", plannerLLM.calls)
+	}
+	if overrideLLM.calls != 1 || len(overrideLLM.requests) != 1 {
+		t.Fatalf("expected override provider to be called once, got calls=%d requests=%d", overrideLLM.calls, len(overrideLLM.requests))
+	}
+	request := overrideLLM.requests[0]
+	if request.Model != "override-model" || request.MaxTokens != 123 || request.Temperature != 0.7 {
+		t.Fatalf("expected overridden model settings, got %#v", request)
+	}
+	stage := result.CompletedStages[0]
+	if stage.Agent != "planner" || stage.Result.Model != "override-model" {
+		t.Fatalf("expected stage to keep logical planner agent and report override model, got %#v", stage)
+	}
+	if stage.Metadata["model.override"] != "true" ||
+		stage.Metadata["model.provider"] != "override" ||
+		stage.Metadata["model.model"] != "override-model" ||
+		stage.Metadata["model.max_tokens"] != "123" ||
+		stage.Metadata["model.temperature"] != "0.7" {
+		t.Fatalf("expected model override metadata, got %#v", stage.Metadata)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphStageToolScopeFiltersPromptTools(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "tool-scope-flow", `
+name: tool-scope-flow
+stages:
+  - name: inspect
+    agent: fixer
+    skill: code-writing
+    params:
+      tools: file_tools/read_file
+    outputs:
+      summary: result.summary
+`)
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "inspected"}}}}
+	readTool := schema.Tool{Name: "read_file", Server: "file_tools", Kind: "read", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}}}`)}
+	writeTool := schema.Tool{Name: "write_file", Server: "file_tools", Kind: "write", InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}`)}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{tools: []schema.Tool{readTool, writeTool}}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   fixerLLM,
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "tool-scope-flow", "inspect only", true, nil)
+	if err != nil {
+		t.Fatalf("Run tool-scope-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 1 {
+		t.Fatalf("expected completed scoped tool stage, got %#v", result)
+	}
+	if len(fixerLLM.requests) != 1 {
+		t.Fatalf("expected one fixer request, got %d", len(fixerLLM.requests))
+	}
+	tools := fixerLLM.requests[0].Tools
+	if len(tools) != 1 || tools[0].Name != "read_file" || tools[0].Server != "file_tools" {
+		t.Fatalf("expected stage-scoped read tool only, got %#v", tools)
+	}
+	stage := result.CompletedStages[0]
+	if stage.Metadata["tool.stage_scoped"] != "true" || stage.Metadata["tool.allowed"] != "file_tools/read_file" {
+		t.Fatalf("expected stage tool scope metadata, got %#v", stage.Metadata)
+	}
+}
+
+func TestWorkflowRunnerValidationRejectsUnknownStageScopedTool(t *testing.T) {
+	runtimeHome := t.TempDir()
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{tools: []schema.Tool{{Name: "read_file", Server: "file_tools", Kind: "read"}}}, workflowGraphTestClients())
+	result := runtimeRef.WorkflowRunner().ValidateWorkflowGraphDocument("bad-tool-scope", WorkflowGraphDocument{
+		Name: "bad-tool-scope",
+		Stages: []WorkflowGraphStageDocument{{
+			Name:  "inspect",
+			Agent: "planner",
+			Skill: "execution-plan",
+			Params: map[string]string{
+				"tools": "file_tools/missing_tool",
+			},
+		}},
+	})
+	if result.Valid {
+		t.Fatalf("expected invalid stage scoped tool, got %#v", result)
+	}
+	if !workflowValidationIssueContains(result.Issues, "error", "tool") {
+		t.Fatalf("expected tool validation error, got %#v", result.Issues)
+	}
+}
+
 func TestWorkflowRunnerCustomWorkflowGraphContextContractLimitsPriorContext(t *testing.T) {
 	runtimeHome := t.TempDir()
 	writeWorkflowGraph(t, runtimeHome, "context-flow", `
@@ -761,6 +889,129 @@ stages:
 	}
 }
 
+func TestWorkflowRunnerCustomWorkflowGraphPromptBudgetsAndWorkerContract(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "budget-worker-flow", `
+name: budget-worker-flow
+description: This workflow has a very long description that should be preserved until the final prompt budget is reached.
+stages:
+  - name: plan
+    agent: planner
+    skill: execution-plan
+    outputs:
+      summary: result.summary
+      long_report: result.output
+    next: [worker]
+  - name: worker
+    agent: fixer
+    skill: code-writing
+    params:
+      worker_contract: engineering_v1
+      output_contract: Emit JSON worker fields.
+      huge_param: "`+strings.Repeat("param-noise ", 120)+`"
+    input:
+      upstream: stages.plan.outputs.long_report
+    context:
+      include:
+        - stages.plan.outputs.summary
+      prompt_max_tokens: 520
+      request_max_tokens: 40
+      inputs_max_tokens: 45
+      parameters_max_tokens: 50
+      max_tokens: 90
+    outputs:
+      summary: result.summary
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: strings.Repeat("plan-context ", 200)}}}}
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "worker done"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   fixerLLM,
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "budget-worker-flow", strings.Repeat("request-noise ", 120), true, nil)
+	if err != nil {
+		t.Fatalf("Run budget-worker-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 2 {
+		t.Fatalf("expected budget worker workflow to complete, got %#v", result)
+	}
+	prompt := fixerLLM.requests[0].Messages[len(fixerLLM.requests[0].Messages)-1].Content
+	for _, want := range []string{
+		"original request truncated by request_max_tokens",
+		"mapped input truncated by inputs_max_tokens",
+		"worker_contract: engineering_v1",
+		"Worker contract engineering_v1",
+		"changed_files",
+		"blockers",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got %q", want, prompt)
+		}
+	}
+	stage := result.CompletedStages[1]
+	if stage.Metadata["context.prompt_max_tokens"] != "520" ||
+		stage.Metadata["context.request_max_tokens"] != "40" ||
+		stage.Metadata["context.inputs_max_tokens"] != "45" ||
+		stage.Metadata["context.parameters_max_tokens"] != "50" {
+		t.Fatalf("expected prompt budget metadata, got %#v", stage.Metadata)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphJSONWorkerFieldsFeedContext(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "worker-json-flow", `
+name: worker-json-flow
+stages:
+  - name: worker
+    agent: fixer
+    skill: code-writing
+    params:
+      worker_contract: engineering_v1
+    outputs:
+      summary: result.summary
+    next: [report]
+  - name: report
+    agent: planner
+    skill: execution-plan
+    context:
+      include:
+        - stages.worker.outputs.changed_files
+        - stages.worker.outputs.verification
+        - stages.worker.outputs.blockers
+        - stages.worker.outputs.next_actions
+      max_tokens: 160
+    outputs:
+      report: result.output
+`)
+	workerJSON := `{"summary":"slice complete","changed_files":["internal/a.go"],"verification":["go test ./internal/a"],"blockers":[],"next_actions":["audit"]}`
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "```json\n" + workerJSON + "\n```"}}}}
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "reported"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   fixerLLM,
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "worker-json-flow", "ship worker json", true, nil)
+	if err != nil {
+		t.Fatalf("Run worker-json-flow workflow graph: %v", err)
+	}
+	worker := result.CompletedStages[0]
+	if worker.Output.Variables["changed_files"] == "" || worker.Output.Variables["verification"] == "" || worker.Output.Variables["blockers"] == "" {
+		t.Fatalf("expected worker JSON fields to be captured, got %#v", worker.Output)
+	}
+	reportPrompt := plannerLLM.requests[0].Messages[len(plannerLLM.requests[0].Messages)-1].Content
+	for _, want := range []string{"stages.worker.outputs.changed_files", "internal/a.go", "stages.worker.outputs.verification", "go test ./internal/a", "stages.worker.outputs.blockers"} {
+		if !strings.Contains(reportPrompt, want) {
+			t.Fatalf("expected report prompt to contain %q, got %q", want, reportPrompt)
+		}
+	}
+}
+
 func TestWorkflowRunnerWorkflowGraphDocumentPersistsContextContract(t *testing.T) {
 	runtimeHome := t.TempDir()
 	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
@@ -778,10 +1029,14 @@ func TestWorkflowRunnerWorkflowGraphDocumentPersistsContextContract(t *testing.T
 				Agent: "auditor",
 				Skill: "code-audit",
 				Context: WorkflowGraphStageContextDocument{
-					Include:   []string{"stages.plan.outputs.summary", "memory.project"},
-					Exclude:   []string{"raw_tool_logs"},
-					MaxTokens: 900,
-					Retrieval: WorkflowGraphContextRetrievalDocument{Enabled: true, Query: "{{input.goal}}"},
+					Include:             []string{"stages.plan.outputs.summary", "memory.project"},
+					Exclude:             []string{"raw_tool_logs"},
+					MaxTokens:           900,
+					PromptMaxTokens:     1200,
+					RequestMaxTokens:    300,
+					InputsMaxTokens:     400,
+					ParametersMaxTokens: 200,
+					Retrieval:           WorkflowGraphContextRetrievalDocument{Enabled: true, Query: "{{input.goal}}"},
 				},
 			},
 		},
@@ -798,12 +1053,16 @@ func TestWorkflowRunnerWorkflowGraphDocumentPersistsContextContract(t *testing.T
 	}
 	context := loaded.Stages[1].Context
 	if context.MaxTokens != 900 || !context.Retrieval.Enabled || context.Retrieval.Query != "{{input.goal}}" ||
+		context.PromptMaxTokens != 1200 || context.RequestMaxTokens != 300 ||
+		context.InputsMaxTokens != 400 || context.ParametersMaxTokens != 200 ||
 		len(context.Include) != 2 || context.Include[0] != "stages.plan.outputs.summary" ||
 		len(context.Exclude) != 1 || context.Exclude[0] != "raw_tool_logs" {
 		t.Fatalf("expected context contract to round-trip, got %#v", context)
 	}
 	graph := loaded.toInternalGraph()
 	if graph.Stages[1].Context.MaxTokens != 900 || !graph.Stages[1].Context.Retrieval.Enabled ||
+		graph.Stages[1].Context.PromptMaxTokens != 1200 || graph.Stages[1].Context.RequestMaxTokens != 300 ||
+		graph.Stages[1].Context.InputsMaxTokens != 400 || graph.Stages[1].Context.ParametersMaxTokens != 200 ||
 		graph.Stages[1].Context.Include[1] != "memory.project" {
 		t.Fatalf("expected context contract to convert to runtime graph, got %#v", graph.Stages[1].Context)
 	}
@@ -1232,6 +1491,128 @@ func TestWorkflowRunnerValidationReportsParallelConcurrencyEligibility(t *testin
 	})
 	if !approval.Valid || approval.Parallel[0].Eligible || approval.Parallel[0].Branches[0].Eligible || !strings.Contains(approval.Parallel[0].Branches[0].Reason, "approval") {
 		t.Fatalf("expected approval branch ineligibility diagnostic, got %#v", approval.Parallel[0])
+	}
+}
+
+func TestWorkflowRunnerParallelUsesSelectedBranchesAndJoinRefs(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "selected-parallel-flow", `
+name: selected-parallel-flow
+stages:
+  - name: decompose
+    agent: planner
+    skill: execution-plan
+    outputs:
+      active_branches: result.active_branches
+      summary: result.summary
+    next: [dispatch]
+  - name: dispatch
+    node_type: parallel
+    params:
+      concurrent: true
+      active_branches_ref: stages.decompose.outputs.active_branches
+    next: [software-worker, docs-worker, ops-worker]
+  - name: software-worker
+    agent: fixer
+    skill: code-writing
+    next: [join]
+  - name: docs-worker
+    agent: auditor
+    skill: execution-plan
+    next: [join]
+  - name: ops-worker
+    agent: chat
+    skill: execution-plan
+    next: [join]
+  - name: join
+    node_type: join
+    params:
+      wait_for_ref: stages.dispatch.outputs.branches
+    next: [report]
+  - name: report
+    agent: planner
+    skill: execution-plan
+    input:
+      branches: stages.join.outputs.wait_for
+      software: stages.software-worker.outputs.summary
+      docs: stages.docs-worker.outputs.summary
+      ops: stages.ops-worker.outputs.summary
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Content: `{"summary":"select bounded branches","active_branches":["software-worker","docs-worker"]}`}},
+		{Message: schema.Message{Content: "selected branch report"}},
+	}}
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "software branch complete"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "docs branch complete"}}}}
+	chatLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "ops branch should not run"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    chatLLM,
+		"planner": plannerLLM,
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "selected-parallel-flow", "run selected branches", true, nil)
+	if err != nil {
+		t.Fatalf("Run selected-parallel-flow workflow graph: %v", err)
+	}
+	if workflowStageResultNamesContain(result.CompletedStages, "ops-worker") {
+		t.Fatalf("expected unselected ops-worker not to run, got %#v", result.CompletedStages)
+	}
+	if chatLLM.calls != 0 {
+		t.Fatalf("expected chat branch not to be called, got %d calls", chatLLM.calls)
+	}
+	dispatch := workflowGraphStageResultByName(t, result.CompletedStages, "dispatch")
+	if dispatch.Output.Variables["branch_count"] != "2" || !strings.Contains(dispatch.Output.Variables["branches"], "software-worker") || !strings.Contains(dispatch.Output.Variables["branches"], "docs-worker") {
+		t.Fatalf("expected dispatch to publish selected branches, got %#v", dispatch.Output)
+	}
+	join := workflowGraphStageResultByName(t, result.CompletedStages, "join")
+	if join.Output.Variables["completed_count"] != "2" || strings.Contains(join.Output.Variables["wait_for"], "ops-worker") {
+		t.Fatalf("expected join to wait only for selected branches, got %#v", join.Output)
+	}
+	reportPrompt := plannerLLM.requests[1].Messages[len(plannerLLM.requests[1].Messages)-1].Content
+	if !strings.Contains(reportPrompt, "software branch complete") || !strings.Contains(reportPrompt, "docs branch complete") || strings.Contains(reportPrompt, "ops branch should not run") {
+		t.Fatalf("expected final report prompt to include selected branches only, got %q", reportPrompt)
+	}
+}
+
+func TestWorkflowRunnerValidationRejectsInvalidStageModelOverrides(t *testing.T) {
+	runtimeHome := t.TempDir()
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+	})
+	runtimeRef.cfg.Providers = map[string]config.LLMConfig{
+		"chat":    {Model: "chat-model"},
+		"planner": {Model: "planner-model"},
+		"fixer":   {Model: "fixer-model"},
+		"auditor": {Model: "auditor-model"},
+	}
+
+	result := runtimeRef.WorkflowRunner().ValidateWorkflowGraphDocument("invalid-stage-model", WorkflowGraphDocument{
+		Name: "invalid-stage-model",
+		Stages: []WorkflowGraphStageDocument{
+			{
+				Name:  "plan",
+				Agent: "planner",
+				Skill: "execution-plan",
+				Model: WorkflowGraphStageModelDocument{
+					Provider:  "missing-provider",
+					MaxTokens: -1,
+				},
+			},
+		},
+	})
+	if result.Valid {
+		t.Fatalf("expected invalid stage model override validation, got %#v", result)
+	}
+	if !workflowValidationIssueContains(result.Issues, "error", "model.max_tokens") {
+		t.Fatalf("expected model.max_tokens error, got %#v", result.Issues)
+	}
+	if !workflowValidationIssueContains(result.Issues, "error", "model.provider") {
+		t.Fatalf("expected model.provider error, got %#v", result.Issues)
 	}
 }
 
@@ -2300,6 +2681,61 @@ func TestWorkflowTemplateCatalogIncludesTaskDecompositionPlan(t *testing.T) {
 	}
 }
 
+func TestWorkflowTemplateCatalogIncludesMultiDomainParallelRouter(t *testing.T) {
+	runtimeRef := newWorkflowGraphRuntime(t, t.TempDir(), workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
+	runner := runtimeRef.WorkflowRunner()
+	template, ok := runner.WorkflowTemplate("multi-domain-intake-router")
+	if !ok {
+		t.Fatal("expected multi-domain-intake-router template")
+	}
+	if template.Category != "starter" || template.Graph.Name != "multi-domain-intake-router" || len(template.Graph.Stages) != 21 {
+		t.Fatalf("unexpected multi-domain parallel router template: %#v", template)
+	}
+	validation := runner.ValidateWorkflowGraphDocument("multi-domain-intake-router", template.Graph)
+	if !validation.Valid {
+		t.Fatalf("expected valid multi-domain parallel router graph, got %#v", validation)
+	}
+	for _, stageName := range []string{"intake", "decompose", "dispatch", "software-worker", "web-security-worker", "ops-worker", "platform-worker", "join", "aggregate", "audit", "quality", "final-report"} {
+		if !workflowGraphHasStage(template.Graph, stageName) {
+			t.Fatalf("expected multi-domain parallel router template to include stage %q, got %#v", stageName, template.Graph.Stages)
+		}
+	}
+	foundStrongDecompose := false
+	foundSelectedDispatch := false
+	foundDynamicJoin := false
+	foundCheapWorker := false
+	foundAudit := false
+	for _, stage := range template.Graph.Stages {
+		if stage.Name == "decompose" && stage.Model.Provider == "primary" && stage.Outputs["active_branches"] == "result.active_branches" && strings.Contains(stage.Params["output_contract"], "active_branches") {
+			foundStrongDecompose = true
+		}
+		if stage.Name == "dispatch" && stage.NodeType == "parallel" && stage.Params["active_branches_ref"] == "stages.decompose.outputs.active_branches" && len(stage.Next) == 9 {
+			foundSelectedDispatch = true
+		}
+		if stage.Name == "join" && stage.NodeType == "join" && stage.Params["wait_for_ref"] == "stages.dispatch.outputs.branches" {
+			foundDynamicJoin = true
+		}
+		if strings.HasSuffix(stage.Name, "-worker") && stage.Model.Provider == "backup" && stage.Context.MaxTokens > 0 {
+			foundCheapWorker = true
+		}
+		if stage.Name == "audit" && stage.Model.Provider == "primary" && strings.Contains(stage.Params["output_contract"], "Token Discipline") {
+			foundAudit = true
+		}
+	}
+	if !foundStrongDecompose || !foundSelectedDispatch || !foundDynamicJoin || !foundCheapWorker || !foundAudit {
+		t.Fatalf("expected decomposition, selected parallel dispatch, dynamic join, cheap workers, and audit, got %#v", template.Graph.Stages)
+	}
+	rendered, err := RenderWorkflowTemplateYAML("multi-domain-copy", "multi-domain-intake-router")
+	if err != nil {
+		t.Fatalf("RenderWorkflowTemplateYAML: %v", err)
+	}
+	for _, want := range []string{"active_branches_ref", "wait_for_ref", "Token Discipline", "domain_slice_v1", "provider: primary", "provider: backup"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected rendered multi-domain parallel router template to contain %q, got %q", want, rendered)
+		}
+	}
+}
+
 func TestWorkflowTemplateCatalogIncludesComplexProjectDelivery(t *testing.T) {
 	runtimeRef := newWorkflowGraphRuntime(t, t.TempDir(), workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
 	runner := runtimeRef.WorkflowRunner()
@@ -2356,6 +2792,66 @@ func TestWorkflowTemplateCatalogIncludesComplexProjectDelivery(t *testing.T) {
 	for _, want := range []string{"PROJECT_COMPLETE", "delivery-loop", "final-validation-report", "completion-report", "confirm-plan"} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("expected rendered complex project delivery template to contain %q, got %q", want, rendered)
+		}
+	}
+}
+
+func TestWorkflowTemplateCatalogIncludesEngineeringParallelDelivery(t *testing.T) {
+	runtimeRef := newWorkflowGraphRuntime(t, t.TempDir(), workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
+	runner := runtimeRef.WorkflowRunner()
+	template, ok := runner.WorkflowTemplate("engineering-parallel-delivery")
+	if !ok {
+		t.Fatal("expected engineering-parallel-delivery template")
+	}
+	if template.Category != "software" || template.Graph.Name != "engineering-parallel-delivery" || len(template.Graph.Stages) != 13 {
+		t.Fatalf("unexpected engineering parallel delivery template: %#v", template)
+	}
+	validation := runner.ValidateWorkflowGraphDocument("engineering-parallel-delivery", template.Graph)
+	if !validation.Valid {
+		t.Fatalf("expected valid engineering parallel delivery graph, got %#v", validation)
+	}
+	requiredStages := []string{"decompose", "dispatch", "worker-core", "worker-tests", "worker-docs", "join", "aggregate", "audit", "quality", "resolve", "final-report"}
+	for _, stageName := range requiredStages {
+		if !workflowGraphHasStage(template.Graph, stageName) {
+			t.Fatalf("expected engineering parallel delivery template to include stage %q, got %#v", stageName, template.Graph.Stages)
+		}
+	}
+	foundStrongPlan := false
+	foundCheapWorker := false
+	foundParallel := false
+	foundJoin := false
+	foundResolve := false
+	foundTokenContext := false
+	for _, stage := range template.Graph.Stages {
+		if stage.Name == "decompose" && stage.Model.Provider == "primary" && stage.Model.MaxTokens > 0 && strings.Contains(stage.Params["output_contract"], "Work Slices") {
+			foundStrongPlan = true
+		}
+		if strings.HasPrefix(stage.Name, "worker-") && stage.Model.Provider == "backup" && stage.Model.MaxTokens > 0 {
+			foundCheapWorker = true
+		}
+		if stage.Name == "dispatch" && stage.NodeType == "parallel" && len(stage.Next) == 3 {
+			foundParallel = true
+		}
+		if stage.Name == "join" && stage.NodeType == "join" && strings.Contains(stage.Params["wait_for"], "worker-core") {
+			foundJoin = true
+		}
+		if stage.Name == "resolve" && stage.Model.Provider == "primary" && stage.Model.MaxTokens > 0 && strings.Contains(stage.Params["output_contract"], "Resolution Plan") {
+			foundResolve = true
+		}
+		if stage.Context.MaxTokens > 0 && len(stage.Context.Exclude) > 0 {
+			foundTokenContext = true
+		}
+	}
+	if !foundStrongPlan || !foundCheapWorker || !foundParallel || !foundJoin || !foundResolve || !foundTokenContext {
+		t.Fatalf("expected model routing, parallel/join, and bounded context stages, got %#v", template.Graph.Stages)
+	}
+	rendered, err := RenderWorkflowTemplateYAML("parallel-delivery-copy", "engineering-parallel-delivery")
+	if err != nil {
+		t.Fatalf("RenderWorkflowTemplateYAML: %v", err)
+	}
+	for _, want := range []string{"provider: primary", "provider: backup", "parallel", "join", "Resolution Plan", "Token Discipline"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("expected rendered engineering parallel delivery template to contain %q, got %q", want, rendered)
 		}
 	}
 }
@@ -3101,7 +3597,7 @@ stages:
         {
           "fields": [
             {"name": "target", "type": "url", "label": "Target URL", "placeholder": "https://example.test", "group": "Scope", "required": true},
-            {"name": "depth", "type": "integer", "min": "1", "max": "3", "default": "1"},
+            {"name": "depth", "type": "integer", "min": 1, "max": 3, "default": 1},
             {"name": "tags", "type": "select", "options": ["api", "auth", "db"], "multiple": true},
             {"name": "payload", "type": "object", "required": true},
             {"name": "findings", "type": "array"},
@@ -3966,6 +4462,9 @@ func workflowGraphTestSkills() []schema.Skill {
 		{Name: "execution-plan", Description: "Plan the work", Mode: "plan", PreferredAgent: "planner", Activation: schema.Activation{Keywords: []string{"plan"}}, Instructions: "Plan."},
 		{Name: "code-writing", Description: "Implement code", Mode: "fix", PreferredAgent: "fixer", Activation: schema.Activation{Keywords: []string{"implement", "code"}}, Instructions: "Implement."},
 		{Name: "code-audit", Description: "Audit code", Mode: "audit", PreferredAgent: "auditor", Activation: schema.Activation{Keywords: []string{"audit", "security"}}, Instructions: "Audit."},
+		{Name: "vulnerability-research", Description: "Research vulnerabilities", Mode: "audit", PreferredAgent: "security-researcher", Activation: schema.Activation{Keywords: []string{"security", "vulnerability"}}, Instructions: "Research vulnerabilities defensively."},
+		{Name: "web-vulnerability-research", Description: "Research web vulnerabilities", Mode: "audit", PreferredAgent: "web-security-researcher", Activation: schema.Activation{Keywords: []string{"web", "browser"}}, Instructions: "Research authorized web evidence."},
+		{Name: "reverse-engineering", Description: "Reverse engineering", Mode: "audit", PreferredAgent: "binary-analyst", Activation: schema.Activation{Keywords: []string{"binary", "reverse"}}, Instructions: "Analyze binaries statically."},
 	}
 }
 
@@ -3976,14 +4475,47 @@ func newWorkflowGraphRuntime(t *testing.T, runtimeHome string, skills []schema.S
 		Session:      config.SessionConfig{MaxHistory: 8},
 		RuntimeHome:  runtimeHome,
 		DefaultAgent: "chat",
+		Providers: map[string]config.LLMConfig{
+			"chat":                          {Model: "test-model"},
+			"planner":                       {Model: "test-model"},
+			"fixer":                         {Model: "test-model"},
+			"auditor":                       {Model: "test-model"},
+			"primary":                       {Model: "test-model"},
+			"backup":                        {Model: "test-model"},
+			"software-engineer":             {Model: "test-model"},
+			"security-researcher":           {Model: "test-model"},
+			"web-security-researcher":       {Model: "test-model"},
+			"binary-analyst":                {Model: "test-model"},
+			"documentation-specialist":      {Model: "test-model"},
+			"operations-specialist":         {Model: "test-model"},
+			"support-specialist":            {Model: "test-model"},
+			"framework-extension-architect": {Model: "test-model"},
+		},
 		Agents: map[string]config.AgentProfile{
-			"chat":    {Name: "Chat", Provider: "chat", Mode: "chat", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
-			"planner": {Name: "Planner", Provider: "planner", Mode: "plan", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
-			"fixer":   {Name: "Fixer", Provider: "fixer", Mode: "fix", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
-			"auditor": {Name: "Auditor", Provider: "auditor", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"chat":                          {Name: "Chat", Provider: "chat", Mode: "chat", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"planner":                       {Name: "Planner", Provider: "planner", Mode: "plan", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"fixer":                         {Name: "Fixer", Provider: "fixer", Mode: "fix", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+			"auditor":                       {Name: "Auditor", Provider: "auditor", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"software-engineer":             {Name: "Software Engineer", Provider: "software-engineer", Mode: "fix", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+			"security-researcher":           {Name: "Security Researcher", Provider: "security-researcher", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"web-security-researcher":       {Name: "Web Security Researcher", Provider: "web-security-researcher", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"binary-analyst":                {Name: "Binary Analyst", Provider: "binary-analyst", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"documentation-specialist":      {Name: "Documentation Specialist", Provider: "documentation-specialist", Mode: "fix", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+			"operations-specialist":         {Name: "Operations Specialist", Provider: "operations-specialist", Mode: "plan", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"support-specialist":            {Name: "Support Specialist", Provider: "support-specialist", Mode: "chat", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"framework-extension-architect": {Name: "Framework Extension Architect", Provider: "framework-extension-architect", Mode: "plan", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
 		},
 	}
-	runtimeRef, err := NewRuntime(cfg, clients, workflowSkillManager{skills: skills}, mcpClient, session.New(8), runtime.NewAuditLogger(false, false))
+	mergedClients := make(map[string]interfaces.LLMClient, len(cfg.Providers))
+	for name, client := range clients {
+		mergedClients[name] = client
+	}
+	for name := range cfg.Providers {
+		if _, ok := mergedClients[name]; !ok {
+			mergedClients[name] = &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: name}}}}
+		}
+	}
+	runtimeRef, err := NewRuntime(cfg, mergedClients, workflowSkillManager{skills: skills}, mcpClient, session.New(8), runtime.NewAuditLogger(false, false))
 	if err != nil {
 		t.Fatalf("NewRuntime: %v", err)
 	}
@@ -3992,9 +4524,19 @@ func newWorkflowGraphRuntime(t *testing.T, runtimeHome string, skills []schema.S
 
 func workflowGraphTestClients() map[string]interfaces.LLMClient {
 	return map[string]interfaces.LLMClient{
-		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
-		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
-		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
-		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+		"chat":                          &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner":                       &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":                         &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor":                       &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+		"primary":                       &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "primary"}}}},
+		"backup":                        &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "backup"}}}},
+		"software-engineer":             &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "software"}}}},
+		"security-researcher":           &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "security"}}}},
+		"web-security-researcher":       &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "web security"}}}},
+		"binary-analyst":                &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "binary"}}}},
+		"documentation-specialist":      &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "docs"}}}},
+		"operations-specialist":         &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "operations"}}}},
+		"support-specialist":            &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "support"}}}},
+		"framework-extension-architect": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "platform"}}}},
 	}
 }

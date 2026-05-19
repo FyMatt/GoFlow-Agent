@@ -52,6 +52,16 @@ nodes:
             - web-vulnerability-research
           hints:
             - A skill narrows instructions and can narrow allowed tool kinds, but it cannot grant permissions the agent does not have.
+        - name: model
+          label: Stage model override
+          type: object
+          description: Optional provider/model/max token override for this stage. Use it to run strong models for decomposition or review and cheaper models for bounded execution.
+          examples:
+            - 'provider: primary, model: strong-planner, max_tokens: 1600'
+            - 'provider: backup, model: small-coder, max_tokens: 900, temperature: 0.1'
+          hints:
+            - The Agent still owns permissions, tool policy, and mode. This field only changes the LLM route and response budget for the stage.
+            - Keep worker max_tokens small and pass only named upstream outputs through context/input contracts.
         - name: input
           label: Inputs
           type: map
@@ -83,8 +93,20 @@ nodes:
           examples:
             - 'purpose: Draft the implementation plan'
             - 'output_contract: Emit Scope, Findings, Risks, Next Steps'
+            - 'worker_contract: engineering_v1'
           hints:
             - Use params for stable settings, output contracts, quality bars, and UI form metadata.
+            - Set worker_contract=engineering_v1 for small-model implementation workers so downstream nodes can consume summary, changed_files, evidence, verification, blockers, and next_actions without copying the full report.
+        - name: context
+          label: Context contract
+          type: object
+          description: Optional prompt budget and selected-context contract for this stage.
+          examples:
+            - 'include: [previous.summary, files.changed], max_tokens: 1600'
+            - 'prompt_max_tokens: 4200, request_max_tokens: 800, inputs_max_tokens: 1400, parameters_max_tokens: 600'
+          hints:
+            - max_tokens caps selected upstream context; prompt_max_tokens caps the whole stage prompt while preserving final execution constraints.
+            - request_max_tokens, inputs_max_tokens, and parameters_max_tokens are expert controls for long-running workflows and low-cost worker routes.
         - name: artifacts
           label: Artifacts
           type: artifact_list
@@ -190,6 +212,15 @@ nodes:
             - web-vulnerability-research
           hints:
             - A skill narrows instructions and can narrow allowed tool kinds, but it cannot grant permissions the agent does not have.
+        - name: model
+          label: Stage model override
+          type: object
+          description: Optional provider/model/max token override for this stage. Use it to route expensive reasoning only to decomposition, arbitration, or audit nodes.
+          examples:
+            - 'provider: primary, model: strong-planner, max_tokens: 1600'
+            - 'provider: backup, model: small-worker, max_tokens: 900, temperature: 0.1'
+          hints:
+            - Prefer small worker budgets plus explicit input/output contracts; use stronger routes only where they reduce rework.
         - name: input
           label: Inputs
           type: map
@@ -221,8 +252,20 @@ nodes:
           examples:
             - 'purpose: Draft the implementation plan'
             - 'output_contract: Emit Scope, Findings, Risks, Next Steps'
+            - 'worker_contract: engineering_v1'
           hints:
             - Use params for stable settings, output contracts, quality bars, and UI form metadata.
+            - Set worker_contract=engineering_v1 for bounded execution stages that should publish summary, changed_files, evidence, verification, blockers, and next_actions.
+        - name: context
+          label: Context contract
+          type: object
+          description: Optional prompt budget and selected-context contract for this stage.
+          examples:
+            - 'include: [previous.summary, previous.artifacts.report], max_tokens: 1800'
+            - 'prompt_max_tokens: 4200, request_max_tokens: 800, inputs_max_tokens: 1400, parameters_max_tokens: 600'
+          hints:
+            - Use artifact refs and named outputs before raw outputs; the runtime records explicit truncation markers when a budget is reached.
+            - Strong planner/audit stages can have larger budgets; worker stages should keep prompt and model budgets small.
         - name: artifacts
           label: Artifacts
           type: artifact_list
@@ -426,7 +469,7 @@ nodes:
         - name: tool
           label: Tool
           type: tool
-          description: Preferred tool metadata for this stage.
+          description: Preferred tool metadata for this stage. Executable workflow stages use this as a stage-scoped tool allowlist so only the relevant tool schema is exposed to the model.
       outputs:
         - name: summary
           description: Bounded result summary
@@ -442,6 +485,7 @@ nodes:
           description: Verification results as JSON
       hints:
         - Use a Tool node only when the workflow needs to strongly prefer one MCP tool. The agent still decides the exact call arguments.
+        - Executable stages can also set params.tools or params.allowed_tools to a comma-separated exact tool list; the stage then exposes only those tool schemas to reduce token cost and accidental tool calls.
         - Write, exec, network, and other risky tools still go through the active agent policy and approval gates.
       warnings:
         - Do not use tool nodes to bypass agent permissions; they are metadata and prompt guidance, not an authorization override.

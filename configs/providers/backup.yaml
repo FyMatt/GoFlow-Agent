@@ -3,6 +3,8 @@ backup:
   base_url: ${GOFLOW_BACKUP_BASE_URL}
   api_key: ${GOFLOW_BACKUP_API_KEY}
   model: ${GOFLOW_BACKUP_MODEL}
+  provider_message_fields:
+    - reasoning_content
   timeout: 60s
   temperature: 0.2
   max_tokens: 2048

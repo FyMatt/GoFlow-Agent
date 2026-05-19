@@ -1,4 +1,5 @@
 # Loaded automatically from templates/workflows/*.yaml.
+# activation: after materializing this starter, reload or restart GoFlow so generated agents, tools, and templates are active.
 kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
@@ -36,6 +37,19 @@ graph:
       node_type: skill
       agent: {{.Names.Agent}}
       skill: {{.Names.Skill}}
+      model:
+        provider: {{.PrimaryProvider}}
+        max_tokens: 1200
+        temperature: 0.1
+      params:
+        output_contract: Emit concise sections named Goal, Work Plan, Evidence Needed, Acceptance Criteria, Risks, and Next Handoff.
+{{ if .BuiltinTools }}
+        allowed_tools: {{ range $index, $tool := .BuiltinTools }}{{ if $index }},{{ end }}{{ $tool }}{{ end }}
+{{ end }}
+{{ if .DomainToolNotes }}
+        domain_tool_boundaries: {{ range $index, $note := .DomainToolNotes }}{{ if $index }} | {{ end }}{{ $note }}{{ end }}
+{{ end }}
+        token_policy: Prefer summaries and artifact refs. Do not paste large logs, full files, or long upstream outputs.
       input:
         request: params.request
         scope: params.scope
@@ -50,6 +64,26 @@ graph:
           ref: result.output
           title: {{.Preset.Title}} Plan
           summary: Initial plan and evidence requirements for the linked starter workflow.
+{{ if .BuiltinTools }}
+        - name: domain-tool-contract
+          kind: contract
+          ref: result.output
+          title: Domain Tool Contract
+          summary: Built-in tool boundaries, authorization requirements, compact evidence refs, and approval expectations for this starter kit.
+{{ end }}
+      context:
+        include:
+          - workflow.input
+          - stages.team.outputs.summary
+        exclude:
+          - raw_tool_logs
+          - large_file_contents
+          - unrelated_session_history
+        max_tokens: 1800
+        prompt_max_tokens: 4200
+        request_max_tokens: 1000
+        inputs_max_tokens: 1200
+        parameters_max_tokens: 700
       next: [gate]
       position: {x: 620, y: 260}
     - name: gate
@@ -66,30 +100,75 @@ graph:
       node_type: skill
       agent: {{.Names.Agent}}
       skill: {{.Names.Skill}}
+      model:
+        provider: {{.PrimaryProvider}}
+        max_tokens: 900
+        temperature: 0.1
+      params:
+        worker_contract: engineering_v1
+        output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, and next_actions.
+{{ if .BuiltinTools }}
+        allowed_tools: {{ range $index, $tool := .BuiltinTools }}{{ if $index }},{{ end }}{{ $tool }}{{ end }}
+{{ end }}
+{{ if .DomainToolNotes }}
+        domain_tool_boundaries: {{ range $index, $note := .DomainToolNotes }}{{ if $index }} | {{ end }}{{ $note }}{{ end }}
+{{ end }}
+        token_policy: Use the approved plan summary and artifact refs; do not copy upstream reports.
       input:
         request: Build the final handoff from the approved plan.
-        upstream: stages.plan.outputs.plan
+        upstream: stages.plan.outputs.summary
       outputs:
         final_report: result.output
         summary: result.summary
+        changed_files: result.changed_files
+        verification: result.verification
+        blockers: result.blockers
       artifacts:
         - name: starter-final-report
           kind: report
           ref: result.output
           title: {{.Preset.Title}} Final Report
           summary: "{{.Preset.Description}}"
+      context:
+        include:
+          - stages.plan.outputs.summary
+          - stages.gate.outputs.summary
+        exclude:
+          - raw_tool_logs
+          - large_file_contents
+        max_tokens: 1400
+        prompt_max_tokens: 3600
+        request_max_tokens: 700
+        inputs_max_tokens: 1000
+        parameters_max_tokens: 650
       next: [end]
       position: {x: 1190, y: 180}
     - name: revise
       node_type: skill
       agent: {{.Names.Agent}}
       skill: {{.Names.Skill}}
+      model:
+        provider: {{.PrimaryProvider}}
+        max_tokens: 800
+        temperature: 0.1
       input:
         request: Revise the workflow handoff because the policy gate denied the previous output.
         upstream: stages.gate.outputs.reason
       outputs:
         revision_plan: result.output
         summary: result.summary
+      context:
+        include:
+          - stages.plan.outputs.summary
+          - stages.gate.outputs.reason
+        exclude:
+          - raw_tool_logs
+          - large_file_contents
+        max_tokens: 1200
+        prompt_max_tokens: 3200
+        request_max_tokens: 600
+        inputs_max_tokens: 900
+        parameters_max_tokens: 600
       next: [end]
       position: {x: 1190, y: 360}
     - name: end

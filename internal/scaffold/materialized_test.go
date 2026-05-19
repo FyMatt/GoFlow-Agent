@@ -15,6 +15,7 @@ func TestRenderMaterializedKitYAMLUsesEmbeddedTemplate(t *testing.T) {
 		Category:    "software",
 		Tags:        []string{"coding"},
 		Providers:   []string{"primary"},
+		Tools:       []string{"file_tools/read_file", "network_tools/device_discovery_plan"},
 	}, MaterializedKitNames{
 		Kit:              "acme-kit",
 		Agent:            "acme-agent",
@@ -30,7 +31,9 @@ func TestRenderMaterializedKitYAMLUsesEmbeddedTemplate(t *testing.T) {
 	}
 	for _, want := range []string{
 		"name: acme-kit",
+		"- acme-helper",
 		"generated_agent: acme-agent",
+		"materialized: true",
 		"recommended_workflow: acme-workflow",
 	} {
 		if !strings.Contains(content, want) {
@@ -77,6 +80,61 @@ func TestRenderMaterializedAgentConfigUsesRuntimeOverride(t *testing.T) {
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected runtime override to contain %q, got:\n%s", want, content)
+		}
+	}
+}
+
+func TestRenderMaterializedAgentSkillTeamAndWorkflowInheritBuiltinTools(t *testing.T) {
+	preset := KitPreset{
+		Name:        "operations-runbook",
+		Title:       "Operations Kit",
+		Description: "Plan safe operations changes.",
+		Category:    "operations",
+		Tags:        []string{"operations"},
+		Providers:   []string{"primary"},
+		Tools: []string{
+			"file_tools/read_file",
+			"network_tools/device_discovery_plan",
+			"network_tools/device_command_plan",
+			"network_tools/device_config_dry_run",
+		},
+	}
+	names := MaterializedKitNames{
+		Kit:              "ops-kit",
+		Agent:            "ops-agent",
+		Skill:            "ops-skill",
+		Tool:             "ops-helper",
+		Workflow:         "ops-workflow",
+		WorkflowTemplate: "ops-template",
+		TeamTemplate:     "ops-team",
+		PolicyRule:       "ops-gate",
+	}
+	rendered := map[string]string{}
+	var err error
+	rendered["agent"], err = RenderMaterializedAgentConfig("", preset, names)
+	if err != nil {
+		t.Fatalf("RenderMaterializedAgentConfig: %v", err)
+	}
+	rendered["skill"], err = RenderMaterializedSkillMarkdown("", preset, names)
+	if err != nil {
+		t.Fatalf("RenderMaterializedSkillMarkdown: %v", err)
+	}
+	rendered["team"], err = RenderMaterializedTeamTemplateYAML("", preset, names)
+	if err != nil {
+		t.Fatalf("RenderMaterializedTeamTemplateYAML: %v", err)
+	}
+	rendered["workflow"], err = RenderMaterializedWorkflowTemplateYAML("", preset, names)
+	if err != nil {
+		t.Fatalf("RenderMaterializedWorkflowTemplateYAML: %v", err)
+	}
+	for label, content := range rendered {
+		for _, want := range []string{
+			"file_tools/read_file",
+			"network_tools are planning and policy-check tools only",
+		} {
+			if !strings.Contains(content, want) {
+				t.Fatalf("%s should contain %q, got:\n%s", label, want, content)
+			}
 		}
 	}
 }
@@ -134,6 +192,38 @@ func TestRenderMaterializedToolConfigUsesRuntimeOverride(t *testing.T) {
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected runtime override to contain %q, got:\n%s", want, content)
+		}
+	}
+}
+
+func TestRenderMaterializedWorkflowTemplateUsesModelAndContextBudgets(t *testing.T) {
+	content, err := RenderMaterializedWorkflowTemplateYAML("", KitPreset{
+		Name:      "software-engineering",
+		Title:     "Software Kit",
+		Category:  "software",
+		Tags:      []string{"coding"},
+		Providers: []string{"backup"},
+	}, MaterializedKitNames{
+		Agent:            "acme-agent",
+		Skill:            "acme-skill",
+		WorkflowTemplate: "acme-template",
+		TeamTemplate:     "acme-team",
+		PolicyRule:       "acme-gate",
+	})
+	if err != nil {
+		t.Fatalf("RenderMaterializedWorkflowTemplateYAML: %v", err)
+	}
+	for _, want := range []string{
+		"name: acme-template",
+		"provider: backup",
+		"max_tokens: 1200",
+		"context:",
+		"large_file_contents",
+		"token_policy:",
+		"activation",
+	} {
+		if !strings.Contains(content, want) {
+			t.Fatalf("expected rendered workflow template to contain %q, got:\n%s", want, content)
 		}
 	}
 }

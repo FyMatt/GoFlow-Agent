@@ -11,6 +11,7 @@ tags:
     - rollback
     - approval
 agents:
+    - chat
     - operations-specialist
     - documentation-specialist
     - planner
@@ -26,6 +27,9 @@ tools:
     - file_tools/read_file
     - file_tools/search_files
     - file_tools/write_file
+    - network_tools/device_discovery_plan
+    - network_tools/device_command_plan
+    - network_tools/device_config_dry_run
 workflows:
     - plan-fix-audit
 workflow_templates:
@@ -33,6 +37,7 @@ workflow_templates:
     - docs-review-publish
 team_templates:
     - operations-runbook-team
+    - documentation-team
     - documentation-team
 policy_rules:
     - expression
@@ -43,6 +48,69 @@ examples:
       request: Create an operations runbook for this deployment with rollback guidance.
       workflow: operations-runbook
       agent: operations-specialist
+    - title: Plan network device discovery
+      description: Validate device scope, allowed hosts, credential references, and read-only command allowlists before any device connector is used.
+      request: Plan read-only discovery for router 192.0.2.10 using allowed host 192.0.2.0/24 and commands show version, show interfaces status.
+      workflow: operations-runbook
+      agent: operations-specialist
+vertical_pack:
+    domain: operations-runbook
+    maturity: production-ready
+    summary: Builds operator-safe runbooks and network-device change plans with prerequisites, prechecks, read-only discovery plans, rollback, approval notes, and verification evidence.
+    supported_tasks:
+        - deployment runbook drafting
+        - incident checklist drafting
+        - rollback planning
+        - operational handoff review
+        - network device read-only discovery planning
+        - network device configuration dry-run planning
+    required_inputs:
+        - system or service
+        - change objective
+        - precheck signals
+        - rollback condition
+        - approval owner
+        - device IP or hostname for network-device work
+        - allowed_hosts and credential_ref for network-device work
+    tool_boundaries:
+        - Default workflow drafts and reviews runbooks; it does not execute infrastructure changes.
+        - network_tools validates device scope, host allowlists, command allowlists, credential refs, dry-run status, rollback, approval metadata, and audit notes.
+        - network_tools does not open device connections or apply configuration; real execution requires a future approved connector with the same contracts.
+    safety_gates:
+        - Require approval before execution-capable steps.
+        - Require rollback and verification before final handoff.
+        - Require authorized_scope=true and allowed_hosts before any network-device plan.
+        - Reject commands outside the operator-provided allowlist.
+    quality_gates:
+        - Requires prechecks.
+        - Requires execution steps.
+        - Requires rollback and success signals.
+        - Requires device evidence contract or a stated blocker for network-device work.
+    evidence_artifacts:
+        - runbook draft
+        - risk review
+        - approval notes
+        - rollback plan
+        - network-device discovery plan
+        - network-device dry-run plan
+        - final handoff
+    simple_mode:
+        - Show service or device, change goal, authorized scope, allowed hosts, prechecks, approval status, rollback, and final runbook.
+    expert_mode:
+        - Show raw workflow graph, policy gates, network_tools allowlists, credential refs, future connector boundaries, and artifact refs.
+    token_strategy:
+        - Keep device or environment evidence as summaries and refs.
+        - Pass only precheck, rollback, device-plan, and status contracts between stages.
+    model_routes:
+        strong:
+            - risk planning
+            - rollback review
+            - final handoff synthesis
+        worker:
+            - runbook drafting
+            - checklist generation
+        verifier:
+            - safety and completeness review
 metadata:
     preset: operations-runbook
     recommended_agent: operations-specialist

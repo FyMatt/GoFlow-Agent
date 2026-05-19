@@ -11,26 +11,27 @@ import (
 
 func TestBuiltInWorkflowTemplatesLoadFromEmbeddedYAML(t *testing.T) {
 	rows := (&WorkflowRunner{}).WorkflowTemplates()
-	if len(rows) < 16 {
+	if len(rows) < 17 {
 		t.Fatalf("expected embedded workflow templates, got %#v", rows)
 	}
 	required := map[string]bool{
-		"complex-project-delivery":     false,
-		"task-decomposition-plan":      false,
-		"multi-domain-intake-router":   false,
-		"agent-framework-extension":    false,
-		"plan-implement-audit":         false,
-		"plan-fix-audit":               false,
-		"software-quality-gate":        false,
-		"web-research-risk":            false,
-		"security-audit-evidence-gate": false,
-		"parallel-research-review":     false,
-		"binary-triage":                false,
-		"docs-review-publish":          false,
-		"operations-runbook":           false,
-		"customer-support-triage":      false,
-		"human-input-security-review":  false,
-		"software-team-review-gate":    false,
+		"complex-project-delivery":      false,
+		"engineering-parallel-delivery": false,
+		"task-decomposition-plan":       false,
+		"multi-domain-intake-router":    false,
+		"agent-framework-extension":     false,
+		"plan-implement-audit":          false,
+		"plan-fix-audit":                false,
+		"software-quality-gate":         false,
+		"web-research-risk":             false,
+		"security-audit-evidence-gate":  false,
+		"parallel-research-review":      false,
+		"binary-triage":                 false,
+		"docs-review-publish":           false,
+		"operations-runbook":            false,
+		"customer-support-triage":       false,
+		"human-input-security-review":   false,
+		"software-team-review-gate":     false,
 	}
 	for _, row := range rows {
 		if _, ok := required[row.Name]; ok {
@@ -79,6 +80,23 @@ func TestBuiltInWorkflowTemplatesValidateAndMeetDeliveryQualityBar(t *testing.T)
 		}
 		if !workflowTemplateQualityHasFinalUserOutput(template.Graph) {
 			t.Fatalf("workflow template %s must include a final report, handoff, publish, or materialize stage", row.Name)
+		}
+	}
+}
+
+func TestBuiltInSoftwareWorkflowTemplatesUseEngineeringTokenControls(t *testing.T) {
+	runtimeRef := newWorkflowGraphRuntime(t, t.TempDir(), workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
+	runner := runtimeRef.WorkflowRunner()
+	for _, name := range []string{"engineering-parallel-delivery", "complex-project-delivery", "plan-implement-audit", "plan-fix-audit"} {
+		template, ok := runner.WorkflowTemplate(name)
+		if !ok {
+			t.Fatalf("expected workflow template %s", name)
+		}
+		if !workflowTemplateHasPromptBudget(template.Graph) {
+			t.Fatalf("workflow template %s must declare stage prompt budgets", name)
+		}
+		if !workflowTemplateHasWorkerContract(template.Graph) {
+			t.Fatalf("workflow template %s must use structured worker contracts", name)
 		}
 	}
 }
@@ -229,6 +247,24 @@ func workflowTemplateQualityHasFinalUserOutput(doc WorkflowGraphDocument) bool {
 			if strings.Contains(output, "report") || strings.Contains(output, "handoff") || strings.Contains(output, "summary") {
 				return true
 			}
+		}
+	}
+	return false
+}
+
+func workflowTemplateHasPromptBudget(doc WorkflowGraphDocument) bool {
+	for _, stage := range doc.Stages {
+		if stage.Context.PromptMaxTokens > 0 && stage.Context.RequestMaxTokens > 0 && stage.Context.InputsMaxTokens > 0 && stage.Context.ParametersMaxTokens > 0 {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowTemplateHasWorkerContract(doc WorkflowGraphDocument) bool {
+	for _, stage := range doc.Stages {
+		if strings.EqualFold(strings.TrimSpace(stage.Params["worker_contract"]), "engineering_v1") {
+			return true
 		}
 	}
 	return false

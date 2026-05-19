@@ -40,6 +40,52 @@ examples:
       request: Triage this customer issue and draft a clear response with missing information called out.
       workflow: customer-support-triage
       agent: support-specialist
+vertical_pack:
+    domain: customer-support
+    maturity: guided
+    summary: Triage support requests, separate facts from assumptions, draft customer-ready responses, and flag escalation or privacy risk.
+    supported_tasks:
+        - issue triage
+        - response drafting
+        - escalation recommendation
+        - knowledge lookup summary
+    required_inputs:
+        - customer issue
+        - known facts
+        - product or service context
+        - response tone
+        - escalation policy
+    tool_boundaries:
+        - Use read/search tools for factual context.
+        - Do not expose secrets or unsupported promises in customer-ready output.
+    safety_gates:
+        - Flag privacy, legal, billing, or security escalation.
+        - Separate customer-facing response from internal notes.
+    quality_gates:
+        - Requires issue summary.
+        - Requires missing information list.
+        - Requires escalation decision.
+    evidence_artifacts:
+        - triage summary
+        - customer response draft
+        - internal notes
+        - escalation decision
+    simple_mode:
+        - Show issue, priority, missing information, response draft, and escalation status.
+    expert_mode:
+        - Show policy assumptions, evidence refs, response variants, and routing diagnostics.
+    token_strategy:
+        - Keep customer context concise and redact irrelevant history.
+        - Pass facts and policy summary instead of full conversation transcripts.
+    model_routes:
+        strong:
+            - escalation arbitration
+            - final response review
+        worker:
+            - fact extraction
+            - draft response
+        verifier:
+            - policy and privacy review
 metadata:
     preset: customer-support
     recommended_agent: support-specialist

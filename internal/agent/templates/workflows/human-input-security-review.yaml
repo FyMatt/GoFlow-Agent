@@ -43,11 +43,12 @@ graph:
             "y": 190
         - name: research
           node_type: skill
-          agent: auditor
+          agent: web-security-researcher
           skill: web-vulnerability-research
           params:
             output_contract: Emit sections named Scope Summary, Evidence, Findings, Severity Assessment, Confidence, Limitations, and Recommended Verification.
-            evidence_rule: Keep findings tied to the operator-provided target and scope.
+            evidence_rule: Keep findings tied to the operator-provided target and scope, require authorized scope and allowed hosts before browser evidence collection, and use browser_probe_points only for scoped probe surface enumeration unless active_probe_approved=true.
+            allowed_tools: web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points,web_tools/fetch_url,web_tools/web_search
           input:
             scope: stages.collect-scope.outputs.scope
             target: stages.collect-scope.outputs.target

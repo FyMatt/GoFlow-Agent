@@ -11,7 +11,7 @@ mcp_servers:
     enabled: true
     timeout: 30s
     workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP, GOFLOW_BROWSER_PATH]
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
@@ -81,6 +81,21 @@ mcp_servers:
       - ${GOFLOW_WEB_TOOLS_CMD}
     max_request_bytes: 65536
     max_response_bytes: 2097152
+
+  - name: network_tools
+    command: ${GOFLOW_NETWORK_TOOLS_CMD}
+    enabled: true
+    timeout: 30s
+    workdir: .
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
+    isolation: process_group
+    restart_limit: 3
+    cooldown: 10s
+    max_concurrent_calls: 1
+    allowed_commands:
+      - ${GOFLOW_NETWORK_TOOLS_CMD}
+    max_request_bytes: 65536
+    max_response_bytes: 1048576
 
 skill:
   directory: ./skills

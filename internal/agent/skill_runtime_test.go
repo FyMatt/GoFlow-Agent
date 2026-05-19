@@ -2,10 +2,12 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 	"strings"
 	"testing"
 	"time"
@@ -275,7 +277,16 @@ func (s *stubRuntimeMCP) HealthStatus(context.Context) map[string]string {
 }
 
 func (s *stubRuntimeMCP) ToolNames() []string {
-	return nil
+	names := make([]string, 0, len(s.tools))
+	for _, tool := range s.tools {
+		if strings.TrimSpace(tool.Server) != "" {
+			names = append(names, strings.TrimSpace(tool.Server)+"/"+strings.TrimSpace(tool.Name))
+			continue
+		}
+		names = append(names, strings.TrimSpace(tool.Name))
+	}
+	sort.Strings(names)
+	return names
 }
 
 func TestWorkspaceGatedMCPOnlyExposesNetworkTools(t *testing.T) {
@@ -408,6 +419,51 @@ func TestRunStreamNudgesImplementationAfterBroadReadContext(t *testing.T) {
 	}
 }
 
+func TestRunStreamPreservesProviderFieldsAcrossToolLoop(t *testing.T) {
+	toolCall := schema.ToolCall{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{
+			Message: schema.Message{
+				Role:      "assistant",
+				Content:   "need to read",
+				ToolCalls: []schema.ToolCall{toolCall},
+				ProviderFields: map[string]json.RawMessage{
+					"reasoning_content": json.RawMessage(`"private reasoning"`),
+				},
+			},
+			ToolCalls: []schema.ToolCall{toolCall},
+		}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "done"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "chat", profile: config.AgentProfile{
+		Name:             "Chat",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+		ToolPolicy:       config.ToolPolicyAllow,
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	if _, err := runner.RunStream(context.Background(), "read a file", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil); err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("expected second model request after tool result, got %d", len(llm.requests))
+	}
+	assistant := llm.requests[1].Messages[len(llm.requests[1].Messages)-2]
+	if got := string(assistant.ProviderFields["reasoning_content"]); got != `"private reasoning"` {
+		t.Fatalf("expected assistant provider field to be preserved, got %#v", assistant.ProviderFields)
+	}
+	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "call-1" {
+		t.Fatalf("expected assistant tool call to be preserved, got %#v", assistant)
+	}
+}
+
 func TestActionNudgeTriggersAfterTwoReadResults(t *testing.T) {
 	tracker := newActionNudgeTracker(config.AgentProfile{
 		Name:             "Fixer",
@@ -513,6 +569,39 @@ func TestPromptBudgetTracksSessionHistoryCompactionSavings(t *testing.T) {
 	}
 	if budget.HistoryEstimatedSavedTokens == 0 {
 		t.Fatalf("expected estimated saved tokens, got %#v", budget)
+	}
+}
+
+func TestPromptBudgetTracksFilteredToolSchemaSavings(t *testing.T) {
+	tools := []schema.Tool{
+		{Name: "read_file", Server: "file_tools", Kind: "read", Description: "read file", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
+		{Name: "write_file", Server: "file_tools", Kind: "write", Description: strings.Repeat("write file ", 80), InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}`)},
+	}
+	profile := config.AgentProfile{
+		Name:             "Reader",
+		Mode:             "chat",
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+		AllowedTools:     []string{"file_tools/read_file"},
+		ToolPolicy:       config.ToolPolicyAllow,
+	}
+	budget := estimatePromptBudgetWithContext("chat", "chat", schema.ChatRequest{
+		Model:    "m",
+		System:   BuildSystemPrompt(profile, nil, session.Snapshot{}),
+		Messages: []schema.Message{{Role: "user", Content: "inspect"}},
+		Tools:    filterPromptTools(profile, tools),
+	}, nil, len(tools), session.Snapshot{}, promptBudgetContextWithTools(promptBudgetContext{}, profile, tools))
+
+	if budget.ExposedToolCount != 1 || budget.FilteredToolCount != 1 {
+		t.Fatalf("expected one visible and one filtered tool, got %#v", budget)
+	}
+	if budget.ToolSchemaEstimatedSavedTokens == 0 {
+		t.Fatalf("expected filtered tool schema token savings, got %#v", budget)
+	}
+	if len(budget.FilteredToolSchemas) != 1 || budget.FilteredToolSchemas[0].QualifiedName != "file_tools/write_file" {
+		t.Fatalf("expected write_file filtered diagnostics, got %#v", budget.FilteredToolSchemas)
+	}
+	if budget.ToolSchemaEstimatedSavedTokens != budget.FilteredToolSchemas[0].Tokens {
+		t.Fatalf("expected savings to match filtered schema tokens, budget=%#v filtered=%#v", budget, budget.FilteredToolSchemas)
 	}
 }
 
@@ -668,6 +757,24 @@ func TestRunStreamCompactsLargeToolResultBeforeNextLLMRequest(t *testing.T) {
 	}
 	if !strings.Contains(last.Content, artifacts[0].Ref) {
 		t.Fatalf("expected compacted prompt to include artifact ref %q, got %q", artifacts[0].Ref, last.Content[:200])
+	}
+}
+
+func TestCompactToolResultForPromptCompactsLongLogsBeforeGlobalThreshold(t *testing.T) {
+	var builder strings.Builder
+	for i := 0; i < 180; i++ {
+		fmt.Fprintf(&builder, "2026-05-18T12:00:%02dZ ERROR worker failed path=internal/agent/file_%03d.go retry=true\n", i%60, i)
+	}
+	result := schema.ToolResult{ToolName: "test_log", Content: builder.String()}
+	compacted := compactToolResultForPrompt(result)
+	if !toolResultPromptWasCompacted(compacted) {
+		t.Fatalf("expected focused log compaction, got %q", compacted[:min(len(compacted), 160)])
+	}
+	if !strings.Contains(compacted, "kind=log") || !strings.Contains(compacted, "--- head ---") || !strings.Contains(compacted, "--- tail ---") {
+		t.Fatalf("expected log compaction metadata and head/tail, got %q", compacted[:min(len(compacted), 220)])
+	}
+	if len([]byte(compacted)) >= len([]byte(result.Content)) {
+		t.Fatalf("expected compacted log to be smaller; compacted=%d original=%d", len([]byte(compacted)), len([]byte(result.Content)))
 	}
 }
 

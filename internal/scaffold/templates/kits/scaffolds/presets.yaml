@@ -2,15 +2,15 @@ presets:
   - name: multi-domain-agent
     default_kit_name: multi-domain-agent-kit
     title: Multi-Domain Agent Starter Kit
-    description: One starter kit that routes mixed user requests to linked software, security, documentation, operations, support, and platform teams.
+    description: One starter kit that decomposes mixed user requests, runs selected domain workers in parallel, and joins them into an audited handoff.
     category: starter
     tags: [starter, multi-domain, workflow, team, quality]
     providers: [primary]
     agents: [chat, planner, fixer, auditor, software-engineer, security-researcher, web-security-researcher, binary-analyst, documentation-specialist, operations-specialist, support-specialist, framework-extension-architect]
     skills: [execution-plan, code-writing, code-audit, vulnerability-research, web-vulnerability-research, binary-vulnerability-research, reverse-engineering]
-    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points, network_tools/device_discovery_plan, network_tools/device_command_plan, network_tools/device_config_dry_run, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview]
     workflows: [plan-fix-audit, skill-chain]
-    workflow_templates: [multi-domain-intake-router, task-decomposition-plan, plan-fix-audit, software-quality-gate, software-team-review-gate, web-research-risk, security-audit-evidence-gate, binary-triage, docs-review-publish, operations-runbook, customer-support-triage, agent-framework-extension]
+    workflow_templates: [multi-domain-intake-router, engineering-parallel-delivery, task-decomposition-plan, plan-fix-audit, software-quality-gate, software-team-review-gate, web-research-risk, security-audit-evidence-gate, binary-triage, docs-review-publish, operations-runbook, customer-support-triage, agent-framework-extension]
     team_templates: [software-task-team, audit-security-team, web-research-team, binary-triage-team, documentation-team, operations-runbook-team, customer-support-team, framework-extension-team]
     policy_rules: [expression, contains, risk_at_least, ref_truthy, team_approval_gate]
     required_env: [GOFLOW_API_KEY]
@@ -18,10 +18,43 @@ presets:
     recommended_agent: chat
     examples:
       - title: Route a mixed request
-        description: Collect context, route to the right domain team, and produce a quality-gated handoff.
+        description: Collect context, decompose into bounded domain slices, run selected workers in parallel, and produce a quality-gated handoff.
         request: Help me decide how to handle this project request and route it to the right workflow.
         workflow: multi-domain-intake-router
         agent: chat
+    vertical_pack:
+      domain: multi-domain
+      maturity: guided
+      summary: Routes mixed user requests through structured intake, strong-model task decomposition, selected parallel domain workers, artifact-first join, audit, quality gate, and final report, including operations tasks that need network-device planning contracts.
+      supported_tasks: [domain routing, task intake, task decomposition, selected parallel domain execution, team handoff, starter kit selection, operations device planning handoff, multi-domain report synthesis]
+      required_inputs: [primary domain or auto routing, user goal, target context, desired output, risk tolerance, maximum parallel domains]
+      tool_boundaries:
+        - Uses only selected domain worker tools and linked team template refs.
+        - Unselected domain workers do not run, reducing token and tool exposure.
+        - Keeps decomposition, worker handoffs, join, audit, and synthesis summary-first.
+        - Network-device work is routed to operations tools with authorized scope, host allowlists, dry-run plans, and evidence refs.
+      safety_gates:
+        - Route risky domains to approval-aware workflows.
+        - Require explicit authorization and scope for security, web, operations, and binary analysis work.
+        - Preserve unresolved decisions for operator review.
+      quality_gates:
+        - Requires decomposition with selected active branches.
+        - Requires selected worker summaries or explicit blockers.
+        - Requires integrated report, audit decision, token discipline, and risk handoff.
+      evidence_artifacts: [intake summary, multi-domain task graph, selected domain worker reports, integrated multi-domain report, audit report, device plan refs, final handoff report]
+      simple_mode:
+        - Show goal, target, desired output, risk tolerance, selected domains, approvals, quality status, and final handoff.
+      expert_mode:
+        - Show active_branches, branch contracts, team refs, policy refs, model routes, context budgets, artifact refs, and audit evidence.
+      token_strategy:
+        - Route with compact intake fields.
+        - Use strong-model decomposition once, then run only selected domain workers.
+        - Pass branch contracts, summaries, structured fields, and artifact refs instead of full transcripts.
+        - Keep unselected branches out of execution, join, audit, and final handoff.
+      model_routes:
+        strong: [task decomposition, selected branch arbitration, cross-domain aggregation, final audit synthesis]
+        worker: [selected domain worker execution, bounded domain analysis]
+        verifier: [quality gate review]
     metadata:
       preset: multi-domain-agent
       recommended_team: framework-extension-team
@@ -38,7 +71,7 @@ presets:
     skills: [execution-plan, code-writing, code-audit]
     tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file]
     workflows: [plan-fix-audit]
-    workflow_templates: [plan-fix-audit, software-quality-gate, software-team-review-gate, parallel-research-review]
+    workflow_templates: [engineering-parallel-delivery, plan-fix-audit, software-quality-gate, software-team-review-gate, parallel-research-review]
     team_templates: [software-task-team]
     policy_rules: [expression, team_approval_gate]
     recommended_workflow: plan-fix-audit
@@ -49,6 +82,41 @@ presets:
         request: Optimize this project and add focused tests.
         workflow: plan-fix-audit
         agent: software-engineer
+    vertical_pack:
+      domain: software-engineering
+      maturity: production-ready
+      summary: Plans, decomposes, implements, verifies, audits, and reports scoped software changes with workspace-scoped file tools, token-bounded context, approval-aware writes, artifact-first evidence, and quality-gated handoff.
+      supported_tasks: [scoped implementation, bug fixing, refactoring, test and verification planning, parallel bounded worker delivery, code review handoff]
+      required_inputs: [user requirement, target files or project area, acceptance criteria, verification command preference, risk tolerance for writes, confirmed workspace boundary]
+      tool_boundaries:
+        - Read tools are used for discovery before edits.
+        - Write tools require fix-stage scope and approval policy.
+        - Exec verification should stay focused and report exact commands.
+        - File tools stay inside the confirmed workspace and reject outside-workspace paths.
+      safety_gates:
+        - Request approval before broad rewrites or risky writes.
+        - Keep changes inside the confirmed workspace.
+        - Preserve verification failures and unresolved risks for review.
+        - Use worker ownership boundaries before parallel writes.
+      quality_gates:
+        - Requires implementation summary.
+        - Requires verification evidence or a stated blocker.
+        - Requires audit findings or clean review rationale.
+        - Requires artifact refs or compact evidence for worker outputs.
+      evidence_artifacts: [implementation plan, changed file summary, verification output, audit report, worker artifact refs, final handoff]
+      simple_mode:
+        - Show task, target area, approval prompts, verification result, and final handoff.
+      expert_mode:
+        - Show workflow graph, stage models, allowed tools, context budgets, artifact refs, and retry state.
+      token_strategy:
+        - Use file summaries and hashes before full file reads.
+        - Pass compact stage outputs and artifact refs between stages.
+        - Use parallel worker slices only when ownership is bounded.
+        - Use artifact refs, changed-file summaries, and verification summaries instead of copying worker transcripts.
+      model_routes:
+        strong: [task decomposition, architecture tradeoff review, conflict resolution, final audit synthesis]
+        worker: [bounded code edits, focused tests, local refactors]
+        verifier: [regression review, quality gate evaluation]
     metadata:
       preset: software-engineering
       recommended_team: software-task-team
@@ -63,9 +131,9 @@ presets:
     providers: [primary]
     agents: [chat, planner, fixer, auditor, framework-extension-architect, software-engineer]
     skills: [execution-plan, code-writing, code-audit]
-    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, network_tools/device_discovery_plan, network_tools/device_command_plan, network_tools/device_config_dry_run]
     workflows: [skill-chain]
-    workflow_templates: [agent-framework-extension, multi-domain-intake-router, task-decomposition-plan, software-quality-gate]
+    workflow_templates: [agent-framework-extension, multi-domain-intake-router, engineering-parallel-delivery, task-decomposition-plan, software-quality-gate]
     team_templates: [framework-extension-team, software-task-team]
     policy_rules: [ref_truthy, team_approval_gate, expression]
     recommended_workflow: agent-framework-extension
@@ -76,6 +144,41 @@ presets:
         request: Create a vertical Agent kit for an internal release-review assistant.
         workflow: agent-framework-extension
         agent: framework-extension-architect
+    vertical_pack:
+      domain: agent-framework
+      maturity: production-ready
+      summary: Designs, validates, and materializes linked Agent, Skill, Tool, Workflow, Team, Policy, and Kit resources for vertical second development with runtime-home boundaries, activation steps, rollback notes, and evidence-backed validation.
+      supported_tasks: [vertical kit design, resource materialization, workflow and team extension, policy and tool boundary design, scaffold preset and materialized resource generation]
+      required_inputs: [target domain, user tasks, required tools, safety constraints, output and acceptance format, runtime home and activation requirements]
+      tool_boundaries:
+        - Generate resources in runtime home, not arbitrary workspace paths.
+        - Keep generated tools narrow and approval-aware.
+        - Prefer existing scaffold templates before custom code.
+        - Preserve resource graph links across Agent, Skill, Tool, Workflow, Team, Policy, and Kit files.
+      safety_gates:
+        - Require scope checkpoint before materialization.
+        - Review linked resource design before writing files.
+        - Preserve activation and rollback steps.
+        - Keep generated MCP tools behind explicit config, isolation, and approval notes.
+      quality_gates:
+        - Requires complete resource graph.
+        - Requires Simple mode and Expert mode behavior.
+        - Requires validation and reload instructions.
+        - Requires release/deployment validation evidence for generated-resource paths.
+      evidence_artifacts: [resource design, generated path list, validation report, activation steps, rollback notes]
+      simple_mode:
+        - Ask for domain, users, tasks, tools, and desired output.
+        - Show generated resources and next activation steps.
+      expert_mode:
+        - Show raw manifests, model routes, context budgets, policy rules, tool isolation, and scaffold overrides.
+      token_strategy:
+        - Reuse scaffold contracts instead of regenerating long boilerplate.
+        - Pass resource summaries and refs between design, review, and materialization stages.
+        - Keep generated file lists and validation evidence as compact artifacts.
+      model_routes:
+        strong: [domain decomposition, resource architecture, safety review]
+        worker: [bounded manifest generation, template updates]
+        verifier: [linked resource validation, final consistency audit]
     metadata:
       preset: agent-framework
       recommended_team: framework-extension-team
@@ -90,7 +193,7 @@ presets:
     providers: [primary]
     agents: [planner, auditor, web-security-researcher, security-researcher]
     skills: [execution-plan, web-vulnerability-research, vulnerability-research, code-audit]
-    tools: [web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, file_tools/read_file]
+    tools: [web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points, file_tools/read_file, file_tools/search_files]
     workflows: [skill-chain]
     workflow_templates: [web-research-risk, security-audit-evidence-gate, human-input-security-review]
     team_templates: [web-research-team, audit-security-team]
@@ -104,6 +207,39 @@ presets:
         request: Review https://example.com for client-side security risks within authorized scope.
         workflow: web-research-risk
         agent: web-security-researcher
+    vertical_pack:
+      domain: web-security
+      maturity: production-ready
+      summary: Collects authorized source and browser-rendered web evidence, classifies client-side risk, and reports defensive findings with approval gates.
+      supported_tasks: [authorized web target intake, page and asset collection, browser DOM and form evidence collection, browser probe surface enumeration and approved GET canary validation, client-side XSS and security signal review, evidence-backed remediation report]
+      required_inputs: [target URL, authorized scope confirmation, allowed hosts, desired evidence depth, active verification approval status]
+      tool_boundaries:
+        - web_tools/browser_snapshot requires authorized_scope=true and allowed_hosts.
+        - web_tools/browser_probe_points requires authorized_scope=true and allowed_hosts, and only runs active GET canary probes when active_probe_approved=true.
+        - Browser automation returns compact DOM, form, link, script, signal, screenshot hash, and path summaries instead of full raw evidence by default.
+        - Active XSS or SQLi-style probing must be approval-gated, non-destructive, rate-limited, and scoped.
+      safety_gates:
+        - Reject browser collection without explicit authorized scope.
+        - Require host allowlist before browser automation.
+        - Route active probing requests through operator approval and evidence capture.
+      quality_gates:
+        - Requires target scope.
+        - Requires collected source or browser evidence.
+        - Requires confirmed vs hypothetical finding separation.
+        - Requires remediation and residual uncertainty.
+      evidence_artifacts: [target scope, page asset inventory, browser snapshot summary, browser probe-point summary, security signal list, risk report]
+      simple_mode:
+        - Show target URL, allowed hosts, authorization checkbox, evidence status, risk level, and final report.
+      expert_mode:
+        - Show tool allowlists, browser evidence refs, context budgets, approval gates, route conditions, and raw workflow graph.
+      token_strategy:
+        - Keep browser outputs compact with DOM hashes and previews.
+        - Store screenshots as artifact paths and hashes instead of injecting image bytes.
+        - Pass evidence summaries and artifact refs to audit/report stages.
+      model_routes:
+        strong: [scope and risk arbitration, active verification decision, final remediation synthesis]
+        worker: [asset collection, browser snapshot collection, probe surface enumeration, client-side pattern review]
+        verifier: [evidence gate review, finding confidence audit]
     metadata:
       preset: web-security
       recommended_team: web-research-team
@@ -118,7 +254,7 @@ presets:
     providers: [primary]
     agents: [planner, auditor, security-researcher, web-security-researcher, binary-analyst]
     skills: [execution-plan, vulnerability-research, web-vulnerability-research, binary-vulnerability-research, reverse-engineering, code-audit]
-    tools: [file_tools/read_file, file_tools/search_files, web_tools/web_search, web_tools/fetch_url, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview]
+    tools: [file_tools/read_file, file_tools/search_files, web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview]
     workflows: [skill-chain]
     workflow_templates: [web-research-risk, security-audit-evidence-gate, binary-triage, human-input-security-review]
     team_templates: [audit-security-team, web-research-team, binary-triage-team]
@@ -131,6 +267,36 @@ presets:
         request: Create an authorized security review plan and identify evidence requirements.
         workflow: skill-chain
         agent: security-researcher
+    vertical_pack:
+      domain: security-research
+      maturity: guided
+      summary: Plans authorized security reviews, collects evidence across code, web, and binary surfaces, and routes findings through risk and quality gates.
+      supported_tasks: [authorized security review planning, evidence collection, vulnerability classification, remediation planning, cross-domain security handoff]
+      required_inputs: [authorized scope, target type, target files or URL, allowed actions, reporting expectations]
+      tool_boundaries:
+        - Use read-only evidence collection before active verification.
+        - Web browser automation requires allowed hosts and authorized scope; active web canary probes require explicit approval.
+        - Binary analysis remains static unless a separate sandboxed execution tool is added.
+      safety_gates:
+        - Require scope confirmation.
+        - Require approval for active verification or exec-capable tools.
+        - Separate confirmed vulnerabilities from hypotheses.
+      quality_gates:
+        - Requires evidence-backed severity.
+        - Requires exploitability prerequisites.
+        - Requires remediation and follow-up tests.
+      evidence_artifacts: [scope note, evidence inventory, finding list, risk decision, remediation report]
+      simple_mode:
+        - Show scope, target type, allowed actions, evidence status, and risk summary.
+      expert_mode:
+        - Show tool allowlists, approval decisions, evidence refs, severity policy, and route diagnostics.
+      token_strategy:
+        - Route each surface to a bounded specialist workflow.
+        - Pass concise evidence summaries to the final risk report.
+      model_routes:
+        strong: [scope triage, exploitability arbitration, final report synthesis]
+        worker: [code evidence collection, web evidence collection, static binary triage]
+        verifier: [severity and evidence review]
     metadata:
       preset: security-research
       recommended_team: audit-security-team
@@ -158,6 +324,35 @@ presets:
         request: Perform static triage on sample.bin and report likely risk areas without executing it.
         workflow: binary-triage
         agent: binary-analyst
+    vertical_pack:
+      domain: binary-analysis
+      maturity: guided
+      summary: Performs static binary and reverse-engineering triage using metadata, strings, hex previews, and defensive vulnerability reasoning.
+      supported_tasks: [static binary metadata review, printable string triage, suspicious indicator extraction, reverse-analysis note generation, follow-up vulnerability hypothesis report]
+      required_inputs: [binary path, analysis objective, allowed analysis depth, target platform when known]
+      tool_boundaries:
+        - Do not execute untrusted binaries.
+        - Use bounded metadata, strings, and hex previews.
+        - Treat deeper disassembly or debugging as a future specialized tool boundary.
+      safety_gates:
+        - Keep analysis static by default.
+        - Require operator approval before any future execution-capable workflow.
+      quality_gates:
+        - Requires file metadata.
+        - Requires evidence for suspicious indicators.
+        - Requires confidence and next analysis steps.
+      evidence_artifacts: [binary metadata, string indicators, hex evidence, reverse notes, risk report]
+      simple_mode:
+        - Show file path, metadata, suspicious indicators, and next steps.
+      expert_mode:
+        - Show offsets, tool outputs, artifact refs, static-analysis limits, and follow-up tool gaps.
+      token_strategy:
+        - Return bounded strings and hex snippets instead of full binary content.
+        - Keep raw binary data out of prompts.
+      model_routes:
+        strong: [risk interpretation, reverse-analysis synthesis]
+        worker: [metadata extraction, string extraction, hex preview]
+        verifier: [static evidence review]
     metadata:
       preset: binary-analysis
       recommended_team: binary-triage-team
@@ -185,6 +380,35 @@ presets:
         request: Update the setup documentation and verify commands are accurate.
         workflow: docs-review-publish
         agent: documentation-specialist
+    vertical_pack:
+      domain: documentation
+      maturity: guided
+      summary: Plans, edits, reviews, and prepares publish-ready technical documentation with accuracy and verification checks.
+      supported_tasks: [documentation planning, guide updates, command verification notes, publish checklist creation]
+      required_inputs: [target document, audience, desired change, verification expectations]
+      tool_boundaries:
+        - Read existing docs before edits.
+        - Write only scoped documentation files.
+        - Run commands only when verification is needed and approved.
+      safety_gates:
+        - Preserve existing bilingual conventions.
+        - Do not invent commands or behavior without source evidence.
+      quality_gates:
+        - Requires changed document summary.
+        - Requires accuracy review.
+        - Requires publish checklist or residual gaps.
+      evidence_artifacts: [documentation plan, changed file summary, verification notes, publish checklist]
+      simple_mode:
+        - Show document target, audience, status, and publish readiness.
+      expert_mode:
+        - Show raw diffs, validation commands, style constraints, and artifact refs.
+      token_strategy:
+        - Use document summaries before full reads.
+        - Pass section-level summaries into review.
+      model_routes:
+        strong: [structure planning, final accuracy review]
+        worker: [scoped doc edits, checklist drafting]
+        verifier: [command and link review]
     metadata:
       preset: documentation
       recommended_team: documentation-team
@@ -199,10 +423,10 @@ presets:
     providers: [primary]
     agents: [chat, planner, fixer, auditor, operations-specialist, documentation-specialist]
     skills: [execution-plan, code-writing, code-audit]
-    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, network_tools/device_discovery_plan, network_tools/device_command_plan, network_tools/device_config_dry_run]
     workflows: [plan-fix-audit]
     workflow_templates: [operations-runbook, docs-review-publish]
-    team_templates: [operations-runbook-team]
+    team_templates: [operations-runbook-team, documentation-team]
     policy_rules: [expression, team_approval_gate]
     recommended_workflow: operations-runbook
     recommended_agent: operations-specialist
@@ -212,6 +436,38 @@ presets:
         request: Create an operations runbook for this deployment with rollback guidance.
         workflow: operations-runbook
         agent: operations-specialist
+    vertical_pack:
+      domain: operations-runbook
+      maturity: production-ready
+      summary: Builds operator-safe runbooks and network-device change plans with prerequisites, prechecks, read-only discovery plans, rollback, approval notes, and verification evidence.
+      supported_tasks: [deployment runbook drafting, incident checklist drafting, rollback planning, operational handoff review, network device read-only discovery planning, network device configuration dry-run planning]
+      required_inputs: [system or service, change objective, precheck signals, rollback condition, approval owner, device IP or hostname for network-device work, allowed_hosts and credential_ref for network-device work]
+      tool_boundaries:
+        - Default workflow drafts and reviews runbooks; it does not execute infrastructure changes.
+        - network_tools validates device scope, host allowlists, command allowlists, credential refs, dry-run status, rollback, approval metadata, and audit notes.
+        - network_tools does not open device connections or apply configuration; real execution requires a future approved connector with the same contracts.
+      safety_gates:
+        - Require approval before execution-capable steps.
+        - Require rollback and verification before final handoff.
+        - Require authorized_scope=true and allowed_hosts before any network-device plan.
+        - Reject commands outside the operator-provided allowlist.
+      quality_gates:
+        - Requires prechecks.
+        - Requires execution steps.
+        - Requires rollback and success signals.
+        - Requires device evidence contract or a stated blocker for network-device work.
+      evidence_artifacts: [runbook draft, risk review, approval notes, rollback plan, network-device discovery plan, network-device dry-run plan, final handoff]
+      simple_mode:
+        - Show service or device, change goal, authorized scope, allowed hosts, prechecks, approval status, rollback, and final runbook.
+      expert_mode:
+        - Show raw workflow graph, policy gates, network_tools allowlists, credential refs, future connector boundaries, and artifact refs.
+      token_strategy:
+        - Keep device or environment evidence as summaries and refs.
+        - Pass only precheck, rollback, device-plan, and status contracts between stages.
+      model_routes:
+        strong: [risk planning, rollback review, final handoff synthesis]
+        worker: [runbook drafting, checklist generation]
+        verifier: [safety and completeness review]
     metadata:
       preset: operations-runbook
       recommended_team: operations-runbook-team
@@ -239,6 +495,34 @@ presets:
         request: Triage this customer issue and draft a clear support response.
         workflow: customer-support-triage
         agent: support-specialist
+    vertical_pack:
+      domain: customer-support
+      maturity: guided
+      summary: Triage support requests, separate facts from assumptions, draft customer-ready responses, and flag escalation or privacy risk.
+      supported_tasks: [issue triage, response drafting, escalation recommendation, knowledge lookup summary]
+      required_inputs: [customer issue, known facts, product or service context, response tone, escalation policy]
+      tool_boundaries:
+        - Use read and search tools for factual context.
+        - Do not expose secrets or unsupported promises in customer-ready output.
+      safety_gates:
+        - Flag privacy, legal, billing, or security escalation.
+        - Separate customer-facing response from internal notes.
+      quality_gates:
+        - Requires issue summary.
+        - Requires missing information list.
+        - Requires escalation decision.
+      evidence_artifacts: [triage summary, customer response draft, internal notes, escalation decision]
+      simple_mode:
+        - Show issue, priority, missing information, response draft, and escalation status.
+      expert_mode:
+        - Show policy assumptions, evidence refs, response variants, and routing diagnostics.
+      token_strategy:
+        - Keep customer context concise and redact irrelevant history.
+        - Pass facts and policy summary instead of full conversation transcripts.
+      model_routes:
+        strong: [escalation arbitration, final response review]
+        worker: [fact extraction, draft response]
+        verifier: [policy and privacy review]
     metadata:
       preset: customer-support
       recommended_team: customer-support-team

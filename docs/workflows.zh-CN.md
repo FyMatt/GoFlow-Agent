@@ -876,7 +876,7 @@ stages:
 
 ## 内置多领域模板
 
-`multi-domain-intake-router` 是推荐的新手入口模板。它会先收集结构化需求，然后根据领域路由到对应的 Team Template，并把团队输出传给综合、质量门禁和最终交接节点。当前覆盖：
+`multi-domain-intake-router` 是推荐的新手入口模板。它会先收集结构化需求，再由强模型规划节点把请求拆成有边界的领域切片，只激活被选中的领域 worker 并行执行，然后动态 join 这些分支，把 compact report 和 artifact 引用交给综合、审计、质量门禁和最终交接节点。当前可选分支覆盖：
 
 - 软件研发：`software-task-team`
 - Web 安全：`web-research-team`
@@ -886,10 +886,13 @@ stages:
 - 运维：`operations-runbook-team`
 - 客服：`customer-support-team`
 - 框架二开：`framework-extension-team`
+- 通用兜底：`general-worker`
 
-这个模板适合用来展示 Agent、Skill、Tool、Team、Workflow Template、Policy Rule 和 Kit 如何在同一条工作流里联动。用户可以从它开始 fork，再替换其中的领域团队、技能、工具或门禁规则。
+普通模式主要展示需求录入、选中的领域、质量状态和最终交接；专家模式会展开 `active_branches_ref`、`wait_for_ref`、branch contracts、模型路由、上下文预算、artifact refs 和 `team_template_ref`。这样它不是固定跑所有领域，而是用强模型做拆解和质量控制，用低成本 worker 做边界执行，避免为了工程化而浪费 token。用户可以从它开始 fork，再替换其中的领域 worker、团队模板引用、技能、工具或门禁规则。
 
-`complex-project-delivery` 是复杂实现任务的推荐模板。它会把用户输入先转换为需求分析、功能需求、验收标准和项目计划，并通过检查点等待用户确认。确认后进入可持久运行的交付循环：每轮选择一个计划切片实现、验证、审查并更新计划，直到迭代输出声明 `PROJECT_COMPLETE`。循环结束后会执行整体验证，并输出包含已交付需求、变更文件、验证证据、剩余风险和产物引用的最终完成报告。边界清晰但仍需要完整交付闭环的任务，可以优先使用 `plan-implement-audit`。
+`complex-project-delivery` 是复杂实现任务的推荐模板。它会把用户输入先转换为需求分析、功能需求、验收标准和项目计划，并通过检查点等待用户确认。确认后进入可持久运行的交付循环：每轮选择一个计划切片实现、验证、审查并更新计划，直到迭代输出声明 `PROJECT_COMPLETE`。循环结束后会执行整体验证，并输出包含已交付需求、变更文件、验证证据、剩余风险和产物引用的最终完成报告。需要工程化拆分、并行执行、最终汇总的复杂任务，可以使用 `engineering-parallel-delivery`：强模型节点负责任务拆解、汇总和审计，轻量模型节点执行小切片，并用 `model.max_tokens`、`context.max_tokens`、`context.prompt_max_tokens`、`context.request_max_tokens`、`context.inputs_max_tokens`、`context.parameters_max_tokens` 和摘要/产物引用控制 token。边界清晰但仍需要完整交付闭环的任务，可以优先使用 `plan-implement-audit`。
+
+复杂工程任务建议采用“质量优先的省 token”模式：强模型先拆成有归属边界的小任务，worker 阶段使用 `worker_contract: engineering_v1` 产出稳定 JSON 字段（`summary`、`changed_files`、`evidence`、`verification`、`blockers`、`next_actions`），并把完整报告保存为 artifact；汇总和审计阶段只消费摘要、变更文件、验证结果、阻塞项和 artifact 引用。这样普通用户在普通模式里主要选择模板、资源和预设，二开开发者在专家模式里再调整模型路由、上下文引用、prompt 预算、输出映射、验收条件和运行诊断。
 
 工作流模板列表会返回可视化选择器需要的构成信息：`node_types`、`agents`、`skills`、`tools`、`team_templates`、`policy_rules`、`has_control_flow`、`has_data_flow`、`has_approval` 和 `has_quality_gate`。Studio 会把这些字段展示成“节点构成、引用资源、能力标签”，让用户在应用模板前就知道它会创建什么、依赖哪些资源、是否包含分支、数据传递、审批或质量门禁。
 

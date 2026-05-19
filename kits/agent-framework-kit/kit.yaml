@@ -11,6 +11,7 @@ tags:
     - kit
     - second-development
 agents:
+    - chat
     - framework-extension-architect
     - software-engineer
     - planner
@@ -26,10 +27,15 @@ tools:
     - file_tools/read_file
     - file_tools/search_files
     - file_tools/write_file
+    - network_tools/device_discovery_plan
+    - network_tools/device_command_plan
+    - network_tools/device_config_dry_run
 workflows:
     - skill-chain
 workflow_templates:
     - agent-framework-extension
+    - multi-domain-intake-router
+    - engineering-parallel-delivery
     - task-decomposition-plan
     - software-quality-gate
 team_templates:
@@ -45,6 +51,64 @@ examples:
       request: Create a vertical Agent kit for an internal release-review assistant.
       workflow: agent-framework-extension
       agent: framework-extension-architect
+vertical_pack:
+    domain: agent-framework
+    maturity: production-ready
+    summary: Designs, validates, and materializes linked Agent, Skill, Tool, Workflow, Team, Policy, and Kit resources for vertical second development with runtime-home boundaries, activation steps, rollback notes, and evidence-backed validation.
+    supported_tasks:
+        - vertical kit design
+        - resource materialization
+        - workflow and team extension
+        - policy and tool boundary design
+        - scaffold preset and materialized resource generation
+    required_inputs:
+        - target domain
+        - user tasks
+        - required tools
+        - safety constraints
+        - output and acceptance format
+        - runtime home and activation requirements
+    tool_boundaries:
+        - Generate resources in runtime home, not arbitrary workspace paths.
+        - Keep generated tools narrow and approval-aware.
+        - Prefer existing scaffold templates before custom code.
+        - Preserve resource graph links across Agent, Skill, Tool, Workflow, Team, Policy, and Kit files.
+    safety_gates:
+        - Require scope checkpoint before materialization.
+        - Review linked resource design before writing files.
+        - Preserve activation and rollback steps.
+        - Keep generated MCP tools behind explicit config, isolation, and approval notes.
+    quality_gates:
+        - Requires complete resource graph.
+        - Requires Simple mode and Expert mode behavior.
+        - Requires validation and reload instructions.
+        - Requires release/deployment validation evidence for generated-resource paths.
+    evidence_artifacts:
+        - resource design
+        - generated path list
+        - validation report
+        - activation steps
+        - rollback notes
+    simple_mode:
+        - Ask for domain, users, tasks, tools, and desired output.
+        - Show generated resources and next activation steps.
+    expert_mode:
+        - Show raw manifests, model routes, context budgets, policy rules, tool isolation, and scaffold overrides.
+    token_strategy:
+        - Reuse scaffold contracts instead of regenerating long boilerplate.
+        - Pass resource summaries and refs between design, review, and materialization stages.
+        - Keep generated file lists and validation evidence as compact artifacts.
+    model_routes:
+        strong:
+            - domain decomposition
+            - resource architecture
+            - safety review
+        worker:
+            - bounded manifest generation
+            - template updates
+        verifier:
+            - linked resource validation
+            - final consistency audit
 metadata:
     preset: agent-framework
     recommended_agent: framework-extension-architect

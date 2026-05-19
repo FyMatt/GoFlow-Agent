@@ -96,6 +96,7 @@ export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
 发布包启动脚本默认启动 HTTP/Web Studio。看到 ready 信息后打开 `http://127.0.0.1:8080/console`。如果想进入交互式 CLI，直接运行 `./bin/goflow`。
 
 压缩包内的启动脚本会使用 `configs/goflow.binary.yaml`，并把内置 Go MCP 工具指向 `bin/` 下的可执行文件。
+其中也包括 `GOFLOW_NETWORK_TOOLS_CMD`，用于让内置网络设备规划工具解析到压缩包里的 `bin/network_tools` 或 `bin/network_tools.exe`。
 
 ## 源码运行
 

@@ -38,11 +38,7 @@ export async function renderStatus(root, runtime) {
     </section>
 
     <div id="statusMetricGrid" class="metric-grid">
-      ${metric(t("status.metric.pending"), String(pending), pending ? t("status.metric.pendingHelp") : t("status.metric.clearHelp"), pending ? "warn" : "good")}
-      ${metric(t("status.metric.workflow"), escapeHTML(localizedText(workflow.name || t("common.none"))), workflowStatusMetricDetail(workflow), workflow.status ? "neutral" : "warn")}
-      ${metric(t("status.metric.tools"), numberText(mcpPressure.active + mcpPressure.queued), mcpPressure.metricHelp, mcpPressure.tone)}
-      ${metric(t("status.metric.agent"), escapeHTML(localizedText(runtime.active_agent || "-")), `${t("status.metric.mode")} ${escapeHTML(modeLabel(runtime.mode))}`, "neutral")}
-      ${metric(t("status.metric.logs"), String(statusLines.length), t("status.metric.logsHelp"), statusLines.length ? "good" : "warn")}
+      ${renderStatusMetrics(runtime, workflow, pending, statusLines, mcpPressure, cost)}
     </div>
 
     <div class="grid status-grid">
@@ -237,12 +233,7 @@ function updateStatusRuntime(root, runtime) {
     heroBadge.textContent = pending ? t("status.badgeAttention") : t("status.badgeHealthy");
   }
 
-  setHTMLIfChanged(root.querySelector("#statusMetricGrid"), `
-      ${metric(t("status.metric.pending"), String(pending), pending ? t("status.metric.pendingHelp") : t("status.metric.clearHelp"), pending ? "warn" : "good")}
-      ${metric(t("status.metric.workflow"), escapeHTML(localizedText(workflow.name || t("common.none"))), workflowStatusMetricDetail(workflow), workflow.status ? "neutral" : "warn")}
-      ${metric(t("status.metric.tools"), numberText(mcpPressure.active + mcpPressure.queued), mcpPressure.metricHelp, mcpPressure.tone)}
-      ${metric(t("status.metric.agent"), escapeHTML(localizedText(runtime.active_agent || "-")), `${t("status.metric.mode")} ${escapeHTML(modeLabel(runtime.mode))}`, "neutral")}
-      ${metric(t("status.metric.logs"), String(statusLines.length), t("status.metric.logsHelp"), statusLines.length ? "good" : "warn")}`);
+  setHTMLIfChanged(root.querySelector("#statusMetricGrid"), renderStatusMetrics(runtime, workflow, pending, statusLines, mcpPressure, cost));
   setHTMLIfChanged(root.querySelector("#statusHealthCard"), healthItems.map(renderHealthItem).join(""));
   const runFocusBadge = root.querySelector("#statusRunFocusBadge");
   if (runFocusBadge) {
@@ -1525,15 +1516,19 @@ function renderToolSchemaDiagnostics(cost = {}) {
   const latest = cost.latest && typeof cost.latest === "object" ? cost.latest : {};
   const injected = Array.isArray(latest.injected_tool_schemas) ? latest.injected_tool_schemas : [];
   const filtered = Array.isArray(latest.filtered_tool_schemas) ? latest.filtered_tool_schemas : [];
-  const hasData = injected.length || filtered.length || latest.exposed_tool_count || latest.filtered_tool_count || latest.tool_schema_tokens;
+  const savedTokens = latest.tool_schema_estimated_saved_tokens || cost.tool_schema_estimated_saved_tokens || 0;
+  const hasData = injected.length || filtered.length || latest.exposed_tool_count || latest.filtered_tool_count || latest.tool_schema_tokens || savedTokens;
   if (!hasData) return "";
   const stats = [
     [t("status.cost.injectedTools"), numberText(latest.exposed_tool_count || injected.length)],
     [t("status.cost.filteredTools"), numberText(latest.filtered_tool_count || filtered.length)],
     [t("status.cost.toolSchemaTokens"), numberText(latest.tool_schema_tokens)],
+    [t("status.cost.toolSchemaSavedTokens"), numberText(savedTokens)]
+  ].filter(([, value]) => value && value !== "0");
+  const expertStats = [
     [t("status.cost.toolSelection"), statusDisplayValue(latest.tool_schema_selection || "")]
   ].filter(([, value]) => value && value !== "0");
-  return `<section class="status-tool-schema-diagnostics">
+  return `<section class="status-tool-schema-diagnostics status-tool-schema-developer">
     <div class="status-cost-section-head">
       <div>
         <strong>${escapeHTML(t("status.cost.toolSchemaTitle"))}</strong>
@@ -1541,7 +1536,7 @@ function renderToolSchemaDiagnostics(cost = {}) {
       </div>
       <small>${escapeHTML(t("status.cost.toolSchemaOmittedCount", { count: latest.tool_schema_diagnostic_omitted || cost.tool_schema_diagnostic_omitted || 0 }))}</small>
     </div>
-    ${stats.length ? `<div class="status-context-stats">${stats.map(([label, value]) => costTuningFactHTML(label, value)).join("")}</div>` : ""}
+    ${stats.length || expertStats.length ? `<div class="status-context-stats">${[...stats, ...expertStats].map(([label, value]) => costTuningFactHTML(label, value)).join("")}</div>` : ""}
     <div class="status-context-columns">
       <section>
         <strong>${escapeHTML(t("status.cost.injectedToolSchemas"))}</strong>
@@ -1749,6 +1744,47 @@ function signedNumberText(value) {
   const number = Number(value || 0);
   if (!Number.isFinite(number)) return "0";
   return `${number > 0 ? "+" : ""}${number.toLocaleString()}`;
+}
+
+function renderStatusMetrics(runtime = {}, workflow = {}, pending = 0, statusLines = [], mcpPressure = {}, cost = {}) {
+  const saved = statusCostSavingsSummary(cost);
+  const items = [
+    metric(t("status.metric.pending"), String(pending), pending ? t("status.metric.pendingHelp") : t("status.metric.clearHelp"), pending ? "warn" : "good"),
+    metric(t("status.metric.workflow"), escapeHTML(localizedText(workflow.name || t("common.none"))), workflowStatusMetricDetail(workflow), workflow.status ? "neutral" : "warn"),
+    metric(t("status.metric.tools"), numberText((mcpPressure.active || 0) + (mcpPressure.queued || 0)), mcpPressure.metricHelp || "", mcpPressure.tone || "neutral")
+  ];
+  if (saved.available) {
+    items.push(metric(
+      t("status.metric.tokenSavings"),
+      numberText(saved.total),
+      t("status.metric.tokenSavingsHelp", {
+        tools: numberText(saved.toolSchema),
+        context: numberText(saved.context)
+      }),
+      saved.total > 0 ? "good" : "neutral"
+    ));
+  }
+  items.push(
+    metric(t("status.metric.agent"), escapeHTML(localizedText(runtime.active_agent || "-")), `${t("status.metric.mode")} ${escapeHTML(modeLabel(runtime.mode))}`, "neutral"),
+    metric(t("status.metric.logs"), String(statusLines.length), t("status.metric.logsHelp"), statusLines.length ? "good" : "warn")
+  );
+  return items.join("");
+}
+
+function statusCostSavingsSummary(cost = {}) {
+  const latest = cost.latest && typeof cost.latest === "object" ? cost.latest : {};
+  const toolSchema = Number(latest.tool_schema_estimated_saved_tokens || cost.tool_schema_estimated_saved_tokens || 0);
+  const context = Number(latest.memory_estimated_saved_tokens || cost.memory_estimated_saved_tokens || 0)
+    + Number(latest.artifact_omitted_tokens || cost.artifact_omitted_tokens || 0)
+    + Number(latest.skill_omitted_tokens || cost.skill_omitted_tokens || 0)
+    + Number(latest.history_estimated_saved_tokens || cost.history_estimated_saved_tokens || 0);
+  const total = Math.max(0, toolSchema) + Math.max(0, context);
+  return {
+    available: Boolean(total || cost.samples || latest.estimated_prompt_tokens),
+    total,
+    toolSchema: Math.max(0, toolSchema),
+    context: Math.max(0, context)
+  };
 }
 
 function statusDisplayValue(value) {
