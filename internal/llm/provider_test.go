@@ -226,6 +226,37 @@ func TestClientStreamChatFallsBackToNonStreamWhenToolArgumentsAreIncomplete(t *t
 	}
 }
 
+func TestNormalizeOpenAIStopReasonMapsOutputLimit(t *testing.T) {
+	tests := map[string]string{
+		"stop":          schema.StopReasonStop,
+		"tool_calls":    schema.StopReasonToolCalls,
+		"function_call": schema.StopReasonToolCalls,
+		"length":        schema.StopReasonMaxTokens,
+		"max_tokens":    schema.StopReasonMaxTokens,
+		"cancelled":     schema.StopReasonCancelled,
+	}
+	for input, want := range tests {
+		if got := normalizeOpenAIStopReason(input); got != want {
+			t.Fatalf("normalizeOpenAIStopReason(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
+func TestNormalizeAnthropicStopReasonMapsOutputLimit(t *testing.T) {
+	tests := map[string]string{
+		"end_turn":      schema.StopReasonStop,
+		"stop_sequence": schema.StopReasonStop,
+		"tool_use":      schema.StopReasonToolCalls,
+		"max_tokens":    schema.StopReasonMaxTokens,
+		"cancelled":     schema.StopReasonCancelled,
+	}
+	for input, want := range tests {
+		if got := normalizeAnthropicStopReason(input); got != want {
+			t.Fatalf("normalizeAnthropicStopReason(%q) = %q, want %q", input, got, want)
+		}
+	}
+}
+
 func TestStreamAssemblerEmitsToolCallAnnouncementOnlyOnce(t *testing.T) {
 	assembler := newStreamAssembler(nil)
 	chunks := []string{

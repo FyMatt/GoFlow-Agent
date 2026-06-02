@@ -138,6 +138,726 @@ stages:
 	}
 }
 
+func TestWorkflowRunnerBlocksRequiredAcceptanceFailure(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "contract-block-flow", `
+name: contract-block-flow
+description: Required acceptance failures block downstream stages.
+stages:
+  - name: draft
+    agent: planner
+    skill: execution-plan
+    params:
+      contract_required: "true"
+    next: [report]
+    acceptance_criteria:
+      - name: mentions-ready
+        ref: result.output
+        contains: ready
+  - name: report
+    agent: auditor
+    skill: code-audit
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "draft missing required evidence"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "should not run"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "contract-block-flow", "draft release", true, nil)
+	if err != nil {
+		t.Fatalf("Run contract-block-flow: %v", err)
+	}
+	if result.Status != "blocked" || result.NextStage != "draft" || len(result.CompletedStages) != 1 {
+		t.Fatalf("expected required contract failure to block at draft, got %#v", result)
+	}
+	stage := result.CompletedStages[0]
+	if stage.Status != "blocked" || stage.Metadata["contract_failed"] != "true" || stage.Metadata["contract_check"] != "acceptance_criteria" {
+		t.Fatalf("expected blocked contract metadata, got %#v", stage)
+	}
+	if stage.Metadata["source_ref"] != "result.output" || !strings.Contains(stage.Metadata["reason"], "mentions-ready") {
+		t.Fatalf("expected contract source and reason metadata, got %#v", stage.Metadata)
+	}
+	if auditorLLM.calls != 0 {
+		t.Fatalf("downstream auditor should not run after required contract failure, calls=%d", auditorLLM.calls)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	if run.Status != "blocked" || len(run.CompletedStages) != 1 || run.CompletedStages[0].Metadata["contract_failed"] != "true" {
+		t.Fatalf("expected persisted blocked contract run, got %#v", run)
+	}
+	foundEvent := false
+	for _, event := range run.Events {
+		if event.Reason == "contract_validation_failed" && event.ContractCheck == "acceptance_criteria" && event.SourceRef == "result.output" && event.NeedsAction {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("expected contract_validation_failed event, got %#v", run.Events)
+	}
+}
+
+func TestWorkflowRunnerBlocksRequiredJSONOutputContractFailure(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "json-contract-block-flow", `
+name: json-contract-block-flow
+description: Required JSON output contract failures block downstream stages.
+stages:
+  - name: implement
+    agent: fixer
+    skill: code-writing
+    params:
+      contract_required: "true"
+      require_json_output: "true"
+      output_contract: Return compact JSON with summary, changed_files, blockers.
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`)
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plain text is not json"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "should not run"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "json-contract-block-flow", "implement as json", true, nil)
+	if err != nil {
+		t.Fatalf("Run json-contract-block-flow: %v", err)
+	}
+	if result.Status != "blocked" || result.NextStage != "implement" || len(result.CompletedStages) != 1 {
+		t.Fatalf("expected JSON contract failure to block at implement, got %#v", result)
+	}
+	stage := result.CompletedStages[0]
+	if stage.Status != "blocked" || stage.Metadata["contract_failed"] != "true" || !strings.Contains(stage.Metadata["contract_check"], "json_output") {
+		t.Fatalf("expected blocked JSON contract metadata, got %#v", stage)
+	}
+	if stage.Metadata["source_ref"] != "result.output" || !strings.Contains(stage.Metadata["reason"], "JSON object") {
+		t.Fatalf("expected JSON contract source and reason metadata, got %#v", stage.Metadata)
+	}
+	if auditorLLM.calls != 0 {
+		t.Fatalf("downstream auditor should not run after JSON contract failure, calls=%d", auditorLLM.calls)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	foundEvent := false
+	for _, event := range run.Events {
+		if event.Reason == "contract_validation_failed" && strings.Contains(event.ContractCheck, "json_output") && event.SourceRef == "result.output" && event.NeedsAction {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("expected JSON contract_validation_failed event, got %#v", run.Events)
+	}
+}
+
+func TestWorkflowRunnerBlocksLiveExecutionWithoutReadiness(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "live-readiness-flow", `
+name: live-readiness-flow
+description: Live execution must prove readiness before running.
+stages:
+  - name: apply-change
+    agent: fixer
+    skill: code-writing
+    tool: write_file
+    execution:
+      mode: live
+      risk_level: high
+      boundary: production
+      allow_live_tools: [read_file]
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`)
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "should not run"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   fixerLLM,
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "live-readiness-flow", "apply live change", true, nil)
+	if err != nil {
+		t.Fatalf("Run live-readiness-flow: %v", err)
+	}
+	if result.Status != "blocked" || result.NextStage != "apply-change" || len(result.CompletedStages) != 1 {
+		t.Fatalf("expected live readiness block at apply-change, got %#v", result)
+	}
+	if fixerLLM.calls != 0 {
+		t.Fatalf("live stage should not call the model before readiness is satisfied, calls=%d", fixerLLM.calls)
+	}
+	stage := result.CompletedStages[0]
+	if stage.Status != "blocked" || stage.Metadata["contract_check"] != "execution_readiness" || stage.Metadata["execution.mode"] != "live" || stage.Metadata["execution.ready"] != "false" {
+		t.Fatalf("expected execution readiness metadata, got %#v", stage.Metadata)
+	}
+	missing := stage.Metadata["execution.missing"]
+	for _, want := range []string{"approval", "authorized_scope", "rollback", "credential_ref", "allowlist", "allow_live_tools:write_file"} {
+		if !strings.Contains(missing, want) {
+			t.Fatalf("expected missing readiness %q in %q", want, missing)
+		}
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	if run.Status != "blocked" || len(run.CompletedStages) != 1 || run.CompletedStages[0].Metadata["execution.ready"] != "false" {
+		t.Fatalf("expected persisted readiness block, got %#v", run.CompletedStages)
+	}
+	foundEvent := false
+	for _, event := range run.Events {
+		if event.Reason == "execution_readiness_blocked" && event.ContractCheck == "execution_readiness" && event.NeedsAction {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("expected execution_readiness_blocked event, got %#v", run.Events)
+	}
+}
+
+func TestWorkflowRunnerAllowsDryRunExecutionContract(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "dry-run-readiness-flow", `
+name: dry-run-readiness-flow
+description: Dry-run stages expose execution metadata without live blocking.
+stages:
+  - name: simulate-change
+    agent: fixer
+    skill: code-writing
+    execution:
+      mode: dry_run
+      risk_level: medium
+      boundary: lab
+`)
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "dry run complete"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   fixerLLM,
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "dry-run-readiness-flow", "simulate change", true, nil)
+	if err != nil {
+		t.Fatalf("Run dry-run-readiness-flow: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 1 {
+		t.Fatalf("expected dry-run workflow to complete, got %#v", result)
+	}
+	if fixerLLM.calls != 1 {
+		t.Fatalf("expected dry-run stage to call model once, calls=%d", fixerLLM.calls)
+	}
+	stage := result.CompletedStages[0]
+	if stage.Metadata["execution.mode"] != "dry_run" || stage.Metadata["execution.ready"] != "true" || stage.Metadata["execution.risk_level"] != "medium" || stage.Metadata["execution.boundary"] != "lab" {
+		t.Fatalf("expected dry-run execution metadata, got %#v", stage.Metadata)
+	}
+}
+
+func TestWorkflowRunnerRejectsInvalidExecutionContract(t *testing.T) {
+	tests := []struct {
+		name      string
+		execution string
+		wantError string
+	}{
+		{
+			name: "bad-mode",
+			execution: `
+    execution:
+      mode: immediate
+`,
+			wantError: "execution.mode",
+		},
+		{
+			name: "bad-risk",
+			execution: `
+    execution:
+      mode: dry_run
+      risk_level: severe
+`,
+			wantError: "execution.risk_level",
+		},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			runtimeHome := t.TempDir()
+			writeWorkflowGraph(t, runtimeHome, tt.name, `
+name: `+tt.name+`
+stages:
+  - name: plan
+    agent: planner
+    skill: execution-plan
+`+tt.execution)
+			runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, workflowGraphTestClients())
+
+			_, err := runtimeRef.WorkflowRunner().Run(context.Background(), tt.name, "run it", true, nil)
+			if err == nil {
+				t.Fatal("expected invalid execution contract error")
+			}
+			if !strings.Contains(err.Error(), tt.wantError) {
+				t.Fatalf("expected error containing %q, got %v", tt.wantError, err)
+			}
+		})
+	}
+}
+
+func TestWorkflowRunnerEscalatesModelForRequiredContractFailure(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "contract-escalate-flow", `
+name: contract-escalate-flow
+description: Required contract failures can rerun with an escalated model.
+stages:
+  - name: implement
+    agent: fixer
+    skill: code-writing
+    params:
+      on_contract_fail: escalate
+      require_json_output: "true"
+      required_json_keys: summary
+      escalate_provider: backup
+      escalate_model: strong-contract-model
+      escalate_max_tokens: "321"
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`)
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plain text is not json"}}}}
+	backupLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: `{"summary":"contract satisfied","evidence":["json"]}`}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit after escalation"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+		"backup":  backupLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "contract-escalate-flow", "implement as json", true, nil)
+	if err != nil {
+		t.Fatalf("Run contract-escalate-flow: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 2 {
+		t.Fatalf("expected escalated workflow to complete, got %#v", result)
+	}
+	if fixerLLM.calls != 1 || backupLLM.calls != 1 || auditorLLM.calls != 1 {
+		t.Fatalf("expected original, escalation, and audit calls, fixer=%d backup=%d auditor=%d", fixerLLM.calls, backupLLM.calls, auditorLLM.calls)
+	}
+	if got := backupLLM.requests[0]; got.Model != "strong-contract-model" || got.MaxTokens != 321 {
+		t.Fatalf("expected escalated model request, got %#v", got)
+	}
+	stage := workflowGraphStageResultByName(t, result.CompletedStages, "implement")
+	if stage.Metadata["model.escalated"] != "true" ||
+		stage.Metadata["model.provider"] != "backup" ||
+		stage.Metadata["model.model"] != "strong-contract-model" ||
+		stage.Metadata["model.max_tokens"] != "321" {
+		t.Fatalf("expected model escalation metadata, got %#v", stage.Metadata)
+	}
+	if summary, ok := stage.Output.Values["summary"]; !ok || summary != "contract satisfied" {
+		t.Fatalf("expected escalated JSON output values, got %#v", stage.Output.Values)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	var contractEvent, escalationEvent, retryEvent bool
+	for _, event := range run.Events {
+		switch event.Reason {
+		case "contract_validation_failed":
+			if event.Stage == "implement" && strings.Contains(event.ContractCheck, "json_output") {
+				contractEvent = true
+			}
+		case "model_escalated":
+			if event.Stage == "implement" && strings.Contains(event.SourceRef, "escalate_") {
+				escalationEvent = true
+			}
+		case "stage_retry":
+			if event.Stage == "implement" {
+				retryEvent = true
+			}
+		}
+	}
+	if !contractEvent || !escalationEvent || !retryEvent {
+		t.Fatalf("expected contract/model escalation/stage retry events, got %#v", run.Events)
+	}
+}
+
+func TestWorkflowRunnerEscalateModelActionResumesBlockedContractFailure(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "contract-escalate-action-flow", `
+name: contract-escalate-action-flow
+description: Blocked contract failures can be resumed by an operator model escalation action.
+stages:
+  - name: implement
+    agent: fixer
+    skill: code-writing
+    params:
+      contract_required: "true"
+      require_json_output: "true"
+      required_json_keys: summary
+      escalate_provider: backup
+      escalate_model: strong-action-model
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`)
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plain text is not json"}}}}
+	backupLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: `{"summary":"action recovered"}`}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit after action"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan"}}}},
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+		"backup":  backupLLM,
+	})
+
+	first, err := runtimeRef.WorkflowRunner().Run(context.Background(), "contract-escalate-action-flow", "implement as json", true, nil)
+	if err != nil {
+		t.Fatalf("Run contract-escalate-action-flow: %v", err)
+	}
+	if first.Status != "blocked" || first.NextStage != "implement" {
+		t.Fatalf("expected initial contract block, got %#v", first)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, first.RunID)
+	if err := runtimeRef.WorkflowRunner().CanEscalateModel(run); err != nil {
+		t.Fatalf("expected model escalation action to be available: %v", err)
+	}
+	resumed, err := runtimeRef.WorkflowRunner().EscalateModel(context.Background(), first.RunID, nil)
+	if err != nil {
+		t.Fatalf("EscalateModel contract-escalate-action-flow: %v", err)
+	}
+	if resumed.Status != "completed" || resumed.RunID != first.RunID || len(resumed.CompletedStages) != 2 {
+		t.Fatalf("expected same run to complete after model escalation, got %#v", resumed)
+	}
+	if backupLLM.calls != 1 || auditorLLM.calls != 1 {
+		t.Fatalf("expected escalation and downstream calls, backup=%d auditor=%d", backupLLM.calls, auditorLLM.calls)
+	}
+	stage := workflowGraphStageResultByName(t, resumed.CompletedStages, "implement")
+	if stage.Metadata["model.escalated"] != "true" || stage.Metadata["model.model"] != "strong-action-model" {
+		t.Fatalf("expected escalated stage metadata after action, got %#v", stage.Metadata)
+	}
+}
+
+func TestWorkflowRunnerBlocksRequiredMappedOutputAndSectionContractFailure(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "mapped-section-contract-flow", `
+name: mapped-section-contract-flow
+description: Required mapped output and section contracts block when missing.
+stages:
+  - name: draft
+    agent: planner
+    skill: execution-plan
+    params:
+      contract_required: "true"
+      required_sections: Summary, Risks
+    outputs:
+      required_blob: result.missing_blob
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "Summary: done"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "should not run"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "mapped-section-contract-flow", "draft with contract", true, nil)
+	if err != nil {
+		t.Fatalf("Run mapped-section-contract-flow: %v", err)
+	}
+	if result.Status != "blocked" || result.NextStage != "draft" || len(result.CompletedStages) != 1 {
+		t.Fatalf("expected mapped output/section contract failure to block at draft, got %#v", result)
+	}
+	stage := result.CompletedStages[0]
+	checks := stage.Metadata["contract_checks"]
+	if stage.Status != "blocked" || !strings.Contains(checks, "mapped_outputs") || !strings.Contains(checks, "required_sections") {
+		t.Fatalf("expected mapped output and required section contract checks, got stage=%#v metadata=%#v", stage, stage.Metadata)
+	}
+	if !strings.Contains(stage.Metadata["source_refs"], "outputs.required_blob") || !strings.Contains(stage.Metadata["source_refs"], "result.output.risks") {
+		t.Fatalf("expected mapped output and required section source refs, got %#v", stage.Metadata)
+	}
+	if auditorLLM.calls != 0 {
+		t.Fatalf("downstream auditor should not run after required contract failure, calls=%d", auditorLLM.calls)
+	}
+}
+
+func TestWorkflowRunnerRoutesRequiredAcceptanceFailure(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "contract-route-flow", `
+name: contract-route-flow
+description: Required acceptance failures can route to remediation.
+stages:
+  - name: draft
+    agent: planner
+    skill: execution-plan
+    params:
+      contract_required: "true"
+    routes:
+      fail: remediate
+    next: [report]
+    acceptance_criteria:
+      - name: mentions-ready
+        ref: result.output
+        contains: ready
+  - name: remediate
+    agent: fixer
+    skill: code-writing
+  - name: report
+    agent: auditor
+    skill: code-audit
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "draft missing required evidence"}}}}
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "remediation complete"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "should not run"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "contract-route-flow", "draft release", true, nil)
+	if err != nil {
+		t.Fatalf("Run contract-route-flow: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 2 {
+		t.Fatalf("expected contract failure route to complete remediation path, got %#v", result)
+	}
+	draft := result.CompletedStages[0]
+	if draft.Stage != "draft" || draft.Status != "blocked" || draft.Metadata["contract_route"] != "remediate" {
+		t.Fatalf("expected blocked draft routed to remediation, got %#v", draft)
+	}
+	if result.CompletedStages[1].Stage != "remediate" || fixerLLM.calls != 1 {
+		t.Fatalf("expected remediation stage execution, stages=%#v fixerCalls=%d", result.CompletedStages, fixerLLM.calls)
+	}
+	if auditorLLM.calls != 0 {
+		t.Fatalf("normal downstream report should not run after contract failure route, calls=%d", auditorLLM.calls)
+	}
+}
+
+func TestWorkflowRunnerFinalReportSurfacesUnresolvedQuality(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "final-quality-handoff-flow", `
+name: final-quality-handoff-flow
+description: Final report must preserve unresolved quality issues.
+stages:
+  - name: audit
+    agent: auditor
+    skill: code-audit
+    next: [final-report]
+    acceptance_criteria:
+      - name: mentions-safe
+        ref: result.output
+        contains: safe
+  - name: final-report
+    agent: planner
+    skill: execution-plan
+`)
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit found unresolved risk"}}}}
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "final delivery summary"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "final-quality-handoff-flow", "ship release", true, nil)
+	if err != nil {
+		t.Fatalf("Run final-quality-handoff-flow: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 2 {
+		t.Fatalf("expected workflow to complete with diagnostic final report, got %#v", result)
+	}
+	audit := workflowGraphStageResultByName(t, result.CompletedStages, "audit")
+	if audit.Status != "completed" || len(audit.Acceptance) != 1 || audit.Acceptance[0].Status != "failed" {
+		t.Fatalf("expected non-blocking failed audit acceptance, got %#v", audit)
+	}
+	final := workflowGraphStageResultByName(t, result.CompletedStages, "final-report")
+	if final.Status != "warning" || final.Metadata["unresolved_quality"] != "true" || final.Metadata["contract_check"] != "final_quality_handoff" {
+		t.Fatalf("expected final report unresolved quality metadata, got %#v", final)
+	}
+	if !strings.Contains(final.Metadata["source_ref"], "audit:result.output") || !strings.Contains(final.Metadata["reason"], "audit") {
+		t.Fatalf("expected final report source diagnostics to reference audit, got %#v", final.Metadata)
+	}
+	foundVerification := false
+	for _, verification := range final.Result.Verification {
+		if verification.Kind == "final_quality_handoff" && verification.Status == "failed" && strings.Contains(verification.Detail, "mentions-safe") {
+			foundVerification = true
+			break
+		}
+	}
+	if !foundVerification {
+		t.Fatalf("expected failed final_quality_handoff verification, got %#v", final.Result.Verification)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	persistedFinal := workflowGraphRunStageSnapshotByName(t, run.CompletedStages, "final-report")
+	if persistedFinal.Status != "warning" || persistedFinal.Metadata["unresolved_quality"] != "true" || !strings.Contains(persistedFinal.Metadata["source_ref"], "audit:result.output") {
+		t.Fatalf("expected persisted final report unresolved quality diagnostics, got %#v", persistedFinal)
+	}
+	foundEvent := false
+	for _, event := range run.Events {
+		if event.Reason == "final_quality_handoff" && event.Stage == "final-report" && event.ContractCheck == "final_quality_handoff" && strings.Contains(event.SourceRef, "audit:result.output") {
+			foundEvent = true
+			break
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("expected final_quality_handoff event with source diagnostics, got %#v", run.Events)
+	}
+}
+
+func TestWorkflowRunnerPausesGraphWhenStageOutputIncomplete(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "incomplete-flow", `
+name: incomplete-flow
+description: Pause instead of flowing incomplete output downstream.
+stages:
+  - name: draft
+    agent: planner
+    skill: execution-plan
+    next: [report]
+  - name: report
+    agent: auditor
+    skill: code-audit
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Role: "assistant", Content: "part 1"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 2"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 3"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 4"}, StopReason: schema.StopReasonMaxTokens},
+	}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "should not run"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "incomplete-flow", "write full plan", true, nil)
+	if err != nil {
+		t.Fatalf("Run incomplete workflow graph: %v", err)
+	}
+	if result.Status != "paused_need_more_budget" || result.NextStage != "draft" {
+		t.Fatalf("expected budget pause at draft, got %#v", result)
+	}
+	if len(result.CompletedStages) != 1 {
+		t.Fatalf("expected only incomplete draft stage, got %#v", result.CompletedStages)
+	}
+	stage := result.CompletedStages[0]
+	if stage.Status != "incomplete" || !stage.Result.Incomplete {
+		t.Fatalf("expected incomplete stage result, got %#v", stage)
+	}
+	if stage.Metadata["incomplete"] != "true" || stage.Metadata["stop_reason"] != schema.StopReasonMaxTokens {
+		t.Fatalf("expected incomplete metadata, got %#v", stage.Metadata)
+	}
+	if auditorLLM.calls != 0 {
+		t.Fatalf("downstream auditor should not run after incomplete stage, calls=%d", auditorLLM.calls)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	if run.Status != "paused_need_more_budget" {
+		t.Fatalf("expected persisted paused run, got %#v", run)
+	}
+	if len(run.CompletedStages) != 1 || run.CompletedStages[0].Status != "incomplete" || !run.CompletedStages[0].Result.Incomplete {
+		t.Fatalf("expected persisted incomplete stage, got %#v", run.CompletedStages)
+	}
+	foundPauseEvent := false
+	for _, event := range run.Events {
+		if event.Type == "stage_paused" && event.Incomplete && event.StopReason == schema.StopReasonMaxTokens {
+			foundPauseEvent = true
+			break
+		}
+	}
+	if !foundPauseEvent {
+		t.Fatalf("expected stage_paused event with incomplete diagnostics, got %#v", run.Events)
+	}
+}
+
+func TestWorkflowRunnerContinuesIncompleteGraphStageInSameRun(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "continue-flow", `
+name: continue-flow
+description: Continue an incomplete stage without restarting the whole workflow.
+stages:
+  - name: draft
+    agent: planner
+    skill: execution-plan
+    next: [report]
+  - name: report
+    agent: auditor
+    skill: code-audit
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Role: "assistant", Content: "partial 1"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "partial 2"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "partial 3"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "partial 4"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "completed draft"}, StopReason: schema.StopReasonStop},
+	}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "report complete"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	paused, err := runtimeRef.WorkflowRunner().Run(context.Background(), "continue-flow", "write full plan", true, nil)
+	if err != nil {
+		t.Fatalf("Run incomplete workflow graph: %v", err)
+	}
+	if paused.Status != "paused_need_more_budget" || paused.RunID == "" || paused.NextStage != "draft" {
+		t.Fatalf("expected budget pause at draft, got %#v", paused)
+	}
+
+	resumed, err := runtimeRef.WorkflowRunner().ContinueOutput(context.Background(), paused.RunID, nil)
+	if err != nil {
+		t.Fatalf("ContinueOutput: %v", err)
+	}
+	if resumed.Status != "completed" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) != 2 {
+		t.Fatalf("expected same run to complete two stages, got %#v", resumed)
+	}
+	if resumed.CompletedStages[0].Status != "completed" || resumed.CompletedStages[0].Result.Output != "completed draft" {
+		t.Fatalf("expected continued draft to replace incomplete result, got %#v", resumed.CompletedStages[0])
+	}
+	if resumed.CompletedStages[0].Metadata["continued_from_incomplete"] != "true" || resumed.CompletedStages[0].Metadata["previous_stop_reason"] != schema.StopReasonMaxTokens {
+		t.Fatalf("expected continuation provenance metadata, got %#v", resumed.CompletedStages[0].Metadata)
+	}
+	if resumed.CompletedStages[1].Result.Output != "report complete" {
+		t.Fatalf("expected downstream report to run after continuation, got %#v", resumed.CompletedStages[1])
+	}
+	if auditorLLM.calls != 1 {
+		t.Fatalf("expected downstream auditor to run once after continuation, calls=%d", auditorLLM.calls)
+	}
+	if len(plannerLLM.requests) < 5 || !strings.Contains(plannerLLM.requests[4].Messages[len(plannerLLM.requests[4].Messages)-1].Content, "Partial output from previous attempt") {
+		t.Fatalf("expected continuation prompt to include partial output, got %#v", plannerLLM.requests)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, paused.RunID)
+	if run.Status != "completed" || len(run.CompletedStages) != 2 || run.CompletedStages[0].Status == "incomplete" {
+		t.Fatalf("expected persisted run completed with replaced draft, got %#v", run)
+	}
+	foundContinueEvent := false
+	for _, event := range run.Events {
+		if event.Type == "workflow_output_continue_submitted" && event.Stage == "draft" && event.Reason == "continue_output" {
+			foundContinueEvent = true
+			break
+		}
+	}
+	if !foundContinueEvent {
+		t.Fatalf("expected continue-output event in run replay, got %#v", run.Events)
+	}
+}
+
 func TestWorkflowRunnerQualityGateRoutesFailedEvidence(t *testing.T) {
 	runtimeHome := t.TempDir()
 	writeWorkflowGraph(t, runtimeHome, "quality-gate-flow", `
@@ -194,6 +914,17 @@ stages:
 	}
 	if string(result.CompletedStages[2].Stage) != "remediate" || len(fixerLLM.requests) != 1 {
 		t.Fatalf("expected remediation stage execution, stages=%#v fixerRequests=%d", result.CompletedStages, len(fixerLLM.requests))
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	foundQualityEvent := false
+	for _, event := range run.Events {
+		if event.Reason == "quality_gate_failed" && event.Stage == "quality" && event.ContractCheck == "quality_gate" && strings.Contains(event.SourceRef, "acceptance_failed") {
+			foundQualityEvent = true
+			break
+		}
+	}
+	if !foundQualityEvent {
+		t.Fatalf("expected quality_gate_failed event with source diagnostics, got %#v", run.Events)
 	}
 }
 
@@ -960,6 +1691,397 @@ stages:
 	}
 }
 
+func TestWorkflowRunnerCustomWorkflowGraphPricingEstimatesPropagate(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "priced-budget-flow", `
+name: priced-budget-flow
+description: Preserve configurable pricing diagnostics across run, stage, and events.
+stages:
+  - name: plan
+    agent: planner
+    skill: execution-plan
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{Content: "Plan complete."},
+		Usage:   schema.TokenUsage{PromptTokens: 1000, CachedTokens: 100, OutputTokens: 500},
+	}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit"}}}},
+	})
+	runtimeRef.runners["planner"].profile.Pricing = config.PricingConfig{
+		Currency:                    "USD",
+		InputPerMillionTokens:       10,
+		OutputPerMillionTokens:      20,
+		CachedInputPerMillionTokens: 1,
+		Source:                      "unit-test-pricing",
+	}
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "priced-budget-flow", "price this run", true, nil)
+	if err != nil {
+		t.Fatalf("Run priced-budget-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 1 {
+		t.Fatalf("expected priced workflow to complete, got %#v", result)
+	}
+	stage := result.CompletedStages[0]
+	if stage.BudgetEstimatedInputCost <= 0 || stage.BudgetEstimatedOutputCost <= 0 || stage.BudgetEstimatedTotalCost <= 0 {
+		t.Fatalf("expected stage estimated cost fields, got %#v", stage)
+	}
+	if stage.BudgetCostCurrency != "USD" || stage.BudgetPricingSource != "unit-test-pricing" {
+		t.Fatalf("expected stage cost currency/source, got currency=%q source=%q", stage.BudgetCostCurrency, stage.BudgetPricingSource)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	if run.BudgetEstimatedInputCost <= 0 || run.BudgetEstimatedOutputCost <= 0 || run.BudgetEstimatedTotalCost <= 0 {
+		t.Fatalf("expected run estimated cost fields, got %#v", run)
+	}
+	if run.BudgetCostCurrency != "USD" || run.BudgetPricingSource != "unit-test-pricing" {
+		t.Fatalf("expected run cost currency/source, got currency=%q source=%q", run.BudgetCostCurrency, run.BudgetPricingSource)
+	}
+	foundPromptBudget := false
+	foundTokenUsage := false
+	for _, event := range run.Events {
+		switch event.Type {
+		case string(schema.StreamEventPromptBudget):
+			if event.PromptBudget != nil && event.PromptBudget.EstimatedInputCost > 0 && event.BudgetCostCurrency == "USD" && event.BudgetPricingSource == "unit-test-pricing" {
+				foundPromptBudget = true
+			}
+		case string(schema.StreamEventTokenUsage):
+			if event.BudgetEstimatedInputCost == 0.0091 &&
+				event.BudgetEstimatedOutputCost == 0.01 &&
+				event.BudgetEstimatedTotalCost == 0.0191 &&
+				event.BudgetCostCurrency == "USD" &&
+				event.BudgetPricingSource == "unit-test-pricing" {
+				foundTokenUsage = true
+			}
+		}
+	}
+	if !foundPromptBudget || !foundTokenUsage {
+		t.Fatalf("expected prompt budget and token usage cost events, promptBudget=%v tokenUsage=%v events=%#v", foundPromptBudget, foundTokenUsage, run.Events)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphHardBudgetPausesAtStageBoundaryAndApproves(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "hard-budget-flow", `
+name: hard-budget-flow
+budget:
+  hard_llm_calls: 1
+stages:
+  - name: plan
+    agent: planner
+    skill: execution-plan
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{Content: "Plan complete."},
+		Usage:   schema.TokenUsage{PromptTokens: 5, OutputTokens: 2},
+	}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "Audit complete."}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	first, err := runtimeRef.WorkflowRunner().Run(context.Background(), "hard-budget-flow", "respect hard budget", true, nil)
+	if err != nil {
+		t.Fatalf("Run hard-budget-flow: %v", err)
+	}
+	if first.Status != "awaiting_budget_approval" || first.NextStage != "audit" || !first.PendingApproval {
+		t.Fatalf("expected hard budget pause before audit, got %#v", first)
+	}
+	if first.BudgetScope != "llm_call" || first.BudgetLLMCalls < 1 || first.BudgetReportedPromptTokens < 5 || first.BudgetOutputTokens < 2 {
+		t.Fatalf("expected result-level budget summary, got %#v", first)
+	}
+	if first.BudgetMetric != "llm_calls" || first.BudgetHardLimit != 1 || first.BudgetUsed < 1 {
+		t.Fatalf("expected hard budget limit diagnostics, got %#v", first)
+	}
+	if len(first.CompletedStages) != 1 || first.CompletedStages[0].Stage != "plan" {
+		t.Fatalf("expected only plan completed before budget pause, got %#v", first.CompletedStages)
+	}
+	if auditorLLM.calls != 0 {
+		t.Fatalf("audit stage should not run before budget approval, calls=%d", auditorLLM.calls)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, first.RunID)
+	if run.Status != "awaiting_budget_approval" || run.NextStage != "audit" || run.BudgetLLMCalls < 1 || run.BudgetScope != "llm_call" {
+		t.Fatalf("expected persisted budget pause summary, got %#v", run)
+	}
+	if run.BudgetMetric != "llm_calls" || run.BudgetHardLimit != 1 || run.BudgetUsed < 1 {
+		t.Fatalf("expected persisted hard budget limit diagnostics, got %#v", run)
+	}
+	foundPauseEvent := false
+	for _, event := range run.Events {
+		if event.Reason == "budget_hard_limit_hit" && event.BudgetScope == "llm_call" && event.BudgetMetric == "llm_calls" && event.BudgetHardLimit == 1 && event.NeedsAction {
+			foundPauseEvent = true
+			break
+		}
+	}
+	if !foundPauseEvent {
+		t.Fatalf("expected budget_hard_limit_hit event, got %#v", run.Events)
+	}
+
+	resumed, err := runtimeRef.WorkflowRunner().ApproveBudget(context.Background(), first.RunID, nil)
+	if err != nil {
+		t.Fatalf("ApproveBudget hard-budget-flow: %v", err)
+	}
+	if resumed.Status != "completed" || len(resumed.CompletedStages) != 2 {
+		t.Fatalf("expected budget approval to complete workflow, got %#v", resumed)
+	}
+	if auditorLLM.calls != 1 {
+		t.Fatalf("expected audit stage to run after budget approval, calls=%d", auditorLLM.calls)
+	}
+	run = workflowGraphRunSnapshotByID(t, runtimeRef, first.RunID)
+	foundApprovalEvent := false
+	for _, event := range run.Events {
+		if event.Type == "workflow_budget_approved" && event.Stage == "audit" {
+			foundApprovalEvent = true
+			break
+		}
+	}
+	if !foundApprovalEvent {
+		t.Fatalf("expected workflow_budget_approved event, got %#v", run.Events)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphSoftBudgetWarnsWithoutPausing(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "soft-budget-flow", `
+name: soft-budget-flow
+budget:
+  soft_llm_calls: 1
+stages:
+  - name: plan
+    agent: planner
+    skill: execution-plan
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{Content: "Plan complete."},
+		Usage:   schema.TokenUsage{PromptTokens: 5, OutputTokens: 2},
+	}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{Content: "Audit complete."},
+		Usage:   schema.TokenUsage{PromptTokens: 4, OutputTokens: 3},
+	}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "soft-budget-flow", "respect soft budget", true, nil)
+	if err != nil {
+		t.Fatalf("Run soft-budget-flow: %v", err)
+	}
+	if result.Status != "completed" || result.PendingApproval || len(result.CompletedStages) != 2 {
+		t.Fatalf("expected soft budget workflow to complete without approval, got %#v", result)
+	}
+	if auditorLLM.calls != 1 {
+		t.Fatalf("audit stage should run after soft budget warning, calls=%d", auditorLLM.calls)
+	}
+	if result.BudgetReason != "budget_soft_limit_hit" || result.BudgetMetric != "llm_calls" || result.BudgetSoftLimit != 1 || result.BudgetUsed < 2 {
+		t.Fatalf("expected result-level soft budget diagnostics, got %#v", result)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	if run.Status != "completed" || run.BudgetReason != "budget_soft_limit_hit" {
+		t.Fatalf("expected persisted completed run with soft budget warning, got %#v", run)
+	}
+	softEvents := 0
+	for _, event := range run.Events {
+		if event.Type != string(schema.StreamEventStatus) || event.Reason != "budget_soft_limit_hit" {
+			continue
+		}
+		softEvents++
+		if event.NeedsAction || event.WorkflowStatus != "running" || event.Severity != "warning" || event.BudgetMetric != "llm_calls" || event.BudgetSoftLimit != 1 || event.BudgetUsed < 2 {
+			t.Fatalf("unexpected soft budget event: %#v", event)
+		}
+	}
+	if softEvents != 1 {
+		t.Fatalf("expected exactly one budget_soft_limit_hit event, got %d events: %#v", softEvents, run.Events)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphSoftBudgetRoutesConfiguredModel(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "soft-budget-route-flow", `
+name: soft-budget-route-flow
+budget:
+  soft_llm_calls: 1
+stages:
+  - name: plan
+    agent: planner
+    skill: execution-plan
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+    model:
+      provider: primary
+      model: strong-model
+      max_tokens: 900
+    params:
+      soft_budget_provider: backup
+      soft_budget_model: cheap-model
+      soft_budget_max_tokens: 111
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{Content: "Plan complete."},
+		Usage:   schema.TokenUsage{PromptTokens: 5, OutputTokens: 2},
+	}}}
+	primaryLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "primary should not run"}}}}
+	backupLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{Content: "Soft budget route audit complete."},
+		Usage:   schema.TokenUsage{PromptTokens: 4, OutputTokens: 3},
+	}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": plannerLLM,
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix"}}}},
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "auditor default should not run"}}}},
+		"primary": primaryLLM,
+		"backup":  backupLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "soft-budget-route-flow", "route after soft budget", true, nil)
+	if err != nil {
+		t.Fatalf("Run soft-budget-route-flow: %v", err)
+	}
+	if result.Status != "completed" || len(result.CompletedStages) != 2 {
+		t.Fatalf("expected completed soft-budget routed workflow, got %#v", result)
+	}
+	if primaryLLM.calls != 0 || backupLLM.calls != 1 {
+		t.Fatalf("expected backup route only, primary=%d backup=%d", primaryLLM.calls, backupLLM.calls)
+	}
+	if got := backupLLM.requests[0]; got.Model != "cheap-model" || got.MaxTokens != 111 {
+		t.Fatalf("expected soft budget model route settings, got %#v", got)
+	}
+	audit := workflowGraphStageResultByName(t, result.CompletedStages, "audit")
+	if audit.Result.Model != "cheap-model" ||
+		audit.Metadata["model.provider"] != "backup" ||
+		audit.Metadata["model.model"] != "cheap-model" ||
+		audit.Metadata["model.max_tokens"] != "111" ||
+		audit.Metadata["model.soft_budget_route"] != "true" {
+		t.Fatalf("expected soft budget route metadata, got stage=%#v metadata=%#v", audit, audit.Metadata)
+	}
+	if result.BudgetReason != "budget_soft_limit_hit" {
+		t.Fatalf("expected final result to retain soft budget reason, got %#v", result)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	foundSoftWarning := false
+	foundRouteEvent := false
+	for _, event := range run.Events {
+		if event.Reason == "budget_soft_limit_hit" {
+			foundSoftWarning = true
+		}
+		if event.Reason == "budget_model_route_applied" && event.Stage == "audit" && strings.Contains(event.Content, "cheap-model") {
+			foundRouteEvent = true
+		}
+	}
+	if !foundSoftWarning || !foundRouteEvent {
+		t.Fatalf("expected soft warning and model route events, got %#v", run.Events)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphSoftBudgetNarrowsParallelBranches(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "soft-budget-parallel-flow", `
+name: soft-budget-parallel-flow
+budget:
+  soft_prompt_tokens: 1
+stages:
+  - name: decompose
+    agent: planner
+    skill: execution-plan
+    next: [dispatch]
+  - name: dispatch
+    node_type: parallel
+    params:
+      concurrent: true
+      active_branches: worker-a,worker-b,worker-c
+      soft_budget_max_parallel_branches: 1
+    next: [worker-a, worker-b, worker-c]
+  - name: worker-a
+    agent: fixer
+    skill: code-writing
+    next: [join]
+  - name: worker-b
+    agent: auditor
+    skill: code-audit
+    next: [join]
+  - name: worker-c
+    agent: chat
+    skill: execution-plan
+    next: [join]
+  - name: join
+    node_type: join
+    params:
+      wait_for_ref: stages.dispatch.outputs.branches
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{Content: "Decomposition selected all branches."},
+		Usage:   schema.TokenUsage{PromptTokens: 5, OutputTokens: 1},
+	}}}
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "worker a complete"}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "worker b should not run"}}}}
+	chatLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "worker c should not run"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    chatLLM,
+		"planner": plannerLLM,
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "soft-budget-parallel-flow", "narrow branches after soft budget", true, nil)
+	if err != nil {
+		t.Fatalf("Run soft-budget-parallel-flow: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed workflow, got %#v", result)
+	}
+	if !workflowStageResultNamesContain(result.CompletedStages, "worker-a") ||
+		workflowStageResultNamesContain(result.CompletedStages, "worker-b") ||
+		workflowStageResultNamesContain(result.CompletedStages, "worker-c") {
+		t.Fatalf("expected only worker-a after soft budget branch limit, got %#v", result.CompletedStages)
+	}
+	if fixerLLM.calls != 1 || auditorLLM.calls != 0 || chatLLM.calls != 0 {
+		t.Fatalf("expected only first branch to call a model, fixer=%d auditor=%d chat=%d", fixerLLM.calls, auditorLLM.calls, chatLLM.calls)
+	}
+	dispatch := workflowGraphStageResultByName(t, result.CompletedStages, "dispatch")
+	if dispatch.Output.Variables["branch_count"] != "1" ||
+		dispatch.Output.Variables["branch_budget_limited"] != "true" ||
+		dispatch.Output.Variables["branch_original_count"] != "3" ||
+		!strings.Contains(dispatch.Output.Variables["branch_skipped"], "worker-b") ||
+		!strings.Contains(dispatch.Output.Variables["branch_skipped"], "worker-c") {
+		t.Fatalf("expected dispatch to publish branch limit diagnostics, got %#v", dispatch.Output)
+	}
+	join := workflowGraphStageResultByName(t, result.CompletedStages, "join")
+	if join.Output.Variables["completed_count"] != "1" || strings.Contains(join.Output.Variables["wait_for"], "worker-b") || strings.Contains(join.Output.Variables["wait_for"], "worker-c") {
+		t.Fatalf("expected join to wait only for selected branch, got %#v", join.Output)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	foundBranchLimitEvent := false
+	for _, event := range run.Events {
+		if event.Reason == "budget_branch_limit_applied" && event.Stage == "dispatch" && strings.Contains(event.ArgumentsSummary, "worker-b") {
+			foundBranchLimitEvent = true
+			break
+		}
+	}
+	if !foundBranchLimitEvent {
+		t.Fatalf("expected budget_branch_limit_applied event, got %#v", run.Events)
+	}
+}
+
 func TestWorkflowRunnerCustomWorkflowGraphJSONWorkerFieldsFeedContext(t *testing.T) {
 	runtimeHome := t.TempDir()
 	writeWorkflowGraph(t, runtimeHome, "worker-json-flow", `
@@ -1435,6 +2557,244 @@ stages:
 	}
 }
 
+func TestWorkflowRunnerCustomWorkflowGraphParallelFileConflictWarnsBeforeJoin(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "parallel-file-conflict-flow", `
+name: parallel-file-conflict-flow
+stages:
+  - name: split
+    node_type: parallel
+    params:
+      concurrent: true
+    next: [implement, audit]
+  - name: implement
+    agent: fixer
+    skill: code-writing
+    next: [join]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+    next: [join]
+  - name: join
+    node_type: join
+    params:
+      wait_for: implement,audit
+    next: [report]
+  - name: report
+    agent: planner
+    skill: execution-plan
+    input:
+      implementation: stages.implement.outputs.summary
+      audit: stages.audit.outputs.summary
+`)
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: `{"summary":"implementation touched shared file","changed_files":["internal/shared.go"],"verification":["not run"],"blockers":[],"next_actions":["audit"]}`}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: `{"summary":"audit touched same shared file","changed_files":"./internal/shared.go","verification":["manual review"],"blockers":[],"next_actions":["merge carefully"]}`}}}}
+	reportLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "report complete"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": reportLLM,
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "parallel-file-conflict-flow", "run parallel workers", true, nil)
+	if err != nil {
+		t.Fatalf("Run parallel-file-conflict-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected conflict warning to preserve workflow completion, got %#v", result)
+	}
+	implement := workflowGraphStageResultByName(t, result.CompletedStages, "implement")
+	audit := workflowGraphStageResultByName(t, result.CompletedStages, "audit")
+	for _, stage := range []WorkflowStageResult{implement, audit} {
+		if stage.Metadata["parallel_file_conflict"] != "true" || stage.Metadata["contract_check"] != "parallel_file_ownership" {
+			t.Fatalf("expected parallel file conflict metadata on %s, got %#v", stage.Stage, stage.Metadata)
+		}
+		for _, want := range []string{"internal/shared.go", "implement", "audit"} {
+			metadata := stage.Metadata["parallel_file_conflict_source_ref"] + " " + stage.Metadata["parallel_file_conflict_paths"] + " " + stage.Metadata["parallel_file_conflict_owners"]
+			if !strings.Contains(metadata, want) {
+				t.Fatalf("expected %s conflict metadata to contain %q, got %#v", stage.Stage, want, stage.Metadata)
+			}
+		}
+		if stage.Output.Variables["parallel_file_conflict"] != "true" || !strings.Contains(stage.Output.Variables["parallel_file_conflict_paths"], "internal/shared.go") {
+			t.Fatalf("expected output conflict values on %s, got %#v", stage.Stage, stage.Output.Variables)
+		}
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	foundEvent := false
+	for _, event := range run.Events {
+		if event.Reason != "parallel_file_conflict" {
+			continue
+		}
+		foundEvent = true
+		if event.Stage != "join" || event.Severity != "warning" || event.ContractCheck != "parallel_file_ownership" {
+			t.Fatalf("unexpected parallel file conflict event: %#v", event)
+		}
+		for _, want := range []string{"internal/shared.go", "implement", "audit"} {
+			if !strings.Contains(event.SourceRef+" "+event.Content, want) {
+				t.Fatalf("expected conflict event to contain %q, got %#v", want, event)
+			}
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("expected parallel_file_conflict event, got %#v", run.Events)
+	}
+	persistedImplement := workflowGraphRunStageSnapshotByName(t, run.CompletedStages, "implement")
+	if persistedImplement.Metadata["parallel_file_conflict"] != "true" || !strings.Contains(persistedImplement.Metadata["parallel_file_conflict_source_ref"], "internal/shared.go") {
+		t.Fatalf("expected persisted conflict metadata, got %#v", persistedImplement.Metadata)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphParallelDirectWriteWarnsBeforeJoin(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "parallel-direct-write-flow", `
+name: parallel-direct-write-flow
+stages:
+  - name: split
+    node_type: parallel
+    params:
+      concurrent: true
+    next: [implement, audit]
+  - name: implement
+    agent: fixer
+    skill: code-writing
+    params:
+      tools: file_tools/read_file,file_tools/write_file
+    next: [join]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+    params:
+      tools: file_tools/read_file
+    next: [join]
+  - name: join
+    node_type: join
+    params:
+      wait_for: implement,audit
+    next: [report]
+  - name: report
+    agent: planner
+    skill: execution-plan
+`)
+	fixerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: `{"summary":"implementation wrote a file","changed_files":["internal/feature.go"],"verification":["not run"],"blockers":[],"next_actions":["merge"]}`}}}}
+	auditorLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: `{"summary":"audit only","verification":["review"],"blockers":[],"next_actions":["report"]}`}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"planner": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "report complete"}}}},
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "parallel-direct-write-flow", "run parallel workers", true, nil)
+	if err != nil {
+		t.Fatalf("Run parallel-direct-write-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected direct-write warning to preserve workflow completion, got %#v", result)
+	}
+	implement := workflowGraphStageResultByName(t, result.CompletedStages, "implement")
+	if implement.Metadata["parallel_patch_artifact_required"] != "true" || implement.Metadata["contract_check"] != "parallel_patch_artifact_handoff" {
+		t.Fatalf("expected patch/artifact handoff metadata on implement, got %#v", implement.Metadata)
+	}
+	for _, want := range []string{"write_file", "parallel branch", "implement"} {
+		metadata := implement.Metadata["parallel_direct_write_tools"] + " " + implement.Metadata["parallel_patch_artifact_reason"] + " " + implement.Metadata["parallel_patch_artifact_source_ref"]
+		if !strings.Contains(metadata, want) {
+			t.Fatalf("expected implement patch/artifact metadata to contain %q, got %#v", want, implement.Metadata)
+		}
+	}
+	if implement.Output.Variables["parallel_patch_artifact_required"] != "true" || !strings.Contains(implement.Output.Variables["parallel_direct_write_tools"], "write_file") {
+		t.Fatalf("expected output patch/artifact values on implement, got %#v", implement.Output.Variables)
+	}
+	audit := workflowGraphStageResultByName(t, result.CompletedStages, "audit")
+	if audit.Metadata["parallel_patch_artifact_required"] == "true" {
+		t.Fatalf("read-only audit branch should not get direct-write warning, got %#v", audit.Metadata)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	foundEvent := false
+	for _, event := range run.Events {
+		if event.Reason != "parallel_patch_artifact_required" {
+			continue
+		}
+		foundEvent = true
+		if event.Stage != "join" || event.Severity != "warning" || event.ContractCheck != "parallel_patch_artifact_handoff" {
+			t.Fatalf("unexpected parallel patch/artifact warning event: %#v", event)
+		}
+		for _, want := range []string{"implement", "write_file"} {
+			if !strings.Contains(event.SourceRef+" "+event.Content, want) {
+				t.Fatalf("expected patch/artifact warning event to contain %q, got %#v", want, event)
+			}
+		}
+	}
+	if !foundEvent {
+		t.Fatalf("expected parallel_patch_artifact_required event, got %#v", run.Events)
+	}
+}
+
+func TestWorkflowRunnerCustomWorkflowGraphParallelPatchArtifactHandoffDoesNotWarn(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "parallel-patch-artifact-flow", `
+name: parallel-patch-artifact-flow
+stages:
+  - name: split
+    node_type: parallel
+    params:
+      concurrent: true
+    next: [worker-a, worker-b]
+  - name: worker-a
+    agent: fixer
+    skill: code-writing
+    params:
+      handoff_mode: patch_artifact_only
+      tools: file_tools/read_file,file_tools/search_files
+      output_contract: Return compact JSON with summary, changed_files, patch, artifact_refs, blockers, and next_actions. Do not write files directly.
+    artifacts:
+      - name: worker-a-patch
+        kind: patch
+        ref: result.patch
+    next: [join]
+  - name: worker-b
+    agent: auditor
+    skill: code-audit
+    params:
+      tools: file_tools/read_file
+    next: [join]
+  - name: join
+    node_type: join
+    params:
+      wait_for: worker-a,worker-b
+`)
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":    &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat"}}}},
+		"fixer":   &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: `{"summary":"patch proposed","changed_files":["internal/feature.go"],"patch":"diff --git a/internal/feature.go b/internal/feature.go","artifact_refs":["worker-a-patch"],"blockers":[],"next_actions":["apply in merge stage"]}`}}}},
+		"auditor": &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: `{"summary":"audit only","blockers":[],"next_actions":["join"]}`}}}},
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "parallel-patch-artifact-flow", "prepare patch artifacts", true, nil)
+	if err != nil {
+		t.Fatalf("Run parallel-patch-artifact-flow workflow graph: %v", err)
+	}
+	if result.Status != "completed" {
+		t.Fatalf("expected completed patch artifact handoff flow, got %#v", result)
+	}
+	worker := workflowGraphStageResultByName(t, result.CompletedStages, "worker-a")
+	if worker.Metadata["parallel_patch_artifact_required"] == "true" {
+		t.Fatalf("patch/artifact-only worker without direct write tools should not warn, got %#v", worker.Metadata)
+	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	for _, event := range run.Events {
+		if event.Reason == "parallel_patch_artifact_required" {
+			t.Fatalf("did not expect patch/artifact warning event, got %#v", event)
+		}
+	}
+}
+
+func TestWorkflowGraphChangedFileListValueHandlesJSONScalarString(t *testing.T) {
+	paths := workflowGraphChangedFileListValue(`"internal/shared.go"`)
+	if len(paths) != 1 || paths[0] != "internal/shared.go" {
+		t.Fatalf("expected JSON scalar changed file path, got %#v", paths)
+	}
+}
+
 func TestWorkflowRunnerValidationReportsParallelConcurrencyEligibility(t *testing.T) {
 	runtimeHome := t.TempDir()
 	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
@@ -1491,6 +2851,22 @@ func TestWorkflowRunnerValidationReportsParallelConcurrencyEligibility(t *testin
 	})
 	if !approval.Valid || approval.Parallel[0].Eligible || approval.Parallel[0].Branches[0].Eligible || !strings.Contains(approval.Parallel[0].Branches[0].Reason, "approval") {
 		t.Fatalf("expected approval branch ineligibility diagnostic, got %#v", approval.Parallel[0])
+	}
+
+	directWrite := runtimeRef.WorkflowRunner().ValidateWorkflowGraphDocument("direct-write-parallel", WorkflowGraphDocument{
+		Name: "direct-write-parallel",
+		Stages: []WorkflowGraphStageDocument{
+			{Name: "split", NodeType: "parallel", Params: map[string]string{"concurrent": "true"}, Next: []string{"implement", "audit"}},
+			{Name: "implement", Agent: "fixer", Skill: "code-writing", Params: map[string]string{"tools": "file_tools/write_file"}, Next: []string{"join"}},
+			{Name: "audit", Agent: "auditor", Skill: "code-audit", Next: []string{"join"}},
+			{Name: "join", NodeType: "join", Params: map[string]string{"wait_for": "implement,audit"}},
+		},
+	})
+	if !directWrite.Valid || len(directWrite.Parallel) != 1 || !directWrite.Parallel[0].Eligible {
+		t.Fatalf("expected direct-write graph to stay eligible with advisory branch diagnostic, got %#v", directWrite)
+	}
+	if len(directWrite.Parallel[0].Branches[0].Issues) == 0 || !strings.Contains(directWrite.Parallel[0].Branches[0].Issues[0].Message, "patch/artifact-only") {
+		t.Fatalf("expected direct-write branch to report patch/artifact handoff warning, got %#v", directWrite.Parallel[0].Branches)
 	}
 }
 
@@ -1576,6 +2952,161 @@ stages:
 	}
 }
 
+func TestWorkflowRunnerParallelDomainOverridesPlannerBranchSelection(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "domain-selected-parallel-flow", `
+name: domain-selected-parallel-flow
+stages:
+  - name: intake
+    agent: planner
+    skill: execution-plan
+    outputs:
+      domain: result.domain
+      max_parallel_domains: result.max_parallel_domains
+      summary: result.summary
+    next: [decompose]
+  - name: decompose
+    agent: planner
+    skill: execution-plan
+    outputs:
+      active_branches: result.active_branches
+      summary: result.summary
+    next: [dispatch]
+  - name: dispatch
+    node_type: parallel
+    params:
+      concurrent: true
+      active_branches_ref: stages.decompose.outputs.active_branches
+      domain_ref: stages.intake.outputs.domain
+      fallback_branch: general-worker
+      max_parallel_domains_ref: stages.intake.outputs.max_parallel_domains
+    next: [software-worker, web-security-worker, general-worker]
+  - name: software-worker
+    agent: software-engineer
+    skill: code-writing
+    next: [join]
+  - name: web-security-worker
+    agent: web-security-researcher
+    skill: web-vulnerability-research
+    next: [join]
+  - name: general-worker
+    agent: chat
+    skill: execution-plan
+    next: [join]
+  - name: join
+    node_type: join
+    params:
+      wait_for_ref: stages.dispatch.outputs.branches
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Content: `{"summary":"software request","domain":"software","max_parallel_domains":1}`}},
+		{Message: schema.Message{Content: `{"summary":"planner picked wrong branch","active_branches":["web-security-worker"]}`}},
+	}}
+	softwareLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "software branch complete"}}}}
+	webSecurityLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "web security branch should not run"}}}}
+	generalLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "general fallback should not run"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":                    generalLLM,
+		"planner":                 plannerLLM,
+		"software-engineer":       softwareLLM,
+		"web-security-researcher": webSecurityLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "domain-selected-parallel-flow", "software implementation request", true, nil)
+	if err != nil {
+		t.Fatalf("Run domain-selected-parallel-flow workflow graph: %v", err)
+	}
+	if !workflowStageResultNamesContain(result.CompletedStages, "software-worker") {
+		t.Fatalf("expected software-worker to run, got %#v", result.CompletedStages)
+	}
+	if workflowStageResultNamesContain(result.CompletedStages, "web-security-worker") || workflowStageResultNamesContain(result.CompletedStages, "general-worker") {
+		t.Fatalf("expected only software branch to run, got %#v", result.CompletedStages)
+	}
+	if softwareLLM.calls != 1 || webSecurityLLM.calls != 0 || generalLLM.calls != 0 {
+		t.Fatalf("expected software-only execution, got software=%d web=%d general=%d", softwareLLM.calls, webSecurityLLM.calls, generalLLM.calls)
+	}
+	dispatch := workflowGraphStageResultByName(t, result.CompletedStages, "dispatch")
+	if dispatch.Output.Variables["branch_count"] != "1" || dispatch.Output.Variables["branches"] != "software-worker" {
+		t.Fatalf("expected dispatch to publish software branch only, got %#v", dispatch.Output)
+	}
+	join := workflowGraphStageResultByName(t, result.CompletedStages, "join")
+	if join.Output.Variables["completed_count"] != "1" || join.Output.Variables["wait_for"] != "software-worker" {
+		t.Fatalf("expected join to wait only for software branch, got %#v", join.Output)
+	}
+}
+
+func TestWorkflowRunnerParallelInvalidSelectionUsesConfiguredFallbackOnly(t *testing.T) {
+	runtimeHome := t.TempDir()
+	writeWorkflowGraph(t, runtimeHome, "fallback-selected-parallel-flow", `
+name: fallback-selected-parallel-flow
+stages:
+  - name: decompose
+    agent: planner
+    skill: execution-plan
+    outputs:
+      active_branches: result.active_branches
+      summary: result.summary
+    next: [dispatch]
+  - name: dispatch
+    node_type: parallel
+    params:
+      concurrent: true
+      active_branches_ref: stages.decompose.outputs.active_branches
+      fallback_branch: general-worker
+    next: [software-worker, web-security-worker, general-worker]
+  - name: software-worker
+    agent: software-engineer
+    skill: code-writing
+    next: [join]
+  - name: web-security-worker
+    agent: web-security-researcher
+    skill: web-vulnerability-research
+    next: [join]
+  - name: general-worker
+    agent: chat
+    skill: execution-plan
+    next: [join]
+  - name: join
+    node_type: join
+    params:
+      wait_for_ref: stages.dispatch.outputs.branches
+`)
+	plannerLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{
+		Message: schema.Message{Content: `{"summary":"bad branch selection","active_branches":["missing-worker"]}`},
+	}}}
+	softwareLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "software branch should not run"}}}}
+	webSecurityLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "web branch should not run"}}}}
+	generalLLM := &workflowRecordingLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "general fallback complete"}}}}
+	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
+		"chat":                    generalLLM,
+		"planner":                 plannerLLM,
+		"software-engineer":       softwareLLM,
+		"web-security-researcher": webSecurityLLM,
+	})
+
+	result, err := runtimeRef.WorkflowRunner().Run(context.Background(), "fallback-selected-parallel-flow", "unclear multi-domain request", true, nil)
+	if err != nil {
+		t.Fatalf("Run fallback-selected-parallel-flow workflow graph: %v", err)
+	}
+	if !workflowStageResultNamesContain(result.CompletedStages, "general-worker") {
+		t.Fatalf("expected fallback general-worker to run, got %#v", result.CompletedStages)
+	}
+	if workflowStageResultNamesContain(result.CompletedStages, "software-worker") || workflowStageResultNamesContain(result.CompletedStages, "web-security-worker") {
+		t.Fatalf("expected invalid selection to run fallback only, got %#v", result.CompletedStages)
+	}
+	if generalLLM.calls != 1 || softwareLLM.calls != 0 || webSecurityLLM.calls != 0 {
+		t.Fatalf("expected fallback-only execution, got general=%d software=%d web=%d", generalLLM.calls, softwareLLM.calls, webSecurityLLM.calls)
+	}
+	dispatch := workflowGraphStageResultByName(t, result.CompletedStages, "dispatch")
+	if dispatch.Output.Variables["branch_count"] != "1" || dispatch.Output.Variables["branches"] != "general-worker" {
+		t.Fatalf("expected dispatch to publish fallback branch only, got %#v", dispatch.Output)
+	}
+	join := workflowGraphStageResultByName(t, result.CompletedStages, "join")
+	if join.Output.Variables["completed_count"] != "1" || join.Output.Variables["wait_for"] != "general-worker" {
+		t.Fatalf("expected join to wait only for fallback branch, got %#v", join.Output)
+	}
+}
+
 func TestWorkflowRunnerValidationRejectsInvalidStageModelOverrides(t *testing.T) {
 	runtimeHome := t.TempDir()
 	runtimeRef := newWorkflowGraphRuntime(t, runtimeHome, workflowGraphTestSkills(), &stubRuntimeMCP{}, map[string]interfaces.LLMClient{
@@ -1602,6 +3133,12 @@ func TestWorkflowRunnerValidationRejectsInvalidStageModelOverrides(t *testing.T)
 					Provider:  "missing-provider",
 					MaxTokens: -1,
 				},
+				Params: map[string]string{
+					"soft_budget_provider":              "missing-soft-provider",
+					"soft_budget_max_tokens":            "-2",
+					"soft_budget_temperature":           "warm",
+					"soft_budget_max_parallel_branches": "-1",
+				},
 			},
 		},
 	})
@@ -1613,6 +3150,15 @@ func TestWorkflowRunnerValidationRejectsInvalidStageModelOverrides(t *testing.T)
 	}
 	if !workflowValidationIssueContains(result.Issues, "error", "model.provider") {
 		t.Fatalf("expected model.provider error, got %#v", result.Issues)
+	}
+	if !workflowValidationIssueContains(result.Issues, "error", "params.soft_budget_provider") {
+		t.Fatalf("expected params.soft_budget_provider error, got %#v", result.Issues)
+	}
+	if !workflowValidationIssueContains(result.Issues, "error", "params.soft_budget_max_tokens") {
+		t.Fatalf("expected params.soft_budget_max_tokens error, got %#v", result.Issues)
+	}
+	if !workflowValidationIssueContains(result.Issues, "error", "params.soft_budget_temperature") {
+		t.Fatalf("expected params.soft_budget_temperature error, got %#v", result.Issues)
 	}
 }
 
@@ -2809,6 +4355,9 @@ func TestWorkflowTemplateCatalogIncludesEngineeringParallelDelivery(t *testing.T
 	validation := runner.ValidateWorkflowGraphDocument("engineering-parallel-delivery", template.Graph)
 	if !validation.Valid {
 		t.Fatalf("expected valid engineering parallel delivery graph, got %#v", validation)
+	}
+	if len(validation.Parallel) != 1 || !validation.Parallel[0].Enabled || !validation.Parallel[0].Eligible || validation.Parallel[0].BranchCount != 3 || validation.Parallel[0].Join != "join" {
+		t.Fatalf("expected engineering parallel delivery to be eligible for concurrent worker execution, got %#v", validation.Parallel)
 	}
 	requiredStages := []string{"decompose", "dispatch", "worker-core", "worker-tests", "worker-docs", "join", "aggregate", "audit", "quality", "resolve", "final-report"}
 	for _, stageName := range requiredStages {
@@ -4033,6 +5582,17 @@ stages:
 	if result.CompletedStages[0].Attempts != 2 {
 		t.Fatalf("expected stage attempt count to be persisted, got %#v", result.CompletedStages[0])
 	}
+	run := workflowGraphRunSnapshotByID(t, runtimeRef, result.RunID)
+	foundRetryEvent := false
+	for _, event := range run.Events {
+		if event.Reason == "stage_retry" && event.Stage == "unstable" {
+			foundRetryEvent = true
+			break
+		}
+	}
+	if !foundRetryEvent {
+		t.Fatalf("expected stage_retry event, got %#v", run.Events)
+	}
 }
 
 func TestWorkflowRunnerCustomWorkflowGraphRoutesOnErrorFallback(t *testing.T) {
@@ -4455,6 +6015,17 @@ func workflowGraphRunSnapshotByID(t *testing.T, runtimeRef *Runtime, runID strin
 	}
 	t.Fatalf("workflow run %s not found in %#v", runID, runtimeRef.SessionSnapshot().WorkflowRuns)
 	return session.WorkflowRunSnapshot{}
+}
+
+func workflowGraphRunStageSnapshotByName(t *testing.T, stages []session.WorkflowRunStageSnapshot, want string) session.WorkflowRunStageSnapshot {
+	t.Helper()
+	for _, stage := range stages {
+		if stage.Stage == want {
+			return stage
+		}
+	}
+	t.Fatalf("workflow run stage %s not found in %#v", want, stages)
+	return session.WorkflowRunStageSnapshot{}
 }
 
 func workflowGraphTestSkills() []schema.Skill {

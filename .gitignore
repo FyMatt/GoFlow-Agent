@@ -8,6 +8,13 @@
 .gocache/
 .gomodcache/
 .gotmp/
+.gotestcache/
+.gotestmodcache/
+.smoke-tmp/
+.smoke-tmp-*/
+
+# Local temp files left by interrupted Go/Windows build and test operations.
+*.go.[0-9]*
 
 # Local planning and agent handoff notes. Keep them beside the repo during
 # development, but do not publish them as end-user project documentation.

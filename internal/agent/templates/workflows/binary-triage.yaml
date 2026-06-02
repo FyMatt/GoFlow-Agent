@@ -14,7 +14,7 @@ tags:
 stages: 9
 graph:
     name: binary-triage
-    description: Static binary triage workflow for defensive vulnerability research.
+    description: Static binary triage workflow for defensive vulnerability research with format summary, entropy map, symbol hints, bounded artifact evidence, and unsafe dynamic analysis blockers.
     stages:
         - name: start
           node_type: start
@@ -30,8 +30,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
-            output_contract: Emit sections named Analysis Plan, Target Assumptions, Tools Needed, Evidence Checklist, Risk Criteria, and Stop Conditions.
-            purpose: Scope a defensive static triage before collecting binary evidence.
+            output_contract: Emit sections named Analysis Plan, Target Assumptions, Static Tools Needed, Evidence Checklist, Sample Scope, Unsafe Dynamic Analysis Blockers, Risk Criteria, and Stop Conditions.
+            purpose: Scope a defensive static triage before collecting binary evidence. Dynamic analysis is disabled unless a separate sandbox plan, approval, and artifact isolation are supplied.
           outputs:
             plan: result.output
             summary: result.summary
@@ -50,6 +50,10 @@ graph:
               ref: result.output
               contains: Evidence Checklist
               expected: plan lists evidence needed for risk classification
+            - name: has-unsafe-dynamic-analysis-blockers
+              ref: result.output
+              contains: Unsafe Dynamic Analysis Blockers
+              expected: plan states dynamic execution is blocked without sandbox approval
           next:
             - triage
           position:
@@ -60,8 +64,9 @@ graph:
           agent: auditor
           skill: binary-vulnerability-research
           params:
-            output_contract: Emit sections named Evidence Summary, Static Indicators, Risk Classification, Confidence, Limitations, and Recommended Next Step.
-            evidence_rule: Prefer reproducible static observations and clearly mark assumptions.
+            output_contract: Emit sections named Evidence Summary, Format Summary, Sections, Imports Exports, Entropy Packing Hints, Symbol Hints, Offset References, Static Indicators, Risk Classification, Confidence, Limitations, Unsafe Dynamic Analysis Blockers, and Recommended Next Step.
+            evidence_rule: Prefer reproducible static observations from python_notes/binary_file_info, python_notes/binary_format_summary, python_notes/binary_entropy_map, python_notes/binary_symbol_hints, python_notes/binary_strings, python_notes/hex_preview, and python_notes/binary_extract_window. Clearly mark assumptions and keep raw binary data out of prompts.
+            tools: python_notes/binary_file_info,python_notes/binary_format_summary,python_notes/binary_entropy_map,python_notes/binary_symbol_hints,python_notes/binary_strings,python_notes/hex_preview,python_notes/binary_extract_window
           input:
             plan: stages.plan.outputs.plan
           outputs:
@@ -73,12 +78,24 @@ graph:
               kind: evidence
               title: Binary triage evidence
               ref: result.output
-              summary: Static indicators, risk classification, confidence, limitations, and next step.
+              summary: Format summary, sections, imports/exports, entropy/packing hints, symbol hints, offset references, static indicators, risk classification, confidence, limitations, and next step.
           acceptance_criteria:
             - name: has-evidence-summary
               ref: result.output
               contains: Evidence Summary
               expected: triage summarizes observed evidence
+            - name: has-format-summary
+              ref: result.output
+              contains: Format Summary
+              expected: triage records binary format and section evidence
+            - name: has-entropy-packing-hints
+              ref: result.output
+              contains: Entropy Packing Hints
+              expected: triage records entropy and packing assessment
+            - name: has-symbol-hints
+              ref: result.output
+              contains: Symbol Hints
+              expected: triage records symbol or import/export hints
             - name: has-risk-classification
               ref: result.output
               contains: Risk Classification
@@ -95,7 +112,7 @@ graph:
           params:
             stages: plan,triage
             min_score: "75"
-            reason: binary triage evidence is missing a plan, evidence summary, or risk classification
+            reason: binary triage evidence is missing sample scope, format summary, entropy map, symbol hints, offset/string references, unsafe dynamic analysis blockers, or risk classification
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
@@ -123,7 +140,7 @@ graph:
           agent: ""
           skill: ""
           params:
-            prompt: Critical binary-risk path requires operator review before deeper analysis.
+            prompt: Critical binary-risk path requires operator review before deeper analysis. Dynamic execution remains blocked until a sandbox plan, approval, and artifact isolation are provided.
           next:
             - deep-review
           position:
@@ -134,7 +151,7 @@ graph:
           agent: auditor
           skill: code-audit
           params:
-            output_contract: Emit sections named Deep Review Findings, Exploitability Notes, False Positive Checks, Evidence Gaps, and Containment Advice.
+            output_contract: Emit sections named Deep Review Findings, Exploitability Notes, False Positive Checks, Evidence Gaps, Unsafe Dynamic Analysis Blockers, Sandbox Plan Needed, and Containment Advice.
           input:
             evidence: stages.triage.outputs.evidence
           outputs:
@@ -161,7 +178,7 @@ graph:
           agent: planner
           skill: execution-plan
           params:
-            output_contract: Emit sections named Final Risk Summary, Evidence, Classification, Confidence, Operator Actions, and Artifact References.
+            output_contract: Emit sections named Final Risk Summary, Static Evidence, Format Summary, Entropy Packing Hints, Symbol and Offset References, Classification, Confidence, Unsafe Action Blockers, Operator Actions, and Artifact References.
             purpose: Produce a defensive user-facing binary triage report for either clean, warning, or critical paths.
           input:
             deep_review: stages.deep-review.outputs.review

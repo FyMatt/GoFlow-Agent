@@ -3,6 +3,7 @@ import { currentLanguage, localizedText, t } from "../i18n.js";
 import { extractSkillScriptContextFromRun, isSkillScriptToolName, skillScriptContextSignature } from "../run_context.js";
 
 const runStateStorageKey = "goflow.playground.runState";
+const workflowStudioRunKey = "goflow.workflowStudio.activeRun";
 const runTargetRecentStorageKey = "goflow.playground.recentTargets";
 const workflowRunPollIntervalMS = 2200;
 const workflowRunHistoryPollIntervalMS = 6600;
@@ -2407,7 +2408,7 @@ function workflowRunActionButton(action) {
   const unavailable = action.available === false || (!action.path && !workflowRunActionCanOpenLocally(action));
   const reasonText = localizedWorkflowActionReason(action.reason || "");
   const reason = reasonText ? ` title="${escapeHTML(reasonText)}"` : "";
-  const primaryActions = ["retry", "approve_stage", "approve_tool", "approve_all_tools", "submit_input", "resume_sub_workflow"];
+  const primaryActions = ["retry", "escalate_model", "approve_budget", "continue_output", "approve_stage", "approve_tool", "approve_all_tools", "submit_input", "resume_sub_workflow"];
   const classes = action.destructive ? "danger" : action.recommended || primaryActions.includes(action.name) ? "primary" : "";
   return `<button type="button" class="${classes}" data-run-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}${reason}>${escapeHTML(workflowRunActionLabel(action.name, action.label))}</button>`;
 }
@@ -2415,6 +2416,7 @@ function workflowRunActionButton(action) {
 function workflowRunActionLabel(name, fallback = "") {
   if (name === "cancel") return t("chat.cancelRun");
   if (name === "retry") return t("chat.retryRun");
+  if (name === "open_workflow_studio") return t("chat.openWorkflowStudio");
   if (name === "approve_stage") return t("approvals.approveStage");
   if (name === "approve_tool") return t("approvals.approveTool");
   if (name === "approve_all_tools") return t("approvals.approveAllTools");
@@ -2424,6 +2426,9 @@ function workflowRunActionLabel(name, fallback = "") {
   if (name === "deny_all_tools") return t("approvals.denyAllTools");
   if (name === "submit_input") return t("chat.submitWorkflowInput");
   if (name === "resume_sub_workflow") return t("chat.resumeSubWorkflow");
+  if (name === "approve_budget") return t("workflow.approveBudget");
+  if (name === "continue_output") return t("workflow.continueOutput");
+  if (name === "escalate_model") return t("workflow.escalateModel");
   return runActionFallbackLabel(name, fallback, t("chat.runActionsTitle"));
 }
 
@@ -2560,11 +2565,11 @@ function setWorkflowActionButtonsPending(container, pending, activeActionName = 
 function workflowRunActionPrefersBackground(action = {}) {
   if (!action?.path || action.name === "cancel") return false;
   if (action.background === true) return true;
-  return ["approve_stage", "approve_tool", "approve_all_tools", "retry", "resume_sub_workflow"].includes(action.name);
+  return ["approve_stage", "approve_tool", "approve_all_tools", "approve_budget", "continue_output", "escalate_model", "retry", "resume_sub_workflow"].includes(action.name);
 }
 
 function workflowRunActionCanOpenLocally(action = {}) {
-  return ["open_approvals", "submit_input"].includes(action.name);
+  return ["open_approvals", "open_workflow_studio", "submit_input"].includes(action.name);
 }
 
 function workflowRunActionUnavailableHelp(actions) {
@@ -2588,6 +2593,12 @@ function localizedWorkflowActionReason(reason) {
   }
   if (lower.includes("tool approval context") && lower.includes("retry or cancel")) {
     return t("approvals.workflowToolContextLost");
+  }
+  if (lower.includes("continue incomplete stage") || lower.includes("paused graph workflow run with an incomplete next stage")) {
+    return t("workflow.continueOutputHelp");
+  }
+  if (lower.includes("approve hard workflow budget") || lower.includes("hard budget boundary") || lower.includes("budget approval requires")) {
+    return t("workflow.runtimeActionApproveBudgetHelp");
   }
   if (lower.includes("pending tool approval context is not available")) {
     return t("chat.agentToolContextUnavailable");
@@ -3259,7 +3270,7 @@ async function renderWorkflowRunHistoryDetail(state, runKey, options = {}) {
     nextScrollNode.scrollTop = 0;
   }
   state.detail.querySelectorAll("button[data-history-action]").forEach(button => {
-    const action = actions.find(item => item.name === button.dataset.historyAction);
+    const action = workflowRunHistoryVisibleActions(run, actions).find(item => item.name === button.dataset.historyAction);
     button.addEventListener("click", () => {
       if (button.disabled) return;
       if (state.runState.actionInFlight && action?.name !== "cancel") return;
@@ -3449,7 +3460,7 @@ function workflowRunHistoryDetail(run, actions) {
     detailChipHTML(t("chat.runHistoryDiffs"), String(diffCount)),
     detailChipHTML(t("chat.runHistoryEvents"), String(eventCount))
   ].filter(Boolean).join("");
-  const visibleActions = Array.isArray(actions) ? actions : [];
+  const visibleActions = workflowRunHistoryVisibleActions(run, actions);
   const actionHTML = visibleActions.length
     ? visibleActions.map(historyRunActionButton).join("")
     : `<p class="muted">${escapeHTML(t("chat.runHistoryNoActions"))}</p>`;
@@ -3497,6 +3508,19 @@ function workflowRunHistoryDetail(run, actions) {
   </article>`;
 }
 
+function workflowRunHistoryVisibleActions(run, actions) {
+  const visible = Array.isArray(actions) ? [...actions] : [];
+  if (run?.run_type !== "agent" && run?.id && !visible.some(action => action?.name === "open_workflow_studio")) {
+    visible.push({
+      name: "open_workflow_studio",
+      label: t("chat.openWorkflowStudio"),
+      available: true,
+      run_type: "workflow"
+    });
+  }
+  return visible;
+}
+
 function runHistoryLazyPanelsHTML(run, counts = {}) {
   const panels = [
     runHistoryLazyPanelHTML("context", t("chat.runHistoryLazyContext"), t("chat.runHistoryLazyContextHelp"), 1, t("chat.runContextTitle")),
@@ -3521,12 +3545,14 @@ function runHistoryLazyPanelsHTML(run, counts = {}) {
 function runHistoryContextualSummaryHTML(run, counts = {}) {
   const tokenSummary = runTokenUsageSummary(run);
   const toolRisk = runToolRiskContext(run);
+  const tokenDetails = tokenSummary ? runHistoryTokenDetailHTML(tokenSummary) : "";
   const items = [
     tokenSummary ? {
       tone: "cost",
       label: t("chat.runContextualCostTitle"),
-      value: tokenCountText(tokenSummary.estimatedPrompt || tokenSummary.total || tokenSummary.prompt || 0),
-      help: t("chat.runContextualHistoryCostHelp")
+      value: tokenCountText(tokenSummary.grossPrompt || tokenSummary.estimatedPrompt || tokenSummary.total || tokenSummary.prompt || 0),
+      help: t("chat.runContextualHistoryCostHelp"),
+      detail: tokenDetails
     } : null,
     toolRisk?.risk ? {
       tone: "tool",
@@ -3550,8 +3576,20 @@ function runHistoryContextualSummaryHTML(run, counts = {}) {
       <small>${escapeHTML(item.label)}</small>
       <strong>${escapeHTML(item.value || "-")}</strong>
       <em>${escapeHTML(item.help)}</em>
+      ${item.detail || ""}
     </span>`).join("")}
   </section>`;
+}
+
+function runHistoryTokenDetailHTML(summary = {}) {
+  const facts = [
+    summary.savedTokens ? [t("workflow.runtimeField.budgetSavedTokens"), tokenCountText(summary.savedTokens)] : null,
+    summary.grossPrompt ? [t("workflow.runtimeField.budgetGrossPromptTokens"), tokenCountText(summary.grossPrompt)] : null,
+    summary.netPrompt ? [t("workflow.runtimeField.budgetNetPromptTokens"), tokenCountText(summary.netPrompt)] : null,
+    summary.budgetLimit ? [t("workflow.runtimeField.budgetLimit"), summary.budgetLimit] : null
+  ].filter(Boolean);
+  if (!facts.length) return "";
+  return `<div class="run-history-token-details">${facts.map(([label, value]) => `<b><i>${escapeHTML(label)}</i><strong>${escapeHTML(value)}</strong></b>`).join("")}</div>`;
 }
 
 function runHistoryLazyPanelHTML(kind, title, help, count, fallbackLabel) {
@@ -3905,6 +3943,27 @@ function workflowRunHistoryNextStep(run, actions = []) {
       body: t("chat.runNextStep.resumeBody", { action: actionLabel("resume_sub_workflow") })
     };
   }
+  if (has("approve_budget") || status === "awaiting_budget_approval") {
+    return {
+      tone: "waiting",
+      title: t("workflow.runtimeExplain.budget.title"),
+      body: t("chat.runNextStep.approveBudgetBody", { action: actionLabel("approve_budget") })
+    };
+  }
+  if (has("continue_output") || status === "paused_need_more_budget") {
+    return {
+      tone: "waiting",
+      title: t("workflow.runtimeExplain.incomplete.title"),
+      body: t("chat.runNextStep.continueOutputBody", { action: actionLabel("continue_output") })
+    };
+  }
+  if (has("escalate_model")) {
+    return {
+      tone: "waiting",
+      title: t("workflow.runtimeExplain.contract.title"),
+      body: t("chat.runNextStep.escalateModelBody", { action: actionLabel("escalate_model") })
+    };
+  }
   if (isWorkflowRunActive(status)) {
     return {
       tone: "running",
@@ -3963,7 +4022,7 @@ function formatRunTime(value) {
 function historyRunActionButton(action) {
   const unavailable = action.available === false || (!action.path && !workflowRunActionCanOpenLocally(action));
   const reason = action.reason ? ` title="${escapeHTML(localizedWorkflowActionReason(action.reason) || action.reason)}"` : "";
-  const classes = action.destructive || action.name === "deny_tool" ? "danger" : action.recommended || ["retry", "approve_stage", "approve_tool", "approve_all_tools", "approve_remember_tool", "submit_input", "resume_sub_workflow"].includes(action.name) ? "primary" : "";
+  const classes = action.destructive || action.name === "deny_tool" ? "danger" : action.recommended || ["retry", "escalate_model", "approve_stage", "approve_tool", "approve_all_tools", "approve_remember_tool", "submit_input", "resume_sub_workflow"].includes(action.name) ? "primary" : "";
   const label = action.run_type === "agent" ? agentRunActionLabel(action.name, action.label) : workflowRunActionLabel(action.name, action.label);
   return `<button type="button" class="${classes}" data-history-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}${reason}>${escapeHTML(label)}</button>`;
 }
@@ -3984,6 +4043,10 @@ async function executeWorkflowRunHistoryAction(state, run, action) {
     location.hash = "approvals";
     return;
   }
+  if (action.name === "open_workflow_studio") {
+    openWorkflowRunInStudio(run);
+    return;
+  }
   if (action.name === "submit_input") {
     await renderWorkflowRunSnapshot(state.runState, state.collaborationState, run);
     markCollaborationStale(state.collaborationState);
@@ -3994,6 +4057,25 @@ async function executeWorkflowRunHistoryAction(state, run, action) {
   markCollaborationStale(state.collaborationState);
   state.userSelectedRunID = currentHistoryRunKey(state.runState) || historyRunKey(run) || state.userSelectedRunID;
   await loadWorkflowRunHistory(state, state.userSelectedRunID, { forceDetail: true });
+}
+
+function openWorkflowRunInStudio(run = {}) {
+  const runID = String(run.id || run.run_id || "").trim();
+  if (!runID) return;
+  const workflowName = String(run.name || run.workflow_name || "").trim();
+  try {
+    localStorage.setItem(workflowStudioRunKey, JSON.stringify({
+      runID,
+      workflowName,
+      eventsURL: String(run.events_url || run.eventsURL || run.events_path || run.eventsPath || "").trim(),
+      lastEventSeq: 0,
+      updatedAt: Date.now()
+    }));
+    if (workflowName) localStorage.setItem("goflow.workflow.open", workflowName);
+  } catch {
+    // Studio can still load the view; persistence is only used to focus the run.
+  }
+  location.hash = "workflows";
 }
 
 async function executeAgentRunHistoryAction(state, run, action) {
@@ -4046,7 +4128,17 @@ function workflowRunEventToTimeline(event, run) {
   const workflowStatus = String(event.workflow_status || event.status || "").toLowerCase();
   const runStatus = String(run?.status || "").toLowerCase();
   const lowLevelTypes = new Set(["text", "delta", "token", "message", "final_message", "token_usage", "prompt_budget", "status"]);
-  if (lowLevelTypes.has(type) || type.endsWith("_delta") || type.includes("stream_chunk")) {
+  const budgetReason = String(event.budget_reason || event.budgetReason || event.reason || "").toLowerCase();
+  const budgetDiagnostic = Boolean(
+    budgetReason.includes("budget_") ||
+    event.budget_metric ||
+    event.budgetMetric ||
+    event.budget_soft_limit ||
+    event.budgetSoftLimit ||
+    event.budget_hard_limit ||
+    event.budgetHardLimit
+  );
+  if ((lowLevelTypes.has(type) && !budgetDiagnostic) || type.endsWith("_delta") || type.includes("stream_chunk")) {
     return null;
   }
   const isError = event.is_error || type === "error";
@@ -4055,6 +4147,34 @@ function workflowRunEventToTimeline(event, run) {
       tone: "error",
       title: t("chat.errorTitle"),
       detail: timelineDetail([event.content, event.arguments_summary])
+    };
+  }
+  if (budgetDiagnostic && budgetReason === "budget_soft_limit_hit" && type !== "workflow_result") {
+    const budgetLimit = runWorkflowBudgetLimitText({
+      budgetMetric: String(event.budget_metric || event.budgetMetric || "").trim(),
+      budgetUsed: runTokenNumber(event, ["budget_used", "budgetUsed"]),
+      budgetSoftLimit: runTokenNumber(event, ["budget_soft_limit", "budgetSoftLimit"]),
+      budgetHardLimit: runTokenNumber(event, ["budget_hard_limit", "budgetHardLimit"]),
+      budgetRemaining: runTokenNumber(event, ["budget_remaining", "budgetRemaining"])
+    });
+    return {
+      tone: "warn",
+      title: t("chat.timelineBudgetWarning"),
+      detail: timelineDetail([event.stage || event.task_stage, event.content || event.detail, budgetLimit])
+    };
+  }
+  if (budgetDiagnostic && budgetReason === "budget_model_route_applied") {
+    return {
+      tone: "stage",
+      title: t("chat.timelineBudgetRoute"),
+      detail: timelineDetail([event.stage || event.task_stage, event.content || event.detail, event.source_ref])
+    };
+  }
+  if (budgetDiagnostic && budgetReason === "budget_branch_limit_applied") {
+    return {
+      tone: "warn",
+      title: t("chat.timelineBudgetBranchLimit"),
+      detail: timelineDetail([event.stage || event.task_stage, event.content || event.detail, event.arguments_summary, event.source_ref])
     };
   }
   if (event.needs_action || event.suspended || type === "approval" || type.includes("approval")) {
@@ -4225,14 +4345,40 @@ function timelineItemsForAgentRun(items, run) {
 function workflowReplayTimelineItem(item = {}, run = {}, fallbackTitle = t("chat.workflow")) {
   const kind = String(item.kind || item.type || "").trim().toLowerCase();
   const lowLevelKinds = new Set(["text", "delta", "token", "message", "final_message", "token_usage", "prompt_budget", "status"]);
-  if (lowLevelKinds.has(kind) || kind.endsWith("_delta") || kind.includes("stream_chunk")) return null;
+  const budgetReason = String(item.budget_reason || item.budgetReason || item.reason || "").toLowerCase();
+  const budgetDiagnostic = Boolean(
+    budgetReason.includes("budget_") ||
+    item.budget_metric ||
+    item.budgetMetric ||
+    item.budget_soft_limit ||
+    item.budgetSoftLimit ||
+    item.budget_hard_limit ||
+    item.budgetHardLimit
+  );
+  if ((lowLevelKinds.has(kind) && !budgetDiagnostic) || kind.endsWith("_delta") || kind.includes("stream_chunk")) return null;
   if (isLowValueTimelineChunk(item)) return null;
   const title = item.title || item.stage || item.tool_name || item.agent_id || item.kind || item.type || run.name || fallbackTitle;
   const summary = item.summary || item.content || item.status || "";
   if (!title && !summary) return null;
+  const budgetLimit = runWorkflowBudgetLimitText({
+    budgetMetric: String(item.budget_metric || item.budgetMetric || "").trim(),
+    budgetUsed: runTokenNumber(item, ["budget_used", "budgetUsed"]),
+    budgetSoftLimit: runTokenNumber(item, ["budget_soft_limit", "budgetSoftLimit"]),
+    budgetHardLimit: runTokenNumber(item, ["budget_hard_limit", "budgetHardLimit"]),
+    budgetRemaining: runTokenNumber(item, ["budget_remaining", "budgetRemaining"])
+  });
+  const budgetTitle = budgetReason === "budget_model_route_applied"
+    ? t("chat.timelineBudgetRoute")
+    : budgetReason === "budget_branch_limit_applied"
+      ? t("chat.timelineBudgetBranchLimit")
+      : budgetReason === "budget_soft_limit_hit"
+        ? t("chat.timelineBudgetWarning")
+        : "";
   const tone = item.is_error
     ? "error"
-    : item.needs_action || item.suspended || kind.includes("approval")
+    : (budgetReason === "budget_soft_limit_hit" && kind === "status") || String(item.severity || "").toLowerCase() === "warning"
+      ? "warn"
+      : item.needs_action || item.suspended || kind.includes("approval")
       ? "approval"
       : kind.includes("tool")
         ? "tool"
@@ -4241,8 +4387,15 @@ function workflowReplayTimelineItem(item = {}, run = {}, fallbackTitle = t("chat
           : "stage";
   return {
     tone,
-    title: localizedText(title),
-    detail: timelineDetail([summary, item.status && item.status !== summary ? item.status : ""])
+    title: budgetTitle || localizedText(title),
+    detail: timelineDetail([
+      summary,
+      item.status && item.status !== summary ? item.status : "",
+      item.reason && item.reason !== summary ? item.reason : "",
+      item.contract_check || item.contractCheck,
+      budgetLimit,
+      item.source_ref || item.sourceRef
+    ])
   };
 }
 
@@ -4507,6 +4660,14 @@ function runTokenUsageHTML(run, options = {}) {
     summary.output ? [t("chat.tokenOutput"), tokenCountText(summary.output)] : null,
     summary.cached ? [t("chat.tokenCached"), tokenCountText(summary.cached)] : null,
     summary.estimatedPrompt ? [t("chat.tokenEstimatedPrompt"), tokenCountText(summary.estimatedPrompt)] : null,
+    summary.savedTokens ? [t("workflow.runtimeField.budgetSavedTokens"), tokenCountText(summary.savedTokens)] : null,
+    summary.grossPrompt ? [t("workflow.runtimeField.budgetGrossPromptTokens"), tokenCountText(summary.grossPrompt)] : null,
+    summary.netPrompt ? [t("workflow.runtimeField.budgetNetPromptTokens"), tokenCountText(summary.netPrompt)] : null,
+    summary.budgetLimit ? [t("workflow.runtimeField.budgetLimit"), summary.budgetLimit] : null,
+    summary.estimatedInputCost ? [t("workflow.runtimeField.budgetEstimatedInputCost"), costText(summary.estimatedInputCost, summary.costCurrency)] : null,
+    summary.estimatedOutputCost ? [t("workflow.runtimeField.budgetEstimatedOutputCost"), costText(summary.estimatedOutputCost, summary.costCurrency)] : null,
+    summary.estimatedTotalCost ? [t("workflow.runtimeField.budgetEstimatedTotalCost"), costText(summary.estimatedTotalCost, summary.costCurrency)] : null,
+    summary.pricingSource ? [t("workflow.runtimeField.budgetPricingSource"), summary.pricingSource] : null,
     summary.samples ? [t("chat.tokenSamples"), String(summary.samples)] : null,
     summary.prefix ? [t("chat.tokenPrefix"), shortRunID(summary.prefix)] : null
   ].filter(Boolean);
@@ -4531,10 +4692,32 @@ function runTokenUsageSummary(run) {
     output: runTokenNumber(run, ["output_tokens", "completion_tokens", "OutputTokens", "outputTokens"]),
     cached: runTokenNumber(run, ["cached_tokens", "CachedTokens", "cachedTokens"]),
     total: runTokenNumber(run, ["total_tokens", "TotalTokens", "totalTokens"]),
-    estimatedPrompt: 0,
+    estimatedPrompt: runTokenNumber(run, ["budget_estimated_prompt_tokens", "budgetEstimatedPromptTokens"]),
+    netPrompt: runTokenNumber(run, ["budget_net_prompt_tokens", "budgetNetPromptTokens"]),
+    grossPrompt: runTokenNumber(run, ["budget_gross_prompt_tokens", "budgetGrossPromptTokens"]),
+    savedTokens: runTokenNumber(run, ["budget_saved_tokens", "budgetSavedTokens"]),
+    memorySavedTokens: runTokenNumber(run, ["budget_memory_saved_tokens", "budgetMemorySavedTokens"]),
+    historySavedTokens: runTokenNumber(run, ["budget_history_saved_tokens", "budgetHistorySavedTokens"]),
+    artifactSavedTokens: runTokenNumber(run, ["budget_artifact_saved_tokens", "budgetArtifactSavedTokens"]),
+    skillSavedTokens: runTokenNumber(run, ["budget_skill_saved_tokens", "budgetSkillSavedTokens"]),
+    toolSchemaSavedTokens: runTokenNumber(run, ["budget_tool_schema_saved_tokens", "budgetToolSchemaSavedTokens"]),
+    estimatedInputCost: runTokenNumber(run, ["budget_estimated_input_cost", "budgetEstimatedInputCost"]),
+    estimatedOutputCost: runTokenNumber(run, ["budget_estimated_output_cost", "budgetEstimatedOutputCost"]),
+    estimatedTotalCost: runTokenNumber(run, ["budget_estimated_total_cost", "budgetEstimatedTotalCost"]),
+    costCurrency: String(run?.budget_cost_currency || run?.budgetCostCurrency || "").trim(),
+    pricingSource: String(run?.budget_pricing_source || run?.budgetPricingSource || "").trim(),
+    budgetMetric: String(run?.budget_metric || run?.budgetMetric || "").trim(),
+    budgetUsed: runTokenNumber(run, ["budget_used", "budgetUsed"]),
+    budgetSoftLimit: runTokenNumber(run, ["budget_soft_limit", "budgetSoftLimit"]),
+    budgetHardLimit: runTokenNumber(run, ["budget_hard_limit", "budgetHardLimit"]),
+    budgetRemaining: runTokenNumber(run, ["budget_remaining", "budgetRemaining"]),
+    budgetLimit: "",
     samples: 0,
     prefix: ""
   };
+  const eventBudgetTotals = runEmptyBudgetAttribution();
+  const eventBudgetCumulative = runEmptyBudgetAttribution();
+  let eventBudgetSamples = 0;
   for (const event of events) {
     const type = String(event?.type || "").toLowerCase();
     if (type === "token_usage") {
@@ -4550,17 +4733,120 @@ function runTokenUsageSummary(run) {
     }
     if (type === "prompt_budget" || event?.prompt_budget || event?.promptBudget) {
       const budget = event.prompt_budget || event.promptBudget || event;
-      summary.estimatedPrompt = Math.max(summary.estimatedPrompt, runTokenNumber(budget, ["estimated_prompt_tokens", "estimatedPromptTokens"]));
+      runBudgetAttributionAdd(eventBudgetTotals, runPromptBudgetAttribution(budget));
+      eventBudgetSamples += 1;
       summary.prefix = summary.prefix || String(budget.prompt_prefix_hash || budget.promptPrefixHash || "").trim();
+    }
+    runBudgetAttributionMax(eventBudgetCumulative, {
+      estimatedPrompt: runTokenNumber(event, ["budget_estimated_prompt_tokens", "budgetEstimatedPromptTokens"]),
+      netPrompt: runTokenNumber(event, ["budget_net_prompt_tokens", "budgetNetPromptTokens"]),
+      grossPrompt: runTokenNumber(event, ["budget_gross_prompt_tokens", "budgetGrossPromptTokens"]),
+      savedTokens: runTokenNumber(event, ["budget_saved_tokens", "budgetSavedTokens"]),
+      memorySavedTokens: runTokenNumber(event, ["budget_memory_saved_tokens", "budgetMemorySavedTokens"]),
+      historySavedTokens: runTokenNumber(event, ["budget_history_saved_tokens", "budgetHistorySavedTokens"]),
+      artifactSavedTokens: runTokenNumber(event, ["budget_artifact_saved_tokens", "budgetArtifactSavedTokens"]),
+      skillSavedTokens: runTokenNumber(event, ["budget_skill_saved_tokens", "budgetSkillSavedTokens"]),
+      toolSchemaSavedTokens: runTokenNumber(event, ["budget_tool_schema_saved_tokens", "budgetToolSchemaSavedTokens"]),
+      estimatedInputCost: runTokenNumber(event, ["budget_estimated_input_cost", "budgetEstimatedInputCost"]),
+      estimatedOutputCost: runTokenNumber(event, ["budget_estimated_output_cost", "budgetEstimatedOutputCost"]),
+      estimatedTotalCost: runTokenNumber(event, ["budget_estimated_total_cost", "budgetEstimatedTotalCost"]),
+      costCurrency: String(event?.budget_cost_currency || event?.budgetCostCurrency || "").trim(),
+      pricingSource: String(event?.budget_pricing_source || event?.budgetPricingSource || "").trim()
+    });
+    if (event?.budget_metric || event?.budgetMetric || event?.budget_hard_limit || event?.budgetHardLimit || event?.budget_soft_limit || event?.budgetSoftLimit) {
+      summary.budgetMetric = String(event.budget_metric || event.budgetMetric || summary.budgetMetric || "").trim();
+      summary.budgetUsed = runTokenNumber(event, ["budget_used", "budgetUsed"]) || summary.budgetUsed;
+      summary.budgetSoftLimit = runTokenNumber(event, ["budget_soft_limit", "budgetSoftLimit"]) || summary.budgetSoftLimit;
+      summary.budgetHardLimit = runTokenNumber(event, ["budget_hard_limit", "budgetHardLimit"]) || summary.budgetHardLimit;
+      summary.budgetRemaining = runTokenNumber(event, ["budget_remaining", "budgetRemaining"]) || summary.budgetRemaining;
     }
   }
   const directBudget = run?.prompt_budget || run?.promptBudget;
+  if (eventBudgetSamples > 0) {
+    runBudgetAttributionMax(summary, eventBudgetTotals);
+  }
   if (directBudget && typeof directBudget === "object") {
-    summary.estimatedPrompt = Math.max(summary.estimatedPrompt, runTokenNumber(directBudget, ["estimated_prompt_tokens", "estimatedPromptTokens"]));
+    runBudgetAttributionMax(summary, runPromptBudgetAttribution(directBudget));
+  }
+  runBudgetAttributionMax(summary, eventBudgetCumulative);
+  if (directBudget && typeof directBudget === "object") {
     summary.prefix = summary.prefix || String(directBudget.prompt_prefix_hash || directBudget.promptPrefixHash || "").trim();
   }
+  if (!summary.savedTokens) {
+    summary.savedTokens = summary.memorySavedTokens + summary.historySavedTokens + summary.artifactSavedTokens + summary.skillSavedTokens + summary.toolSchemaSavedTokens;
+  }
+  if (!summary.estimatedPrompt && summary.netPrompt) summary.estimatedPrompt = summary.netPrompt;
+  if (!summary.netPrompt) summary.netPrompt = summary.estimatedPrompt;
+  if (!summary.grossPrompt && (summary.netPrompt || summary.savedTokens)) summary.grossPrompt = summary.netPrompt + summary.savedTokens;
   if (!summary.total && (summary.prompt || summary.output)) summary.total = summary.prompt + summary.output;
-  return summary.prompt || summary.output || summary.cached || summary.total || summary.estimatedPrompt || summary.samples ? summary : null;
+  if (!summary.estimatedTotalCost && (summary.estimatedInputCost || summary.estimatedOutputCost)) summary.estimatedTotalCost = summary.estimatedInputCost + summary.estimatedOutputCost;
+  summary.budgetLimit = runWorkflowBudgetLimitText(summary);
+  return summary.prompt || summary.output || summary.cached || summary.total || summary.estimatedPrompt || summary.savedTokens || summary.grossPrompt || summary.budgetLimit || summary.estimatedTotalCost || summary.estimatedInputCost || summary.estimatedOutputCost || summary.samples ? summary : null;
+}
+
+function runEmptyBudgetAttribution() {
+  return {
+    estimatedPrompt: 0,
+    netPrompt: 0,
+    grossPrompt: 0,
+    savedTokens: 0,
+    memorySavedTokens: 0,
+    historySavedTokens: 0,
+    artifactSavedTokens: 0,
+    skillSavedTokens: 0,
+    toolSchemaSavedTokens: 0,
+    estimatedInputCost: 0,
+    estimatedOutputCost: 0,
+    estimatedTotalCost: 0,
+    costCurrency: "",
+    pricingSource: ""
+  };
+}
+
+function runPromptBudgetAttribution(budget = {}) {
+  const attribution = runEmptyBudgetAttribution();
+  attribution.estimatedPrompt = runTokenNumber(budget, ["estimated_prompt_tokens", "estimatedPromptTokens"]);
+  attribution.netPrompt = attribution.estimatedPrompt;
+  attribution.memorySavedTokens = runTokenNumber(budget, ["memory_estimated_saved_tokens", "memoryEstimatedSavedTokens"]);
+  attribution.historySavedTokens = runTokenNumber(budget, ["history_estimated_saved_tokens", "historyEstimatedSavedTokens"]);
+  attribution.artifactSavedTokens = runTokenNumber(budget, ["artifact_omitted_tokens", "artifactOmittedTokens"]);
+  attribution.skillSavedTokens = runTokenNumber(budget, ["skill_omitted_tokens", "skillOmittedTokens"]);
+  attribution.toolSchemaSavedTokens = runTokenNumber(budget, ["tool_schema_estimated_saved_tokens", "toolSchemaEstimatedSavedTokens"]);
+  attribution.savedTokens = attribution.memorySavedTokens + attribution.historySavedTokens + attribution.artifactSavedTokens + attribution.skillSavedTokens + attribution.toolSchemaSavedTokens;
+  attribution.grossPrompt = attribution.netPrompt + attribution.savedTokens;
+  attribution.estimatedInputCost = runTokenNumber(budget, ["estimated_input_cost", "estimatedInputCost"]);
+  attribution.estimatedOutputCost = runTokenNumber(budget, ["estimated_output_cost", "estimatedOutputCost"]);
+  attribution.estimatedTotalCost = runTokenNumber(budget, ["estimated_total_cost", "estimatedTotalCost"]) || attribution.estimatedInputCost + attribution.estimatedOutputCost;
+  attribution.costCurrency = String(budget.cost_currency || budget.costCurrency || "").trim();
+  attribution.pricingSource = String(budget.pricing_source || budget.pricingSource || "").trim();
+  return attribution;
+}
+
+function runBudgetAttributionAdd(target, attribution = {}) {
+  if (!target || !attribution) return;
+  target.estimatedPrompt += Number(attribution.estimatedPrompt || 0);
+  target.netPrompt += Number(attribution.netPrompt || 0);
+  target.grossPrompt += Number(attribution.grossPrompt || 0);
+  target.savedTokens += Number(attribution.savedTokens || 0);
+  target.memorySavedTokens += Number(attribution.memorySavedTokens || 0);
+  target.historySavedTokens += Number(attribution.historySavedTokens || 0);
+  target.artifactSavedTokens += Number(attribution.artifactSavedTokens || 0);
+  target.skillSavedTokens += Number(attribution.skillSavedTokens || 0);
+  target.toolSchemaSavedTokens += Number(attribution.toolSchemaSavedTokens || 0);
+  target.estimatedInputCost += Number(attribution.estimatedInputCost || 0);
+  target.estimatedOutputCost += Number(attribution.estimatedOutputCost || 0);
+  target.estimatedTotalCost += Number(attribution.estimatedTotalCost || 0);
+  if (!target.costCurrency && attribution.costCurrency) target.costCurrency = attribution.costCurrency;
+  if (!target.pricingSource && attribution.pricingSource) target.pricingSource = attribution.pricingSource;
+}
+
+function runBudgetAttributionMax(target, attribution = {}) {
+  if (!target || !attribution) return;
+  for (const key of ["estimatedPrompt", "netPrompt", "grossPrompt", "savedTokens", "memorySavedTokens", "historySavedTokens", "artifactSavedTokens", "skillSavedTokens", "toolSchemaSavedTokens", "estimatedInputCost", "estimatedOutputCost", "estimatedTotalCost"]) {
+    target[key] = Math.max(Number(target[key] || 0), Number(attribution[key] || 0));
+  }
+  if (!target.costCurrency && attribution.costCurrency) target.costCurrency = attribution.costCurrency;
+  if (!target.pricingSource && attribution.pricingSource) target.pricingSource = attribution.pricingSource;
 }
 
 function runTokenNumber(source, keys = []) {
@@ -4572,10 +4858,48 @@ function runTokenNumber(source, keys = []) {
   return 0;
 }
 
+function runWorkflowBudgetLimitText(summary = {}) {
+  const metric = String(summary.budgetMetric || "").trim();
+  const soft = Number(summary.budgetSoftLimit || 0);
+  const hard = Number(summary.budgetHardLimit || 0);
+  if (!metric && !soft && !hard) return "";
+  const limit = hard || soft;
+  const metricKey = metric ? `workflow.budgetMetric.${metric}` : "";
+  const metricLabel = metricKey && t(metricKey) !== metricKey ? t(metricKey) : localizedText(metric.replace(/_/g, " ") || t("workflow.runtimeField.budgetUsed"));
+  const parts = [`${metricLabel}: ${Number(summary.budgetUsed || 0)}${limit ? ` / ${limit}` : ""}`];
+  if (soft && hard && soft !== hard) parts.push(`${t("workflow.runtimeField.budgetSoftLimit")}: ${soft}`);
+  if (hard) parts.push(`${t("workflow.runtimeField.budgetRemaining")}: ${Number(summary.budgetRemaining || 0)}`);
+  return parts.join(" / ");
+}
+
 function tokenCountText(value) {
   const number = Number(value || 0);
   if (!Number.isFinite(number) || number <= 0) return "-";
   return `${number.toLocaleString()} ${t("chat.tokens")}`;
+}
+
+function costText(value, currency = "") {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "-";
+  const code = String(currency || "").trim().toUpperCase();
+  const digits = number < 0.01 ? 6 : number < 1 ? 4 : 2;
+  if (/^[A-Z]{3}$/.test(code)) {
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: code,
+        minimumFractionDigits: Math.min(2, digits),
+        maximumFractionDigits: digits
+      }).format(number);
+    } catch {
+      // Fall through to a plain numeric display for custom currency labels.
+    }
+  }
+  const text = number.toLocaleString(undefined, {
+    minimumFractionDigits: number < 1 ? Math.min(2, digits) : 0,
+    maximumFractionDigits: digits
+  });
+  return code ? `${text} ${code}` : text;
 }
 
 function renderRunToolRisk(state, run) {
@@ -4633,7 +4957,7 @@ function runSupplementalDetailItems(run) {
   const items = [];
   const tokenSummary = runTokenUsageSummary(run);
   if (tokenSummary) {
-    const estimated = tokenSummary.estimatedPrompt || tokenSummary.total || tokenSummary.prompt || 0;
+    const estimated = tokenSummary.grossPrompt || tokenSummary.estimatedPrompt || tokenSummary.total || tokenSummary.prompt || 0;
     items.push({
       kind: "cost",
       title: t("chat.runContextualCostTitle"),

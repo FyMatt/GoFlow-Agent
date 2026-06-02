@@ -384,6 +384,10 @@ acceptance_criteria:
 
 如果后面要接 `quality_gate`，建议上游节点至少声明一部分 `acceptance_criteria`，否则质量门禁只能根据有限上下文猜测是否通过。
 
+如果某个执行节点的输出必须满足契约，可以在 `params` 里设置 `contract_required: "true"` 或 `on_contract_fail: block`。运行时会在阶段执行后检查缺失的验收结果、验证/证据、声明的 artifact、映射 `outputs`、JSON worker 输出、必需 JSON 字段和必需章节；失败时会发出 `contract_validation_failed` 事件，并带上 `contract_check`、`contract_checks`、`source_ref` 和 `source_refs`，Studio 可以直接定位到出问题的节点和缺失输出。
+
+契约失败也可以配置模型升级恢复路径：设置 `params.on_contract_fail: escalate`，并配置 `escalate_provider`、`escalate_model`、`escalate_max_tokens` 或 `escalate_temperature` 中的任意一项（也支持 `model_escalation_*` 和 `contract_fail_*` 别名）。运行时只会用升级后的模型/预算路由重跑失败阶段，发出 `model_escalated` 和 `stage_retry` 事件，在阶段元数据中记录 `model.escalated`、`model.route` 和 `model.escalation_ref`，然后在同一个 workflow run 中继续下游阶段。没有配置自动升级但具备升级参数的阻塞运行，会在 Studio 和 `/actions` 中暴露 `escalate_model` 操作。
+
 ### 新手推荐的最小套路
 
 如果你还不熟，先按这个固定模式写：
@@ -898,6 +902,92 @@ stages:
 
 所有内置模板都按“可交付蓝图”维护，而不是松散示例。内置 Workflow Template 必须能通过图校验，包含明确结束节点，产出报告或证据产物，声明验收标准，经过 `quality_gate` 或 `policy_guard`，并最终收口到面向用户的报告、交接、发布摘要或可落地的工作流草案。这样简单起步模板也能作为复杂任务的稳定基础。
 
+## 执行准备契约
+
+`stage.execution` 用来声明一个节点到底是在做规划、干跑、人工交接，还是准备触发真实 live 动作。它和 `approval: true` 是两层控制：`approval` 负责在阶段开始前暂停给人确认，`execution` 负责记录目标边界、风险等级和 live 前必须具备的授权证据。
+
+常用字段：
+
+- `mode`: `planning`、`dry_run`、`manual`、`disabled` 或 `live`。
+- `risk_level`: `low`、`medium`、`high`、`critical`。
+- `boundary`: 给操作者看的边界说明，例如 `workspace-draft`、`lab`、`production`。
+- `requires_approval`、`requires_authorized_scope`、`requires_rollback`、`requires_credential_ref`、`requires_allowlist`: live 前需要满足的准备项。
+- `allow_live_tools`: live 阶段允许真正调用的工具白名单。
+- `required_params`: 额外要求存在的阶段参数。
+
+示例：
+
+```yaml
+- name: apply-change
+  node_type: tool
+  agent: fixer
+  skill: code-writing
+  tool: network_ops/apply_config
+  approval: true
+  execution:
+    mode: live
+    risk_level: high
+    boundary: production-router-change
+    requires_authorized_scope: true
+    requires_rollback: true
+    requires_credential_ref: true
+    requires_allowlist: true
+    allow_live_tools: [network_ops/apply_config]
+    required_params: [change_ticket]
+  params:
+    authorized_scope: router-edge-01
+    rollback_plan: artifacts://rollback-plan
+    credential_ref: vault://network/prod/operator
+    allowed_devices: router-edge-01
+    change_ticket: CHG-12345
+```
+
+当 `mode: live` 缺少审批、授权范围、回滚、凭据引用、allowlist、必填参数或 live 工具白名单时，GoFlow 会在模型或工具执行前阻断该节点。阻断结果会持久化 `contract_check=execution_readiness`、`contract_failed=true`、`execution.mode`、`execution.ready=false`、`execution.missing`、`execution.risk_level`、`execution.boundary` 和 `source_ref`，运行流也会发出 `execution_readiness_blocked` 事件。Workflow Studio 会在图节点、悬浮详情、选中节点诊断和运行日志里显示这些信息，方便定位到底是哪一个节点、哪一个准备项没满足。
+
+`planning`、`dry_run`、`manual` 和 `disabled` 不会触发 live 准备阻断，但仍会输出执行模式、风险和边界元数据。新工作流建议优先使用结构化的 `stage.execution`，旧的 `params.execution_mode`、`params.authorized_scope`、`params.rollback_plan`、`params.credential_ref`、`params.allowed_hosts`、`params.allowed_commands`、`params.allow_live_tools` 等兼容参数仍会被读取。
+
+受控 RESTCONF/API live connector 示例：
+
+```yaml
+- name: apply-restconf-change
+  node_type: tool
+  agent: operations-specialist
+  skill: execution-plan
+  tool: network_tools/device_restconf_live_apply
+  approval: true
+  execution:
+    mode: live
+    risk_level: high
+    boundary: production-restconf-change
+    requires_approval: true
+    requires_authorized_scope: true
+    requires_rollback: true
+    requires_credential_ref: true
+    requires_allowlist: true
+    allow_live_tools: [network_tools/device_restconf_live_apply]
+    required_params: [approval_ref, change_ticket, allowed_hosts, allowed_paths]
+  params:
+    host: router-edge-01.example.com
+    endpoint: https://router-edge-01.example.com/restconf/data/native/interface
+    method: PATCH
+    credential_ref: env:GOFLOW_RESTCONF_TOKEN
+    approval_ref: approval-123
+    change_ticket: CHG-12345
+    authorized_scope: true
+    allowed_hosts: [router-edge-01.example.com]
+    allowed_methods: [PATCH]
+    allowed_paths: [/restconf/data/native/*]
+    payload:
+      interface:
+        description: approved maintenance update
+    rollback_plan:
+      - restore previous interface description from backup artifact
+    dry_run_confirmed: true
+    change_approved: true
+```
+
+这个工具仍然需要 MCP server 环境里显式设置 `GOFLOW_NETWORK_TOOLS_ENABLE_LIVE=1` 才会发送 HTTPS 请求；否则只返回 blocked audit payload，不会假装成功。凭据只通过 `env:` / `env://` 引用在 MCP server 进程内读取，工具结果不会返回 secret。
+
 ## Durable Run
 
 浏览器运行 workflow 时应使用后台 durable run：
@@ -906,7 +996,9 @@ stages:
 - 刷新页面或切换板块不会取消 run。
 - 取消只能通过显式 cancel。
 - 客户端可通过 SSE 重新连接。
-- retry、input、approve、approve-tools 写入同一个 run 快照。
+- retry、input、approve、approve-tools、continue_output、approve_budget 和 escalate_model 写入同一个 run 快照。
+
+运行恢复动作会区分不同阻塞原因：`paused_need_more_budget` 暴露 `continue_output`，硬预算暂停暴露 `approve_budget`，带模型升级配置的必需契约失败暴露 `escalate_model`，接口是 `POST /api/workflow-runs/{id}/escalate-model` 和 `/escalate-model/stream`。Studio 会在运行操作、选中节点诊断、图节点标记和时间线事件里显示同一条恢复路径，方便定位是哪一个节点、哪一个契约或预算导致暂停。
 
 ## 审批边界
 

@@ -32,6 +32,7 @@ skills:
     - code-audit
     - vulnerability-research
     - web-vulnerability-research
+    - authorized-red-team-validation
     - binary-vulnerability-research
     - reverse-engineering
 tools:
@@ -46,9 +47,17 @@ tools:
     - network_tools/device_discovery_plan
     - network_tools/device_command_plan
     - network_tools/device_config_dry_run
+    - network_tools/device_restconf_live_apply
     - python_notes/binary_file_info
     - python_notes/binary_strings
     - python_notes/hex_preview
+    - python_notes/binary_format_summary
+    - python_notes/binary_entropy_map
+    - python_notes/binary_symbol_hints
+    - python_notes/binary_extract_window
+    - python_notes/markdown_link_check
+    - python_notes/support_case_summary
+    - python_notes/redaction_check
 workflows:
     - plan-fix-audit
     - skill-chain
@@ -61,6 +70,7 @@ workflow_templates:
     - software-team-review-gate
     - web-research-risk
     - security-audit-evidence-gate
+    - authorized-red-team-validation
     - binary-triage
     - docs-review-publish
     - operations-runbook
@@ -94,15 +104,20 @@ examples:
       agent: framework-extension-architect
 vertical_pack:
     domain: multi-domain
-    maturity: guided
-    summary: Routes mixed user requests through structured intake, strong-model task decomposition, selected parallel domain workers, artifact-first join, audit, quality gate, and final report.
+    maturity: production-ready
+    summary: Routes mixed user requests through structured intake, branch-selection contracts, max-parallel limits, per-branch tool allowlists, cost attribution, selected parallel domain workers, artifact-first join, conflict detection, audit, quality gate, and final integrated risk handoff.
     supported_tasks:
         - domain routing
         - task intake
         - task decomposition
         - selected parallel domain execution
+        - branch-selection diagnostics
+        - max-parallel orchestration
+        - per-branch tool allowlist enforcement
+        - authorized red-team validation routing
         - team handoff
         - starter kit selection
+        - artifact handoff and conflict detection
         - multi-domain report synthesis
     required_inputs:
         - primary domain or auto routing
@@ -111,35 +126,47 @@ vertical_pack:
         - desired output
         - risk tolerance
         - maximum parallel domains
+        - branch selection policy
     tool_boundaries:
         - Uses only selected domain worker tools and linked team template refs.
         - Unselected domain workers do not run, reducing token and tool exposure.
+        - Each selected branch must carry branch-selection reason, per-branch tool allowlist, budget/cost attribution, and artifact handoff contract.
         - Keeps decomposition, worker handoffs, join, audit, and synthesis summary-first.
         - Network-device work is routed to operations tools with authorized scope, host allowlists, dry-run plans, and evidence refs.
+        - Offensive security work is routed to authorized red-team validation with written scope, allowlists, approvals, rate limits, and blocked-action reporting.
     safety_gates:
         - Route risky domains to approval-aware workflows.
         - Require explicit authorization and scope for security, web, operations, and binary analysis work.
+        - Keep offensive validation non-destructive, scoped, and approval-gated.
+        - Block joins when selected worker artifacts are missing or cross-domain conflicts are unresolved.
         - Preserve unresolved decisions for operator review.
     quality_gates:
         - Requires decomposition with selected active branches.
+        - Requires branch-selection reason, pruned branch list, max-parallel decision, and per-branch allowlist.
         - Requires selected worker summaries or explicit blockers.
-        - Requires integrated report, audit decision, token discipline, and risk handoff.
+        - Requires artifact handoff, join conflict diagnostics, integrated report, audit decision, token/cost discipline, and risk handoff.
     evidence_artifacts:
         - intake summary
         - multi-domain task graph
+        - branch-selection reason
+        - pruned branches
+        - per-branch tool allowlists
         - selected domain worker reports
+        - authorized red-team validation report
         - integrated multi-domain report
+        - join conflict report
         - audit report
         - final handoff report
     simple_mode:
-        - Show goal, target, desired output, risk tolerance, selected domains, approvals, quality status, and final handoff.
+        - Show goal, target, desired output, risk tolerance, selected/pruned domains, branch blockers, approvals, quality status, join conflicts, and final handoff.
     expert_mode:
-        - Show active_branches, branch contracts, team template refs, policy refs, model routes, context budgets, artifacts, and audit evidence.
+        - Show active_branches, branch_selection_reason, pruned_branches, per_branch_tool_allowlists, branch contracts, team template refs, policy refs, model routes, context budgets, cost attribution, artifacts, conflicts, and audit evidence.
     token_strategy:
         - Route with compact intake fields.
         - Use strong-model decomposition once, then run only selected domain workers.
         - Pass branch contracts, summaries, structured fields, and artifact refs instead of full transcripts.
         - Keep unselected branches out of execution, join, audit, and final handoff.
+        - Attribute cost by selected branch and surface budget blockers instead of truncating work.
     model_routes:
         strong:
             - task decomposition

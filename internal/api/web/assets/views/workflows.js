@@ -63,6 +63,7 @@ const state = {
   expertMode: workflowExpertModeEnabled(),
   stageRecommendationNotice: null,
   hoveredControlStage: "",
+  resourcePickerExpanded: {},
   resourceCapabilities: [],
   activeRoot: null,
   shortcutsBound: false,
@@ -160,7 +161,7 @@ function workflowExpertModeEnabled() {
 }
 
 function workflowSimpleInspectorTabIDs() {
-  return ["overview", "flow"];
+  return ["overview"];
 }
 
 function setWorkflowExpertMode(root, enabled, options = {}) {
@@ -704,6 +705,7 @@ function createRuntimeState() {
     approval: null,
     error: "",
     tokenUsage: null,
+    budgetUsage: null,
     route: null,
     runID: "",
     eventsURL: "",
@@ -936,6 +938,41 @@ function workflowRunSnapshotFromWorkflowEvent(event = {}) {
     pending_input: Boolean(result?.pending_input) || status === "awaiting_input",
     pending_input_fields: result?.pending_input_fields || [],
     completed_stages: result?.completed_stages || [],
+    reason: event.reason || result?.reason || "",
+    stop_reason: event.stop_reason || result?.stop_reason || "",
+    continuation_count: event.continuation_count ?? result?.continuation_count ?? null,
+    incomplete: Boolean(event.incomplete || result?.incomplete),
+    incomplete_reason: event.incomplete_reason || result?.incomplete_reason || "",
+    budget_scope: event.budget_scope || result?.budget_scope || "",
+    budget_reason: event.budget_reason || result?.budget_reason || "",
+    budget_metric: event.budget_metric || event.budgetMetric || result?.budget_metric || result?.budgetMetric || "",
+    budget_used: event.budget_used ?? event.budgetUsed ?? result?.budget_used ?? result?.budgetUsed ?? 0,
+    budget_soft_limit: event.budget_soft_limit ?? event.budgetSoftLimit ?? result?.budget_soft_limit ?? result?.budgetSoftLimit ?? 0,
+    budget_hard_limit: event.budget_hard_limit ?? event.budgetHardLimit ?? result?.budget_hard_limit ?? result?.budgetHardLimit ?? 0,
+    budget_remaining: event.budget_remaining ?? event.budgetRemaining ?? result?.budget_remaining ?? result?.budgetRemaining ?? 0,
+    budget_prompt_tokens: event.budget_prompt_tokens ?? event.budgetPromptTokens ?? result?.budget_prompt_tokens ?? result?.budgetPromptTokens ?? 0,
+    budget_estimated_prompt_tokens: event.budget_estimated_prompt_tokens ?? event.budgetEstimatedPromptTokens ?? result?.budget_estimated_prompt_tokens ?? result?.budgetEstimatedPromptTokens ?? 0,
+    budget_net_prompt_tokens: event.budget_net_prompt_tokens ?? event.budgetNetPromptTokens ?? result?.budget_net_prompt_tokens ?? result?.budgetNetPromptTokens ?? 0,
+    budget_gross_prompt_tokens: event.budget_gross_prompt_tokens ?? event.budgetGrossPromptTokens ?? result?.budget_gross_prompt_tokens ?? result?.budgetGrossPromptTokens ?? 0,
+    budget_saved_tokens: event.budget_saved_tokens ?? event.budgetSavedTokens ?? result?.budget_saved_tokens ?? result?.budgetSavedTokens ?? 0,
+    budget_memory_saved_tokens: event.budget_memory_saved_tokens ?? event.budgetMemorySavedTokens ?? result?.budget_memory_saved_tokens ?? result?.budgetMemorySavedTokens ?? 0,
+    budget_history_saved_tokens: event.budget_history_saved_tokens ?? event.budgetHistorySavedTokens ?? result?.budget_history_saved_tokens ?? result?.budgetHistorySavedTokens ?? 0,
+    budget_artifact_saved_tokens: event.budget_artifact_saved_tokens ?? event.budgetArtifactSavedTokens ?? result?.budget_artifact_saved_tokens ?? result?.budgetArtifactSavedTokens ?? 0,
+    budget_skill_saved_tokens: event.budget_skill_saved_tokens ?? event.budgetSkillSavedTokens ?? result?.budget_skill_saved_tokens ?? result?.budgetSkillSavedTokens ?? 0,
+    budget_tool_schema_saved_tokens: event.budget_tool_schema_saved_tokens ?? event.budgetToolSchemaSavedTokens ?? result?.budget_tool_schema_saved_tokens ?? result?.budgetToolSchemaSavedTokens ?? 0,
+    budget_reported_prompt_tokens: event.budget_reported_prompt_tokens ?? event.budgetReportedPromptTokens ?? result?.budget_reported_prompt_tokens ?? result?.budgetReportedPromptTokens ?? 0,
+    budget_output_tokens: event.budget_output_tokens ?? event.budgetOutputTokens ?? result?.budget_output_tokens ?? result?.budgetOutputTokens ?? 0,
+    budget_cached_tokens: event.budget_cached_tokens ?? event.budgetCachedTokens ?? result?.budget_cached_tokens ?? result?.budgetCachedTokens ?? 0,
+    budget_total_tokens: event.budget_total_tokens ?? event.budgetTotalTokens ?? result?.budget_total_tokens ?? result?.budgetTotalTokens ?? 0,
+    budget_estimated_input_cost: event.budget_estimated_input_cost ?? event.budgetEstimatedInputCost ?? result?.budget_estimated_input_cost ?? result?.budgetEstimatedInputCost ?? 0,
+    budget_estimated_output_cost: event.budget_estimated_output_cost ?? event.budgetEstimatedOutputCost ?? result?.budget_estimated_output_cost ?? result?.budgetEstimatedOutputCost ?? 0,
+    budget_estimated_total_cost: event.budget_estimated_total_cost ?? event.budgetEstimatedTotalCost ?? result?.budget_estimated_total_cost ?? result?.budgetEstimatedTotalCost ?? 0,
+    budget_cost_currency: event.budget_cost_currency || event.budgetCostCurrency || result?.budget_cost_currency || result?.budgetCostCurrency || "",
+    budget_pricing_source: event.budget_pricing_source || event.budgetPricingSource || result?.budget_pricing_source || result?.budgetPricingSource || "",
+    budget_llm_calls: event.budget_llm_calls ?? event.budgetLLMCalls ?? result?.budget_llm_calls ?? result?.budgetLLMCalls ?? 0,
+    budget_continuations: event.budget_continuations ?? event.budgetContinuations ?? result?.budget_continuations ?? result?.budgetContinuations ?? 0,
+    contract_check: event.contract_check || result?.contract_check || "",
+    source_ref: event.source_ref || result?.source_ref || "",
     summary: result?.final_summary || result?.summary || ""
   };
 }
@@ -956,6 +993,12 @@ function ingestRuntimeEvent(event) {
   if (!event || typeof event !== "object") return false;
   state.runtime.timeline.push(event);
   if (state.runtime.timeline.length > 80) state.runtime.timeline.shift();
+
+  const workflowStatus = String(event.workflow_status || "").trim();
+  if (workflowStatus) {
+    state.runtime.workflowStatus = workflowStatus;
+    state.runtime.status = workflowStatusState(workflowStatus);
+  }
 
   if (event.type === "workflow_result") {
     const run = workflowRunSnapshotFromWorkflowEvent(event);
@@ -1009,6 +1052,16 @@ function ingestRuntimeEvent(event) {
     };
     changed = true;
   }
+  const eventBudgetUsage = workflowRuntimeBudgetUsageFromRun(event);
+  if (eventBudgetUsage) {
+    state.runtime.budgetUsage = { ...(state.runtime.budgetUsage || {}), ...eventBudgetUsage };
+    changed = true;
+  }
+
+  if (event.incomplete || ["stage_paused", "model_output_truncated", "continuation_started", "continuation_completed"].includes(String(event.type || ""))) {
+    state.runtime.status = workflowStatusState(event.workflow_status || state.runtime.workflowStatus || "paused_need_more_budget");
+    if (event.workflow_status) state.runtime.workflowStatus = event.workflow_status;
+  }
 
   const stageRuntime = normalizeStageRuntimeEvent(event);
   if (!stageRuntime) return changed;
@@ -1018,11 +1071,25 @@ function ingestRuntimeEvent(event) {
   state.runtime.lastStage = stageRuntime.name;
   if (previousStage !== stageRuntime.name) invalidateWorkflowRuntimeActions();
   state.runtime.route = deriveRoute(stageRuntime);
-  state.runtime.stageDetails[stageRuntime.name] = {
-    ...(state.runtime.stageDetails[stageRuntime.name] || {}),
+  const existingStageRuntime = state.runtime.stageDetails[stageRuntime.name] || {};
+  const mergedStageRuntime = {
+    ...existingStageRuntime,
     ...stageRuntime,
     updatedAt: Date.now()
   };
+  if (!isTruthyParam(mergedStageRuntime.parallel_file_conflict) && isTruthyParam(existingStageRuntime.parallel_file_conflict)) {
+    mergedStageRuntime.parallel_file_conflict = existingStageRuntime.parallel_file_conflict;
+  }
+  for (const key of ["parallel_file_conflict_paths", "parallel_file_conflict_owners", "parallel_file_conflict_source_ref"]) {
+    if (!mergedStageRuntime[key] && existingStageRuntime[key]) mergedStageRuntime[key] = existingStageRuntime[key];
+  }
+  if (!isTruthyParam(mergedStageRuntime.parallel_patch_artifact_required) && isTruthyParam(existingStageRuntime.parallel_patch_artifact_required)) {
+    mergedStageRuntime.parallel_patch_artifact_required = existingStageRuntime.parallel_patch_artifact_required;
+  }
+  for (const key of ["parallel_direct_write_tools", "parallel_patch_artifact_reason", "parallel_patch_artifact_source_ref"]) {
+    if (!mergedStageRuntime[key] && existingStageRuntime[key]) mergedStageRuntime[key] = existingStageRuntime[key];
+  }
+  state.runtime.stageDetails[stageRuntime.name] = mergedStageRuntime;
   if (workflowRuntimeStageLooksFinal(stageRuntime.name)) {
     const finalText = workflowRuntimeStageOutputText(stageRuntime);
     if (finalText) {
@@ -1064,6 +1131,498 @@ function workflowRuntimeStageOutputText(runtime = {}) {
   return "";
 }
 
+function workflowRuntimeDisplayText(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const text = Array.isArray(value)
+      ? value.map(item => workflowPlainDisplayText(formatRuntimeValue(item))).filter(Boolean).join("; ")
+      : workflowPlainDisplayText(formatRuntimeValue(value));
+    if (text && text !== "[object Object]") return text;
+  }
+  return "";
+}
+
+function workflowRuntimeDisplayValue(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const text = workflowDisplayValue(formatRuntimeValue(value));
+    if (text && text !== "[object Object]") return text;
+  }
+  return "";
+}
+
+function workflowRuntimeReasonText(...values) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === "") continue;
+    const raw = String(formatRuntimeValue(value) || "").trim();
+    if (!raw || raw === "[object Object]") continue;
+    if (workflowLooksTechnical(raw)) return raw;
+    return workflowDisplayText(raw);
+  }
+  return "";
+}
+
+function workflowQualityStatusIsFailed(status = "") {
+  return ["failed", "fail", "failure", "blocked", "denied", "error", "reject", "rejected"].includes(String(status || "").trim().toLowerCase());
+}
+
+function parseWorkflowBoolean(value) {
+  if (value === null || value === undefined || value === "") return null;
+  if (typeof value === "boolean") return value;
+  const text = String(value || "").trim().toLowerCase();
+  if (["1", "true", "yes", "y", "on", "ready", "passed"].includes(text)) return true;
+  if (["0", "false", "no", "n", "off", "blocked", "failed"].includes(text)) return false;
+  return null;
+}
+
+function workflowRuntimeStageDiagnostic(stage = {}, runtime = {}) {
+  stage = stage || {};
+  runtime = runtime || {};
+  const metadata = runtime.metadata && typeof runtime.metadata === "object" ? runtime.metadata : {};
+  const result = runtime.result && typeof runtime.result === "object" ? runtime.result : {};
+  const outputs = runtime.outputs && typeof runtime.outputs === "object" ? runtime.outputs : {};
+  const resultOutputs = result.outputs && typeof result.outputs === "object" ? result.outputs : {};
+  const outputVariables = outputs.variables && typeof outputs.variables === "object" ? outputs.variables : {};
+  const runtimeType = String(runtime.type || "").toLowerCase();
+  const runtimeReason = String(runtime.reason || metadata.reason || "").toLowerCase();
+  const status = String(runtime.status || stage.status || "").toLowerCase();
+  const continuation = runtime.continuation_count ?? runtime.continuationCount ?? metadata.continuation_count ?? result.continuation_count ?? null;
+  const contractCheck = workflowRuntimeDisplayValue(runtime.contract_check, runtime.contractCheck, metadata.contract_check);
+  const sourceRef = workflowRuntimeDisplayValue(runtime.source_ref, runtime.sourceRef, metadata.source_ref);
+  const executionMode = workflowRuntimeDisplayValue(
+    runtime.execution_mode,
+    runtime.executionMode,
+    metadata["execution.mode"],
+    metadata.execution_mode,
+    outputs.execution_mode,
+    outputVariables.execution_mode,
+    resultOutputs.execution_mode
+  );
+  const executionRisk = workflowRuntimeDisplayValue(
+    runtime.execution_risk_level,
+    runtime.executionRiskLevel,
+    metadata["execution.risk_level"],
+    metadata.execution_risk_level,
+    outputs.execution_risk_level,
+    outputVariables.execution_risk_level,
+    resultOutputs.execution_risk_level
+  );
+  const executionBoundary = workflowRuntimeDisplayValue(
+    runtime.execution_boundary,
+    runtime.executionBoundary,
+    metadata["execution.boundary"],
+    metadata.execution_boundary,
+    outputs.execution_boundary,
+    outputVariables.execution_boundary,
+    resultOutputs.execution_boundary
+  );
+  const executionMissing = workflowRuntimeDisplayText(
+    runtime.execution_missing,
+    runtime.executionMissing,
+    metadata["execution.missing"],
+    metadata.execution_missing,
+    outputs.execution_missing,
+    outputVariables.execution_missing,
+    resultOutputs.execution_missing
+  );
+  const executionReason = workflowRuntimeDisplayText(
+    runtime.execution_reason,
+    runtime.executionReason,
+    metadata["execution.reason"],
+    metadata.execution_reason
+  );
+  const executionSourceRef = workflowRuntimeDisplayValue(
+    runtime.execution_source_ref,
+    runtime.executionSourceRef,
+    metadata["execution.source_ref"],
+    metadata.execution_source_ref
+  );
+  const executionReady = parseWorkflowBoolean(runtime.execution_ready ?? runtime.executionReady ?? metadata["execution.ready"] ?? metadata.execution_ready ?? outputs.execution_ready ?? outputVariables.execution_ready ?? resultOutputs.execution_ready);
+  const executionBlocked = String(contractCheck || "").toLowerCase() === "execution_readiness" || (executionMode === "live" && executionReady === false) || Boolean(executionMissing);
+  const qualityStatus = workflowRuntimeDisplayValue(
+    runtime.quality_status,
+    runtime.qualityStatus,
+    metadata.quality_status,
+    metadata["quality.status"],
+    result.quality_status,
+    result.qualityStatus,
+    outputs.quality_status,
+    outputVariables.quality_status,
+    resultOutputs.quality_status
+  );
+  const qualityScore = workflowRuntimeDisplayValue(
+    runtime.quality_score,
+    runtime.qualityScore,
+    metadata.quality_score,
+    metadata["quality.score"],
+    metadata.score,
+    result.quality_score,
+    result.qualityScore,
+    result.score,
+    outputs.quality_score,
+    outputs.score,
+    outputVariables.quality_score,
+    outputVariables.score,
+    resultOutputs.quality_score,
+    resultOutputs.score
+  );
+  const qualityFailures = workflowRuntimeDisplayText(
+    runtime.quality_failures,
+    runtime.qualityFailures,
+    runtime.failures,
+    metadata.quality_failures,
+    metadata["quality.failures"],
+    metadata.failures,
+    result.quality_failures,
+    result.qualityFailures,
+    result.failure_reasons,
+    result.failures,
+    outputs.quality_failures,
+    outputs.failures,
+    outputVariables.quality_failures,
+    outputVariables.failures,
+    resultOutputs.quality_failures,
+    resultOutputs.failures
+  );
+  const qualityWarnings = workflowRuntimeDisplayText(
+    runtime.quality_warnings,
+    runtime.qualityWarnings,
+    runtime.warnings,
+    metadata.quality_warnings,
+    metadata["quality.warnings"],
+    metadata.warnings,
+    result.quality_warnings,
+    result.qualityWarnings,
+    result.warnings,
+    outputs.quality_warnings,
+    outputs.warnings,
+    outputVariables.quality_warnings,
+    outputVariables.warnings,
+    resultOutputs.quality_warnings,
+    resultOutputs.warnings
+  );
+  const qualityReason = workflowRuntimeDisplayText(
+    runtime.quality_reason,
+    runtime.qualityReason,
+    metadata.quality_reason,
+    metadata["quality.reason"],
+    result.quality_reason,
+    result.qualityReason,
+    outputs.quality_reason,
+    outputVariables.quality_reason,
+    resultOutputs.quality_reason,
+    (runtimeType.includes("quality") || runtimeReason.includes("quality")) ? runtime.content : ""
+  );
+  const qualityCheck = workflowRuntimeDisplayValue(
+    runtime.quality_check,
+    runtime.qualityCheck,
+    metadata.quality_check,
+    metadata["quality.check"],
+    contractCheck && String(contractCheck).toLowerCase().includes("quality") ? contractCheck : ""
+  );
+  const qualitySourceRef = workflowRuntimeDisplayValue(
+    runtime.quality_source_ref,
+    runtime.qualitySourceRef,
+    metadata.quality_source_ref,
+    metadata["quality.source_ref"],
+    qualityCheck ? sourceRef : "",
+    String(contractCheck).toLowerCase().includes("quality") ? sourceRef : ""
+  );
+  const qualityFailed = isTruthyParam(runtime.quality_failed ?? runtime.qualityFailed ?? metadata.quality_failed) ||
+    status === "quality_failed" ||
+    workflowQualityStatusIsFailed(qualityStatus) ||
+    (String(contractCheck).toLowerCase().includes("quality") && ["blocked", "failed", "error", "warning", "warn"].includes(status));
+  const unresolvedQuality = isTruthyParam(runtime.unresolved_quality ?? runtime.unresolvedQuality ?? metadata.unresolved_quality);
+  const qualityDetected = qualityFailed ||
+    unresolvedQuality ||
+    Boolean(qualityStatus || qualityScore || qualityFailures || qualityWarnings || qualityReason || qualityCheck || qualitySourceRef) ||
+    String(normalizedNodeType(stage) || runtime.node_type || runtime.nodeType || "").toLowerCase().includes("quality");
+  let conflictFiles = workflowRuntimeDisplayText(
+    runtime.parallel_file_conflict_paths,
+    runtime.parallelFileConflictPaths,
+    metadata.parallel_file_conflict_paths,
+    result.parallel_file_conflict_paths,
+    result.parallelFileConflictPaths,
+    outputs.parallel_file_conflict_paths,
+    outputVariables.parallel_file_conflict_paths,
+    resultOutputs.parallel_file_conflict_paths
+  );
+  let conflictOwners = workflowRuntimeDisplayText(
+    runtime.parallel_file_conflict_owners,
+    runtime.parallelFileConflictOwners,
+    metadata.parallel_file_conflict_owners,
+    result.parallel_file_conflict_owners,
+    result.parallelFileConflictOwners,
+    outputs.parallel_file_conflict_owners,
+    outputVariables.parallel_file_conflict_owners,
+    resultOutputs.parallel_file_conflict_owners
+  );
+  const conflictSourceRef = workflowRuntimeDisplayValue(
+    runtime.parallel_file_conflict_source_ref,
+    runtime.parallelFileConflictSourceRef,
+    metadata.parallel_file_conflict_source_ref,
+    outputs.parallel_file_conflict_source_ref,
+    outputVariables.parallel_file_conflict_source_ref,
+    resultOutputs.parallel_file_conflict_source_ref,
+    String(contractCheck).toLowerCase() === "parallel_file_ownership" ? sourceRef : ""
+  );
+  const explicitFileConflict = isTruthyParam(runtime.parallel_file_conflict ?? runtime.parallelFileConflict ?? metadata.parallel_file_conflict ?? outputs.parallel_file_conflict ?? outputVariables.parallel_file_conflict) ||
+    runtimeReason.includes("parallel_file_conflict") ||
+    String(contractCheck).toLowerCase() === "parallel_file_ownership";
+  if (explicitFileConflict && !conflictFiles) {
+    conflictFiles = workflowRuntimeDisplayText(runtime.conflict_files, runtime.conflictFiles, metadata.conflict_files);
+  }
+  if (explicitFileConflict && !conflictOwners) {
+    conflictOwners = workflowRuntimeDisplayText(runtime.conflict_owners, runtime.conflictOwners, metadata.conflict_owners);
+  }
+  const sourceConflict = explicitFileConflict ? workflowRuntimeParallelFileConflictFromSourceRef(conflictSourceRef || sourceRef) : { files: "", owners: "" };
+  if (!conflictFiles && sourceConflict.files) conflictFiles = sourceConflict.files;
+  if (!conflictOwners && sourceConflict.owners) conflictOwners = sourceConflict.owners;
+  const fileConflict = explicitFileConflict || Boolean(conflictFiles || conflictOwners || conflictSourceRef);
+  const patchArtifactSourceRef = workflowRuntimeDisplayValue(
+    runtime.parallel_patch_artifact_source_ref,
+    runtime.parallelPatchArtifactSourceRef,
+    metadata.parallel_patch_artifact_source_ref,
+    outputs.parallel_patch_artifact_source_ref,
+    outputVariables.parallel_patch_artifact_source_ref,
+    resultOutputs.parallel_patch_artifact_source_ref,
+    String(contractCheck).toLowerCase() === "parallel_patch_artifact_handoff" ? sourceRef : ""
+  );
+  const directWriteTools = workflowRuntimeDisplayText(
+    runtime.parallel_direct_write_tools,
+    runtime.parallelDirectWriteTools,
+    metadata.parallel_direct_write_tools,
+    outputs.parallel_direct_write_tools,
+    outputVariables.parallel_direct_write_tools,
+    resultOutputs.parallel_direct_write_tools
+  );
+  const patchArtifactReason = workflowRuntimeDisplayText(
+    runtime.parallel_patch_artifact_reason,
+    runtime.parallelPatchArtifactReason,
+    metadata.parallel_patch_artifact_reason,
+    outputs.parallel_patch_artifact_reason,
+    outputVariables.parallel_patch_artifact_reason,
+    resultOutputs.parallel_patch_artifact_reason,
+    runtimeReason.includes("parallel_patch_artifact") ? runtime.content : ""
+  );
+  const explicitPatchArtifactWarning = isTruthyParam(runtime.parallel_patch_artifact_required ?? runtime.parallelPatchArtifactRequired ?? metadata.parallel_patch_artifact_required ?? outputs.parallel_patch_artifact_required ?? outputVariables.parallel_patch_artifact_required) ||
+    runtimeReason.includes("parallel_patch_artifact") ||
+    String(contractCheck).toLowerCase() === "parallel_patch_artifact_handoff";
+  const patchArtifactWarning = explicitPatchArtifactWarning || Boolean(patchArtifactSourceRef || directWriteTools);
+  const patchArtifactContractCheck = workflowRuntimeDisplayValue(
+    runtime.parallel_patch_artifact_contract_check,
+    runtime.parallelPatchArtifactContractCheck,
+    metadata.parallel_patch_artifact_contract_check,
+    outputs.parallel_patch_artifact_contract_check,
+    outputVariables.parallel_patch_artifact_contract_check,
+    resultOutputs.parallel_patch_artifact_contract_check,
+    patchArtifactWarning ? "parallel_patch_artifact_handoff" : ""
+  );
+  return {
+    incomplete: Boolean(runtime.incomplete ?? result.incomplete) || String(metadata.incomplete || "").toLowerCase() === "true" || String(runtime.status || stage.status || "").toLowerCase() === "incomplete",
+    incompleteReason: workflowRuntimeReasonText(runtime.incomplete_reason || runtime.incompleteReason || metadata.incomplete_reason || result.incomplete_reason || ""),
+    reason: workflowRuntimeReasonText(runtime.reason || metadata.reason || ""),
+    severity: String(runtime.severity || metadata.severity || "").trim(),
+    budgetScope: workflowDisplayText(runtime.budget_scope || runtime.budgetScope || metadata.budget_scope || ""),
+    budgetReason: workflowRuntimeReasonText(runtime.budget_reason || runtime.budgetReason || metadata.budget_reason || ""),
+    budgetMetric: workflowDisplayText(runtime.budget_metric || runtime.budgetMetric || metadata.budget_metric || ""),
+    budgetUsed: workflowNumber(runtime.budget_used ?? runtime.budgetUsed ?? metadata.budget_used),
+    budgetSoftLimit: workflowNumber(runtime.budget_soft_limit ?? runtime.budgetSoftLimit ?? metadata.budget_soft_limit),
+    budgetHardLimit: workflowNumber(runtime.budget_hard_limit ?? runtime.budgetHardLimit ?? metadata.budget_hard_limit),
+    budgetRemaining: workflowNumber(runtime.budget_remaining ?? runtime.budgetRemaining ?? metadata.budget_remaining),
+    budgetPromptTokens: workflowNumber(runtime.budget_prompt_tokens ?? runtime.budgetPromptTokens ?? metadata.budget_prompt_tokens),
+    budgetEstimatedPromptTokens: workflowNumber(runtime.budget_estimated_prompt_tokens ?? runtime.budgetEstimatedPromptTokens ?? metadata.budget_estimated_prompt_tokens),
+    budgetNetPromptTokens: workflowNumber(runtime.budget_net_prompt_tokens ?? runtime.budgetNetPromptTokens ?? metadata.budget_net_prompt_tokens),
+    budgetGrossPromptTokens: workflowNumber(runtime.budget_gross_prompt_tokens ?? runtime.budgetGrossPromptTokens ?? metadata.budget_gross_prompt_tokens),
+    budgetSavedTokens: workflowNumber(runtime.budget_saved_tokens ?? runtime.budgetSavedTokens ?? metadata.budget_saved_tokens),
+    budgetMemorySavedTokens: workflowNumber(runtime.budget_memory_saved_tokens ?? runtime.budgetMemorySavedTokens ?? metadata.budget_memory_saved_tokens),
+    budgetHistorySavedTokens: workflowNumber(runtime.budget_history_saved_tokens ?? runtime.budgetHistorySavedTokens ?? metadata.budget_history_saved_tokens),
+    budgetArtifactSavedTokens: workflowNumber(runtime.budget_artifact_saved_tokens ?? runtime.budgetArtifactSavedTokens ?? metadata.budget_artifact_saved_tokens),
+    budgetSkillSavedTokens: workflowNumber(runtime.budget_skill_saved_tokens ?? runtime.budgetSkillSavedTokens ?? metadata.budget_skill_saved_tokens),
+    budgetToolSchemaSavedTokens: workflowNumber(runtime.budget_tool_schema_saved_tokens ?? runtime.budgetToolSchemaSavedTokens ?? metadata.budget_tool_schema_saved_tokens),
+    budgetCachedTokens: workflowNumber(runtime.budget_cached_tokens ?? runtime.budgetCachedTokens ?? metadata.budget_cached_tokens),
+    budgetOutputTokens: workflowNumber(runtime.budget_output_tokens ?? runtime.budgetOutputTokens ?? metadata.budget_output_tokens),
+    budgetTotalTokens: workflowNumber(runtime.budget_total_tokens ?? runtime.budgetTotalTokens ?? metadata.budget_total_tokens),
+    budgetEstimatedInputCost: workflowNumber(runtime.budget_estimated_input_cost ?? runtime.budgetEstimatedInputCost ?? metadata.budget_estimated_input_cost),
+    budgetEstimatedOutputCost: workflowNumber(runtime.budget_estimated_output_cost ?? runtime.budgetEstimatedOutputCost ?? metadata.budget_estimated_output_cost),
+    budgetEstimatedTotalCost: workflowNumber(runtime.budget_estimated_total_cost ?? runtime.budgetEstimatedTotalCost ?? metadata.budget_estimated_total_cost),
+    budgetCostCurrency: workflowDisplayValue(runtime.budget_cost_currency || runtime.budgetCostCurrency || metadata.budget_cost_currency || ""),
+    budgetPricingSource: workflowDisplayValue(runtime.budget_pricing_source || runtime.budgetPricingSource || metadata.budget_pricing_source || ""),
+    budgetLLMCalls: workflowNumber(runtime.budget_llm_calls ?? runtime.budgetLLMCalls ?? metadata.budget_llm_calls),
+    budgetContinuations: workflowNumber(runtime.budget_continuations ?? runtime.budgetContinuations ?? metadata.budget_continuations),
+    modelProvider: workflowDisplayValue(runtime.model_provider || runtime.modelProvider || metadata["model.provider"] || stage.model?.provider || ""),
+    modelName: workflowDisplayValue(runtime.model_model || runtime.modelName || runtime.model || metadata["model.model"] || stage.model?.model || ""),
+    modelMaxTokens: workflowNumber(runtime.model_max_tokens ?? runtime.modelMaxTokens ?? metadata["model.max_tokens"] ?? stage.model?.max_tokens ?? stage.model?.maxTokens),
+    modelTemperature: workflowDisplayValue(runtime.model_temperature ?? runtime.modelTemperature ?? metadata["model.temperature"] ?? stage.model?.temperature ?? ""),
+    modelSoftBudgetRoute: isTruthyParam(runtime.model_soft_budget_route ?? runtime.modelSoftBudgetRoute ?? metadata["model.soft_budget_route"]),
+    modelSoftBudgetRouteRef: workflowDisplayValue(runtime.model_soft_budget_route_ref || runtime.modelSoftBudgetRouteRef || metadata["model.soft_budget_route_ref"] || ""),
+    modelEscalated: isTruthyParam(runtime.model_escalated ?? runtime.modelEscalated ?? metadata["model.escalated"]),
+    modelEscalationRef: workflowDisplayValue(runtime.model_escalation_ref || runtime.modelEscalationRef || metadata["model.escalation_ref"] || ""),
+    modelRouteReason: workflowDisplayValue(metadata["model.route"] || runtime.reason || metadata.reason || metadata["budget.reason"] || runtime.budget_reason || runtime.budgetReason || ""),
+    contractCheck,
+    sourceRef,
+    executionMode,
+    executionReady,
+    executionBlocked,
+    executionMissing,
+    executionRisk,
+    executionBoundary,
+    executionReason,
+    executionSourceRef,
+    qualityDetected,
+    qualityFailed,
+    unresolvedQuality,
+    qualityStatus,
+    qualityScore,
+    qualityFailures,
+    qualityWarnings,
+    qualityReason,
+    qualityCheck,
+    qualitySourceRef,
+    fileConflict,
+    conflictFiles,
+    conflictOwners,
+    conflictSourceRef,
+    patchArtifactWarning,
+    patchArtifactReason,
+    patchArtifactSourceRef,
+    patchArtifactContractCheck,
+    directWriteTools,
+    stopReason: workflowDisplayText(runtime.stop_reason || runtime.stopReason || metadata.stop_reason || result.stop_reason || ""),
+    continuationCount: continuation === null || continuation === undefined || continuation === "" ? null : Number(continuation)
+  };
+}
+
+function workflowRuntimeParallelFileConflictFromSourceRef(sourceRef = "") {
+  const text = workflowDisplayText(sourceRef);
+  if (!text || !text.includes(":")) return { files: "", owners: "" };
+  const files = [];
+  const owners = [];
+  const addUnique = (list, value) => {
+    value = String(value || "").trim();
+    if (!value) return;
+    const key = value.toLowerCase();
+    if (list.some(item => String(item || "").toLowerCase() === key)) return;
+    list.push(value);
+  };
+  for (const item of text.split(";")) {
+    const segment = item.trim();
+    const separator = segment.lastIndexOf(":");
+    if (separator <= 0 || separator >= segment.length - 1) continue;
+    addUnique(files, segment.slice(0, separator));
+    segment.slice(separator + 1).split(",").forEach(owner => addUnique(owners, owner));
+  }
+  return {
+    files: files.join(", "),
+    owners: owners.join(", ")
+  };
+}
+
+function workflowBudgetMetricLabel(metric = "") {
+  const normalized = String(metric || "").trim();
+  if (!normalized) return "";
+  const key = `workflow.budgetMetric.${normalized}`;
+  const translated = t(key);
+  return translated === key ? localizedText(normalized.replace(/_/g, " ")) : translated;
+}
+
+function workflowBudgetMetricUsed(source = {}, metric = "") {
+  const normalized = String(metric || "").trim();
+  switch (normalized) {
+    case "prompt_tokens":
+    case "prompt":
+      return workflowNumber(source.budgetPromptTokens ?? source.prompt);
+    case "output_tokens":
+    case "output":
+      return workflowNumber(source.budgetOutputTokens ?? source.output);
+    case "total_tokens":
+    case "total":
+      return workflowNumber(source.budgetTotalTokens ?? source.total);
+    case "llm_calls":
+    case "llm_call":
+      return workflowNumber(source.budgetLLMCalls ?? source.llmCalls);
+    case "continuations":
+    case "continuation":
+      return workflowNumber(source.budgetContinuations ?? source.continuations);
+    default:
+      return 0;
+  }
+}
+
+function workflowBudgetLimitText(source = {}) {
+  const metric = workflowDisplayText(source.budgetMetric || source.metric || source.scope || "");
+  const soft = workflowNumber(source.budgetSoftLimit ?? source.softLimit);
+  const hard = workflowNumber(source.budgetHardLimit ?? source.hardLimit);
+  if (!metric && !soft && !hard) return "";
+  const used = workflowNumber(source.budgetUsed ?? source.used) || workflowBudgetMetricUsed(source, metric);
+  const remaining = workflowNumber(source.budgetRemaining ?? source.remaining);
+  const limit = hard || soft;
+  const parts = [];
+  const label = workflowBudgetMetricLabel(metric) || t("workflow.runtimeField.budgetUsed");
+  parts.push(`${label}: ${used}${limit ? ` / ${limit}` : ""}`);
+  if (soft && hard && soft !== hard) parts.push(`${t("workflow.runtimeField.budgetSoftLimit")}: ${soft}`);
+  if (hard) parts.push(`${t("workflow.runtimeField.budgetRemaining")}: ${remaining}`);
+  return parts.join(" / ");
+}
+
+function workflowRuntimeDiagnosticText(diagnostic = {}) {
+  const parts = [];
+  const reason = workflowPlainDisplayText(diagnostic.incompleteReason || diagnostic.reason || diagnostic.budgetReason || "");
+  if (reason) parts.push(reason);
+  if (diagnostic.stopReason) parts.push(`${t("workflow.runtimeField.stopReason")}: ${localizedText(diagnostic.stopReason)}`);
+  if (diagnostic.budgetScope) parts.push(`${t("workflow.runtimeField.budgetScope")}: ${localizedText(diagnostic.budgetScope)}`);
+  const budgetLimit = workflowBudgetLimitText(diagnostic);
+  if (budgetLimit) parts.push(`${t("workflow.runtimeField.budgetLimit")}: ${budgetLimit}`);
+  if (Number.isFinite(diagnostic.budgetLLMCalls) && diagnostic.budgetLLMCalls > 0) parts.push(`${t("workflow.runtimeField.budgetLLMCalls")}: ${diagnostic.budgetLLMCalls}`);
+  if (Number.isFinite(diagnostic.budgetTotalTokens) && diagnostic.budgetTotalTokens > 0) parts.push(`${t("workflow.runtimeField.budgetTotalTokens")}: ${diagnostic.budgetTotalTokens}`);
+  if (Number.isFinite(diagnostic.budgetPromptTokens) && diagnostic.budgetPromptTokens > 0) parts.push(`${t("workflow.runtimeField.budgetPromptTokens")}: ${diagnostic.budgetPromptTokens}`);
+  if (Number.isFinite(diagnostic.budgetSavedTokens) && diagnostic.budgetSavedTokens > 0) parts.push(`${t("workflow.runtimeField.budgetSavedTokens")}: ${diagnostic.budgetSavedTokens}`);
+  if (Number.isFinite(diagnostic.budgetGrossPromptTokens) && diagnostic.budgetGrossPromptTokens > 0) parts.push(`${t("workflow.runtimeField.budgetGrossPromptTokens")}: ${diagnostic.budgetGrossPromptTokens}`);
+  if (Number.isFinite(diagnostic.budgetNetPromptTokens) && diagnostic.budgetNetPromptTokens > 0) parts.push(`${t("workflow.runtimeField.budgetNetPromptTokens")}: ${diagnostic.budgetNetPromptTokens}`);
+  if (Number.isFinite(diagnostic.budgetOutputTokens) && diagnostic.budgetOutputTokens > 0) parts.push(`${t("workflow.runtimeField.budgetOutputTokens")}: ${diagnostic.budgetOutputTokens}`);
+  if (Number.isFinite(diagnostic.budgetCachedTokens) && diagnostic.budgetCachedTokens > 0) parts.push(`${t("workflow.runtimeField.budgetCachedTokens")}: ${diagnostic.budgetCachedTokens}`);
+  if (Number.isFinite(diagnostic.budgetEstimatedInputCost) && diagnostic.budgetEstimatedInputCost > 0) parts.push(`${t("workflow.runtimeField.budgetEstimatedInputCost")}: ${workflowCostText(diagnostic.budgetEstimatedInputCost, diagnostic.budgetCostCurrency)}`);
+  if (Number.isFinite(diagnostic.budgetEstimatedOutputCost) && diagnostic.budgetEstimatedOutputCost > 0) parts.push(`${t("workflow.runtimeField.budgetEstimatedOutputCost")}: ${workflowCostText(diagnostic.budgetEstimatedOutputCost, diagnostic.budgetCostCurrency)}`);
+  if (Number.isFinite(diagnostic.budgetEstimatedTotalCost) && diagnostic.budgetEstimatedTotalCost > 0) parts.push(`${t("workflow.runtimeField.budgetEstimatedTotalCost")}: ${workflowCostText(diagnostic.budgetEstimatedTotalCost, diagnostic.budgetCostCurrency)}`);
+  if (diagnostic.budgetPricingSource) parts.push(`${t("workflow.runtimeField.budgetPricingSource")}: ${truncateWorkflowText(diagnostic.budgetPricingSource, 80)}`);
+  if (diagnostic.qualityStatus) parts.push(`${t("workflow.runtimeField.qualityStatus")}: ${diagnostic.qualityStatus}`);
+  if (diagnostic.qualityScore) parts.push(`${t("workflow.runtimeField.qualityScore")}: ${diagnostic.qualityScore}`);
+  if (diagnostic.qualityFailures) parts.push(`${t("workflow.runtimeField.qualityFailures")}: ${truncateWorkflowText(diagnostic.qualityFailures, 160)}`);
+  if (diagnostic.qualityWarnings) parts.push(`${t("workflow.runtimeField.qualityWarnings")}: ${truncateWorkflowText(diagnostic.qualityWarnings, 160)}`);
+  if (diagnostic.executionMode) parts.push(`${t("workflow.runtimeField.executionMode")}: ${diagnostic.executionMode}`);
+  if (diagnostic.executionReady !== null && diagnostic.executionReady !== undefined) parts.push(`${t("workflow.runtimeField.executionReady")}: ${diagnostic.executionReady ? t("common.yes") : t("common.no")}`);
+  if (diagnostic.executionRisk) parts.push(`${t("workflow.runtimeField.executionRisk")}: ${diagnostic.executionRisk}`);
+  if (diagnostic.executionBoundary) parts.push(`${t("workflow.runtimeField.executionBoundary")}: ${truncateWorkflowText(diagnostic.executionBoundary, 120)}`);
+  if (diagnostic.executionMissing) parts.push(`${t("workflow.runtimeField.executionMissing")}: ${truncateWorkflowText(diagnostic.executionMissing, 160)}`);
+  if (diagnostic.fileConflict && diagnostic.conflictFiles) parts.push(`${t("workflow.runtimeField.conflictFiles")}: ${truncateWorkflowText(diagnostic.conflictFiles, 160)}`);
+  if (diagnostic.fileConflict && diagnostic.conflictOwners) parts.push(`${t("workflow.runtimeField.conflictOwners")}: ${truncateWorkflowText(diagnostic.conflictOwners, 160)}`);
+  if (diagnostic.patchArtifactWarning && diagnostic.directWriteTools) parts.push(`${t("workflow.runtimeField.directWriteTools")}: ${truncateWorkflowText(diagnostic.directWriteTools, 160)}`);
+  if (diagnostic.contractCheck) parts.push(`${t("workflow.runtimeField.contractCheck")}: ${diagnostic.contractCheck}`);
+  if (diagnostic.conflictSourceRef) parts.push(`${t("workflow.runtimeField.sourceRef")}: ${diagnostic.conflictSourceRef}`);
+  else if (diagnostic.patchArtifactSourceRef) parts.push(`${t("workflow.runtimeField.sourceRef")}: ${diagnostic.patchArtifactSourceRef}`);
+  else if (diagnostic.sourceRef) parts.push(`${t("workflow.runtimeField.sourceRef")}: ${diagnostic.sourceRef}`);
+  if (Number.isFinite(diagnostic.continuationCount) && diagnostic.continuationCount > 0) {
+    parts.push(`${t("workflow.runtimeField.continuations")}: ${diagnostic.continuationCount}`);
+  }
+  return parts.filter(Boolean).join(" / ");
+}
+
+function workflowRuntimeStageBlocked(runtime = {}, stage = {}) {
+  const diagnostic = workflowRuntimeStageDiagnostic(stage, runtime);
+  const status = String(runtime?.status || stage?.status || "").toLowerCase();
+  const metadata = runtime?.metadata && typeof runtime.metadata === "object" ? runtime.metadata : {};
+  return diagnostic.incomplete ||
+    diagnostic.qualityFailed ||
+    diagnostic.unresolvedQuality ||
+    diagnostic.executionBlocked ||
+    diagnostic.fileConflict ||
+    diagnostic.patchArtifactWarning ||
+    ["incomplete", "paused_need_more_budget", "awaiting_budget_approval", "blocked", "contract_failed", "quality_failed", "warning", "warn"].includes(status) ||
+    String(metadata.contract_failed || "").toLowerCase() === "true" ||
+    String(metadata.quality_failed || "").toLowerCase() === "true" ||
+    String(metadata.unresolved_quality || "").toLowerCase() === "true";
+}
+
 function workflowRuntimeStageLooksFinal(stageName = "") {
   const name = String(stageName || "").toLowerCase();
   return /\b(final|report|handoff|delivery|summary|validation)\b/.test(name) ||
@@ -1103,7 +1662,7 @@ function markStageRuntimeComplete(stageName) {
   const runtime = state.runtime.stageDetails[stageName];
   if (!runtime) return;
   const current = String(runtime.status || "").toLowerCase();
-  if (["completed", "success", "succeeded", "done", "finished", "failed", "error", "denied", "cancelled"].includes(current)) return;
+  if (["completed", "success", "succeeded", "done", "finished", "failed", "error", "denied", "cancelled", "incomplete", "paused_need_more_budget", "awaiting_budget_approval"].includes(current) || runtime.incomplete) return;
   runtime.status = "completed";
 }
 
@@ -1143,10 +1702,63 @@ function normalizeStageRuntimeEvent(event) {
       ? event.artifacts.length
       : null;
   const acceptance = normalizeAcceptanceItems(payload.acceptance ?? event.acceptance ?? null);
+  const reason = payload.reason || event.reason || "";
+  const contractCheck = payload.contract_check || payload.contractCheck || event.contract_check || event.contractCheck || "";
+  const sourceRef = payload.source_ref || payload.sourceRef || event.source_ref || event.sourceRef || "";
+  const isPatchArtifactHandoff = String(reason || "").toLowerCase().includes("parallel_patch_artifact") ||
+    String(contractCheck || "").toLowerCase() === "parallel_patch_artifact_handoff";
   const normalized = {
     name,
     status: payload.status || event.status || event.workflow_status || event.type || "task_stage",
     content: payload.content || event.content || "",
+    reason,
+    severity: payload.severity || event.severity || "",
+    budget_scope: payload.budget_scope || payload.budgetScope || event.budget_scope || event.budgetScope || "",
+    budget_reason: payload.budget_reason || payload.budgetReason || event.budget_reason || event.budgetReason || "",
+    budget_metric: payload.budget_metric || payload.budgetMetric || event.budget_metric || event.budgetMetric || "",
+    budget_used: payload.budget_used ?? payload.budgetUsed ?? event.budget_used ?? event.budgetUsed ?? 0,
+    budget_soft_limit: payload.budget_soft_limit ?? payload.budgetSoftLimit ?? event.budget_soft_limit ?? event.budgetSoftLimit ?? 0,
+    budget_hard_limit: payload.budget_hard_limit ?? payload.budgetHardLimit ?? event.budget_hard_limit ?? event.budgetHardLimit ?? 0,
+    budget_remaining: payload.budget_remaining ?? payload.budgetRemaining ?? event.budget_remaining ?? event.budgetRemaining ?? 0,
+    budget_prompt_tokens: payload.budget_prompt_tokens ?? payload.budgetPromptTokens ?? event.budget_prompt_tokens ?? event.budgetPromptTokens ?? 0,
+    budget_estimated_prompt_tokens: payload.budget_estimated_prompt_tokens ?? payload.budgetEstimatedPromptTokens ?? event.budget_estimated_prompt_tokens ?? event.budgetEstimatedPromptTokens ?? 0,
+    budget_net_prompt_tokens: payload.budget_net_prompt_tokens ?? payload.budgetNetPromptTokens ?? event.budget_net_prompt_tokens ?? event.budgetNetPromptTokens ?? 0,
+    budget_gross_prompt_tokens: payload.budget_gross_prompt_tokens ?? payload.budgetGrossPromptTokens ?? event.budget_gross_prompt_tokens ?? event.budgetGrossPromptTokens ?? 0,
+    budget_saved_tokens: payload.budget_saved_tokens ?? payload.budgetSavedTokens ?? event.budget_saved_tokens ?? event.budgetSavedTokens ?? 0,
+    budget_memory_saved_tokens: payload.budget_memory_saved_tokens ?? payload.budgetMemorySavedTokens ?? event.budget_memory_saved_tokens ?? event.budgetMemorySavedTokens ?? 0,
+    budget_history_saved_tokens: payload.budget_history_saved_tokens ?? payload.budgetHistorySavedTokens ?? event.budget_history_saved_tokens ?? event.budgetHistorySavedTokens ?? 0,
+    budget_artifact_saved_tokens: payload.budget_artifact_saved_tokens ?? payload.budgetArtifactSavedTokens ?? event.budget_artifact_saved_tokens ?? event.budgetArtifactSavedTokens ?? 0,
+    budget_skill_saved_tokens: payload.budget_skill_saved_tokens ?? payload.budgetSkillSavedTokens ?? event.budget_skill_saved_tokens ?? event.budgetSkillSavedTokens ?? 0,
+    budget_tool_schema_saved_tokens: payload.budget_tool_schema_saved_tokens ?? payload.budgetToolSchemaSavedTokens ?? event.budget_tool_schema_saved_tokens ?? event.budgetToolSchemaSavedTokens ?? 0,
+    budget_cached_tokens: payload.budget_cached_tokens ?? payload.budgetCachedTokens ?? event.budget_cached_tokens ?? event.budgetCachedTokens ?? 0,
+    budget_output_tokens: payload.budget_output_tokens ?? payload.budgetOutputTokens ?? event.budget_output_tokens ?? event.budgetOutputTokens ?? 0,
+    budget_total_tokens: payload.budget_total_tokens ?? payload.budgetTotalTokens ?? event.budget_total_tokens ?? event.budgetTotalTokens ?? 0,
+    budget_estimated_input_cost: payload.budget_estimated_input_cost ?? payload.budgetEstimatedInputCost ?? event.budget_estimated_input_cost ?? event.budgetEstimatedInputCost ?? 0,
+    budget_estimated_output_cost: payload.budget_estimated_output_cost ?? payload.budgetEstimatedOutputCost ?? event.budget_estimated_output_cost ?? event.budgetEstimatedOutputCost ?? 0,
+    budget_estimated_total_cost: payload.budget_estimated_total_cost ?? payload.budgetEstimatedTotalCost ?? event.budget_estimated_total_cost ?? event.budgetEstimatedTotalCost ?? 0,
+    budget_cost_currency: payload.budget_cost_currency || payload.budgetCostCurrency || event.budget_cost_currency || event.budgetCostCurrency || "",
+    budget_pricing_source: payload.budget_pricing_source || payload.budgetPricingSource || event.budget_pricing_source || event.budgetPricingSource || "",
+    budget_llm_calls: payload.budget_llm_calls ?? payload.budgetLLMCalls ?? event.budget_llm_calls ?? event.budgetLLMCalls ?? 0,
+    budget_continuations: payload.budget_continuations ?? payload.budgetContinuations ?? event.budget_continuations ?? event.budgetContinuations ?? 0,
+    contract_check: contractCheck,
+    source_ref: sourceRef,
+    quality_status: payload.quality_status || payload.qualityStatus || event.quality_status || event.qualityStatus || outputs?.quality_status || "",
+    quality_score: payload.quality_score ?? payload.qualityScore ?? event.quality_score ?? event.qualityScore ?? outputs?.quality_score ?? outputs?.score ?? "",
+    quality_failures: payload.quality_failures || payload.qualityFailures || payload.failures || event.quality_failures || event.qualityFailures || event.failures || outputs?.quality_failures || outputs?.failures || "",
+    quality_warnings: payload.quality_warnings || payload.qualityWarnings || payload.warnings || event.quality_warnings || event.qualityWarnings || event.warnings || outputs?.quality_warnings || outputs?.warnings || "",
+    quality_reason: payload.quality_reason || payload.qualityReason || event.quality_reason || event.qualityReason || "",
+    parallel_file_conflict: payload.parallel_file_conflict ?? payload.parallelFileConflict ?? event.parallel_file_conflict ?? event.parallelFileConflict ?? outputs?.parallel_file_conflict ?? false,
+    parallel_file_conflict_paths: payload.parallel_file_conflict_paths || payload.parallelFileConflictPaths || event.parallel_file_conflict_paths || event.parallelFileConflictPaths || outputs?.parallel_file_conflict_paths || "",
+    parallel_file_conflict_owners: payload.parallel_file_conflict_owners || payload.parallelFileConflictOwners || event.parallel_file_conflict_owners || event.parallelFileConflictOwners || outputs?.parallel_file_conflict_owners || "",
+    parallel_file_conflict_source_ref: payload.parallel_file_conflict_source_ref || payload.parallelFileConflictSourceRef || event.parallel_file_conflict_source_ref || event.parallelFileConflictSourceRef || outputs?.parallel_file_conflict_source_ref || "",
+    parallel_patch_artifact_required: payload.parallel_patch_artifact_required ?? payload.parallelPatchArtifactRequired ?? event.parallel_patch_artifact_required ?? event.parallelPatchArtifactRequired ?? outputs?.parallel_patch_artifact_required ?? isPatchArtifactHandoff,
+    parallel_direct_write_tools: payload.parallel_direct_write_tools || payload.parallelDirectWriteTools || event.parallel_direct_write_tools || event.parallelDirectWriteTools || outputs?.parallel_direct_write_tools || (isPatchArtifactHandoff ? sourceRef : ""),
+    parallel_patch_artifact_reason: payload.parallel_patch_artifact_reason || payload.parallelPatchArtifactReason || event.parallel_patch_artifact_reason || event.parallelPatchArtifactReason || outputs?.parallel_patch_artifact_reason || (isPatchArtifactHandoff ? reason : ""),
+    parallel_patch_artifact_source_ref: payload.parallel_patch_artifact_source_ref || payload.parallelPatchArtifactSourceRef || event.parallel_patch_artifact_source_ref || event.parallelPatchArtifactSourceRef || outputs?.parallel_patch_artifact_source_ref || (isPatchArtifactHandoff ? sourceRef : ""),
+    stop_reason: payload.stop_reason || payload.stopReason || event.stop_reason || event.stopReason || payload.result?.stop_reason || "",
+    continuation_count: payload.continuation_count ?? payload.continuationCount ?? event.continuation_count ?? event.continuationCount ?? payload.result?.continuation_count ?? null,
+    incomplete: Boolean(payload.incomplete ?? event.incomplete ?? payload.result?.incomplete),
+    incomplete_reason: payload.incomplete_reason || payload.incompleteReason || event.incomplete_reason || event.incompleteReason || payload.result?.incomplete_reason || "",
     node_type: payload.node_type || event.node_type || "",
     skill: payload.skill || event.skill || "",
     tool: payload.tool || event.tool || event.tool_name || "",
@@ -1155,6 +1767,7 @@ function normalizeStageRuntimeEvent(event) {
     attempts: payload.attempts ?? event.attempts ?? null,
     artifacts,
     metadata: payload.metadata ?? event.metadata ?? null,
+    result: payload.result || event.result || null,
     route: payload.route ?? event.route ?? outputs?.route ?? "",
     value: payload.value ?? event.value ?? outputs?.value,
     target: payload.target ?? event.target ?? outputs?.target ?? "",
@@ -1210,10 +1823,22 @@ function deriveRoute(stageRuntime) {
 function workflowStatusState(status) {
   const value = String(status || "").toLowerCase();
   if (["completed", "success", "succeeded", "done", "finished"].includes(value)) return "success";
-  if (["failed", "error", "denied", "cancelled"].includes(value)) return "error";
-  if (["waiting", "paused", "approval_required", "approval", "pending", "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow"].includes(value)) return "waiting";
+  if (["failed", "error", "denied", "cancelled", "canceled", "blocked", "contract_failed", "quality_failed"].includes(value)) return "error";
+  if (["waiting", "paused", "approval_required", "approval", "pending", "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow", "paused_need_more_budget", "awaiting_budget_approval"].includes(value)) return "waiting";
   if (value) return "running";
   return "idle";
+}
+
+function workflowStatusLabel(status) {
+  const value = String(status || "").trim();
+  if (!value) return "";
+  const key = `workflow.workflowStatus.${value.toLowerCase()}`;
+  const translated = t(key);
+  return translated === key ? localizedText(value) : translated;
+}
+
+function workflowRuntimeStatusIsActive(status) {
+  return ["running", "waiting"].includes(workflowStatusState(status));
 }
 
 function renderRuntime(root) {
@@ -1225,6 +1850,11 @@ function renderRuntime(root) {
   renderSelectedStageRuntime(root);
   syncWorkflowSidePane(root);
   revealWorkflowCurrentStage(root);
+}
+
+function workflowRuntimeHasActiveCurrentStage() {
+  return workflowRuntimeStatusIsActive(state.runtime.workflowStatus || state.runtime.status) &&
+    String(state.runtime.currentStage || "").trim() !== "";
 }
 
 function renderRuntimeBadge(root) {
@@ -1255,13 +1885,38 @@ function renderRuntimeSummary(root) {
     return;
   }
   const metrics = [];
-  if (state.runtime.workflowStatus) metrics.push(summaryMetric(t("workflow.runtimeSummary.workflowStatus"), localizedText(state.runtime.workflowStatus)));
-  if (state.runtime.currentStage) metrics.push(summaryMetric(t("workflow.runtimeSummary.currentStage"), workflowDisplayValue(state.runtime.currentStage)));
+  if (state.runtime.workflowStatus) metrics.push(summaryMetric(t("workflow.runtimeSummary.workflowStatus"), workflowStatusLabel(state.runtime.workflowStatus)));
+  if (workflowRuntimeHasActiveCurrentStage()) metrics.push(summaryMetric(t("workflow.runtimeSummary.currentStage"), workflowDisplayValue(state.runtime.currentStage)));
+  const currentRuntime = workflowRuntimeHasActiveCurrentStage() ? state.runtime.stageDetails[state.runtime.currentStage] : null;
+  if (currentRuntime?.incomplete || currentRuntime?.incomplete_reason) metrics.push(summaryMetric(t("workflow.runtimeSummary.blockedReason"), workflowDisplayText(currentRuntime.incomplete_reason || currentRuntime.reason || state.runtime.approval?.summary || "")));
+  if (currentRuntime?.stop_reason) metrics.push(summaryMetric(t("workflow.runtimeField.stopReason"), localizedText(currentRuntime.stop_reason)));
   if (state.runtime.route?.target || state.runtime.route?.route) metrics.push(summaryMetric(t("workflow.runtimeSummary.route"), formatRouteText(state.runtime.route)));
   if (state.runtime.tokenUsage) {
     metrics.push(summaryMetric(
       t("workflow.runtimeSummary.tokens"),
       `${t("workflow.in")} ${state.runtime.tokenUsage.prompt || 0} / ${t("workflow.out")} ${state.runtime.tokenUsage.output || 0}`
+    ));
+  }
+  if (state.runtime.budgetUsage?.total || state.runtime.budgetUsage?.llmCalls || state.runtime.budgetUsage?.metric || state.runtime.budgetUsage?.softLimit || state.runtime.budgetUsage?.hardLimit) {
+    const budgetLimit = workflowBudgetLimitText(state.runtime.budgetUsage);
+    metrics.push(summaryMetric(
+      t("workflow.runtimeSummary.budget"),
+      budgetLimit || `${state.runtime.budgetUsage.total || 0} / ${t("workflow.runtimeField.budgetLLMCalls")} ${state.runtime.budgetUsage.llmCalls || 0}`
+    ));
+  }
+  if (state.runtime.budgetUsage?.savedTokens) {
+    metrics.push(summaryMetric(
+      t("workflow.runtimeField.budgetSavedTokens"),
+      `${state.runtime.budgetUsage.savedTokens} (${t("workflow.runtimeField.budgetGrossPromptTokens")} ${state.runtime.budgetUsage.grossPrompt || 0} / ${t("workflow.runtimeField.budgetNetPromptTokens")} ${state.runtime.budgetUsage.netPrompt || state.runtime.budgetUsage.estimatedPrompt || 0})`
+    ));
+  }
+  if (state.runtime.budgetUsage?.estimatedTotalCost || state.runtime.budgetUsage?.estimatedInputCost || state.runtime.budgetUsage?.estimatedOutputCost) {
+    metrics.push(summaryMetric(
+      t("workflow.runtimeField.budgetEstimatedTotalCost"),
+      workflowCostText(
+        state.runtime.budgetUsage.estimatedTotalCost || Number(state.runtime.budgetUsage.estimatedInputCost || 0) + Number(state.runtime.budgetUsage.estimatedOutputCost || 0),
+        state.runtime.budgetUsage.costCurrency
+      )
     ));
   }
   if (state.runtime.approval?.tool) metrics.push(summaryMetric(t("workflow.runtimeSummary.approval"), localizedText(state.runtime.approval.tool)));
@@ -1387,7 +2042,7 @@ function invalidateWorkflowRuntimeActions() {
 
 function workflowRuntimeNeedsAction() {
   const status = String(state.runtime.workflowStatus || state.runtime.status || "").toLowerCase();
-  return ["waiting", "paused", "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow"].includes(status);
+  return ["waiting", "paused", "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow", "paused_need_more_budget", "awaiting_budget_approval"].includes(status);
 }
 
 function workflowRuntimeStatusIsAwaitingInput(status) {
@@ -1473,7 +2128,7 @@ function workflowRuntimeInputFieldsFromJSON(raw) {
 
 function workflowRuntimeInputKey(request) {
   if (!request) return "";
-  const fields = (request.fields || []).map(field => `${field.name}:${field.type}:${field.defaultValue ?? ""}`).join("|");
+  const fields = (request.fields || []).map(field => `${field.name}:${field.type}:${formatRuntimeValue(field.defaultValue ?? "")}`).join("|");
   return `${request.runID || ""}:${request.stage || ""}:${fields}`;
 }
 
@@ -1670,10 +2325,25 @@ function renderWorkflowRuntimeInputForm() {
 function workflowRuntimeInputSummary(request = {}) {
   const parts = [];
   if (request.workflowName) parts.push(request.workflowName);
-  if (request.stage) parts.push(request.stage);
+  if (request.stage) parts.push(workflowDisplayValue(request.stage));
   const count = Array.isArray(request.fields) ? request.fields.length : 0;
   if (count) parts.push(t("chat.workflowInputCount", { count }));
   return parts.join(" / ") || t("chat.awaitingInputDetail");
+}
+
+function localizedWorkflowFieldValue(value) {
+  if (value && typeof value === "object") return localizedText(value);
+  return localizedText(String(value ?? "").trim());
+}
+
+function workflowInputLocalizedProperty(source, key, fallback = "") {
+  if (!source || typeof source !== "object") return fallback;
+  const localizedKey = `${key}_zh`;
+  if (currentLanguage() === "zh" && typeof source[localizedKey] === "string" && source[localizedKey].trim()) {
+    return source[localizedKey];
+  }
+  if (typeof source[key] === "string" && source[key].trim()) return source[key];
+  return fallback;
 }
 
 function normalizeWorkflowInputFields(fields) {
@@ -1714,9 +2384,9 @@ function normalizeWorkflowInputField(field) {
   return {
     name,
     type,
-    label: String(field.label || field.title || name).trim(),
-    description: String(field.description || field.help || "").trim(),
-    placeholder: String(field.placeholder || "").trim(),
+    label: localizedWorkflowFieldValue(workflowInputLocalizedProperty(field, "label", workflowInputLocalizedProperty(field, "title", name))),
+    description: localizedWorkflowFieldValue(workflowInputLocalizedProperty(field, "description", workflowInputLocalizedProperty(field, "help", ""))),
+    placeholder: localizedWorkflowFieldValue(workflowInputLocalizedProperty(field, "placeholder", "")),
     required: Boolean(field.required),
     defaultValue: field.default ?? field.default_value ?? "",
     options,
@@ -1727,7 +2397,7 @@ function normalizeWorkflowInputField(field) {
     pattern: String(field.pattern || "").trim(),
     multiple: Boolean(field.multiple),
     advanced: Boolean(field.advanced),
-    group: String(field.group || "").trim()
+    group: localizedWorkflowFieldValue(workflowInputLocalizedProperty(field, "group", ""))
   };
 }
 
@@ -1737,11 +2407,11 @@ function normalizeWorkflowInputOptions(options) {
     if (option && typeof option === "object") {
       const rawValue = option.value ?? option.id ?? option.name ?? option.label;
       const value = rawValue == null ? "" : String(rawValue).trim();
-      const label = String(option.label ?? option.name ?? value).trim();
+      const label = localizedWorkflowFieldValue(workflowInputLocalizedProperty(option, "label", workflowInputLocalizedProperty(option, "name", value)));
       return value ? { value, label: label || value } : null;
     }
     const value = String(option ?? "").trim();
-    return value ? { value, label: value } : null;
+    return value ? { value, label: localizedWorkflowFieldValue(value) || value } : null;
   }).filter(Boolean);
 }
 
@@ -1775,7 +2445,7 @@ function renderWorkflowInputFieldGroups(fields) {
   const groups = [];
   const byGroup = new Map();
   for (const field of fields) {
-    const group = field.group || "";
+    const group = localizedText(field.group || "");
     if (!byGroup.has(group)) {
       byGroup.set(group, []);
       groups.push(group);
@@ -1798,7 +2468,8 @@ function renderWorkflowInputFieldGroups(fields) {
 
 function renderWorkflowInputField(field) {
   const name = escapeHTML(field.name);
-  const label = escapeHTML(localizedText(field.label || field.name));
+  const fieldLabel = localizedText(field.label || field.name);
+  const label = escapeHTML(fieldLabel);
   const description = field.description ? `<small>${escapeHTML(localizedText(field.description))}</small>` : "";
   const required = field.required ? `<em>${escapeHTML(t("common.required"))}</em>` : `<em>${escapeHTML(t("common.optional"))}</em>`;
   const value = workflowInputDefaultValue(field);
@@ -1921,16 +2592,16 @@ function collectWorkflowInputValues(container, fields) {
       const missing = isBoolean ? false : Array.isArray(value) ? value.length === 0 : !value;
       if (missing) {
         markWorkflowInputInvalid(node);
-        throw new Error(`${field.label || field.name} ${t("chat.workflowInputRequiredSuffix")}`);
+        throw new Error(`${localizedText(field.label || field.name)} ${t("chat.workflowInputRequiredSuffix")}`);
       }
     }
     if (!isBoolean && value !== "" && typeof node.checkValidity === "function" && !node.checkValidity()) {
       markWorkflowInputInvalid(node);
-      throw new Error(`${field.label || field.name} ${t("chat.workflowInputInvalidSuffix")}`);
+      throw new Error(`${localizedText(field.label || field.name)} ${t("chat.workflowInputInvalidSuffix")}`);
     }
     if (!isBoolean && value !== "" && field.pattern && !workflowInputPatternMatches(field.pattern, value)) {
       markWorkflowInputInvalid(node);
-      throw new Error(`${field.label || field.name} ${t("chat.workflowInputInvalidSuffix")}`);
+      throw new Error(`${localizedText(field.label || field.name)} ${t("chat.workflowInputInvalidSuffix")}`);
     }
     if (!isBoolean && !Array.isArray(value) && value === "" && !field.required) continue;
     if (Array.isArray(value) && !value.length && !field.required) continue;
@@ -1963,7 +2634,7 @@ function coerceWorkflowInputValue(field, value) {
       if (field.type === "object" && (!parsed || Array.isArray(parsed) || typeof parsed !== "object")) throw new Error(t("chat.workflowInputJSONInvalid"));
       return parsed;
     } catch {
-      throw new Error(`${field.label || field.name} ${t("chat.workflowInputJSONInvalid")}`);
+      throw new Error(`${localizedText(field.label || field.name)} ${t("chat.workflowInputJSONInvalid")}`);
     }
   }
   return value;
@@ -1989,7 +2660,7 @@ function cssEscape(value) {
 }
 
 function workflowVisibleRuntimeActions() {
-  const allowed = new Set(["approve_stage", "approve_tool", "approve_all_tools", "deny_tool", "resume_sub_workflow", "cancel"]);
+  const allowed = new Set(["approve_stage", "approve_tool", "approve_all_tools", "deny_tool", "resume_sub_workflow", "approve_budget", "continue_output", "escalate_model", "retry", "cancel"]);
   return (state.runtime.actions || []).filter(action => allowed.has(action?.name));
 }
 
@@ -2033,7 +2704,7 @@ function syncWorkflowRuntimeActionButtons(container) {
 function workflowRuntimeActionButton(action) {
   const unavailable = action.available === false || !action.path;
   const reason = localizedWorkflowActionReason(action.reason || "");
-  const primary = ["approve_stage", "approve_tool", "approve_all_tools", "resume_sub_workflow"].includes(action.name);
+  const primary = ["approve_stage", "approve_tool", "approve_all_tools", "resume_sub_workflow", "approve_budget", "continue_output", "escalate_model", "retry"].includes(action.name);
   const classes = action.destructive || action.name === "deny_tool" ? "danger" : primary ? "primary" : "";
   const title = reason ? ` title="${escapeHTML(reason)}"` : "";
   return `<button type="button" class="${escapeHTML(classes)}" data-workflow-run-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}${title}>${escapeHTML(workflowRunActionLabel(action.name, action.label))}</button>`;
@@ -2136,12 +2807,23 @@ function workflowRunActionRequestOptions(action = {}) {
 function workflowRunActionPrefersBackground(action = {}) {
   if (!action?.path || action.name === "cancel") return false;
   if (action.background === true || action.supports_background === true || action.supportsBackground === true) return true;
-  return ["approve_stage", "approve_tool", "approve_all_tools", "retry", "resume_sub_workflow"].includes(action.name);
+  return ["approve_stage", "approve_tool", "approve_all_tools", "approve_budget", "continue_output", "escalate_model", "retry", "resume_sub_workflow"].includes(action.name);
 }
 
 function applyWorkflowRuntimeActionResponse(response, action = {}) {
   const payload = response && typeof response === "object" ? response : {};
   if (payload.run || payload.run_id || payload.runID) {
+    if (payload.run) {
+      applyWorkflowStudioAcceptedRun(payload, state.runtime.runInput || "");
+      return;
+    }
+    if (workflowRuntimeActionResponseLooksLikeRunResult(payload)) {
+      applyWorkflowStudioRunSnapshot({
+        id: payload.run_id || payload.runID || state.runtime.runID || "",
+        ...payload
+      });
+      return;
+    }
     applyWorkflowStudioAcceptedRun(payload, state.runtime.runInput || "");
     return;
   }
@@ -2149,11 +2831,37 @@ function applyWorkflowRuntimeActionResponse(response, action = {}) {
     applyWorkflowStudioRunSnapshot(payload);
     return;
   }
+  if (payload.run_id || payload.workflow_result) {
+    const run = workflowRunSnapshotFromWorkflowEvent({
+      type: "workflow_result",
+      run_id: payload.run_id,
+      workflow_status: payload.status,
+      workflow_result: payload.workflow_result || payload
+    });
+    if (run) applyWorkflowStudioRunSnapshot(run);
+    return;
+  }
   if (action.name === "cancel") {
     state.runtime.status = "error";
     state.runtime.workflowStatus = "cancelled";
     state.runtime.finishedAt = Date.now();
   }
+}
+
+function workflowRuntimeActionResponseLooksLikeRunResult(payload = {}) {
+  return Boolean(
+    Array.isArray(payload.completed_stages) ||
+    payload.final_summary ||
+    payload.approval_prompt ||
+    payload.next_stage ||
+    payload.pending_approval ||
+    payload.pending_input ||
+    payload.pending_sub_workflow ||
+    payload.budget_scope ||
+    payload.budget_reason ||
+    payload.budgetScope ||
+    payload.budgetReason
+  );
 }
 
 async function refreshWorkflowRuntimeSnapshot(root) {
@@ -2184,6 +2892,9 @@ function workflowRunActionLabel(name, fallback = "") {
   if (name === "approve_all_tools") return t("approvals.approveAllTools");
   if (name === "deny_tool") return t("approvals.denyTool");
   if (name === "resume_sub_workflow") return t("chat.resumeSubWorkflow");
+  if (name === "approve_budget") return t("workflow.approveBudget");
+  if (name === "continue_output") return t("workflow.continueOutput");
+  if (name === "escalate_model") return t("workflow.escalateModel");
   const raw = String(fallback || "").trim();
   return raw ? localizedText(raw) : localizedText(String(name || "").replace(/[_-]+/g, " "));
 }
@@ -2193,18 +2904,20 @@ function localizedWorkflowActionReason(reason) {
   if (!value) return "";
   const lower = value.toLowerCase();
   if (lower.includes("tool approval context") && lower.includes("retry or cancel")) return t("approvals.workflowToolContextLost");
+  if (lower.includes("continue incomplete stage") || lower.includes("paused graph workflow run with an incomplete next stage")) return t("workflow.continueOutputHelp");
+  if (lower.includes("approve hard workflow budget") || lower.includes("hard budget boundary") || lower.includes("budget approval requires")) return t("workflow.runtimeActionApproveBudgetHelp");
   if (lower.includes("cannot be resumed durably") || lower.includes("approval type cannot be resumed")) return t("approvals.workflowApprovalNotResumable");
   if (lower.includes("in-memory model/tool context")) return t("approvals.workflowToolContextRequired");
   if (lower.includes("auto-approves later matching tool calls")) return t("workflow.runtimeActionApproveAllHelp");
   if (lower.includes("manual input can resume")) return t("workflow.runtimeActionManualInputHelp");
   if (lower.includes("persisted workflow run snapshot")) return t("workflow.runtimeActionPersistedHelp");
+  if (lower.includes("model output or budget was incomplete") || lower.includes("output was incomplete") || lower.includes("budget was exhausted")) return t("workflow.runtimeActionRetryBudgetHelp");
   return localizedText(value);
 }
 
 function revealWorkflowCurrentStage(root) {
+  if (!workflowRuntimeHasActiveCurrentStage() || state.dragging || state.panning || state.connecting) return;
   const stageName = state.runtime.currentStage || "";
-  if (!stageName || state.dragging || state.panning || state.connecting) return;
-  if (state.runtime.status !== "running" && state.runtime.status !== "waiting") return;
   const surface = root.querySelector("#canvasSurface");
   const node = workflowCanvasNodeElement(surface, stageName);
   if (!node) return;
@@ -2280,7 +2993,36 @@ function renderSelectedStageRuntime(root) {
   const previousStageName = container.dataset.runtimeStageName || "";
   const sameStage = previousStageName === stageName;
   const facts = [];
-  if (runtime.status) facts.push(detailChip(t("workflow.runtimeField.status"), localizedText(runtime.status)));
+  if (runtime.status) facts.push(detailChip(t("workflow.runtimeField.status"), workflowStatusLabel(runtime.status)));
+  const diagnostic = workflowRuntimeStageDiagnostic(stage, runtime);
+  const diagnosticText = workflowRuntimeDiagnosticText(diagnostic);
+  if (diagnostic.incomplete) facts.push(detailChip(t("workflow.runtimeField.incomplete"), t("common.yes")));
+  if (diagnostic.stopReason) facts.push(detailChip(t("workflow.runtimeField.stopReason"), localizedText(diagnostic.stopReason)));
+  if (Number.isFinite(diagnostic.continuationCount) && diagnostic.continuationCount > 0) facts.push(detailChip(t("workflow.runtimeField.continuations"), String(diagnostic.continuationCount)));
+  if (diagnostic.budgetScope) facts.push(detailChip(t("workflow.runtimeField.budgetScope"), localizedText(diagnostic.budgetScope)));
+  const budgetLimitText = workflowBudgetLimitText(diagnostic);
+  if (budgetLimitText) facts.push(detailChip(t("workflow.runtimeField.budgetLimit"), budgetLimitText));
+  if (Number.isFinite(diagnostic.budgetLLMCalls) && diagnostic.budgetLLMCalls > 0) facts.push(detailChip(t("workflow.runtimeField.budgetLLMCalls"), String(diagnostic.budgetLLMCalls)));
+  if (Number.isFinite(diagnostic.budgetTotalTokens) && diagnostic.budgetTotalTokens > 0) facts.push(detailChip(t("workflow.runtimeField.budgetTotalTokens"), String(diagnostic.budgetTotalTokens)));
+  if (Number.isFinite(diagnostic.budgetPromptTokens) && diagnostic.budgetPromptTokens > 0) facts.push(detailChip(t("workflow.runtimeField.budgetPromptTokens"), String(diagnostic.budgetPromptTokens)));
+  if (Number.isFinite(diagnostic.budgetSavedTokens) && diagnostic.budgetSavedTokens > 0) facts.push(detailChip(t("workflow.runtimeField.budgetSavedTokens"), String(diagnostic.budgetSavedTokens)));
+  if (Number.isFinite(diagnostic.budgetGrossPromptTokens) && diagnostic.budgetGrossPromptTokens > 0) facts.push(detailChip(t("workflow.runtimeField.budgetGrossPromptTokens"), String(diagnostic.budgetGrossPromptTokens)));
+  if (Number.isFinite(diagnostic.budgetNetPromptTokens) && diagnostic.budgetNetPromptTokens > 0) facts.push(detailChip(t("workflow.runtimeField.budgetNetPromptTokens"), String(diagnostic.budgetNetPromptTokens)));
+  if (Number.isFinite(diagnostic.budgetOutputTokens) && diagnostic.budgetOutputTokens > 0) facts.push(detailChip(t("workflow.runtimeField.budgetOutputTokens"), String(diagnostic.budgetOutputTokens)));
+  if (Number.isFinite(diagnostic.budgetCachedTokens) && diagnostic.budgetCachedTokens > 0) facts.push(detailChip(t("workflow.runtimeField.budgetCachedTokens"), String(diagnostic.budgetCachedTokens)));
+  if (Number.isFinite(diagnostic.budgetContinuations) && diagnostic.budgetContinuations > 0) facts.push(detailChip(t("workflow.runtimeField.budgetContinuations"), String(diagnostic.budgetContinuations)));
+  if (diagnostic.modelSoftBudgetRoute) facts.push(detailChip(t("workflow.runtimeField.modelRoute"), t("workflow.runtimeField.modelRouteSoftBudget")));
+  if (diagnostic.modelEscalated) facts.push(detailChip(t("workflow.runtimeField.modelRoute"), t("workflow.runtimeField.modelRouteEscalated")));
+  if (diagnostic.executionMode) facts.push(detailChip(t("workflow.runtimeField.executionMode"), diagnostic.executionMode));
+  if (diagnostic.executionReady !== null && diagnostic.executionReady !== undefined) facts.push(detailChip(t("workflow.runtimeField.executionReady"), diagnostic.executionReady ? t("common.yes") : t("common.no")));
+  if (diagnostic.executionRisk) facts.push(detailChip(t("workflow.runtimeField.executionRisk"), diagnostic.executionRisk));
+  if (diagnostic.executionBoundary) facts.push(detailChip(t("workflow.runtimeField.executionBoundary"), truncateWorkflowText(diagnostic.executionBoundary, 72)));
+  if (diagnostic.executionMissing) facts.push(detailChip(t("workflow.runtimeField.executionMissing"), truncateWorkflowText(diagnostic.executionMissing, 72)));
+  if (diagnostic.patchArtifactWarning && diagnostic.directWriteTools) facts.push(detailChip(t("workflow.runtimeField.directWriteTools"), truncateWorkflowText(diagnostic.directWriteTools, 72)));
+  if (diagnostic.reason || diagnostic.incompleteReason || diagnostic.budgetReason) facts.push(detailChip(t("workflow.runtimeField.reason"), truncateWorkflowText(diagnostic.incompleteReason || diagnostic.reason || diagnostic.budgetReason, 72)));
+  if (diagnostic.contractCheck) facts.push(detailChip(t("workflow.runtimeField.contractCheck"), truncateWorkflowText(diagnostic.contractCheck, 72)));
+  if (diagnostic.patchArtifactSourceRef) facts.push(detailChip(t("workflow.runtimeField.sourceRef"), truncateWorkflowText(diagnostic.patchArtifactSourceRef, 72)));
+  else if (diagnostic.sourceRef) facts.push(detailChip(t("workflow.runtimeField.sourceRef"), truncateWorkflowText(diagnostic.sourceRef, 72)));
   if (runtime.node_type) facts.push(detailChip(t("workflow.runtimeField.nodeType"), nodeDisplayType(runtime.node_type)));
   if (runtime.skill) facts.push(detailChip(t("workflow.runtimeField.skill"), localizedText(runtime.skill)));
   if (runtime.tool) facts.push(detailChip(t("workflow.runtimeField.tool"), localizedText(runtime.tool)));
@@ -2320,8 +3062,13 @@ function renderSelectedStageRuntime(root) {
       <strong>${escapeHTML(explanation.title)}</strong>
       <span>${escapeHTML(explanation.body)}</span>
     </div>
+    ${diagnosticText ? `<div class="workflow-stage-runtime-diagnostic">${escapeHTML(diagnosticText)}</div>` : ""}
     ${compactSummary}
     ${facts.length ? `<div class="workflow-stage-runtime-facts">${facts.join("")}</div>` : ""}
+    ${renderWorkflowStageRuntimeDiagnosticShortcuts(diagnostic)}
+    ${renderWorkflowStageRuntimeProjectDeliveryShortcut(stage, runtime)}
+    ${renderWorkflowStageRuntimeArtifactShortcut(stageName, detailState, runtime)}
+    ${renderWorkflowStageRuntimeActionBlock(stageName, workflowRuntimeNeedsAction())}
     <div class="workflow-runtime-lazy-status ${detailState.error ? "error" : ""}">
       <span>${escapeHTML(detailHint)}</span>
       ${detailState.loading ? "" : `<button type="button" class="ghost-button" data-stage-runtime-load="${escapeHTML(stageName)}">${escapeHTML(detailState.loaded ? t("workflow.runtimeDetailRefresh") : t("workflow.runtimeDetailLoad"))}</button>`}
@@ -2334,24 +3081,448 @@ function renderSelectedStageRuntime(root) {
     event.preventDefault();
     loadWorkflowStageRuntimeDetail(root, event.currentTarget.dataset.stageRuntimeLoad || stageName, { force: true });
   }));
+  bindWorkflowRuntimeActionButtons(root, container);
+}
+
+function renderWorkflowStageRuntimeDiagnosticShortcuts(diagnostic = {}) {
+  const blocks = [];
+  const budgetFacts = workflowStageRuntimeBudgetShortcutFacts(diagnostic);
+  if (budgetFacts.length) {
+    blocks.push(renderWorkflowStageRuntimeDiagnosticShortcut(
+      "budget",
+      t("workflow.runtimeShortcut.promptBudget"),
+      t("workflow.runtimeShortcut.promptBudgetHelp"),
+      budgetFacts
+    ));
+  }
+  const modelFacts = workflowStageRuntimeModelRouteShortcutFacts(diagnostic);
+  if (modelFacts.length) {
+    blocks.push(renderWorkflowStageRuntimeDiagnosticShortcut(
+      "model",
+      t("workflow.runtimeShortcut.modelRoute"),
+      t("workflow.runtimeShortcut.modelRouteHelp"),
+      modelFacts
+    ));
+  }
+  const qualityFacts = workflowStageRuntimeQualityShortcutFacts(diagnostic);
+  if (qualityFacts.length) {
+    blocks.push(renderWorkflowStageRuntimeDiagnosticShortcut(
+      "quality",
+      t("workflow.runtimeShortcut.qualityGate"),
+      t("workflow.runtimeShortcut.qualityGateHelp"),
+      qualityFacts
+    ));
+  }
+  const conflictFacts = workflowStageRuntimeFileConflictShortcutFacts(diagnostic);
+  if (conflictFacts.length) {
+    blocks.push(renderWorkflowStageRuntimeDiagnosticShortcut(
+      "conflict",
+      t("workflow.runtimeShortcut.fileConflicts"),
+      t("workflow.runtimeShortcut.fileConflictsHelp"),
+      conflictFacts
+    ));
+  }
+  const handoffFacts = workflowStageRuntimePatchArtifactShortcutFacts(diagnostic);
+  if (handoffFacts.length) {
+    blocks.push(renderWorkflowStageRuntimeDiagnosticShortcut(
+      "handoff",
+      t("workflow.runtimeShortcut.patchArtifactHandoff"),
+      t("workflow.runtimeShortcut.patchArtifactHandoffHelp"),
+      handoffFacts
+    ));
+  }
+  const contractFacts = workflowStageRuntimeContractShortcutFacts(diagnostic);
+  if (contractFacts.length) {
+    blocks.push(renderWorkflowStageRuntimeDiagnosticShortcut(
+      "contract",
+      t("workflow.runtimeShortcut.missingContract"),
+      t("workflow.runtimeShortcut.missingContractHelp"),
+      contractFacts
+    ));
+  }
+  return blocks.length ? `<div class="workflow-stage-runtime-shortcuts">${blocks.join("")}</div>` : "";
+}
+
+function renderWorkflowStageRuntimeProjectDeliveryShortcut(stage = {}, runtime = {}) {
+  const panel = workflowStageRuntimeProjectDeliveryPanel(stage, runtime);
+  if (!panel || !panel.facts.length) return "";
+  return `<div class="workflow-stage-runtime-shortcuts project-delivery">${renderWorkflowStageRuntimeDiagnosticShortcut(
+    panel.kind,
+    panel.title,
+    panel.help,
+    panel.facts
+  )}</div>`;
+}
+
+function workflowStageRuntimeProjectDeliveryPanel(stage = {}, runtime = {}) {
+  if (!workflowRuntimeIsComplexProjectDelivery()) return null;
+  const stageName = String(stage.name || runtime.name || "").trim().toLowerCase();
+  const text = workflowStageRuntimeProjectDeliveryText(runtime);
+  const outputs = workflowStageRuntimeProjectDeliveryOutputs(runtime);
+  const value = (outputKeys = [], sectionNames = [], fallbackKeys = []) => workflowRuntimeDisplayText(
+    ...outputKeys.map(key => outputs[key]),
+    workflowExtractSection(text, sectionNames),
+    ...fallbackKeys.map(key => outputs[key])
+  );
+  if (stageName === "plan") {
+    return workflowProjectDeliveryPanel("project-plan", t("workflow.runtimeProject.projectPlan"), t("workflow.runtimeProject.projectPlanHelp"), [
+      [t("workflow.runtimeProject.projectPlan"), value(["project_plan"], ["Project Plan"])],
+      [t("workflow.runtimeProject.workSlices"), value(["work_slices"], ["Work Slices"])],
+      [t("workflow.runtimeProject.verificationStrategy"), value(["verification_strategy"], ["Verification Strategy"])],
+      [t("workflow.runtimeProject.definitionOfDone"), value(["definition_of_done"], ["Definition of Done"])]
+    ]);
+  }
+  if (stageName === "iteration" || stageName === "delivery-loop") {
+    return workflowProjectDeliveryPanel("iteration", t("workflow.runtimeProject.iteration"), t("workflow.runtimeProject.iterationHelp"), [
+      [t("workflow.runtimeProject.currentIteration"), value(["iteration_number", "iteration_count"], ["Iteration Number"])],
+      [t("workflow.runtimeProject.selectedSlice"), value(["selected_work_slice"], ["Selected Work Slice"])],
+      [t("workflow.runtimeProject.implementationSummary"), value(["implementation_summary"], ["Implementation Summary"], ["summary"])],
+      [t("workflow.runtimeProject.verificationPerformed"), value(["verification"], ["Verification Performed"])],
+      [t("workflow.runtimeProject.planUpdate"), value(["plan_update"], ["Plan Update"])],
+      [t("workflow.runtimeProject.remainingWork"), value(["remaining_work", "blockers"], ["Remaining Work"])],
+      [t("workflow.runtimeProject.completionDecision"), value(["completion_decision", "complete"], ["Completion Decision"], ["summary"])]
+    ]);
+  }
+  if (stageName === "loop-quality" || stageName === "operator-review" || stageName === "recovery-plan") {
+    return workflowProjectDeliveryPanel("remaining-work", t("workflow.runtimeProject.remainingWork"), t("workflow.runtimeProject.remainingWorkHelp"), [
+      [t("workflow.runtimeProject.qualityStatus"), value(["quality_status"], ["Quality Status"])],
+      [t("workflow.runtimeProject.remainingWork"), value(["remaining_work", "failures", "blockers"], ["Remaining Work", "Failed Iterations", "Missing Evidence"])],
+      [t("workflow.runtimeProject.nextAction"), value(["next_actions", "next_action"], ["Recommended Next Action", "User Decision Needed"])],
+      [t("workflow.runtimeProject.planUpdate"), value(["updated_plan"], ["Updated Plan", "Recovery Decision"])]
+    ]);
+  }
+  if (stageName === "final-validation") {
+    return workflowProjectDeliveryPanel("final-validation", t("workflow.runtimeProject.finalValidation"), t("workflow.runtimeProject.finalValidationHelp"), [
+      [t("workflow.runtimeProject.finalValidationResult"), value(["final_validation_result"], ["Final Validation Result"], ["final_validation"])],
+      [t("workflow.runtimeProject.commandsRun"), value(["commands_run"], ["Commands Run"], ["verification"])],
+      [t("workflow.runtimeProject.requirementsCoverage"), value(["requirements_coverage"], ["Requirements Coverage"])],
+      [t("workflow.runtimeProject.failures"), value(["failures"], ["Failures"])],
+      [t("workflow.runtimeProject.residualRisks"), value(["residual_risks"], ["Residual Risks"])]
+    ]);
+  }
+  if (stageName === "final-report") {
+    return workflowProjectDeliveryPanel("final-report", t("workflow.runtimeProject.finalReport"), t("workflow.runtimeProject.finalReportHelp"), [
+      [t("workflow.runtimeProject.completionSummary"), value(["completion_summary"], ["Completion Summary"], ["final_report", "summary"])],
+      [t("workflow.runtimeProject.requirementsDelivered"), value(["requirements_delivered"], ["Requirements Delivered"])],
+      [t("workflow.runtimeProject.filesChanged"), value(["changed_files", "changes"], ["Files Changed"])],
+      [t("workflow.runtimeProject.verificationEvidence"), value(["verification_evidence"], ["Verification Evidence"], ["verification"])],
+      [t("workflow.runtimeProject.residualRisks"), value(["residual_risks"], ["Residual Risks"])],
+      [t("workflow.runtimeProject.artifactReferences"), value(["artifact_references"], ["Artifact References"])]
+    ]);
+  }
+  return null;
+}
+
+function workflowProjectDeliveryPanel(kind, title, help, facts) {
+  const cleanFacts = facts
+    .map(([label, value]) => [label, workflowProjectDeliveryFactText(value)])
+    .filter(([, value]) => value);
+  return cleanFacts.length ? { kind, title, help, facts: cleanFacts } : null;
+}
+
+function workflowRuntimeIsComplexProjectDelivery() {
+  return ["complex-project-delivery"].includes(String(state.runtime.workflowName || state.graph.name || "").trim());
+}
+
+function workflowStageRuntimeProjectDeliveryOutputs(runtime = {}) {
+  const values = {};
+  const add = source => {
+    if (!source || typeof source !== "object") return;
+    for (const [key, value] of Object.entries(source)) {
+      if (value === undefined || value === null || value === "") continue;
+      values[key] = value;
+    }
+  };
+  add(runtime.outputs);
+  add(runtime.outputs?.variables);
+  add(runtime.result?.outputs);
+  add(runtime.result?.output_values);
+  add(runtime.result?.values);
+  add(runtime.output_values);
+  return values;
+}
+
+function workflowStageRuntimeProjectDeliveryText(runtime = {}) {
+  const sections = [
+    runtime.result?.output,
+    runtime.outputs?.raw_output,
+    runtime.outputs?.output,
+    runtime.outputs?.project_plan,
+    runtime.outputs?.iteration_report,
+    runtime.outputs?.final_validation,
+    runtime.outputs?.final_report,
+    runtime.outputs?.summary,
+    runtime.content,
+    runtime.summary,
+    runtime.result?.summary
+  ];
+  const seen = new Set();
+  return sections
+    .map(value => workflowRuntimeDisplayText(value))
+    .filter(text => {
+      if (!text || seen.has(text)) return false;
+      seen.add(text);
+      return true;
+    })
+    .join("\n");
+}
+
+function workflowProjectDeliveryFactText(value) {
+  const text = workflowRuntimeDisplayText(value);
+  if (!text) return "";
+  return truncateWorkflowText(text.replace(/\s+/g, " "), 220);
+}
+
+function workflowExtractSection(text = "", names = []) {
+  text = String(text || "").trim();
+  if (!text) return "";
+  const labels = names.map(name => String(name || "").trim()).filter(Boolean);
+  for (const label of labels) {
+    const escaped = label.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const heading = new RegExp(`(?:^|\\n)\\s*(?:#{1,6}\\s*)?${escaped}\\s*(?::\\s*|\\n|$)`, "i");
+    const match = heading.exec(text);
+    if (!match) continue;
+    const start = match.index + match[0].length;
+    const rest = text.slice(start);
+    const next = /\n\s*(?:#{1,6}\s*)?[A-Z][A-Za-z0-9 /&()_-]{2,80}\s*(?::\s*|\n|$)/.exec(rest);
+    const section = (next ? rest.slice(0, next.index) : rest).trim();
+    if (section) return section;
+  }
+  return "";
+}
+
+function renderWorkflowStageRuntimeArtifactShortcut(stageName, detailState = {}, runtime = {}) {
+  const artifacts = workflowStageRuntimeArtifactItems(detailState.detail);
+  const count = artifacts.length || workflowNumber(runtime.artifacts);
+  if (!count) return "";
+  const loaded = !!detailState.loaded;
+  const body = loaded
+    ? artifacts.length
+      ? `<div class="workflow-stage-runtime-artifacts" data-runtime-artifact-list>${artifacts.map(renderWorkflowStageRuntimeArtifactCard).join("")}</div>`
+      : `<div class="workflow-runtime-lazy-status">${escapeHTML(t("workflow.runtimeArtifact.empty"))}</div>`
+    : `<div class="workflow-stage-runtime-artifact-load">
+        <span><small>${escapeHTML(t("workflow.runtimeField.artifacts"))}</small><strong>${escapeHTML(String(count))}</strong></span>
+        <button type="button" class="ghost-button" data-stage-runtime-load="${escapeHTML(stageName)}">${escapeHTML(t("workflow.runtimeShortcut.loadArtifacts"))}</button>
+      </div>`;
+  return `<details class="workflow-stage-runtime-shortcut artifact" data-runtime-diagnostic-panel="artifact" open>
+    <summary>
+      <span>
+        <strong>${escapeHTML(t("workflow.runtimeShortcut.artifacts"))}</strong>
+        <small>${escapeHTML(t("workflow.runtimeShortcut.artifactsHelp"))}</small>
+      </span>
+      <i>${escapeHTML(loaded ? t("workflow.runtimeShortcut.view") : t("workflow.runtimeShortcut.loadArtifacts"))}</i>
+    </summary>
+    ${body}
+  </details>`;
+}
+
+function workflowStageRuntimeBudgetShortcutFacts(diagnostic = {}) {
+  const budgetLimit = workflowBudgetLimitText(diagnostic);
+  return [
+    budgetLimit ? [t("workflow.runtimeField.budgetLimit"), budgetLimit] : null,
+    Number.isFinite(diagnostic.budgetSavedTokens) && diagnostic.budgetSavedTokens > 0 ? [t("workflow.runtimeField.budgetSavedTokens"), workflowTokenCountText(diagnostic.budgetSavedTokens)] : null,
+    Number.isFinite(diagnostic.budgetGrossPromptTokens) && diagnostic.budgetGrossPromptTokens > 0 ? [t("workflow.runtimeField.budgetGrossPromptTokens"), workflowTokenCountText(diagnostic.budgetGrossPromptTokens)] : null,
+    Number.isFinite(diagnostic.budgetNetPromptTokens) && diagnostic.budgetNetPromptTokens > 0 ? [t("workflow.runtimeField.budgetNetPromptTokens"), workflowTokenCountText(diagnostic.budgetNetPromptTokens)] : null,
+    Number.isFinite(diagnostic.budgetPromptTokens) && diagnostic.budgetPromptTokens > 0 ? [t("workflow.runtimeField.budgetPromptTokens"), workflowTokenCountText(diagnostic.budgetPromptTokens)] : null,
+    Number.isFinite(diagnostic.budgetTotalTokens) && diagnostic.budgetTotalTokens > 0 ? [t("workflow.runtimeField.budgetTotalTokens"), workflowTokenCountText(diagnostic.budgetTotalTokens)] : null,
+    Number.isFinite(diagnostic.budgetEstimatedInputCost) && diagnostic.budgetEstimatedInputCost > 0 ? [t("workflow.runtimeField.budgetEstimatedInputCost"), workflowCostText(diagnostic.budgetEstimatedInputCost, diagnostic.budgetCostCurrency)] : null,
+    Number.isFinite(diagnostic.budgetEstimatedOutputCost) && diagnostic.budgetEstimatedOutputCost > 0 ? [t("workflow.runtimeField.budgetEstimatedOutputCost"), workflowCostText(diagnostic.budgetEstimatedOutputCost, diagnostic.budgetCostCurrency)] : null,
+    Number.isFinite(diagnostic.budgetEstimatedTotalCost) && diagnostic.budgetEstimatedTotalCost > 0 ? [t("workflow.runtimeField.budgetEstimatedTotalCost"), workflowCostText(diagnostic.budgetEstimatedTotalCost, diagnostic.budgetCostCurrency)] : null,
+    diagnostic.budgetCostCurrency ? [t("workflow.runtimeField.budgetCostCurrency"), diagnostic.budgetCostCurrency] : null,
+    diagnostic.budgetPricingSource ? [t("workflow.runtimeField.budgetPricingSource"), diagnostic.budgetPricingSource] : null,
+    Number.isFinite(diagnostic.budgetLLMCalls) && diagnostic.budgetLLMCalls > 0 ? [t("workflow.runtimeField.budgetLLMCalls"), String(diagnostic.budgetLLMCalls)] : null
+  ].filter(Boolean);
+}
+
+function workflowStageRuntimeModelRouteShortcutFacts(diagnostic = {}) {
+  const routeRef = diagnostic.modelEscalationRef || diagnostic.modelSoftBudgetRouteRef || diagnostic.sourceRef || "";
+  const modelRouteDetected = diagnostic.modelSoftBudgetRoute ||
+    diagnostic.modelEscalated ||
+    String(diagnostic.modelRouteReason || "").includes("budget_model_route") ||
+    String(diagnostic.modelRouteReason || "").includes("model_escalated") ||
+    String(routeRef || "").includes("soft_budget") ||
+    String(routeRef || "").includes("model_escalation") ||
+    String(routeRef || "").includes("escalat");
+  if (!modelRouteDetected && !diagnostic.modelProvider && !diagnostic.modelName && !diagnostic.modelMaxTokens) return [];
+  return [
+    diagnostic.modelRouteReason ? [t("workflow.runtimeField.reason"), diagnostic.modelRouteReason] : null,
+    diagnostic.modelSoftBudgetRoute ? [t("workflow.runtimeField.modelRoute"), t("workflow.runtimeField.modelRouteSoftBudget")] : null,
+    diagnostic.modelEscalated ? [t("workflow.runtimeField.modelRoute"), t("workflow.runtimeField.modelRouteEscalated")] : null,
+    diagnostic.modelProvider ? [t("workflow.runtimeField.modelProvider"), diagnostic.modelProvider] : null,
+    diagnostic.modelName ? [t("workflow.runtimeField.model"), diagnostic.modelName] : null,
+    Number.isFinite(diagnostic.modelMaxTokens) && diagnostic.modelMaxTokens > 0 ? [t("workflow.runtimeField.modelMaxTokens"), String(diagnostic.modelMaxTokens)] : null,
+    diagnostic.modelTemperature ? [t("workflow.runtimeField.modelTemperature"), diagnostic.modelTemperature] : null,
+    routeRef ? [t("workflow.runtimeField.sourceRef"), routeRef] : null
+  ].filter(Boolean);
+}
+
+function workflowStageRuntimeQualityShortcutFacts(diagnostic = {}) {
+  if (!diagnostic.qualityDetected) return [];
+  const sourceRef = diagnostic.qualitySourceRef || diagnostic.sourceRef || "";
+  return [
+    diagnostic.qualityStatus ? [t("workflow.runtimeField.qualityStatus"), diagnostic.qualityStatus] : null,
+    diagnostic.qualityScore ? [t("workflow.runtimeField.qualityScore"), diagnostic.qualityScore] : null,
+    diagnostic.qualityReason ? [t("workflow.runtimeField.reason"), diagnostic.qualityReason] : null,
+    diagnostic.qualityFailures ? [t("workflow.runtimeField.qualityFailures"), diagnostic.qualityFailures] : null,
+    diagnostic.qualityWarnings ? [t("workflow.runtimeField.qualityWarnings"), diagnostic.qualityWarnings] : null,
+    diagnostic.qualityCheck ? [t("workflow.runtimeField.qualityCheck"), diagnostic.qualityCheck] : null,
+    diagnostic.unresolvedQuality ? [t("workflow.runtimeField.unresolvedQuality"), t("common.on")] : null,
+    sourceRef ? [t("workflow.runtimeField.sourceRef"), sourceRef] : null
+  ].filter(Boolean);
+}
+
+function workflowStageRuntimeFileConflictShortcutFacts(diagnostic = {}) {
+  if (!diagnostic.fileConflict) return [];
+  const sourceRef = diagnostic.conflictSourceRef || diagnostic.sourceRef || "";
+  return [
+    diagnostic.conflictFiles ? [t("workflow.runtimeField.conflictFiles"), diagnostic.conflictFiles] : null,
+    diagnostic.conflictOwners ? [t("workflow.runtimeField.conflictOwners"), diagnostic.conflictOwners] : null,
+    diagnostic.contractCheck ? [t("workflow.runtimeField.contractCheck"), diagnostic.contractCheck] : null,
+    sourceRef ? [t("workflow.runtimeField.sourceRef"), sourceRef] : null
+  ].filter(Boolean);
+}
+
+function workflowStageRuntimePatchArtifactShortcutFacts(diagnostic = {}) {
+  if (!diagnostic.patchArtifactWarning) return [];
+  const sourceRef = diagnostic.patchArtifactSourceRef || diagnostic.sourceRef || "";
+  return [
+    diagnostic.patchArtifactReason ? [t("workflow.runtimeField.reason"), diagnostic.patchArtifactReason] : null,
+    diagnostic.directWriteTools ? [t("workflow.runtimeField.directWriteTools"), diagnostic.directWriteTools] : null,
+    diagnostic.patchArtifactContractCheck || diagnostic.contractCheck ? [t("workflow.runtimeField.contractCheck"), diagnostic.patchArtifactContractCheck || diagnostic.contractCheck] : null,
+    sourceRef ? [t("workflow.runtimeField.sourceRef"), sourceRef] : null
+  ].filter(Boolean);
+}
+
+function workflowStageRuntimeArtifactItems(detail = {}) {
+  const snapshot = detail?.snapshot || {};
+  const values = [
+    ...normalizeWorkflowDetailArray(detail?.artifacts),
+    ...normalizeWorkflowDetailArray(snapshot?.artifacts)
+  ];
+  const merged = [];
+  const byIdentity = new Map();
+  values.map((item, index) => normalizeWorkflowStageRuntimeArtifact(item, index))
+    .filter(item => item && item.identity)
+    .forEach(item => {
+      const existing = byIdentity.get(item.identity);
+      if (!existing) {
+        byIdentity.set(item.identity, item);
+        merged.push(item);
+        return;
+      }
+      existing.id = existing.id || item.id;
+      existing.stage = existing.stage || item.stage;
+      existing.kind = existing.kind || item.kind;
+      existing.title = existing.title || item.title;
+      existing.summary = existing.summary || item.summary;
+      existing.content = existing.content || item.content;
+      existing.ref = existing.ref || item.ref;
+      existing.size = existing.size || item.size;
+      existing.isError = existing.isError || item.isError;
+    });
+  return merged.slice(0, 8);
+}
+
+function normalizeWorkflowStageRuntimeArtifact(item = {}, index = 0) {
+  if (!item || typeof item !== "object") return null;
+  const metadata = item.metadata && typeof item.metadata === "object" ? item.metadata : {};
+  const ref = workflowDisplayValue(
+    item.artifact_ref ||
+    item.artifactRef ||
+    item.ref ||
+    metadata.artifact_ref ||
+    metadata.ref ||
+    item.hash ||
+    metadata.hash ||
+    ""
+  );
+  const identity = String(item.id || ref || `${item.stage || ""}:${item.kind || ""}:${item.title || ""}:${index}`).trim();
+  if (!identity) return null;
+  const content = workflowDisplayText(item.content || "");
+  const summary = workflowDisplayText(item.summary || metadata.summary || "");
+  return {
+    identity,
+    id: workflowDisplayValue(item.id || ""),
+    stage: workflowDisplayValue(item.stage || ""),
+    kind: workflowDisplayValue(item.kind || ""),
+    title: workflowDisplayText(item.title || item.id || item.kind || t("workflow.artifact")),
+    summary,
+    content,
+    ref,
+    size: workflowNumber(item.size ?? item.content_bytes ?? item.contentBytes ?? item.stored_bytes ?? item.storedBytes),
+    isError: Boolean(item.is_error || item.isError || metadata.is_error === "true")
+  };
+}
+
+function renderWorkflowStageRuntimeArtifactCard(artifact = {}, index = 0) {
+  const meta = [
+    artifact.kind ? [t("workflow.artifactKind"), artifact.kind] : null,
+    artifact.ref ? [t("workflow.runtimeArtifact.ref"), artifact.ref] : null,
+    artifact.size ? [t("workflow.runtimeArtifact.size"), String(artifact.size)] : null
+  ].filter(Boolean);
+  const body = artifact.content || artifact.summary || "";
+  return `<article class="workflow-stage-runtime-artifact ${artifact.isError ? "error" : ""}" data-runtime-artifact="${escapeHTML(artifact.identity)}">
+    <div class="workflow-stage-runtime-artifact-head">
+      <span>${escapeHTML(artifact.kind || t("workflow.artifact"))}</span>
+      <strong>${escapeHTML(artifact.title || t("workflow.artifact"))}</strong>
+    </div>
+    ${artifact.summary ? `<p>${escapeHTML(truncateWorkflowText(artifact.summary, 180))}</p>` : ""}
+    ${meta.length ? `<div class="workflow-stage-runtime-artifact-meta">${meta.map(([label, value]) => `<small><b>${escapeHTML(label)}</b><code>${escapeHTML(value)}</code></small>`).join("")}</div>` : ""}
+    ${body ? `<details class="workflow-stage-runtime-artifact-content" data-runtime-artifact-open="${escapeHTML(String(index))}">
+      <summary>${escapeHTML(t("workflow.runtimeArtifact.open"))}</summary>
+      <pre>${escapeHTML(body)}</pre>
+    </details>` : ""}
+  </article>`;
+}
+
+function workflowStageRuntimeContractShortcutFacts(diagnostic = {}) {
+  if (diagnostic.qualityDetected && String(diagnostic.contractCheck || "").toLowerCase().includes("quality")) return [];
+  if (diagnostic.patchArtifactWarning && String(diagnostic.patchArtifactContractCheck || diagnostic.contractCheck || "").toLowerCase() === "parallel_patch_artifact_handoff") return [];
+  const reason = diagnostic.incompleteReason || diagnostic.reason || "";
+  return [
+    reason ? [t("workflow.runtimeField.reason"), reason] : null,
+    diagnostic.contractCheck ? [t("workflow.runtimeField.contractCheck"), diagnostic.contractCheck] : null,
+    diagnostic.sourceRef ? [t("workflow.runtimeField.sourceRef"), diagnostic.sourceRef] : null,
+    diagnostic.stopReason ? [t("workflow.runtimeField.stopReason"), localizedText(diagnostic.stopReason)] : null
+  ].filter(Boolean);
+}
+
+function renderWorkflowStageRuntimeDiagnosticShortcut(kind, title, help, facts = []) {
+  return `<details class="workflow-stage-runtime-shortcut ${escapeHTML(kind)}" data-runtime-diagnostic-panel="${escapeHTML(kind)}" open>
+    <summary>
+      <span>
+        <strong>${escapeHTML(title)}</strong>
+        <small>${escapeHTML(help)}</small>
+      </span>
+      <i>${escapeHTML(t("workflow.runtimeShortcut.view"))}</i>
+    </summary>
+    <div class="workflow-stage-runtime-shortcut-grid">
+      ${facts.map(([label, value]) => `<span><small>${escapeHTML(label)}</small><strong>${escapeHTML(String(value || ""))}</strong></span>`).join("")}
+    </div>
+  </details>`;
 }
 
 function renderWorkflowStageRuntimeActionBlock(stageName, open = false) {
-  if (!workflowRuntimeNeedsAction()) return "";
-  const visible = workflowVisibleRuntimeActions().filter(action => ["approve_stage", "approve_tool", "approve_all_tools", "deny_tool", "resume_sub_workflow", "cancel"].includes(action.name));
-  if (!visible.length && state.runtime.actionsStatus !== "loading") return "";
+  const visible = workflowVisibleRuntimeActions().filter(action => ["approve_stage", "approve_tool", "approve_all_tools", "deny_tool", "resume_sub_workflow", "approve_budget", "continue_output", "escalate_model", "retry", "cancel"].includes(action.name));
+  const needsAction = workflowRuntimeNeedsAction();
+  if (!needsAction && !visible.length && state.runtime.actionsStatus !== "loading" && !state.runtime.actionsError) return "";
   const loading = state.runtime.actionsStatus === "loading" && !visible.length;
-  return `<details class="workflow-stage-runtime-actions-inline"${open || workflowRuntimeNeedsAction() ? " open" : ""}>
+  const title = needsAction ? t("workflow.runtimeActionsWaitingTitle") : t("workflow.runtimeActionsTitle");
+  const help = needsAction
+    ? t("workflow.runtimeActionsWaitingHelp", { stage: workflowDisplayValue(stageName || t("workflow.noStage")) })
+    : t("workflow.runtimeActionsHelp");
+  return `<details class="workflow-stage-runtime-actions-inline"${open || needsAction || visible.some(action => action.name === "retry") ? " open" : ""}>
     <summary>
       <span>
-        <strong>${escapeHTML(t("workflow.runtimeActionsWaitingTitle"))}</strong>
-        <small>${escapeHTML(t("workflow.runtimeActionsWaitingHelp", { stage: workflowDisplayValue(stageName || t("workflow.noStage")) }))}</small>
+        <strong>${escapeHTML(title)}</strong>
+        <small>${escapeHTML(help)}</small>
       </span>
       <i>${escapeHTML(loading ? t("workflow.runtimeActionsLoading") : t("workflow.runtimeActionsTitle"))}</i>
     </summary>
     <div class="workflow-stage-runtime-actions-body">
       ${loading ? `<div class="workflow-runtime-actions-loading">${escapeHTML(t("workflow.runtimeActionsLoading"))}</div>` : `<div class="workflow-runtime-action-grid">${visible.map(workflowRuntimeActionButton).join("")}</div>`}
       ${workflowRuntimeActionUnavailableHelp(visible) ? `<p class="workflow-runtime-action-help">${escapeHTML(workflowRuntimeActionUnavailableHelp(visible))}</p>` : ""}
+      ${state.runtime.actionsError ? `<p class="workflow-runtime-action-help error">${escapeHTML(state.runtime.actionsError)}</p>` : ""}
     </div>
   </details>`;
 }
@@ -2440,24 +3611,82 @@ function mergeWorkflowStageRuntimeDetail(stageName, detail = {}) {
   if (!name) return;
   const outputs = snapshot.output_values || snapshot.outputs || snapshot.result?.outputs || null;
   const inputs = snapshot.input_values || snapshot.inputs || null;
+  const existing = state.runtime.stageDetails[name] || {};
+  const metadata = snapshot.metadata || existing.metadata || null;
   const runtime = {
-    ...(state.runtime.stageDetails[name] || {}),
+    ...existing,
     name,
-    status: detail.status || snapshot.status || state.runtime.stageDetails[name]?.status || "",
-    content: snapshot.summary || snapshot.result?.output || state.runtime.stageDetails[name]?.content || "",
-    node_type: snapshot.node_type || state.runtime.stageDetails[name]?.node_type || "",
-    skill: snapshot.skill || state.runtime.stageDetails[name]?.skill || "",
-    tool: snapshot.tool || state.runtime.stageDetails[name]?.tool || "",
+    status: detail.status || snapshot.status || existing.status || "",
+    content: snapshot.summary || snapshot.result?.output || existing.content || "",
+    reason: snapshot.reason || existing.reason || "",
+    severity: snapshot.severity || existing.severity || "",
+    budget_scope: snapshot.budget_scope || metadata?.budget_scope || existing.budget_scope || "",
+    budget_reason: snapshot.budget_reason || metadata?.budget_reason || existing.budget_reason || "",
+    budget_metric: snapshot.budget_metric || metadata?.budget_metric || existing.budget_metric || "",
+    budget_used: snapshot.budget_used ?? metadata?.budget_used ?? existing.budget_used ?? 0,
+    budget_soft_limit: snapshot.budget_soft_limit ?? metadata?.budget_soft_limit ?? existing.budget_soft_limit ?? 0,
+    budget_hard_limit: snapshot.budget_hard_limit ?? metadata?.budget_hard_limit ?? existing.budget_hard_limit ?? 0,
+    budget_remaining: snapshot.budget_remaining ?? metadata?.budget_remaining ?? existing.budget_remaining ?? 0,
+    budget_prompt_tokens: snapshot.budget_prompt_tokens ?? metadata?.budget_prompt_tokens ?? existing.budget_prompt_tokens ?? 0,
+    budget_estimated_prompt_tokens: snapshot.budget_estimated_prompt_tokens ?? metadata?.budget_estimated_prompt_tokens ?? existing.budget_estimated_prompt_tokens ?? 0,
+    budget_net_prompt_tokens: snapshot.budget_net_prompt_tokens ?? metadata?.budget_net_prompt_tokens ?? existing.budget_net_prompt_tokens ?? 0,
+    budget_gross_prompt_tokens: snapshot.budget_gross_prompt_tokens ?? metadata?.budget_gross_prompt_tokens ?? existing.budget_gross_prompt_tokens ?? 0,
+    budget_saved_tokens: snapshot.budget_saved_tokens ?? metadata?.budget_saved_tokens ?? existing.budget_saved_tokens ?? 0,
+    budget_memory_saved_tokens: snapshot.budget_memory_saved_tokens ?? metadata?.budget_memory_saved_tokens ?? existing.budget_memory_saved_tokens ?? 0,
+    budget_history_saved_tokens: snapshot.budget_history_saved_tokens ?? metadata?.budget_history_saved_tokens ?? existing.budget_history_saved_tokens ?? 0,
+    budget_artifact_saved_tokens: snapshot.budget_artifact_saved_tokens ?? metadata?.budget_artifact_saved_tokens ?? existing.budget_artifact_saved_tokens ?? 0,
+    budget_skill_saved_tokens: snapshot.budget_skill_saved_tokens ?? metadata?.budget_skill_saved_tokens ?? existing.budget_skill_saved_tokens ?? 0,
+    budget_tool_schema_saved_tokens: snapshot.budget_tool_schema_saved_tokens ?? metadata?.budget_tool_schema_saved_tokens ?? existing.budget_tool_schema_saved_tokens ?? 0,
+    budget_cached_tokens: snapshot.budget_cached_tokens ?? metadata?.budget_cached_tokens ?? existing.budget_cached_tokens ?? 0,
+    budget_output_tokens: snapshot.budget_output_tokens ?? metadata?.budget_output_tokens ?? existing.budget_output_tokens ?? 0,
+    budget_total_tokens: snapshot.budget_total_tokens ?? metadata?.budget_total_tokens ?? existing.budget_total_tokens ?? 0,
+    budget_estimated_input_cost: snapshot.budget_estimated_input_cost ?? metadata?.budget_estimated_input_cost ?? existing.budget_estimated_input_cost ?? 0,
+    budget_estimated_output_cost: snapshot.budget_estimated_output_cost ?? metadata?.budget_estimated_output_cost ?? existing.budget_estimated_output_cost ?? 0,
+    budget_estimated_total_cost: snapshot.budget_estimated_total_cost ?? metadata?.budget_estimated_total_cost ?? existing.budget_estimated_total_cost ?? 0,
+    budget_cost_currency: snapshot.budget_cost_currency || metadata?.budget_cost_currency || existing.budget_cost_currency || "",
+    budget_pricing_source: snapshot.budget_pricing_source || metadata?.budget_pricing_source || existing.budget_pricing_source || "",
+    budget_llm_calls: snapshot.budget_llm_calls ?? metadata?.budget_llm_calls ?? existing.budget_llm_calls ?? 0,
+    budget_continuations: snapshot.budget_continuations ?? metadata?.budget_continuations ?? existing.budget_continuations ?? 0,
+    contract_check: snapshot.contract_check || metadata?.contract_check || existing.contract_check || "",
+    source_ref: snapshot.source_ref || metadata?.source_ref || existing.source_ref || "",
+    quality_status: snapshot.quality_status || metadata?.quality_status || outputs?.quality_status || outputs?.variables?.quality_status || existing.quality_status || "",
+    quality_score: snapshot.quality_score ?? metadata?.quality_score ?? metadata?.score ?? outputs?.quality_score ?? outputs?.score ?? outputs?.variables?.quality_score ?? outputs?.variables?.score ?? existing.quality_score ?? "",
+    quality_failures: snapshot.quality_failures || metadata?.quality_failures || metadata?.failures || outputs?.quality_failures || outputs?.failures || outputs?.variables?.quality_failures || outputs?.variables?.failures || existing.quality_failures || "",
+    quality_warnings: snapshot.quality_warnings || metadata?.quality_warnings || metadata?.warnings || outputs?.quality_warnings || outputs?.warnings || outputs?.variables?.quality_warnings || outputs?.variables?.warnings || existing.quality_warnings || "",
+    quality_reason: snapshot.quality_reason || metadata?.quality_reason || outputs?.quality_reason || outputs?.variables?.quality_reason || existing.quality_reason || "",
+    parallel_file_conflict: snapshot.parallel_file_conflict ?? metadata?.parallel_file_conflict ?? outputs?.parallel_file_conflict ?? outputs?.variables?.parallel_file_conflict ?? existing.parallel_file_conflict ?? false,
+    parallel_file_conflict_paths: snapshot.parallel_file_conflict_paths || metadata?.parallel_file_conflict_paths || outputs?.parallel_file_conflict_paths || outputs?.variables?.parallel_file_conflict_paths || existing.parallel_file_conflict_paths || "",
+    parallel_file_conflict_owners: snapshot.parallel_file_conflict_owners || metadata?.parallel_file_conflict_owners || outputs?.parallel_file_conflict_owners || outputs?.variables?.parallel_file_conflict_owners || existing.parallel_file_conflict_owners || "",
+    parallel_file_conflict_source_ref: snapshot.parallel_file_conflict_source_ref || metadata?.parallel_file_conflict_source_ref || outputs?.parallel_file_conflict_source_ref || outputs?.variables?.parallel_file_conflict_source_ref || existing.parallel_file_conflict_source_ref || "",
+    parallel_patch_artifact_required: snapshot.parallel_patch_artifact_required ?? metadata?.parallel_patch_artifact_required ?? outputs?.parallel_patch_artifact_required ?? outputs?.variables?.parallel_patch_artifact_required ?? existing.parallel_patch_artifact_required ?? false,
+    parallel_direct_write_tools: snapshot.parallel_direct_write_tools || metadata?.parallel_direct_write_tools || outputs?.parallel_direct_write_tools || outputs?.variables?.parallel_direct_write_tools || existing.parallel_direct_write_tools || "",
+    parallel_patch_artifact_reason: snapshot.parallel_patch_artifact_reason || metadata?.parallel_patch_artifact_reason || outputs?.parallel_patch_artifact_reason || outputs?.variables?.parallel_patch_artifact_reason || existing.parallel_patch_artifact_reason || "",
+    parallel_patch_artifact_source_ref: snapshot.parallel_patch_artifact_source_ref || metadata?.parallel_patch_artifact_source_ref || outputs?.parallel_patch_artifact_source_ref || outputs?.variables?.parallel_patch_artifact_source_ref || existing.parallel_patch_artifact_source_ref || "",
+    execution_mode: snapshot.execution_mode || metadata?.["execution.mode"] || metadata?.execution_mode || outputs?.execution_mode || outputs?.variables?.execution_mode || existing.execution_mode || "",
+    execution_ready: snapshot.execution_ready ?? metadata?.["execution.ready"] ?? metadata?.execution_ready ?? outputs?.execution_ready ?? outputs?.variables?.execution_ready ?? existing.execution_ready ?? null,
+    execution_missing: snapshot.execution_missing || metadata?.["execution.missing"] || metadata?.execution_missing || outputs?.execution_missing || outputs?.variables?.execution_missing || existing.execution_missing || "",
+    execution_risk_level: snapshot.execution_risk_level || metadata?.["execution.risk_level"] || metadata?.execution_risk_level || outputs?.execution_risk_level || outputs?.variables?.execution_risk_level || existing.execution_risk_level || "",
+    execution_boundary: snapshot.execution_boundary || metadata?.["execution.boundary"] || metadata?.execution_boundary || outputs?.execution_boundary || outputs?.variables?.execution_boundary || existing.execution_boundary || "",
+    execution_reason: snapshot.execution_reason || metadata?.["execution.reason"] || metadata?.execution_reason || existing.execution_reason || "",
+    execution_source_ref: snapshot.execution_source_ref || metadata?.["execution.source_ref"] || metadata?.execution_source_ref || existing.execution_source_ref || "",
+    stop_reason: snapshot.stop_reason || snapshot.result?.stop_reason || metadata?.stop_reason || existing.stop_reason || "",
+    continuation_count: snapshot.continuation_count ?? snapshot.result?.continuation_count ?? metadata?.continuation_count ?? existing.continuation_count ?? null,
+    incomplete: Boolean(snapshot.incomplete ?? snapshot.result?.incomplete ?? existing.incomplete) || String(metadata?.incomplete || "").toLowerCase() === "true",
+    incomplete_reason: snapshot.incomplete_reason || snapshot.result?.incomplete_reason || metadata?.incomplete_reason || existing.incomplete_reason || "",
+    node_type: snapshot.node_type || existing.node_type || "",
+    skill: snapshot.skill || existing.skill || "",
+    tool: snapshot.tool || existing.tool || "",
     inputs,
     outputs,
-    attempts: snapshot.attempts ?? state.runtime.stageDetails[name]?.attempts ?? null,
-    artifacts: Array.isArray(detail.artifacts) ? detail.artifacts.length : Array.isArray(snapshot.artifacts) ? snapshot.artifacts.length : state.runtime.stageDetails[name]?.artifacts ?? 0,
-    acceptance: normalizeAcceptanceItems(snapshot.acceptance || state.runtime.stageDetails[name]?.acceptance),
-    metadata: snapshot.metadata || state.runtime.stageDetails[name]?.metadata || null,
-    route: snapshot.result?.route ?? outputs?.route ?? state.runtime.stageDetails[name]?.route ?? "",
-    value: snapshot.result?.value ?? outputs?.value ?? state.runtime.stageDetails[name]?.value,
-    target: snapshot.result?.target ?? outputs?.target ?? state.runtime.stageDetails[name]?.target ?? "",
-    passed: snapshot.result?.passed ?? outputs?.passed ?? state.runtime.stageDetails[name]?.passed,
+    attempts: snapshot.attempts ?? existing.attempts ?? null,
+    artifacts: Array.isArray(detail.artifacts) ? detail.artifacts.length : Array.isArray(snapshot.artifacts) ? snapshot.artifacts.length : existing.artifacts ?? 0,
+    acceptance: normalizeAcceptanceItems(snapshot.acceptance || existing.acceptance),
+    metadata,
+    result: snapshot.result || existing.result || null,
+    route: snapshot.result?.route ?? outputs?.route ?? existing.route ?? "",
+    value: snapshot.result?.value ?? outputs?.value ?? existing.value,
+    target: snapshot.result?.target ?? outputs?.target ?? existing.target ?? "",
+    passed: snapshot.result?.passed ?? outputs?.passed ?? existing.passed,
     updatedAt: Date.now()
   };
   state.runtime.stageDetails[name] = runtime;
@@ -2483,6 +3712,57 @@ function restoreWorkflowRuntimeScroll(container, state = {}) {
 function stageRuntimeExplanation(stage, runtime) {
   const stateName = nodeRuntimeState(runtime, stage?.name || "");
   const route = runtimeRouteTarget(stage || {}, runtime || {});
+  const diagnostic = workflowRuntimeStageDiagnostic(stage, runtime || {});
+  if (diagnostic.incomplete) {
+    return {
+      tone: "blocked",
+      title: t("workflow.runtimeExplain.incomplete.title"),
+      body: diagnostic.incompleteReason || diagnostic.reason || t("workflow.runtimeExplain.incomplete.body")
+    };
+  }
+  if (diagnostic.qualityDetected && (diagnostic.qualityFailed || diagnostic.unresolvedQuality || String(runtime?.status || "").toLowerCase() === "warning")) {
+    return {
+      tone: diagnostic.qualityFailed ? "error" : "waiting",
+      title: t("workflow.qualityGateFailure"),
+      body: diagnostic.qualityFailures || diagnostic.qualityReason || diagnostic.reason || t("workflow.runtimeExplain.quality.body")
+    };
+  }
+  if (diagnostic.fileConflict) {
+    return {
+      tone: "waiting",
+      title: t("workflow.runtimeExplain.fileConflict.title"),
+      body: diagnostic.conflictFiles || diagnostic.conflictSourceRef || diagnostic.reason || t("workflow.runtimeExplain.fileConflict.body")
+    };
+  }
+  if (diagnostic.patchArtifactWarning) {
+    return {
+      tone: "waiting",
+      title: t("workflow.runtimeExplain.patchArtifact.title"),
+      body: diagnostic.patchArtifactReason || diagnostic.directWriteTools || diagnostic.patchArtifactSourceRef || t("workflow.runtimeExplain.patchArtifact.body")
+    };
+  }
+  if (diagnostic.executionBlocked) {
+    return {
+      tone: "blocked",
+      title: t("workflow.runtimeExplain.execution.title"),
+      body: diagnostic.executionReason || diagnostic.executionMissing || diagnostic.executionSourceRef || t("workflow.runtimeExplain.execution.body")
+    };
+  }
+  if (diagnostic.contractCheck || String(runtime?.status || "").toLowerCase() === "blocked") {
+    return {
+      tone: "error",
+      title: t("workflow.runtimeExplain.contract.title"),
+      body: diagnostic.reason || t("workflow.runtimeExplain.contract.body")
+    };
+  }
+  if (String(state.runtime.workflowStatus || "").toLowerCase() === "awaiting_budget_approval") {
+    const budgetLimit = workflowBudgetLimitText(diagnostic);
+    return {
+      tone: "blocked",
+      title: t("workflow.runtimeExplain.budget.title"),
+      body: diagnostic.reason || budgetLimit || t("workflow.runtimeExplain.budget.body")
+    };
+  }
   if (stateName === "waiting") {
     return {
       tone: "waiting",
@@ -2530,6 +3810,41 @@ function runtimeMetaLine() {
 
 function summaryMetric(label, value) {
   return `<div class="workflow-runtime-metric"><span>${escapeHTML(label)}</span><strong>${escapeHTML(String(value))}</strong></div>`;
+}
+
+function workflowNumber(value) {
+  const number = Number(value);
+  return Number.isFinite(number) ? number : 0;
+}
+
+function workflowTokenCountText(value) {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "-";
+  return `${number.toLocaleString()} ${t("chat.tokens")}`;
+}
+
+function workflowCostText(value, currency = "") {
+  const number = Number(value || 0);
+  if (!Number.isFinite(number) || number <= 0) return "-";
+  const code = String(currency || "").trim().toUpperCase();
+  const digits = number < 0.01 ? 6 : number < 1 ? 4 : 2;
+  if (/^[A-Z]{3}$/.test(code)) {
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: code,
+        minimumFractionDigits: Math.min(2, digits),
+        maximumFractionDigits: digits
+      }).format(number);
+    } catch {
+      // Fall back to plain number text for uncommon private currency labels.
+    }
+  }
+  const text = number.toLocaleString(undefined, {
+    minimumFractionDigits: number < 1 ? Math.min(2, digits) : 0,
+    maximumFractionDigits: digits
+  });
+  return code ? `${text} ${code}` : text;
 }
 
 function detailChip(label, value) {
@@ -3188,6 +4503,7 @@ function bind(root) {
     insertExpressionSuggestion(root, button.dataset.expressionSuggestion || "");
   });
   root.querySelector("#stageDataFlow").addEventListener("click", event => {
+    if (!state.expertMode) return;
     const button = event.target instanceof Element ? event.target.closest("[data-copy-stage-ref]") : null;
     if (!button) return;
     addDataFlowReferenceToStageInput(root, button.dataset.copyStageRef || "");
@@ -3201,6 +4517,11 @@ function bind(root) {
     const emptyAction = event.target instanceof Element ? event.target.closest("[data-stage-empty-tab]") : null;
     if (emptyAction) {
       setWorkflowInspectorTab(root, emptyAction.dataset.stageEmptyTab || "overview");
+      return;
+    }
+    const resourceToggle = event.target instanceof Element ? event.target.closest("[data-stage-resource-toggle]") : null;
+    if (resourceToggle) {
+      toggleStageResourcePicker(root, resourceToggle.dataset.stageResourceToggle || "");
       return;
     }
     const button = event.target instanceof Element ? event.target.closest("[data-stage-resource-choice]") : null;
@@ -3627,6 +4948,7 @@ function normalizeStagePresetForApply(source, fallbackNodeType) {
     input: preset.input && typeof preset.input === "object" && !Array.isArray(preset.input) ? preset.input : {},
     outputs: preset.outputs && typeof preset.outputs === "object" && !Array.isArray(preset.outputs) ? preset.outputs : {},
     context: hasStageContextContract(preset.context) ? normalizeStageContext(preset.context) : undefined,
+    execution: hasStageExecutionContract(preset.execution) ? normalizeStageExecutionContract(preset.execution) : undefined,
     params: preset.params && typeof preset.params === "object" && !Array.isArray(preset.params) ? preset.params : {},
     artifacts: normalizeArtifacts(preset.artifacts),
     acceptance_criteria: normalizeAcceptanceCriteria(preset.acceptance_criteria || preset.acceptance),
@@ -4061,7 +5383,8 @@ function renderCanvas(root) {
     const node = document.createElement("div");
     node.dataset.stageName = stage.name;
     node.dataset.tourId = index === tourNodeIndex ? "workflow-node-agent" : "";
-    node.dataset.runtimeLabel = state.runtime.currentStage === stage.name
+    const isRuntimeCurrent = workflowRuntimeHasActiveCurrentStage() && state.runtime.currentStage === stage.name;
+    node.dataset.runtimeLabel = isRuntimeCurrent
       ? (runtimeState === "waiting" ? t("workflow.nodeRuntime.currentWaiting") : t("workflow.nodeRuntime.currentRunning"))
       : "";
     node.tabIndex = 0;
@@ -4074,7 +5397,7 @@ function renderCanvas(root) {
       (stage.approval ? " needs-approval" : "") +
       ` setup-${setupStatus.tone}` +
       (runtimeState ? ` has-runtime runtime-${runtimeState}` : "") +
-      (state.runtime.currentStage === stage.name ? " runtime-current" : "") +
+      (isRuntimeCurrent ? " runtime-current" : "") +
       (routeText ? " runtime-route-hit" : "") +
       (state.connectSource === stage.name || state.connecting?.sourceName === stage.name ? " connecting" : "") +
       (state.connecting && state.connecting.sourceName !== stage.name && canReceive ? " connect-target" : "");
@@ -4502,17 +5825,19 @@ function edgeRuntimeLabel(stage, targetName, point) {
 
 function nodeRuntimeState(runtime, stageName) {
   const inferred = runtime || inferredControlRuntime(stageName);
-  if (!inferred && state.runtime.currentStage !== stageName) return "";
-  if (state.runtime.currentStage === stageName && state.runtime.status === "waiting") return "waiting";
-  if (state.runtime.currentStage === stageName && state.runtime.status === "running") return "running";
+  const isActiveCurrent = workflowRuntimeHasActiveCurrentStage() && state.runtime.currentStage === stageName;
+  if (!inferred && !isActiveCurrent) return "";
+  if (isActiveCurrent && state.runtime.status === "waiting") return "waiting";
+  if (isActiveCurrent && state.runtime.status === "running") return "running";
   const status = String(inferred?.status || "").toLowerCase();
+  if (["failed", "error", "denied", "cancelled", "canceled", "blocked", "contract_failed", "quality_failed"].includes(status)) return "error";
+  if (workflowRuntimeStageBlocked(inferred, { status })) return "waiting";
   const stage = state.graph.stages.find(item => item.name === stageName);
   const nodeType = normalizedNodeType(stage || { node_type: inferred?.node_type || "" });
   if (controlTypes.has(nodeType) && ["failed", "fail"].includes(String(inferred?.route || inferred?.value || "").toLowerCase())) {
     return "success";
   }
-  if (["failed", "error", "denied", "cancelled", "canceled"].includes(status)) return "error";
-  if (["waiting", "paused", "approval_required", "approval", "pending", "awaiting_input"].includes(status)) return "waiting";
+  if (["waiting", "paused", "approval_required", "approval", "pending", "awaiting_input", "paused_need_more_budget", "awaiting_budget_approval"].includes(status)) return "waiting";
   if (["completed", "success", "succeeded", "done", "finished"].includes(status)) return "success";
   if (inferred) return state.runtime.status === "success" ? "success" : "running";
   return "";
@@ -4621,8 +5946,32 @@ function nodeRuntimePopover(stage, nodeType, runtime, runtimeState) {
   const statusLabel = t(`workflow.nodeRuntime.${runtimeState}`);
   const summary = truncateWorkflowText(workflowDisplayText(runtime?.content || runtime?.summary || runtime?.message || ""), 140);
   const progress = workflowRuntimeProgress();
+  const diagnostic = workflowRuntimeStageDiagnostic(stage, runtime || {});
+  const diagnosticText = workflowRuntimeDiagnosticText(diagnostic);
   const facts = [
     runtime?.node_type || nodeType ? detailChip(t("workflow.runtimeField.nodeType"), nodeDisplayType(runtime?.node_type || nodeType)) : "",
+    diagnostic.stopReason ? detailChip(t("workflow.runtimeField.stopReason"), diagnostic.stopReason) : "",
+    Number.isFinite(diagnostic.continuationCount) && diagnostic.continuationCount > 0 ? detailChip(t("workflow.runtimeField.continuations"), String(diagnostic.continuationCount)) : "",
+    diagnostic.budgetScope ? detailChip(t("workflow.runtimeField.budgetScope"), diagnostic.budgetScope) : "",
+    workflowBudgetLimitText(diagnostic) ? detailChip(t("workflow.runtimeField.budgetLimit"), workflowBudgetLimitText(diagnostic)) : "",
+    Number.isFinite(diagnostic.budgetLLMCalls) && diagnostic.budgetLLMCalls > 0 ? detailChip(t("workflow.runtimeField.budgetLLMCalls"), String(diagnostic.budgetLLMCalls)) : "",
+    Number.isFinite(diagnostic.budgetTotalTokens) && diagnostic.budgetTotalTokens > 0 ? detailChip(t("workflow.runtimeField.budgetTotalTokens"), String(diagnostic.budgetTotalTokens)) : "",
+    Number.isFinite(diagnostic.budgetPromptTokens) && diagnostic.budgetPromptTokens > 0 ? detailChip(t("workflow.runtimeField.budgetPromptTokens"), String(diagnostic.budgetPromptTokens)) : "",
+    Number.isFinite(diagnostic.budgetSavedTokens) && diagnostic.budgetSavedTokens > 0 ? detailChip(t("workflow.runtimeField.budgetSavedTokens"), String(diagnostic.budgetSavedTokens)) : "",
+    Number.isFinite(diagnostic.budgetGrossPromptTokens) && diagnostic.budgetGrossPromptTokens > 0 ? detailChip(t("workflow.runtimeField.budgetGrossPromptTokens"), String(diagnostic.budgetGrossPromptTokens)) : "",
+    Number.isFinite(diagnostic.budgetNetPromptTokens) && diagnostic.budgetNetPromptTokens > 0 ? detailChip(t("workflow.runtimeField.budgetNetPromptTokens"), String(diagnostic.budgetNetPromptTokens)) : "",
+    Number.isFinite(diagnostic.budgetOutputTokens) && diagnostic.budgetOutputTokens > 0 ? detailChip(t("workflow.runtimeField.budgetOutputTokens"), String(diagnostic.budgetOutputTokens)) : "",
+    Number.isFinite(diagnostic.budgetCachedTokens) && diagnostic.budgetCachedTokens > 0 ? detailChip(t("workflow.runtimeField.budgetCachedTokens"), String(diagnostic.budgetCachedTokens)) : "",
+    Number.isFinite(diagnostic.budgetEstimatedTotalCost) && diagnostic.budgetEstimatedTotalCost > 0 ? detailChip(t("workflow.runtimeField.budgetEstimatedTotalCost"), workflowCostText(diagnostic.budgetEstimatedTotalCost, diagnostic.budgetCostCurrency)) : "",
+    diagnostic.qualityStatus ? detailChip(t("workflow.runtimeField.qualityStatus"), diagnostic.qualityStatus) : "",
+    diagnostic.qualityScore ? detailChip(t("workflow.runtimeField.qualityScore"), diagnostic.qualityScore) : "",
+    diagnostic.executionMode ? detailChip(t("workflow.runtimeField.executionMode"), diagnostic.executionMode) : "",
+    diagnostic.executionReady !== null && diagnostic.executionReady !== undefined ? detailChip(t("workflow.runtimeField.executionReady"), diagnostic.executionReady ? t("common.yes") : t("common.no")) : "",
+    diagnostic.executionMissing ? detailChip(t("workflow.runtimeField.executionMissing"), truncateWorkflowText(diagnostic.executionMissing, 44)) : "",
+    diagnostic.executionRisk ? detailChip(t("workflow.runtimeField.executionRisk"), diagnostic.executionRisk) : "",
+    diagnostic.fileConflict && diagnostic.conflictFiles ? detailChip(t("workflow.runtimeField.conflictFiles"), truncateWorkflowText(diagnostic.conflictFiles, 44)) : "",
+    diagnostic.patchArtifactWarning && diagnostic.directWriteTools ? detailChip(t("workflow.runtimeField.directWriteTools"), truncateWorkflowText(diagnostic.directWriteTools, 44)) : "",
+    diagnostic.contractCheck ? detailChip(t("workflow.runtimeField.contractCheck"), truncateWorkflowText(diagnostic.contractCheck, 44)) : "",
     runtime?.skill ? detailChip(t("workflow.runtimeField.skill"), workflowDisplayValue(runtime.skill)) : "",
     runtime?.tool ? detailChip(t("workflow.runtimeField.tool"), workflowDisplayValue(runtime.tool)) : "",
     runtime?.attempts !== null && runtime?.attempts !== undefined && runtime?.attempts !== "" ? detailChip(t("workflow.runtimeField.attempts"), String(runtime.attempts)) : ""
@@ -4633,11 +5982,13 @@ function nodeRuntimePopover(stage, nodeType, runtime, runtimeState) {
   const outputs = runtime ? countRuntimeOutputs([runtime]) : 0;
   const artifacts = runtime?.artifacts === null || runtime?.artifacts === undefined ? 0 : Number(runtime.artifacts || 0);
   const evidence = [
+    diagnostic.incomplete ? t("workflow.nodeRuntime.incomplete") : "",
+    diagnostic.executionBlocked ? t("workflow.nodeRuntime.executionBlocked") : "",
     outputs ? t("workflow.nodeRuntime.outputs", { count: outputs }) : "",
     artifacts ? t("workflow.nodeRuntime.artifacts", { count: artifacts }) : "",
     Array.isArray(runtime?.acceptance) && runtime.acceptance.length ? workflowAcceptanceSummary(runtime.acceptance) : ""
   ].filter(Boolean);
-  const isCurrent = state.runtime.currentStage === stage.name;
+  const isCurrent = workflowRuntimeHasActiveCurrentStage() && state.runtime.currentStage === stage.name;
   const hint = runtimeState === "waiting"
     ? t("workflow.nodeRuntime.hoverWaitingHint")
     : isCurrent
@@ -4661,6 +6012,7 @@ function nodeRuntimePopover(stage, nodeType, runtime, runtimeState) {
       ${route ? `<span><small>${escapeHTML(t("workflow.runtimeField.route"))}</small><strong>${escapeHTML(truncateWorkflowText(route, 44))}</strong></span>` : ""}
     </div>
     ${facts.length ? `<div class="node-runtime-popover-meta">${facts.slice(0, 3).join("")}</div>` : ""}
+    ${diagnosticText ? `<p class="node-runtime-popover-diagnostic">${escapeHTML(truncateWorkflowText(diagnosticText, 150))}</p>` : ""}
     ${summary ? `<p>${escapeHTML(summary)}</p>` : ""}
     <small class="node-runtime-popover-hint">${escapeHTML(hint)}</small>
   </aside>`;
@@ -4669,6 +6021,48 @@ function nodeRuntimePopover(stage, nodeType, runtime, runtimeState) {
 function nodeRuntimeEvidenceChips(runtime) {
   if (!runtime) return "";
   const chips = [];
+  const diagnostic = workflowRuntimeStageDiagnostic({}, runtime);
+  if (diagnostic.incomplete) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.incomplete"), "warn"));
+  }
+  if (diagnostic.stopReason) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.stopReason", { reason: diagnostic.stopReason }), "warn"));
+  }
+  if (Number.isFinite(diagnostic.continuationCount) && diagnostic.continuationCount > 0) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.continuations", { count: diagnostic.continuationCount }), "warn"));
+  }
+  if (diagnostic.budgetScope) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.budgetScope", { scope: diagnostic.budgetScope }), "warn"));
+  }
+  const reason = diagnostic.incompleteReason || diagnostic.reason || diagnostic.budgetReason || "";
+  if (reason && !diagnostic.incomplete) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.reason", { reason: truncateWorkflowText(reason, 32) }), "warn"));
+  }
+  const budgetLimitText = workflowBudgetLimitText(diagnostic);
+  if (budgetLimitText) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.budgetLimit", { limit: truncateWorkflowText(budgetLimitText, 36) }), "warn"));
+  }
+  if (diagnostic.contractCheck) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.contractCheck", { check: truncateWorkflowText(diagnostic.contractCheck, 32) }), "warn"));
+  }
+  if (diagnostic.fileConflict) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.fileConflict", { files: truncateWorkflowText(diagnostic.conflictFiles || diagnostic.conflictSourceRef || "", 32) }), "warn"));
+  }
+  if (diagnostic.executionBlocked) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.executionBlocked"), "bad"));
+  } else if (diagnostic.executionMode) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.executionMode", { mode: truncateWorkflowText(diagnostic.executionMode, 24) }), diagnostic.executionMode === "live" ? "warn" : "info"));
+  }
+  if (diagnostic.patchArtifactWarning) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.patchArtifact", { tools: truncateWorkflowText(diagnostic.directWriteTools || diagnostic.patchArtifactSourceRef || "", 32) }), "warn"));
+  }
+  if (diagnostic.modelEscalated) {
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.modelEscalated"), "warn"));
+  }
+  if (diagnostic.qualityDetected) {
+    const qualityLabel = diagnostic.qualityStatus || (diagnostic.qualityFailed ? t("workflow.runtimeAcceptanceStatus.fail") : t("workflow.runtimeAcceptanceStatus.warn"));
+    chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.qualityStatus", { status: truncateWorkflowText(qualityLabel, 32) }), diagnostic.qualityFailed ? "bad" : "warn"));
+  }
   const outputs = countRuntimeOutputs([runtime]);
   const artifacts = runtime.artifacts === null || runtime.artifacts === undefined ? 0 : Number(runtime.artifacts || 0);
   if (outputs) chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.outputs", { count: outputs })));
@@ -5162,6 +6556,7 @@ function renderParallelVisualBuilder(stage) {
     <div class="workflow-visual-grid two">
       <label><span>${escapeHTML(t("workflow.visualParallelJoin"))}</span>${renderStageTargetInput("parallel-join", joinTarget)}</label>
       ${renderVisualToggle("parallel-concurrent", "workflow.visualParallelConcurrent", isTruthyParam(stage.params?.concurrent), "workflow.visualParallelConcurrentHelp")}
+      <label><span>${escapeHTML(t("workflow.visualParallelSoftBudgetMax"))}</span><input data-visual-field="parallel-soft-budget-max" type="number" min="1" step="1" value="${escapeHTML(stage.params?.soft_budget_max_parallel_branches || "")}" placeholder="${examplePlaceholder("1")}"><small>${escapeHTML(t("workflow.visualParallelSoftBudgetMaxHelp"))}</small></label>
     </div>
   </section>`;
 }
@@ -5507,6 +6902,7 @@ function applyVisualBuilder(root, rerender = true) {
     stage.next = branches;
     stage.params = stage.params || {};
     setParamValue(stage.params, "concurrent", builder.querySelector('[data-visual-field="parallel-concurrent"]')?.checked ? "true" : "");
+    setParamValue(stage.params, "soft_budget_max_parallel_branches", value("parallel-soft-budget-max"));
     applyParallelJoinTarget(branches, slug(value("parallel-join")));
   } else if (nodeType === "join") {
     stage.params = stage.params || {};
@@ -6278,8 +7674,12 @@ function updateStageResourcePickers(root, stage = selectedStage(), nodeType = st
 }
 
 function renderStageResourcePicker(config) {
-  const options = prioritizedWorkflowResourceOptions(config.kind, config.selected).slice(0, 6);
-  const total = workflowResourceOptions(config.kind).length;
+  const allOptions = prioritizedWorkflowResourceOptions(config.kind, config.selected);
+  const expanded = !!state.resourcePickerExpanded?.[config.kind];
+  const visibleLimit = 6;
+  const options = expanded ? allOptions : allOptions.slice(0, visibleLimit);
+  const total = allOptions.length;
+  const hiddenCount = Math.max(0, total - options.length);
   const selectedOption = workflowResourceOptionByName(config.kind, config.selected);
   const title = t(`workflow.resourcePicker.${config.kind}.title`);
   const help = t(`workflow.resourcePicker.${config.kind}.help`);
@@ -6297,7 +7697,7 @@ function renderStageResourcePicker(config) {
     <div class="workflow-resource-card-list">
       ${options.length ? options.map(option => renderStageResourceCard(config.kind, option, option.name === config.selected, config.icon)).join("") : `<div class="workflow-resource-empty">${escapeHTML(t("workflow.resourcePickerEmpty"))}</div>`}
     </div>
-    ${total > options.length ? `<small class="workflow-resource-picker-more">${escapeHTML(t("workflow.resourcePickerMore", { count: total - options.length }))}</small>` : ""}`;
+    ${total > visibleLimit ? `<button type="button" class="workflow-resource-picker-more" data-stage-resource-toggle="${escapeHTML(config.kind)}" aria-expanded="${expanded ? "true" : "false"}">${escapeHTML(expanded ? t("workflow.resourcePickerShowLess") : t("workflow.resourcePickerShowAll", { count: hiddenCount }))}</button>` : ""}`;
 }
 
 function renderStageResourceCard(kind, option, selected, icon) {
@@ -6313,6 +7713,20 @@ function renderStageResourceCard(kind, option, selected, icon) {
     </span>
     ${chips.length ? `<b>${chips.slice(0, 3).map(chip => `<em>${escapeHTML(chip)}</em>`).join("")}</b>` : ""}
   </button>`;
+}
+
+function toggleStageResourcePicker(root, kind) {
+  const key = String(kind || "").trim();
+  if (!key) return;
+  state.resourcePickerExpanded = {
+    ...(state.resourcePickerExpanded || {}),
+    [key]: !state.resourcePickerExpanded?.[key]
+  };
+  const stage = selectedStage();
+  const nodeType = stage ? normalizedNodeType(stage) : "";
+  updateStageResourcePickers(root, stage, nodeType);
+  updateStageTaskEditor(root, stage, nodeType);
+  updateWorkflowFormPanels(root);
 }
 
 function selectStageResource(root, kind, value) {
@@ -6976,6 +8390,11 @@ function updateStageGuidance(root, stage, nodeType) {
 function updateStageDataFlow(root, stage, nodeType) {
   const target = root.querySelector("#stageDataFlow");
   if (!target || !stage) return;
+  if (!state.expertMode) {
+    updateSimpleStageDataFlow(target, stage, nodeType);
+    return;
+  }
+  target.classList.remove("simple");
   const inputs = workflowStageMapEntries(stage.input);
   const outputs = workflowStageMapEntries(stage.outputs);
   const refs = workflowStageReferenceEntries(stage);
@@ -7002,6 +8421,41 @@ function updateStageDataFlow(root, stage, nodeType) {
     ${refs.length ? `<div class="workflow-stage-data-flow-refs"><strong>${escapeHTML(t("workflow.dataFlowReads"))}</strong>${refs.slice(0, 6).map(ref => renderWorkflowRefPreview(ref)).join("")}</div>` : ""}
     ${contextRefs.length ? `<div class="workflow-stage-data-flow-refs contract"><strong>${escapeHTML(t("workflow.dataFlowContext"))}</strong>${contextRefs.slice(0, 8).map(ref => renderWorkflowRefPreview(ref)).join("")}</div>` : ""}
     ${available.length ? `<div class="workflow-stage-data-flow-refs muted-list"><strong>${escapeHTML(t("workflow.dataFlowAvailable"))}</strong>${available.map(ref => renderWorkflowRefPreviewButton(ref)).join("")}</div>` : ""}`;
+}
+
+function updateSimpleStageDataFlow(target, stage, nodeType) {
+  const inputs = simpleWorkflowAutoInputRefs(stage, nodeType);
+  const outputs = simpleWorkflowAutoOutputRefs(stage, nodeType);
+  const targets = workflowSimpleFlowTargets(stage);
+  target.className = "workflow-stage-data-flow simple";
+  target.innerHTML = `
+    <div class="workflow-stage-data-flow-head">
+      <div>
+        <span>${escapeHTML(t("workflow.dataFlowKicker"))}</span>
+        <strong>${escapeHTML(t("workflow.simpleAutoDataFlowTitle"))}</strong>
+      </div>
+      <em>${escapeHTML(t("workflow.modeSimpleBadge"))}</em>
+    </div>
+    <p class="workflow-stage-data-flow-policy">${escapeHTML(t("workflow.simpleAutoDataFlowHelp"))}</p>
+    <div class="workflow-stage-data-flow-grid">
+      ${renderWorkflowAutoDataFlowBlock(t("workflow.autoContextPolicy"), inputs, "input")}
+      ${renderWorkflowAutoDataFlowBlock(t("workflow.autoPublishPolicy"), outputs, "output")}
+    </div>
+    <div class="workflow-stage-data-flow-refs contract">
+      <strong>${escapeHTML(t("workflow.autoFlowPolicy"))}</strong>
+      <span class="workflow-ref-preview">
+        <strong>${escapeHTML(targets.length ? t("workflow.simpleAutoNextTargets", { targets: workflowDisplayList(targets) }) : t("workflow.simpleAutoNoNext"))}</strong>
+        <small>${escapeHTML(t("workflow.simpleCanvasFlowHelp"))}</small>
+      </span>
+    </div>`;
+}
+
+function renderWorkflowAutoDataFlowBlock(title, refs, kind) {
+  const visibleRefs = uniqueWorkflowRefs(refs).slice(0, 6);
+  return `<section class="workflow-stage-data-flow-block ${escapeHTML(kind)}">
+    <strong>${escapeHTML(title)}</strong>
+    <div>${visibleRefs.map(ref => renderWorkflowRefPreview(ref)).join("")}</div>
+  </section>`;
 }
 
 function updateStageInputOutputBuilders(root, stage, nodeType) {
@@ -7270,6 +8724,51 @@ function workflowStageContextRefs(stage) {
   if (context.retrieval?.enabled) refs.push("retrieval:enabled");
   if (String(context.retrieval?.query || "").trim()) refs.push(`query:${context.retrieval.query}`);
   return refs;
+}
+
+function simpleWorkflowAutoInputRefs(stage, nodeType) {
+  const refs = ["workflow.input"];
+  if (nodeType !== "start") {
+    refs.push("previous.summary", "previous.evidence", "previous.next_actions");
+  }
+  refs.push(...Object.values(stage?.input || {}));
+  refs.push(...workflowStageContextRefs(stage).filter(ref => !String(ref || "").startsWith("max_tokens:")));
+  return uniqueWorkflowRefs(refs);
+}
+
+function simpleWorkflowAutoOutputRefs(stage, nodeType) {
+  const refs = ["result.summary"];
+  if (nodeType !== "start") {
+    refs.push("result.evidence", "result.artifacts", "result.next_actions");
+  }
+  if (["agent", "skill", "tool", "team", "custom"].includes(nodeType)) {
+    refs.push("result.changes", "result.verification");
+  }
+  refs.push(...Object.values(stage?.outputs || {}));
+  return uniqueWorkflowRefs(refs);
+}
+
+function workflowSimpleFlowTargets(stage) {
+  const targets = [];
+  targets.push(...workflowReferenceTargets(stage?.next || []));
+  targets.push(...workflowReferenceTargets(stage?.routes || {}));
+  targets.push(...workflowReferenceTargets(stage?.cases || {}));
+  if (workflowNodeHasBodyStage(normalizedNodeType(stage))) {
+    targets.push(...workflowReferenceTargets(stage?.params?.stage || stage?.params?.body || ""));
+  }
+  return [...new Set(targets.map(value => String(value || "").trim()).filter(Boolean))];
+}
+
+function uniqueWorkflowRefs(refs) {
+  const seen = new Set();
+  const out = [];
+  for (const ref of refs || []) {
+    const value = String(ref || "").trim();
+    if (!value || seen.has(value)) continue;
+    seen.add(value);
+    out.push(value);
+  }
+  return out;
 }
 
 function workflowStageMapEntries(map) {
@@ -8245,7 +9744,7 @@ function updateStageTaskEditor(root, stage, nodeType) {
       </div>
       <em id="stageTaskEditorStatus">${escapeHTML(t("workflow.taskEditorProgress", { ready, total }))}</em>
     </div>
-    ${canRead ? renderStageRecommendedDefaults(stage, nodeType) : ""}
+    ${state.expertMode && canRead ? renderStageRecommendedDefaults(stage, nodeType) : ""}
     <div class="workflow-task-editor-grid">
       ${renderStageTaskSection("purpose", t("workflow.taskPurposeTitle"), t("workflow.taskPurposeHelp"), renderStageTaskPurpose(stage, nodeType))}
       ${actors.length ? renderStageTaskSection("actor", t("workflow.taskActorTitle"), t("workflow.taskActorHelp"), actors.map(renderStageTaskResourceBlock).join("")) : ""}
@@ -8269,6 +9768,23 @@ function renderStageTaskSection(kind, title, help, body) {
 }
 
 function renderStageTaskPurpose(stage, nodeType) {
+  if (!state.expertMode) {
+    return `<div class="workflow-task-field-grid normal-purpose">
+      <span class="workflow-task-readonly">
+        <small>${escapeHTML(t("workflow.nodeType"))}</small>
+        <strong>${escapeHTML(t("workflow.simpleNodeTypeManaged", { type: nodeDisplayType(nodeType) }))}</strong>
+      </span>
+      <label>
+        <span>${escapeHTML(t("workflow.stageName"))}</span>
+        <input data-stage-task-field="name" value="${escapeHTML(stage.name || "")}" placeholder="${escapeHTML(t("workflow.taskNamePlaceholder"))}">
+      </label>
+      ${stageFieldSet(nodeType, stage).has("approval") ? `<label class="check workflow-task-approval">
+        <input type="checkbox" data-stage-task-field="approval" ${stage.approval ? "checked" : ""}>
+        <span>${escapeHTML(t("workflow.requireApproval"))}</span>
+        <small>${escapeHTML(t("workflow.taskApprovalHelp"))}</small>
+      </label>` : ""}
+    </div>`;
+  }
   return `<div class="workflow-task-field-grid two">
     <label>
       <span>${escapeHTML(t("workflow.nodeType"))}</span>
@@ -8309,6 +9825,15 @@ function renderStageTaskResourceBlock(config) {
 }
 
 function renderStageTaskInput(stage, nodeType) {
+  if (!state.expertMode) {
+    return renderStageTaskAutoPolicy(
+      "input",
+      t("workflow.autoContextPolicy"),
+      t("workflow.autoContextPolicyHelp"),
+      simpleWorkflowAutoInputRefs(stage, nodeType),
+      hasStageContextContract(stage.context) || workflowStageMapEntries(stage.input).length ? t("workflow.simpleCustomInputsActive") : ""
+    );
+  }
   const canMap = advancedFieldSet(nodeType).has("input");
   const selectedRefs = new Set(Object.values(stage.input || {}).map(value => String(value || "").trim()).filter(Boolean));
   const refs = canMap ? inputMapReferenceOptions(stage).slice(0, 6) : [];
@@ -8342,6 +9867,15 @@ function renderStageTaskInput(stage, nodeType) {
 }
 
 function renderStageTaskOutput(stage, nodeType) {
+  if (!state.expertMode) {
+    return renderStageTaskAutoPolicy(
+      "output",
+      t("workflow.autoPublishPolicy"),
+      t("workflow.autoPublishPolicyHelp"),
+      simpleWorkflowAutoOutputRefs(stage, nodeType),
+      workflowStageMapEntries(stage.outputs).length ? t("workflow.simpleCustomOutputsActive") : ""
+    );
+  }
   const canOutput = advancedFieldSet(nodeType).has("outputs");
   const canArtifact = stageFieldSet(nodeType, stage).has("artifacts");
   const canAcceptance = stageFieldSet(nodeType, stage).has("acceptance_criteria");
@@ -8369,6 +9903,7 @@ function renderStageTaskOutput(stage, nodeType) {
 }
 
 function renderStageTaskFlow(stage, nodeType) {
+  if (!state.expertMode) return renderStageTaskAutoFlow(stage, nodeType);
   if (nodeType === "end") {
     return `<p class="workflow-task-muted">${escapeHTML(t("workflow.taskFlowEnd"))}</p>`;
   }
@@ -8389,6 +9924,34 @@ function renderStageTaskFlow(stage, nodeType) {
     </label>
     ${stage.next?.length > 1 ? `<small class="workflow-task-muted">${escapeHTML(t("workflow.taskFlowMoreTargets", { count: stage.next.length - 1 }))}</small>` : ""}
     ${renderExpertFlowActions("routes")}
+  </div>`;
+}
+
+function renderStageTaskAutoPolicy(kind, title, help, refs, notice = "") {
+  const visibleRefs = uniqueWorkflowRefs(refs).slice(0, 6);
+  return `<div class="workflow-task-auto-policy ${escapeHTML(kind)}">
+    <div>
+      <strong>${escapeHTML(title)}</strong>
+      <span>${escapeHTML(help)}</span>
+    </div>
+    ${notice ? `<em>${escapeHTML(notice)}</em>` : ""}
+    <div class="workflow-task-auto-ref-list">
+      ${visibleRefs.map(ref => renderWorkflowRefPreview(ref)).join("")}
+    </div>
+  </div>`;
+}
+
+function renderStageTaskAutoFlow(stage, nodeType) {
+  if (nodeType === "end") {
+    return `<p class="workflow-task-muted">${escapeHTML(t("workflow.taskFlowEnd"))}</p>`;
+  }
+  const targets = workflowSimpleFlowTargets(stage);
+  return `<div class="workflow-task-auto-policy flow">
+    <div>
+      <strong>${escapeHTML(t("workflow.autoFlowPolicy"))}</strong>
+      <span>${escapeHTML(t("workflow.autoFlowPolicyHelp"))}</span>
+    </div>
+    <em>${escapeHTML(targets.length ? t("workflow.simpleAutoNextTargets", { targets: workflowDisplayList(targets) }) : t("workflow.simpleAutoNoNext"))}</em>
   </div>`;
 }
 
@@ -9833,7 +11396,7 @@ function renderExecutionOrder(root) {
   target.innerHTML = order.map((name, index) => {
     const stage = state.graph.stages.find(item => item.name === name);
     const type = normalizedNodeType(stage);
-    return `<span class="order-chip ${type} ${nodeTypeCategory(type)}"><small>${index + 1}</small>${escapeHTML(name)}</span>`;
+    return `<span class="order-chip ${type} ${nodeTypeCategory(type)}"><small>${index + 1}</small>${escapeHTML(workflowDisplayValue(name))}</span>`;
   }).join("");
 }
 
@@ -10119,6 +11682,7 @@ function pruneEmptyStageFields(stage) {
   if (!Array.isArray(stage.artifacts) || !stage.artifacts.length) delete stage.artifacts;
   if (!Array.isArray(stage.acceptance_criteria) || !stage.acceptance_criteria.length) delete stage.acceptance_criteria;
   if (!hasStageContextContract(stage.context)) delete stage.context;
+  if (!hasStageExecutionContract(stage.execution)) delete stage.execution;
 }
 
 function addConnection(sourceName, targetName) {
@@ -11612,7 +13176,11 @@ function applyWorkflowStudioRunSnapshot(run) {
   state.runtime.workflowStatus = run.status || state.runtime.workflowStatus || "";
   state.runtime.status = workflowStatusState(run.status || state.runtime.workflowStatus);
   state.runtime.runInput = run.request || state.runtime.runInput || "";
-  state.runtime.currentStage = run.next_stage || state.runtime.currentStage || "";
+  const runBudgetUsage = workflowRuntimeBudgetUsageFromRun(run);
+  if (runBudgetUsage) state.runtime.budgetUsage = runBudgetUsage;
+  state.runtime.currentStage = workflowRuntimeStatusIsActive(run.status || state.runtime.workflowStatus)
+    ? run.next_stage || state.runtime.currentStage || ""
+    : "";
   if (previousStage !== state.runtime.currentStage || previousStatus !== state.runtime.workflowStatus) invalidateWorkflowRuntimeActions();
   const pendingInput = workflowRuntimePendingInputFromRun(run);
   if (pendingInput) {
@@ -11642,12 +13210,62 @@ function applyWorkflowStudioRunSnapshot(run) {
   for (const stage of run.completed_stages || []) {
     const name = stage.stage || stage.name || "";
     if (!name) continue;
+    const existingStageRuntime = state.runtime.stageDetails[name] || {};
     const outputs = stage.outputs || stage.result?.outputs || null;
+    const metadata = stage.metadata || null;
     const stageRuntime = {
-      ...(state.runtime.stageDetails[name] || {}),
+      ...existingStageRuntime,
       name,
       status: stage.status || "completed",
       content: stage.summary || stage.result?.output || "",
+      reason: stage.reason || existingStageRuntime.reason || "",
+      severity: stage.severity || existingStageRuntime.severity || "",
+      budget_scope: stage.budget_scope || metadata?.budget_scope || "",
+      budget_reason: stage.budget_reason || metadata?.budget_reason || "",
+      budget_metric: stage.budget_metric || metadata?.budget_metric || "",
+      budget_used: stage.budget_used ?? metadata?.budget_used ?? 0,
+      budget_soft_limit: stage.budget_soft_limit ?? metadata?.budget_soft_limit ?? 0,
+      budget_hard_limit: stage.budget_hard_limit ?? metadata?.budget_hard_limit ?? 0,
+      budget_remaining: stage.budget_remaining ?? metadata?.budget_remaining ?? 0,
+      budget_prompt_tokens: stage.budget_prompt_tokens ?? metadata?.budget_prompt_tokens ?? 0,
+      budget_estimated_prompt_tokens: stage.budget_estimated_prompt_tokens ?? metadata?.budget_estimated_prompt_tokens ?? 0,
+      budget_net_prompt_tokens: stage.budget_net_prompt_tokens ?? metadata?.budget_net_prompt_tokens ?? 0,
+      budget_gross_prompt_tokens: stage.budget_gross_prompt_tokens ?? metadata?.budget_gross_prompt_tokens ?? 0,
+      budget_saved_tokens: stage.budget_saved_tokens ?? metadata?.budget_saved_tokens ?? 0,
+      budget_memory_saved_tokens: stage.budget_memory_saved_tokens ?? metadata?.budget_memory_saved_tokens ?? 0,
+      budget_history_saved_tokens: stage.budget_history_saved_tokens ?? metadata?.budget_history_saved_tokens ?? 0,
+      budget_artifact_saved_tokens: stage.budget_artifact_saved_tokens ?? metadata?.budget_artifact_saved_tokens ?? 0,
+      budget_skill_saved_tokens: stage.budget_skill_saved_tokens ?? metadata?.budget_skill_saved_tokens ?? 0,
+      budget_tool_schema_saved_tokens: stage.budget_tool_schema_saved_tokens ?? metadata?.budget_tool_schema_saved_tokens ?? 0,
+      budget_cached_tokens: stage.budget_cached_tokens ?? metadata?.budget_cached_tokens ?? 0,
+      budget_output_tokens: stage.budget_output_tokens ?? metadata?.budget_output_tokens ?? 0,
+      budget_total_tokens: stage.budget_total_tokens ?? metadata?.budget_total_tokens ?? 0,
+      budget_estimated_input_cost: stage.budget_estimated_input_cost ?? metadata?.budget_estimated_input_cost ?? 0,
+      budget_estimated_output_cost: stage.budget_estimated_output_cost ?? metadata?.budget_estimated_output_cost ?? 0,
+      budget_estimated_total_cost: stage.budget_estimated_total_cost ?? metadata?.budget_estimated_total_cost ?? 0,
+      budget_cost_currency: stage.budget_cost_currency || metadata?.budget_cost_currency || "",
+      budget_pricing_source: stage.budget_pricing_source || metadata?.budget_pricing_source || "",
+      budget_llm_calls: stage.budget_llm_calls ?? metadata?.budget_llm_calls ?? 0,
+      budget_continuations: stage.budget_continuations ?? metadata?.budget_continuations ?? 0,
+      contract_check: stage.contract_check || metadata?.contract_check || state.runtime.stageDetails[name]?.contract_check || "",
+      source_ref: stage.source_ref || metadata?.source_ref || state.runtime.stageDetails[name]?.source_ref || "",
+      quality_status: stage.quality_status || metadata?.quality_status || outputs?.quality_status || outputs?.variables?.quality_status || "",
+      quality_score: stage.quality_score ?? metadata?.quality_score ?? metadata?.score ?? outputs?.quality_score ?? outputs?.score ?? outputs?.variables?.quality_score ?? outputs?.variables?.score ?? "",
+      quality_failures: stage.quality_failures || metadata?.quality_failures || metadata?.failures || outputs?.quality_failures || outputs?.failures || outputs?.variables?.quality_failures || outputs?.variables?.failures || "",
+      quality_warnings: stage.quality_warnings || metadata?.quality_warnings || metadata?.warnings || outputs?.quality_warnings || outputs?.warnings || outputs?.variables?.quality_warnings || outputs?.variables?.warnings || "",
+      quality_reason: stage.quality_reason || metadata?.quality_reason || outputs?.quality_reason || outputs?.variables?.quality_reason || "",
+      parallel_file_conflict: stage.parallel_file_conflict ?? metadata?.parallel_file_conflict ?? outputs?.parallel_file_conflict ?? outputs?.variables?.parallel_file_conflict ?? existingStageRuntime.parallel_file_conflict ?? false,
+      parallel_file_conflict_paths: stage.parallel_file_conflict_paths || metadata?.parallel_file_conflict_paths || outputs?.parallel_file_conflict_paths || outputs?.variables?.parallel_file_conflict_paths || existingStageRuntime.parallel_file_conflict_paths || "",
+      parallel_file_conflict_owners: stage.parallel_file_conflict_owners || metadata?.parallel_file_conflict_owners || outputs?.parallel_file_conflict_owners || outputs?.variables?.parallel_file_conflict_owners || existingStageRuntime.parallel_file_conflict_owners || "",
+      parallel_file_conflict_source_ref: stage.parallel_file_conflict_source_ref || metadata?.parallel_file_conflict_source_ref || outputs?.parallel_file_conflict_source_ref || outputs?.variables?.parallel_file_conflict_source_ref || existingStageRuntime.parallel_file_conflict_source_ref || "",
+      parallel_patch_artifact_required: stage.parallel_patch_artifact_required ?? metadata?.parallel_patch_artifact_required ?? outputs?.parallel_patch_artifact_required ?? outputs?.variables?.parallel_patch_artifact_required ?? existingStageRuntime.parallel_patch_artifact_required ?? false,
+      parallel_direct_write_tools: stage.parallel_direct_write_tools || metadata?.parallel_direct_write_tools || outputs?.parallel_direct_write_tools || outputs?.variables?.parallel_direct_write_tools || existingStageRuntime.parallel_direct_write_tools || "",
+      parallel_patch_artifact_reason: stage.parallel_patch_artifact_reason || metadata?.parallel_patch_artifact_reason || outputs?.parallel_patch_artifact_reason || outputs?.variables?.parallel_patch_artifact_reason || existingStageRuntime.parallel_patch_artifact_reason || "",
+      parallel_patch_artifact_source_ref: stage.parallel_patch_artifact_source_ref || metadata?.parallel_patch_artifact_source_ref || outputs?.parallel_patch_artifact_source_ref || outputs?.variables?.parallel_patch_artifact_source_ref || existingStageRuntime.parallel_patch_artifact_source_ref || "",
+      stop_reason: stage.stop_reason || stage.result?.stop_reason || metadata?.stop_reason || state.runtime.stageDetails[name]?.stop_reason || "",
+      continuation_count: stage.continuation_count ?? stage.result?.continuation_count ?? metadata?.continuation_count ?? null,
+      incomplete: Boolean(stage.incomplete ?? stage.result?.incomplete) || String(metadata?.incomplete || "").toLowerCase() === "true",
+      incomplete_reason: stage.incomplete_reason || stage.result?.incomplete_reason || metadata?.incomplete_reason || "",
       node_type: stage.node_type || "",
       skill: stage.skill || "",
       tool: stage.tool || "",
@@ -11656,7 +13274,8 @@ function applyWorkflowStudioRunSnapshot(run) {
       attempts: stage.attempts ?? null,
       artifacts: Array.isArray(stage.artifacts) ? stage.artifacts.length : 0,
       acceptance: normalizeAcceptanceItems(stage.acceptance),
-      metadata: stage.metadata || null,
+      metadata,
+      result: stage.result || null,
       route: stage.route ?? stage.result?.route ?? outputs?.route ?? "",
       value: stage.value ?? stage.result?.value ?? outputs?.value,
       target: stage.target ?? stage.result?.target ?? outputs?.target ?? "",
@@ -11689,14 +13308,95 @@ function applyWorkflowStudioRunSnapshot(run) {
   saveWorkflowStudioActiveRun();
 }
 
+function workflowRuntimeBudgetUsageFromRun(run = {}) {
+  const usage = {
+    prompt: workflowNumber(run.budget_prompt_tokens ?? run.budgetPromptTokens),
+    estimatedPrompt: workflowNumber(run.budget_estimated_prompt_tokens ?? run.budgetEstimatedPromptTokens),
+    netPrompt: workflowNumber(run.budget_net_prompt_tokens ?? run.budgetNetPromptTokens),
+    grossPrompt: workflowNumber(run.budget_gross_prompt_tokens ?? run.budgetGrossPromptTokens),
+    savedTokens: workflowNumber(run.budget_saved_tokens ?? run.budgetSavedTokens),
+    memorySavedTokens: workflowNumber(run.budget_memory_saved_tokens ?? run.budgetMemorySavedTokens),
+    historySavedTokens: workflowNumber(run.budget_history_saved_tokens ?? run.budgetHistorySavedTokens),
+    artifactSavedTokens: workflowNumber(run.budget_artifact_saved_tokens ?? run.budgetArtifactSavedTokens),
+    skillSavedTokens: workflowNumber(run.budget_skill_saved_tokens ?? run.budgetSkillSavedTokens),
+    toolSchemaSavedTokens: workflowNumber(run.budget_tool_schema_saved_tokens ?? run.budgetToolSchemaSavedTokens),
+    reportedPrompt: workflowNumber(run.budget_reported_prompt_tokens ?? run.budgetReportedPromptTokens),
+    output: workflowNumber(run.budget_output_tokens ?? run.budgetOutputTokens),
+    cached: workflowNumber(run.budget_cached_tokens ?? run.budgetCachedTokens),
+    total: workflowNumber(run.budget_total_tokens ?? run.budgetTotalTokens),
+    estimatedInputCost: workflowNumber(run.budget_estimated_input_cost ?? run.budgetEstimatedInputCost),
+    estimatedOutputCost: workflowNumber(run.budget_estimated_output_cost ?? run.budgetEstimatedOutputCost),
+    estimatedTotalCost: workflowNumber(run.budget_estimated_total_cost ?? run.budgetEstimatedTotalCost),
+    costCurrency: String(run.budget_cost_currency || run.budgetCostCurrency || "").trim(),
+    pricingSource: String(run.budget_pricing_source || run.budgetPricingSource || "").trim(),
+    llmCalls: workflowNumber(run.budget_llm_calls ?? run.budgetLLMCalls),
+    continuations: workflowNumber(run.budget_continuations ?? run.budgetContinuations),
+    scope: String(run.budget_scope || run.budgetScope || "").trim(),
+    reason: String(run.budget_reason || run.budgetReason || "").trim(),
+    metric: String(run.budget_metric || run.budgetMetric || "").trim(),
+    used: workflowNumber(run.budget_used ?? run.budgetUsed),
+    softLimit: workflowNumber(run.budget_soft_limit ?? run.budgetSoftLimit),
+    hardLimit: workflowNumber(run.budget_hard_limit ?? run.budgetHardLimit),
+    remaining: workflowNumber(run.budget_remaining ?? run.budgetRemaining)
+  };
+  if (!usage.total && (usage.prompt || usage.output)) {
+    usage.total = usage.prompt + usage.output;
+  }
+  if (!usage.savedTokens) {
+    usage.savedTokens = usage.memorySavedTokens + usage.historySavedTokens + usage.artifactSavedTokens + usage.skillSavedTokens + usage.toolSchemaSavedTokens;
+  }
+  if (!usage.netPrompt) usage.netPrompt = usage.estimatedPrompt;
+  if (!usage.grossPrompt && (usage.netPrompt || usage.savedTokens)) usage.grossPrompt = usage.netPrompt + usage.savedTokens;
+  return usage.prompt || usage.output || usage.total || usage.estimatedTotalCost || usage.estimatedInputCost || usage.estimatedOutputCost || usage.llmCalls || usage.continuations || usage.savedTokens || usage.grossPrompt || usage.scope || usage.reason || usage.metric || usage.softLimit || usage.hardLimit
+    ? usage
+    : null;
+}
+
 function ensureCurrentStageRuntimePlaceholder(run = {}) {
+  if (!workflowRuntimeStatusIsActive(run.status || state.runtime.workflowStatus || state.runtime.status)) return;
   const name = String(state.runtime.currentStage || run.next_stage || "").trim();
   if (!name || state.runtime.stageDetails[name]) return;
   const status = String(run.status || state.runtime.workflowStatus || "").trim();
+  const isBudgetPause = ["paused_need_more_budget", "awaiting_budget_approval"].includes(status.toLowerCase());
   state.runtime.stageDetails[name] = {
     name,
     status: workflowStatusState(status) === "waiting" ? "waiting" : workflowStatusState(status) === "error" ? "error" : "running",
     content: run.approval_prompt || run.pending_arguments_summary || state.runtime.approval?.summary || "",
+    reason: run.reason || "",
+    severity: isBudgetPause ? "warning" : "",
+    budget_scope: run.budget_scope || (isBudgetPause ? "output" : ""),
+    budget_reason: run.budget_reason || "",
+    budget_metric: run.budget_metric || "",
+    budget_used: run.budget_used || 0,
+    budget_soft_limit: run.budget_soft_limit || 0,
+    budget_hard_limit: run.budget_hard_limit || 0,
+    budget_remaining: run.budget_remaining || 0,
+    budget_prompt_tokens: run.budget_prompt_tokens || 0,
+    budget_estimated_prompt_tokens: run.budget_estimated_prompt_tokens || 0,
+    budget_net_prompt_tokens: run.budget_net_prompt_tokens || 0,
+    budget_gross_prompt_tokens: run.budget_gross_prompt_tokens || 0,
+    budget_saved_tokens: run.budget_saved_tokens || 0,
+    budget_memory_saved_tokens: run.budget_memory_saved_tokens || 0,
+    budget_history_saved_tokens: run.budget_history_saved_tokens || 0,
+    budget_artifact_saved_tokens: run.budget_artifact_saved_tokens || 0,
+    budget_skill_saved_tokens: run.budget_skill_saved_tokens || 0,
+    budget_tool_schema_saved_tokens: run.budget_tool_schema_saved_tokens || 0,
+    budget_cached_tokens: run.budget_cached_tokens || 0,
+    budget_output_tokens: run.budget_output_tokens || 0,
+    budget_total_tokens: run.budget_total_tokens || 0,
+    budget_estimated_input_cost: run.budget_estimated_input_cost || 0,
+    budget_estimated_output_cost: run.budget_estimated_output_cost || 0,
+    budget_estimated_total_cost: run.budget_estimated_total_cost || 0,
+    budget_cost_currency: run.budget_cost_currency || "",
+    budget_pricing_source: run.budget_pricing_source || "",
+    budget_llm_calls: run.budget_llm_calls || 0,
+    budget_continuations: run.budget_continuations || 0,
+    contract_check: run.contract_check || "",
+    source_ref: run.source_ref || "",
+    stop_reason: run.stop_reason || "",
+    continuation_count: run.continuation_count ?? null,
+    incomplete: Boolean(run.incomplete) || isBudgetPause,
+    incomplete_reason: run.incomplete_reason || (isBudgetPause ? run.approval_prompt || "" : ""),
     node_type: "",
     skill: "",
     tool: run.pending_tool_name || "",
@@ -11813,6 +13513,7 @@ function stopWorkflowStudioEventStream(options = {}) {
 async function restoreWorkflowStudioRuntime(root) {
   const saved = readWorkflowStudioActiveRun();
   let runID = saved?.runID || "";
+  const explicitSavedRun = Boolean(runID);
   if (!runID) {
     const runs = normalizeWorkflowRunList(await fetchWorkflowRuns().catch(() => []));
     const active = runs.find(run => run.name === state.graph.name && workflowStudioShouldFollowStatus(run.status));
@@ -11820,15 +13521,16 @@ async function restoreWorkflowStudioRuntime(root) {
   }
   if (!runID) return;
   const run = await fetchWorkflowRun(runID).catch(() => null);
-  if (!run || run.name !== state.graph.name) return;
+  if (!run || (!explicitSavedRun && run.name !== state.graph.name)) return;
   resetRuntimeState(run.request || "");
   applyWorkflowStudioRunSnapshot(run);
   renderRuntime(root);
   renderStageForm(root);
   scheduleWorkflowRepaint(root);
   const output = root.querySelector("#runOutput");
-  if (output && workflowStudioShouldFollowStatus(run.status)) {
-    output.textContent = `${t("workflow.restoredRun")} ${run.id}\n`;
+  if (!output) return;
+  output.textContent = renderWorkflowStudioSnapshotLog(run);
+  if (workflowStudioShouldFollowStatus(run.status)) {
     startWorkflowStudioEventStream(root, output, {
       runID: run.id,
       eventsURL: workflowRunEventsURL(run) || saved?.eventsURL || ""
@@ -11842,14 +13544,61 @@ async function restoreWorkflowStudioRuntime(root) {
   }
 }
 
+function renderWorkflowStudioSnapshotLog(run = {}) {
+  const lines = [`${t("workflow.restoredRunSnapshot")} ${run.id || ""}`.trim()];
+  if (run.name || run.status) {
+    lines.push(`${t("workflow.workflowEvent")} ${run.name || state.graph.name}: ${workflowStatusLabel(run.status || "")}`.trim());
+  }
+  for (const event of run.events || []) {
+    const line = workflowStudioEventLogLine(event);
+    if (line) lines.push(line);
+  }
+  return `${lines.filter(Boolean).join("\n")}\n`;
+}
+
 function workflowStudioEventLogLine(event) {
   if (event.type === "workflow_result") return `${t("workflow.workflowEvent")} ${event.workflow_name || state.graph.name}: ${event.workflow_status || ""}`;
   if (event.type === "task_stage") return `${t("workflow.stageEvent")}: ${event.task_stage || event.stage || ""} ${event.content || ""}`.trim();
   if (event.type === "approval") return `${t("workflow.approvalRequired")}: ${event.tool_name || ""} ${event.arguments_summary || ""}`.trim();
   if (event.type === "token_usage") return `${t("workflow.tokens")}: ${t("workflow.in")} ${event.prompt_tokens || 0}, ${t("workflow.out")} ${event.output_tokens || 0}`;
+  const diagnostic = workflowRuntimeStageDiagnostic({}, event);
+  const diagnosticText = workflowRuntimeDiagnosticText(diagnostic);
+  if (diagnosticText || event.incomplete || event.needs_action || event.suspended) {
+    const stage = event.stage || event.task_stage || state.runtime.currentStage || t("workflow.noStage");
+    const label = workflowRuntimeEventDiagnosticLabel(event, diagnostic);
+    return `${label}: ${stage} ${diagnosticText || event.content || ""}`.trim();
+  }
   if (event.type === "error" || event.type === "workflow_run_error" || event.is_error) return `${t("workflow.runFailed")}: ${workflowRunEventErrorMessage(event)}`;
   if (["text", "delta", "message_delta", "response_delta"].includes(String(event.type || ""))) return "";
   return truncateWorkflowText(event.content || "", 520);
+}
+
+function workflowRuntimeEventDiagnosticLabel(event = {}, diagnostic = {}) {
+  const type = String(event.type || "").toLowerCase();
+  const reason = String(event.reason || event.budget_reason || event.budgetReason || diagnostic.reason || diagnostic.budgetReason || "").toLowerCase();
+  if (diagnostic.fileConflict || reason.includes("parallel_file_conflict") || String(diagnostic.contractCheck || "").toLowerCase() === "parallel_file_ownership") return t("workflow.fileConflictWarning");
+  if (diagnostic.patchArtifactWarning || reason.includes("parallel_patch_artifact") || String(diagnostic.contractCheck || "").toLowerCase() === "parallel_patch_artifact_handoff") return t("workflow.parallelHandoffWarning");
+  if (type.includes("quality") || reason.includes("quality") || String(diagnostic.contractCheck || "").toLowerCase().includes("quality")) return t("workflow.qualityGateFailure");
+  if (workflowRuntimeEventIsBudgetWarning(event, diagnostic)) return t("workflow.budgetWarning");
+  if (diagnostic.contractCheck || type.includes("contract") || reason.includes("contract")) return t("workflow.contractFailure");
+  if (event.incomplete) return t("workflow.runtimeField.incomplete");
+  if (event.suspended) return t("workflow.workflowStatus.awaiting_tool_approval");
+  return t("workflow.runtimeActionsWaitingTitle");
+}
+
+function workflowRuntimeEventIsBudgetWarning(event = {}, diagnostic = {}) {
+  const type = String(event.type || "").toLowerCase();
+  const severity = String(event.severity || diagnostic.severity || "").toLowerCase();
+  const reason = String(event.reason || event.budget_reason || event.budgetReason || diagnostic.budgetReason || "").toLowerCase();
+  const status = String(event.workflow_status || event.status || "").toLowerCase();
+  return type.includes("budget_soft_limit") ||
+    type.includes("budget_hard_limit") ||
+    reason.includes("budget_soft_limit") ||
+    reason.includes("budget_hard_limit") ||
+    severity === "warning" ||
+    severity === "warn" ||
+    event.needs_action === true ||
+    ["paused_need_more_budget", "awaiting_budget_approval"].includes(status);
 }
 
 function localizedWorkflowErrorMessage(error, fallback = "") {
@@ -11924,6 +13673,7 @@ function workflowStudioShouldKeepStreamOpen(root, runID, run = null) {
   if (!root?.isConnected || state.activeRoot !== root) return false;
   if (!runID || state.runtime.runID !== runID) return false;
   const status = String(run?.status || state.runtime.workflowStatus || "").toLowerCase();
+  if (["paused_need_more_budget", "awaiting_budget_approval"].includes(status)) return false;
   if (workflowStudioShouldFollowStatus(status)) return true;
   return !status && state.runtime.status === "running";
 }
@@ -11981,7 +13731,7 @@ function workflowStudioLatestSeq(run) {
 
 function workflowStudioShouldFollowStatus(status) {
   const value = String(status || "").toLowerCase();
-  return ["running", "cancelling", "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow"].includes(value);
+  return ["running", "cancelling", "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow", "paused_need_more_budget", "awaiting_budget_approval"].includes(value);
 }
 
 function normalizeWorkflowRunList(value) {
@@ -12005,8 +13755,14 @@ function normalizeGraph(doc) {
     } else {
       delete stage.context;
     }
+    if (hasStageExecutionContract(stage.execution)) {
+      stage.execution = normalizeStageExecutionContract(stage.execution);
+    } else {
+      delete stage.execution;
+    }
     stage.artifacts = normalizeArtifacts(stage.artifacts);
     stage.acceptance_criteria = normalizeAcceptanceCriteria(stage.acceptance_criteria || stage.acceptance);
+    pruneEmptyStageFields(stage);
     ensurePosition(stage, index);
   });
   return graph;
@@ -12132,8 +13888,10 @@ function workflowDisplayList(values) {
 function workflowDisplayValue(value) {
   const text = String(value || "").trim();
   if (!text) return "";
+  const translated = localizedText(text);
+  if (translated !== text) return translated;
   if (workflowLooksTechnical(text)) return text;
-  return localizedText(text);
+  return translated;
 }
 
 function workflowDisplayText(value) {
@@ -12821,7 +14579,7 @@ function dedicatedParamKeys(nodeType) {
   if (nodeType === "input_gate") keys.add("fields_json");
   if (nodeType === "policy_guard") keys.add("rule");
   if (isQualityGateType(nodeType)) ["stage", "min_score", "require_acceptance", "require_verification", "require_evidence", "allow_unknown"].forEach(key => keys.add(key));
-  if (nodeType === "parallel") keys.add("concurrent");
+  if (nodeType === "parallel") ["concurrent", "soft_budget_max_parallel_branches"].forEach(key => keys.add(key));
   if (nodeType === "for_each") ["items", "items_ref", "stage"].forEach(key => keys.add(key));
   if (nodeType === "loop") ["stage", "until", "max_iterations"].forEach(key => keys.add(key));
   if (nodeType === "sub_workflow") ["workflow", "request"].forEach(key => keys.add(key));
@@ -12989,6 +14747,59 @@ function hasStageContextContract(value) {
     context.retrieval.enabled ||
     context.retrieval.query
   );
+}
+
+function normalizeStageExecutionContract(value) {
+  const raw = value && typeof value === "object" && !Array.isArray(value) ? value : {};
+  return {
+    mode: String(raw.mode || "").trim(),
+    risk_level: String(raw.risk_level || raw.riskLevel || "").trim(),
+    boundary: String(raw.boundary || "").trim(),
+    requires_approval: normalizeWorkflowContractBoolean(raw.requires_approval ?? raw.requiresApproval),
+    requires_authorized_scope: normalizeWorkflowContractBoolean(raw.requires_authorized_scope ?? raw.requiresAuthorizedScope),
+    requires_rollback: normalizeWorkflowContractBoolean(raw.requires_rollback ?? raw.requiresRollback),
+    requires_credential_ref: normalizeWorkflowContractBoolean(raw.requires_credential_ref ?? raw.requiresCredentialRef),
+    requires_allowlist: normalizeWorkflowContractBoolean(raw.requires_allowlist ?? raw.requiresAllowlist),
+    allow_live_tools: normalizeWorkflowStringList(raw.allow_live_tools ?? raw.allowLiveTools),
+    required_params: normalizeWorkflowStringList(raw.required_params ?? raw.requiredParams)
+  };
+}
+
+function hasStageExecutionContract(value) {
+  const execution = normalizeStageExecutionContract(value);
+  return Boolean(
+    execution.mode ||
+    execution.risk_level ||
+    execution.boundary ||
+    execution.requires_approval ||
+    execution.requires_authorized_scope ||
+    execution.requires_rollback ||
+    execution.requires_credential_ref ||
+    execution.requires_allowlist ||
+    execution.allow_live_tools.length ||
+    execution.required_params.length
+  );
+}
+
+function normalizeWorkflowStringList(value) {
+  const raw = Array.isArray(value) ? value : [value];
+  const seen = new Set();
+  return raw.flatMap(item => String(item || "")
+    .split(/\r?\n|,/)
+    .map(item => item.trim())
+    .filter(Boolean))
+    .filter(item => {
+      const key = item.toLowerCase();
+      if (seen.has(key)) return false;
+      seen.add(key);
+      return true;
+    });
+}
+
+function normalizeWorkflowContractBoolean(value) {
+  const parsed = parseWorkflowBoolean(value);
+  if (parsed !== null) return parsed === true;
+  return ["required", "require", "enabled"].includes(String(value ?? "").trim().toLowerCase());
 }
 
 function isTruthyParam(value) {

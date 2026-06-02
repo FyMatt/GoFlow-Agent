@@ -9,6 +9,7 @@ tags:
     - security
     - audit
     - evidence
+    - red-team
 agents:
     - security-researcher
     - web-security-researcher
@@ -21,6 +22,7 @@ skills:
     - execution-plan
     - vulnerability-research
     - web-vulnerability-research
+    - authorized-red-team-validation
     - binary-vulnerability-research
     - reverse-engineering
     - code-audit
@@ -35,11 +37,17 @@ tools:
     - python_notes/binary_file_info
     - python_notes/binary_strings
     - python_notes/hex_preview
+    - python_notes/binary_format_summary
+    - python_notes/binary_entropy_map
+    - python_notes/binary_symbol_hints
+    - python_notes/binary_extract_window
+    - python_notes/redaction_check
 workflows:
     - skill-chain
 workflow_templates:
     - web-research-risk
     - security-audit-evidence-gate
+    - authorized-red-team-validation
     - binary-triage
     - human-input-security-review
 team_templates:
@@ -64,12 +72,15 @@ examples:
       agent: security-researcher
 vertical_pack:
     domain: security-research
-    maturity: guided
-    summary: Plans authorized security reviews, collects evidence across code, web, and binary surfaces, and routes findings through risk and quality gates.
+    maturity: production-ready
+    summary: Plans authorized security reviews, collects evidence across code, web, binary, and configuration surfaces, arbitrates exploitability, blocks disallowed actions, and routes findings through red-team, blue-team, risk, and quality gates.
     supported_tasks:
         - authorized security review planning
         - evidence collection
         - vulnerability classification
+        - authorized red-team validation
+        - attack-path and exploitability validation planning
+        - disclosure-safe security reporting
         - remediation planning
         - cross-domain security handoff
     required_inputs:
@@ -77,29 +88,41 @@ vertical_pack:
         - target type
         - target files or URL
         - allowed actions
+        - red-team authorization, exclusions, and rate limits
         - reporting expectations
     tool_boundaries:
         - Use read-only evidence collection before any active verification.
         - Web browser automation requires allowed hosts and authorized scope; active web canary probes require explicit approval.
-        - Binary analysis remains static unless a separate sandboxed execution tool is added.
+        - Offensive validation must stay non-destructive, scoped, rate-limited, and evidence-oriented.
+        - Binary analysis remains static and uses format, entropy, symbol, and bounded artifact helpers unless a separate sandboxed execution tool is added.
+        - Redaction checks must run before customer-visible or disclosure-safe reporting when evidence may contain secrets.
     safety_gates:
         - Require scope confirmation.
         - Require approval for active verification or exec-capable tools.
+        - Block unsanctioned exploitation, credential attacks, persistence, destructive changes, denial of service, and lateral movement.
         - Separate confirmed vulnerabilities from hypotheses.
+        - Preserve authorization blockers, missing evidence, and weak exploitability confidence as visible workflow diagnostics.
     quality_gates:
         - Requires evidence-backed severity.
         - Requires exploitability prerequisites.
         - Requires remediation and follow-up tests.
+        - Requires disclosure-safe wording and red/blue handoff evidence before final reporting.
     evidence_artifacts:
         - scope note
         - evidence inventory
         - finding list
+        - authorized red-team validation plan
+        - red-team evidence and blocked-action log
         - risk decision
+        - disclosure-safe report
         - remediation report
     simple_mode:
         - Show scope, target type, allowed actions, evidence status, and risk summary.
+        - Show whether offensive validation is authorized, blocked, or complete.
     expert_mode:
         - Show tool allowlists, approval decisions, evidence refs, severity policy, and route diagnostics.
+        - Show red-team scope, exclusions, allowed payload classes, rate limits, and blue-team handoff refs.
+        - Show authorization blockers, disallowed actions, weak evidence, unresolved exploitability, and disclosure-safe report checks.
     token_strategy:
         - Route each surface to a bounded specialist workflow.
         - Pass concise evidence summaries to the final risk report.
@@ -107,10 +130,12 @@ vertical_pack:
         strong:
             - scope triage
             - exploitability arbitration
+            - red-team authorization boundary review
             - final report synthesis
         worker:
             - code evidence collection
             - web evidence collection
+            - authorized non-destructive validation
             - static binary triage
         verifier:
             - severity and evidence review

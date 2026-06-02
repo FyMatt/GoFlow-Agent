@@ -282,10 +282,28 @@ func normalizeResponse(resp openAIResponse, allowedProviderFields map[string]str
 			ToolCalls:      toolCalls,
 			ProviderFields: providerFieldsForSchema(choice.Message.ProviderFields, allowedProviderFields),
 		},
-		StopReason: choice.FinishReason,
+		StopReason: normalizeOpenAIStopReason(choice.FinishReason),
 		ToolCalls:  toolCalls,
 		Usage:      resp.Usage.tokenUsage(),
 	}, nil
+}
+
+func normalizeOpenAIStopReason(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	switch reason {
+	case "":
+		return ""
+	case "stop":
+		return schema.StopReasonStop
+	case "tool_calls", "function_call":
+		return schema.StopReasonToolCalls
+	case "length", "max_tokens":
+		return schema.StopReasonMaxTokens
+	case "cancelled", "canceled":
+		return schema.StopReasonCancelled
+	default:
+		return reason
+	}
 }
 
 func newStreamAssembler(allowedProviderFields map[string]struct{}) *streamAssembler {
@@ -382,7 +400,7 @@ func (a *streamAssembler) response() schema.ChatResponse {
 			ToolCalls:      toolCalls,
 			ProviderFields: streamProviderFieldsForSchema(a.providerFields, a.allowedProviderFields),
 		},
-		StopReason: a.finishReason,
+		StopReason: normalizeOpenAIStopReason(a.finishReason),
 		ToolCalls:  toolCalls,
 		Usage:      a.usage.tokenUsage(),
 	}

@@ -40,6 +40,7 @@ function drawMemory(root, state) {
   const solutions = Array.isArray(dashboard.solutions?.solutions) ? dashboard.solutions.solutions : [];
   const activeSolutions = solutions.filter(solution => !isSolutionRetired(solution));
   const retiredSolutions = solutions.length - activeSolutions.length;
+  const supersededSolutions = solutions.filter(solution => solution.superseded_by || solution.supersededBy).length;
   const visibleSolutions = memoryExpertMode() ? solutions : activeSolutions;
   const files = Array.isArray(dashboard.file_index?.files) ? dashboard.file_index.files : [];
   const context = dashboard.context || {};
@@ -97,6 +98,7 @@ function drawMemory(root, state) {
             <p>${escapeHTML(t("memory.solutionsHelp"))}</p>
           </div>
         </div>
+        ${renderSolutionGovernance(solutions, { active: activeSolutions.length, retired: retiredSolutions, superseded: supersededSolutions })}
         ${renderSolutions(visibleSolutions, state)}
       </section>
 
@@ -272,6 +274,28 @@ function bindMemoryActions(root, state) {
       state.solutionActionID = "";
     });
   });
+  root.querySelectorAll("[data-solution-supersede]").forEach(form => {
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const id = event.currentTarget?.dataset?.solutionId || "";
+      const formData = new FormData(event.currentTarget);
+      const supersededBy = String(formData.get("superseded_by") || "").trim();
+      const reason = String(formData.get("reason") || "").trim();
+      if (!id || !supersededBy) {
+        state.error = t("memory.solutionSupersedeRequired");
+        drawMemory(root, state);
+        return;
+      }
+      await runMemoryAction(root, state, async () => {
+        state.solutionActionID = id;
+        state.dashboard.solutions = await updateMemorySolutionLifecycle(id, "supersede", {
+          superseded_by: supersededBy,
+          reason: reason || t("memory.solutionSupersedeDefaultReason")
+        });
+      }, `solution:${id}:supersede`);
+      state.solutionActionID = "";
+    });
+  });
   root.querySelector("[data-artifact-load]")?.addEventListener("submit", async event => {
     event.preventDefault();
     const ref = String(new FormData(event.currentTarget).get("ref") || "").trim();
@@ -403,6 +427,47 @@ function renderSolutions(solutions, state = {}) {
   return `<div class="memory-list memory-solution-list">${solutions.slice(0, 12).map(item => renderSolutionItem(item, state)).join("")}</div>`;
 }
 
+function renderSolutionGovernance(solutions = [], counts = {}) {
+  if (!solutions.length) return "";
+  const expert = memoryExpertMode();
+  const active = counts.active ?? solutions.filter(solution => !isSolutionRetired(solution)).length;
+  const retired = counts.retired ?? solutions.length - active;
+  const superseded = counts.superseded ?? solutions.filter(solution => solution.superseded_by || solution.supersededBy).length;
+  const activeVerify = solutions.filter(solution => !isSolutionRetired(solution) && (solution.verification_command || solution.verificationCommand)).length;
+  const retiredLinks = solutions.filter(solution => isSolutionRetired(solution) && (solution.superseded_by || solution.supersededBy)).slice(0, 6);
+  return `<div class="memory-solution-governance${expert ? " expert" : ""}">
+    <div class="memory-solution-governance-metrics">
+      ${renderSolutionGovernanceMetric(t("memory.solutionActive"), active)}
+      ${renderSolutionGovernanceMetric(t("memory.solutionVerify"), activeVerify)}
+      ${renderSolutionGovernanceMetric(t("memory.solutionRetired"), retired)}
+      ${expert ? renderSolutionGovernanceMetric(t("memory.solutionSuperseded"), superseded) : ""}
+    </div>
+    ${expert && retiredLinks.length ? `<div class="memory-solution-graph expert-mode-section" aria-label="${escapeHTML(t("memory.solutionGraph"))}">
+      <div class="memory-solution-graph-head">
+        <strong>${escapeHTML(t("memory.solutionGraph"))}</strong>
+        <span>${escapeHTML(t("memory.solutionGraphHelp"))}</span>
+      </div>
+      <div class="memory-solution-graph-list">
+        ${retiredLinks.map(solution => renderSolutionGraphEdge(solution)).join("")}
+      </div>
+    </div>` : ""}
+  </div>`;
+}
+
+function renderSolutionGovernanceMetric(label, value) {
+  return `<span><b>${escapeHTML(formatNumber(value))}</b>${escapeHTML(label)}</span>`;
+}
+
+function renderSolutionGraphEdge(solution = {}) {
+  const source = solution.id || solution.problem_signature || solution.problemSignature || t("memory.solution");
+  const target = solution.superseded_by || solution.supersededBy || t("common.none");
+  return `<div class="memory-solution-graph-edge">
+    <code title="${escapeHTML(localizeMemoryText(solution.problem_signature || solution.problemSignature || solution.problem || ""))}">${escapeHTML(source)}</code>
+    <span aria-hidden="true">-></span>
+    <code>${escapeHTML(target)}</code>
+  </div>`;
+}
+
 function renderSolutionItem(item = {}, state = {}) {
   const title = item.problem || item.problem_signature || item.problemSignature || item.id || t("memory.solution");
   const confidence = item.confidence ? t("memory.solutionConfidence", { confidence: item.confidence }) : "";
@@ -416,10 +481,11 @@ function renderSolutionItem(item = {}, state = {}) {
   const applicability = item.applicability || [];
   const invalidWhen = item.invalid_when || item.invalidWhen || [];
   const relatedFiles = item.related_files || item.relatedFiles || [];
+  const verification = item.verification_command || item.verificationCommand || "";
   const summaryRows = [
     item.decision ? [t("memory.solutionDecision"), item.decision] : null,
     item.solution ? [t("memory.solutionFix"), item.solution] : null,
-    item.verification_command || item.verificationCommand ? [t("memory.solutionVerify"), item.verification_command || item.verificationCommand] : null
+    verification ? [t("memory.solutionVerify"), verification] : null
   ].filter(Boolean);
   const expertRows = [
     item.id ? [t("memory.solutionId"), item.id] : null,
@@ -435,6 +501,7 @@ function renderSolutionItem(item = {}, state = {}) {
   const action = retired ? "restore" : "retire";
   const actionKey = retired ? "memory.solutionRestore" : "memory.solutionRetire";
   const busy = isBusyAction(state, `solution:${item.id}:${action}`);
+  const supersedeBusy = isBusyAction(state, `solution:${item.id}:supersede`);
   return `
     <article class="memory-item memory-solution-item${retired ? " is-retired" : ""}">
       <div class="memory-item-head">
@@ -448,8 +515,38 @@ function renderSolutionItem(item = {}, state = {}) {
       ${expertRows.length ? `<div class="memory-solution-expert expert-mode-section">${expertRows.map(([label, value]) => `<span><b>${escapeHTML(label)}</b>${escapeHTML(localizeMemoryText(value))}</span>`).join("")}</div>` : ""}
       ${item.id ? `<div class="memory-solution-actions expert-mode-section">
         <button type="button" data-solution-action="${escapeHTML(action)}" data-solution-id="${escapeHTML(item.id)}" ${state.busy ? "disabled" : ""} aria-busy="${busy ? "true" : "false"}">${escapeHTML(t(actionKey))}</button>
+        ${!retired && hasAlternativeActiveSolution(item, state) ? `<form data-solution-supersede data-solution-id="${escapeHTML(item.id)}" class="memory-solution-supersede">
+          <label>
+            <span>${escapeHTML(t("memory.solutionSupersedeWith"))}</span>
+            <select name="superseded_by" ${state.busy ? "disabled" : ""}>
+              <option value="">${escapeHTML(t("memory.solutionSupersedePlaceholder"))}</option>
+              ${solutionReplacementOptions(item, state).map(option => `<option value="${escapeHTML(option.id)}">${escapeHTML(option.label)}</option>`).join("")}
+            </select>
+          </label>
+          <label>
+            <span>${escapeHTML(t("memory.solutionRetiredReason"))}</span>
+            <input name="reason" autocomplete="off" placeholder="${escapeHTML(t("memory.solutionSupersedeReasonPlaceholder"))}" ${state.busy ? "disabled" : ""}>
+          </label>
+          <button type="submit" ${state.busy ? "disabled" : ""} aria-busy="${supersedeBusy ? "true" : "false"}">${escapeHTML(t("memory.solutionSupersede"))}</button>
+        </form>` : ""}
       </div>` : ""}
     </article>`;
+}
+
+function hasAlternativeActiveSolution(item = {}, state = {}) {
+  return solutionReplacementOptions(item, state).length > 0;
+}
+
+function solutionReplacementOptions(item = {}, state = {}) {
+  const currentID = String(item.id || "").trim();
+  const solutions = Array.isArray(state.dashboard?.solutions?.solutions) ? state.dashboard.solutions.solutions : [];
+  return solutions
+    .filter(solution => !isSolutionRetired(solution) && String(solution.id || "").trim() && String(solution.id || "").trim() !== currentID)
+    .slice(0, 20)
+    .map(solution => ({
+      id: String(solution.id || "").trim(),
+      label: `${solution.id || ""} - ${compactText(localizeMemoryText(solution.problem_signature || solution.problemSignature || solution.problem || solution.decision || solution.solution || ""))}`
+    }));
 }
 
 function renderContextSummary(context = {}, state = {}) {
@@ -762,7 +859,8 @@ function formatDateTime(value) {
 }
 
 function isSolutionRetired(item = {}) {
-  return Boolean(item.retired || item.Retired);
+  const status = String(item.status || item.Status || "").trim().toLowerCase();
+  return Boolean(item.retired || item.Retired || status === "retired" || status === "superseded");
 }
 
 function memoryExpertMode() {

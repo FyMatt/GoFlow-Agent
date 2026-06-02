@@ -24,9 +24,9 @@ role_templates:
     skill: reverse-engineering
     responsibilities:
       - summarize binary metadata
-      - extract strings and suspicious imports
-      - map code areas for review
-    tools: [python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview]
+      - extract format, section, entropy, symbol, string, import/export, and offset evidence
+      - map static code areas for review without executing the sample
+    tools: [python_notes/binary_file_info, python_notes/binary_format_summary, python_notes/binary_entropy_map, python_notes/binary_symbol_hints, python_notes/binary_strings, python_notes/hex_preview, python_notes/binary_extract_window]
     consumes: [triage_plan]
     produces: [reverse_notes, evidence]
   - name: vulnerability-analyst
@@ -36,7 +36,7 @@ role_templates:
     responsibilities:
       - review evidence for vulnerability classes
       - classify exploitability cautiously
-      - recommend next static/dynamic checks
+      - recommend next static checks and block unsafe dynamic analysis without sandbox approval
     consumes: [reverse_notes, evidence]
     produces: [findings, next_checks]
   - name: reporter
@@ -47,6 +47,7 @@ role_templates:
       - produce defensive report
       - preserve uncertainty
       - list reproduction prerequisites
+      - include unsafe-action blockers and artifact refs
     consumes: [findings, next_checks]
     produces: [final_report]
 handoffs:

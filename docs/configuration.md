@@ -128,6 +128,30 @@ requests. DeepSeek thinking/tool-call mode requires `reasoning_content`; other
 OpenAI-compatible providers can add their own safe field names here without a
 code change.
 
+Provider and agent profiles can include optional operator-maintained pricing
+metadata. GoFlow does not hardcode provider prices because model pricing
+changes; estimated monetary cost appears only when you configure current rates:
+
+```yaml
+providers:
+  primary:
+    provider: openai-compatible
+    model: ${GOFLOW_MODEL}
+    pricing:
+      currency: USD
+      input_per_million_tokens: 1.50
+      cached_input_per_million_tokens: 0.15
+      output_per_million_tokens: 4.50
+      source: "2026-05 internal rate card"
+```
+
+Agents inherit pricing from their provider unless the agent profile declares its
+own `pricing` block. The runtime then includes `budget_estimated_input_cost`,
+`budget_estimated_output_cost`, `budget_estimated_total_cost`,
+`budget_cost_currency`, and `budget_pricing_source` in prompt budget, token
+usage, workflow run, stage, replay, and Studio diagnostics. Treat these values
+as estimates for operator visibility, not invoices.
+
 ```yaml
 agents:
   chat:
@@ -387,6 +411,12 @@ fields such as `samples`, `saved_tokens`, `filtered_tools`, and
 badges instead of parsing recommendation text. Provider cached-token values are
 provider-reported prompt-cache telemetry; GoFlow does not store provider
 KV-cache tensors locally.
+
+When provider or agent `pricing` metadata is configured, the same runtime cost
+diagnostics also include estimated input, output, and total monetary cost with
+the configured currency and pricing source. GoFlow never truncates model output
+or skips verification to save money; hard budgets pause at safe workflow
+boundaries and expose recovery actions in Studio.
 
 `GET /api/runtime` and `GET /api/runtime/cost` also expose
 `cost.tuning[]` for measurement-led low-cost route tuning. GoFlow does not

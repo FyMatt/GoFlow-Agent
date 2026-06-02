@@ -345,7 +345,7 @@ func agentRunCollectionRunMatches(run session.AgentRunSnapshot, query agentRunCo
 
 func agentRunCollectionRunActive(run session.AgentRunSnapshot) bool {
 	switch normalizeWorkflowRunQueryToken(run.Status) {
-	case "running", "cancelling", "awaiting_tool_approval":
+	case "running", "cancelling", "awaiting_tool_approval", "paused_need_more_budget":
 		return true
 	default:
 		return false
@@ -369,9 +369,12 @@ func agentRunCollectionRunNeedsAction(run session.AgentRunSnapshot) bool {
 		return true
 	}
 	for _, event := range run.Events {
-		if event.NeedsAction || event.Suspended {
+		if event.NeedsAction || event.Suspended || event.Incomplete {
 			return true
 		}
+	}
+	if run.Result != nil && run.Result.Incomplete {
+		return true
 	}
 	return false
 }
@@ -728,7 +731,7 @@ func (s *Server) agentRunActions(run session.AgentRunSnapshot) []agentRunAction 
 			})
 		}
 	}
-	if !agentRunStatusActive(status) && strings.TrimSpace(run.Request) != "" {
+	if agentRunStatusRetryable(status) && strings.TrimSpace(run.Request) != "" {
 		actions = append(actions, agentRunAction{
 			Name:       "retry",
 			Label:      "Retry",
@@ -738,6 +741,7 @@ func (s *Server) agentRunActions(run session.AgentRunSnapshot) []agentRunAction 
 			Available:  true,
 			Durable:    true,
 			Background: true,
+			Reason:     agentRunRetryActionReason(status),
 		})
 	}
 	return normalizeAgentRunActions(actions)
@@ -940,8 +944,11 @@ func (s *Server) handleAgentRunRetry(w http.ResponseWriter, r *http.Request, run
 		return
 	}
 	if agentRunStatusActive(run.Status) {
-		http.Error(w, "agent run is still active", http.StatusConflict)
-		return
+		activeStatus := strings.ToLower(strings.TrimSpace(run.Status))
+		if activeStatus != "paused_need_more_budget" {
+			http.Error(w, "agent run is still active", http.StatusConflict)
+			return
+		}
 	}
 	if !s.ensureWorkspaceConfirmedForRun(w, run.Request) {
 		return
@@ -1286,22 +1293,30 @@ func (s *Server) recordAgentRunEvents(runID string, handler func(event schema.St
 
 func agentRunEventSnapshot(event schema.StreamEvent) session.AgentRunEventSnapshot {
 	return session.AgentRunEventSnapshot{
-		Type:             string(event.Type),
-		Content:          event.Content,
-		ToolName:         event.ToolName,
-		ToolCallID:       event.ToolCallID,
-		ArgumentsSummary: event.ArgumentsSummary,
-		AgentID:          event.AgentID,
-		Mode:             event.Mode,
-		IsError:          event.IsError,
-		NeedsAction:      event.NeedsAction,
-		Suspended:        event.Suspended,
-		TaskStage:        event.TaskStage,
-		PromptTokens:     event.PromptTokens,
-		OutputTokens:     event.OutputTokens,
-		CachedTokens:     event.CachedTokens,
-		PromptBudget:     event.PromptBudget,
-		Risk:             event.Risk,
+		Type:              string(event.Type),
+		Content:           event.Content,
+		ToolName:          event.ToolName,
+		ToolCallID:        event.ToolCallID,
+		ArgumentsSummary:  event.ArgumentsSummary,
+		AgentID:           event.AgentID,
+		Mode:              event.Mode,
+		IsError:           event.IsError,
+		NeedsAction:       event.NeedsAction,
+		Suspended:         event.Suspended,
+		TaskStage:         event.TaskStage,
+		PromptTokens:      event.PromptTokens,
+		OutputTokens:      event.OutputTokens,
+		CachedTokens:      event.CachedTokens,
+		Reason:            event.Reason,
+		Severity:          event.Severity,
+		BudgetScope:       event.BudgetScope,
+		ContractCheck:     event.ContractCheck,
+		SourceRef:         event.SourceRef,
+		StopReason:        event.StopReason,
+		ContinuationCount: event.ContinuationCount,
+		Incomplete:        event.Incomplete,
+		PromptBudget:      event.PromptBudget,
+		Risk:              event.Risk,
 	}
 }
 
@@ -1396,6 +1411,9 @@ func normalizeAgentRunActionPath(action string) string {
 }
 
 func agentRunStatusForResult(result schema.AgentResult) string {
+	if result.Incomplete {
+		return "paused_need_more_budget"
+	}
 	for _, toolResult := range result.ToolResults {
 		if toolResult.Suspended {
 			return "awaiting_tool_approval"
@@ -1548,16 +1566,28 @@ func agentRunToolApprovalActionReason(resumable bool) string {
 
 func agentRunStatusActive(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "running", "cancelling":
+	case "running", "cancelling", "paused_need_more_budget":
 		return true
 	default:
 		return false
 	}
 }
 
+func agentRunStatusRetryable(status string) bool {
+	status = strings.ToLower(strings.TrimSpace(status))
+	return !agentRunStatusActive(status) || status == "paused_need_more_budget"
+}
+
+func agentRunRetryActionReason(status string) string {
+	if strings.EqualFold(strings.TrimSpace(status), "paused_need_more_budget") {
+		return "agent output was incomplete because model output or budget was exhausted; retry starts a new run from the saved request"
+	}
+	return ""
+}
+
 func agentRunStatusCancellable(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "running", "cancelling", "awaiting_tool_approval":
+	case "running", "cancelling", "awaiting_tool_approval", "paused_need_more_budget":
 		return true
 	default:
 		return false

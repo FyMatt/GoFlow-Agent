@@ -1,0 +1,433 @@
+/* GoFlow Agent - Enhanced UI Styles
+ * Design Direction: Professional Developer Tool + Workflow Orchestration
+ * Color Palette: Teal-based (avoiding standard SaaS blue)
+ * Visual Style: Modern, efficient, technical
+ */
+
+:root {
+  color-scheme: light;
+
+  /* Typography */
+  --font-sans: ui-sans-serif, system-ui, -apple-system, Segoe UI, Arial, sans-serif;
+  --font-mono: ui-monospace, SFMono-Regular, Consolas, Menlo, monospace;
+  --mono: var(--font-mono);
+
+  /* Animation */
+  --duration-fast: .14s;
+  --duration-base: .18s;
+  --duration-smooth: .28s;
+
+  /* Brand Colors - Teal-based palette (avoiding standard blue) */
+  --primary: #0d9488;
+  --primary-hover: #0f766e;
+  --primary-light: #5eead4;
+  --primary-dark: #115e59;
+
+  --accent: #f59e0b;
+  --accent-hover: #d97706;
+
+  --success: #059669;
+  --success-light: #34d399;
+
+  --error: #dc2626;
+  --error-light: #f87171;
+
+  --warning: #f59e0b;
+  --warning-light: #fbbf24;
+
+  --info: #0891b2;
+  --info-light: #22d3ee;
+
+  /* Neutral Colors */
+  --bg: #f5f7fb;
+  --bg-grad-1: rgba(13, 148, 136, .055);
+  --bg-grad-2: rgba(8, 145, 178, .045);
+  --bg-grad-3: #eef3f8;
+  --bg-grad-4: #f8fafc;
+
+  --panel: rgba(255, 255, 255, 0.96);
+  --panel-2: #f7f9fc;
+  --panel-3: #eef3f8;
+
+  --ink: #0f1f33;
+  --muted: #5e7085;
+
+  --line: rgba(135, 151, 171, 0.28);
+  --line-strong: rgba(86, 102, 123, 0.42);
+
+  /* Legacy color mappings for compatibility */
+  --blue: var(--primary);
+  --green: var(--success);
+  --red: var(--error);
+  --amber: var(--warning);
+  --purple: #7c3aed;
+  --cyan: var(--info);
+  --teal: var(--primary-dark);
+
+  --brand: var(--primary-dark);
+  --brand-2: var(--primary);
+
+  /* Surfaces */
+  --sidebar: rgba(250, 252, 255, 0.98);
+  --sidebar-2: rgba(241, 246, 251, 0.98);
+
+  /* Shadows - More refined */
+  --shadow: 0 16px 36px rgba(15, 23, 42, .09);
+  --soft-shadow: 0 8px 22px rgba(15, 23, 42, .065);
+  --panel-shadow: 0 1px 2px rgba(15, 23, 42, .055), 0 8px 20px rgba(15, 23, 42, .055);
+  --control-shadow: 0 1px 2px rgba(15, 23, 42, .08);
+  --control-shadow-hover: 0 4px 12px rgba(15, 23, 42, .10);
+  --focus: 0 0 0 3px rgba(13, 148, 136, .18);
+
+  /* Controls */
+  --control-bg: linear-gradient(180deg, #ffffff, #f5f8fc);
+  --control-bg-hover: linear-gradient(180deg, #ffffff, #eef4fb);
+  --field-bg: rgba(255, 255, 255, .98);
+  --field-shadow: inset 0 1px 0 rgba(255, 255, 255, .68);
+
+  /* Highlights */
+  --sidebar-highlight: linear-gradient(180deg, rgba(241, 246, 255, .98), rgba(228, 238, 250, .98));
+  --topbar-bg: rgba(247, 250, 253, .94);
+
+  /* Runtime & Canvas */
+  --runtime-bg: rgba(255, 255, 255, .92);
+  --runtime-panel-bg: rgba(255, 255, 255, .92);
+  --runtime-border: rgba(13, 148, 136, .18);
+  --runtime-accent-bg: rgba(237, 250, 247, .9);
+  --runtime-chip-bg: rgba(255, 255, 255, .88);
+  --runtime-chip-ink: #1e3a5f;
+  --runtime-chip-line: rgba(148, 163, 184, .22);
+
+  --accent-line: rgba(13, 148, 136, .20);
+
+  /* Gradients */
+  --hero-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(247,249,252,.98));
+  --hero-bg-accent: linear-gradient(120deg, rgba(13,148,136,.045), rgba(8,145,178,.04));
+  --metric-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(247,250,253,.98));
+  --panel-bg: linear-gradient(180deg, rgba(255,255,255,.97), rgba(247,250,253,.98));
+  --panel-flat-bg: linear-gradient(180deg, rgba(255,255,255,.96), rgba(244,248,252,.98));
+  --message-bg: linear-gradient(180deg, rgba(255,255,255,.99), rgba(246,249,252,.99));
+  --message-code-bg: rgba(237, 250, 247, .92);
+  --message-code-ink: #115e59;
+
+  /* Badges */
+  --badge-good-bg: #ecfdf5;
+  --badge-good-line: #a7f3d0;
+  --badge-good-ink: #047857;
+
+  --badge-info-bg: #f0fdfa;
+  --badge-info-line: #99f6e4;
+  --badge-info-ink: #0f766e;
+
+  --badge-warn-bg: #fffbeb;
+  --badge-warn-line: #fde68a;
+  --badge-warn-ink: #b45309;
+
+  --badge-bad-bg: #fff1f2;
+  --badge-bad-line: #fecdd3;
+  --badge-bad-ink: #be123c;
+
+  --badge-neutral-bg: #eef4fb;
+  --badge-neutral-line: rgba(100, 116, 139, .24);
+  --badge-neutral-ink: #38516b;
+
+  /* Tour */
+  --tour-card-bg: #ffffff;
+  --tour-chip-bg: #f0fdfa;
+  --tour-progress-bg: #e6ebf2;
+  --tour-scrim: rgba(15, 23, 42, .56);
+  --tour-hole-line: rgba(13, 148, 136, .78);
+  --tour-hole-glow: rgba(13, 148, 136, .18);
+
+  /* Navigation */
+  --nav-ink: #52677f;
+  --nav-active-ink: #102033;
+  --nav-active-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(239,245,252,.98));
+  --nav-active-line: rgba(13, 148, 136, .24);
+
+  /* Launchpad */
+  --launchpad-bg: linear-gradient(180deg, rgba(255,255,255,.96), rgba(242,247,252,.96));
+
+  /* Error Panel */
+  --error-panel-bg: linear-gradient(180deg, rgba(255, 241, 242, .96), rgba(255, 248, 248, .98));
+  --error-panel-ink: #9f1239;
+  --error-panel-line: rgba(225, 29, 72, .22);
+
+  /* Canvas - Enhanced with teal accents */
+  --canvas-bg: linear-gradient(180deg, #f8fafc 0%, #eef3f8 100%);
+  --canvas-surface-bg:
+    linear-gradient(rgba(107, 132, 162, .105) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(107, 132, 162, .105) 1px, transparent 1px),
+    radial-gradient(circle at 1px 1px, rgba(13, 148, 136, .075) 1px, transparent 0),
+    linear-gradient(180deg, rgba(255,255,255,.99) 0%, rgba(242,247,252,.99) 100%);
+
+  --canvas-guide-bg: rgba(255, 255, 255, .90);
+  --canvas-guide-code-bg: #f0fdfa;
+  --canvas-guide-code-ink: #115e59;
+
+  /* Workflow Nodes - Modern card design */
+  --workflow-node-bg: linear-gradient(180deg, rgba(255,255,255,.99), rgba(248,251,255,.99));
+  --workflow-node-line: rgba(111, 132, 158, .28);
+  --workflow-node-strong-line: rgba(13, 148, 136, .34);
+  --workflow-node-shadow: 0 1px 2px rgba(15, 23, 42, .07), 0 10px 22px rgba(15, 23, 42, .075);
+  --workflow-node-hover-shadow: 0 0 0 1px rgba(13, 148, 136, .13), 0 12px 24px rgba(15, 23, 42, .105);
+  --workflow-node-selected-shadow: 0 0 0 2px rgba(13, 148, 136, .24), 0 12px 24px rgba(15, 23, 42, .11);
+
+  --workflow-node-meta-bg: rgba(244, 248, 253, .94);
+  --workflow-node-meta-ink: #334860;
+
+  --workflow-node-delete-bg: #fff1f2;
+  --workflow-node-delete-line: rgba(220, 38, 38, .34);
+  --workflow-node-delete-hover-bg: #dc2626;
+
+  --workflow-node-end-title: #115e59;
+  --workflow-node-custom-icon-bg: #f1f5f9;
+  --workflow-node-custom-icon-ink: #475569;
+
+  /* Workflow Edges - Teal-based */
+  --workflow-edge-delete-bg: #fff1f2;
+  --workflow-edge-delete-hover-bg: #dc2626;
+  --workflow-edge-delete-shadow: 0 8px 18px rgba(220, 38, 38, .18);
+
+  --workflow-board-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(244,248,252,.98));
+  --workflow-toolbar-bg: rgba(250, 252, 255, .94);
+
+  --workflow-edge-stroke: #0d9488;
+  --workflow-edge-underlay: rgba(71, 94, 124, .18);
+  --workflow-edge-route: #059669;
+  --workflow-edge-draft: #64748b;
+  --workflow-edge-shadow: none;
+
+  /* Workflow Node Types */
+  --workflow-node-start-bg: linear-gradient(180deg, rgba(236,253,245,.98), rgba(218,252,238,.98));
+  --workflow-node-start-line: rgba(16, 185, 129, .26);
+
+  --workflow-node-end-bg: linear-gradient(180deg, rgba(240,253,250,.98), rgba(204,251,241,.98));
+  --workflow-node-end-shadow: 0 8px 18px rgba(13, 148, 136, .10), 0 1px 2px rgba(15, 23, 42, .06);
+
+  --workflow-node-icon-bg: rgba(13, 148, 136, .10);
+  --workflow-node-icon-line: rgba(13, 148, 136, .12);
+
+  --workflow-node-skill-icon-bg: #ecfdf5;
+  --workflow-node-tool-icon-bg: #f5f3ff;
+  --workflow-node-start-icon-bg: #ecfdf5;
+  --workflow-node-end-icon-bg: #ccfbf1;
+  --workflow-node-end-icon-ink: #0f766e;
+
+  --workflow-node-flag-bg: #fffbeb;
+  --workflow-node-flag-line: #fde68a;
+
+  /* Workflow Order Chips */
+  --workflow-order-chip-bg: rgba(255, 255, 255, .92);
+  --workflow-order-chip-line: rgba(148, 163, 184, .24);
+  --workflow-order-chip-ink: #284158;
+
+  /* Workflow Runtime */
+  --workflow-runtime-head-bg: rgba(255, 255, 255, .58);
+  --workflow-runtime-metric-bg: rgba(255, 255, 255, .78);
+  --workflow-runtime-block-bg: rgba(255, 255, 255, .78);
+  --workflow-runtime-block-pre-bg: rgba(240, 253, 250, .92);
+
+  /* Logs */
+  --log-bg: #0b1120;
+  --log-ink: #dbeafe;
+  --log-running-line: #5eead4;
+  --log-running-shadow: 0 0 0 3px rgba(94, 234, 212, .18);
+  --log-border: rgba(13, 148, 136, .18);
+
+  /* Border Radius */
+  --radius: 8px;
+  --radius-sm: 6px;
+  --radius-lg: 12px;
+  --radius-xl: 16px;
+
+  /* Control Height */
+  --control-height: 42px;
+}
+
+/* Dark Theme - Enhanced with teal accents */
+:root[data-theme='dark'] {
+  color-scheme: dark;
+
+  --primary: #5eead4;
+  --primary-hover: #2dd4bf;
+  --primary-light: #99f6e4;
+  --primary-dark: #14b8a6;
+
+  --bg: #07111d;
+  --bg-grad-1: rgba(94, 234, 212, .08);
+  --bg-grad-2: rgba(73, 216, 255, .06);
+  --bg-grad-3: #0a1725;
+  --bg-grad-4: #06111d;
+
+  --panel: rgba(12, 23, 37, 0.96);
+  --panel-2: #0d1928;
+  --panel-3: #111f31;
+
+  --ink: #e7eef8;
+  --muted: #96a9bf;
+
+  --line: rgba(130, 153, 184, 0.22);
+  --line-strong: rgba(155, 179, 210, 0.36);
+
+  --blue: var(--primary);
+  --green: #33d69f;
+  --red: #ff6c7a;
+  --amber: #ffbb5c;
+  --purple: #a98bff;
+  --cyan: #49d8ff;
+  --teal: #22c7b8;
+
+  --brand: #14b8a6;
+  --brand-2: #5eead4;
+
+  --sidebar: rgba(8, 18, 31, 0.98);
+  --sidebar-2: rgba(10, 23, 38, 0.98);
+
+  --shadow: 0 18px 42px rgba(2, 8, 18, .34);
+  --soft-shadow: 0 10px 26px rgba(2, 8, 18, .24);
+  --panel-shadow: 0 1px 0 rgba(255,255,255,.035), 0 12px 26px rgba(2, 8, 18, .26);
+  --control-shadow: 0 1px 2px rgba(2, 8, 18, .28);
+  --control-shadow-hover: 0 5px 14px rgba(2, 8, 18, .34);
+  --focus: 0 0 0 3px rgba(94, 234, 212, .26);
+
+  --control-bg: linear-gradient(180deg, rgba(18, 32, 50, .98), rgba(11, 23, 37, .98));
+  --control-bg-hover: linear-gradient(180deg, rgba(24, 42, 64, .98), rgba(13, 27, 43, .98));
+  --field-bg: rgba(8, 18, 31, .94);
+  --field-shadow: inset 0 1px 0 rgba(255, 255, 255, .03);
+
+  --sidebar-highlight: linear-gradient(180deg, rgba(20, 40, 64, .96), rgba(12, 28, 46, .98));
+  --topbar-bg: rgba(8, 18, 31, .94);
+
+  --runtime-bg: rgba(10, 22, 36, .90);
+  --runtime-panel-bg: rgba(10, 22, 36, .90);
+  --runtime-border: rgba(94, 234, 212, .22);
+  --runtime-accent-bg: rgba(8, 18, 31, .88);
+  --runtime-chip-bg: rgba(8, 18, 31, .78);
+  --runtime-chip-ink: #dbeafe;
+  --runtime-chip-line: rgba(131, 157, 189, .18);
+
+  --accent-line: rgba(94, 234, 212, .24);
+
+  --hero-bg: linear-gradient(180deg, rgba(14, 27, 43, .98), rgba(10, 21, 34, .98));
+  --hero-bg-accent: linear-gradient(120deg, rgba(20,184,166,.075), rgba(15,156,171,.06));
+  --metric-bg: linear-gradient(180deg, rgba(14, 27, 43, .96), rgba(10, 22, 36, .98));
+  --panel-bg: linear-gradient(180deg, rgba(12, 23, 37, .96), rgba(9, 20, 33, .98));
+  --panel-flat-bg: linear-gradient(180deg, rgba(14, 27, 43, .94), rgba(10, 22, 36, .98));
+  --message-bg: linear-gradient(180deg, rgba(14, 27, 43, .98), rgba(10, 22, 36, .98));
+  --message-code-bg: rgba(7, 17, 31, .88);
+  --message-code-ink: #99f6e4;
+
+  --badge-good-bg: rgba(16, 185, 129, .14);
+  --badge-good-line: rgba(52, 211, 153, .28);
+  --badge-good-ink: #7dd3ae;
+
+  --badge-info-bg: rgba(20, 184, 166, .14);
+  --badge-info-line: rgba(94, 234, 212, .30);
+  --badge-info-ink: #5eead4;
+
+  --badge-warn-bg: rgba(245, 158, 11, .14);
+  --badge-warn-line: rgba(251, 191, 36, .28);
+  --badge-warn-ink: #fcd34d;
+
+  --badge-bad-bg: rgba(244, 63, 94, .14);
+  --badge-bad-line: rgba(251, 113, 133, .28);
+  --badge-bad-ink: #fca5a5;
+
+  --badge-neutral-bg: rgba(148, 163, 184, .12);
+  --badge-neutral-line: rgba(148, 163, 184, .22);
+  --badge-neutral-ink: #c6d3e3;
+
+  --tour-card-bg: rgba(12, 23, 37, .96);
+  --tour-chip-bg: rgba(20, 184, 166, .14);
+  --tour-progress-bg: rgba(148, 163, 184, .18);
+  --tour-scrim: rgba(2, 8, 18, .68);
+  --tour-hole-line: rgba(94, 234, 212, .84);
+  --tour-hole-glow: rgba(94, 234, 212, .24);
+
+  --nav-ink: #b7c7db;
+  --nav-active-ink: #f4f8ff;
+  --nav-active-bg: linear-gradient(180deg, rgba(18, 36, 58, .98), rgba(12, 27, 44, .98));
+  --nav-active-line: rgba(94, 234, 212, .24);
+
+  --launchpad-bg: linear-gradient(180deg, rgba(14,27,43,.98), rgba(9,20,33,.96));
+
+  --error-panel-bg: linear-gradient(180deg, rgba(56, 18, 27, .94), rgba(38, 12, 20, .98));
+  --error-panel-ink: #ffb6bf;
+  --error-panel-line: rgba(255, 108, 122, .34);
+
+  --canvas-bg: linear-gradient(180deg, #08131f 0%, #0a1624 100%);
+  --canvas-surface-bg:
+    linear-gradient(rgba(122, 148, 182, .105) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(122, 148, 182, .105) 1px, transparent 1px),
+    radial-gradient(circle at 1px 1px, rgba(94, 234, 212, .11) 1px, transparent 0),
+    linear-gradient(180deg, rgba(8, 18, 31, .99) 0%, rgba(9, 20, 33, .99) 100%);
+
+  --canvas-guide-bg: rgba(10, 22, 36, .90);
+  --canvas-guide-code-bg: #0f1d30;
+  --canvas-guide-code-ink: #99f6e4;
+
+  --workflow-node-bg: linear-gradient(180deg, rgba(14, 27, 43, .99), rgba(10, 21, 34, .99));
+  --workflow-node-line: rgba(131, 157, 189, .24);
+  --workflow-node-strong-line: rgba(94, 234, 212, .38);
+  --workflow-node-shadow: 0 1px 0 rgba(255,255,255,.035), 0 12px 26px rgba(2, 8, 18, .30);
+  --workflow-node-hover-shadow: 0 0 0 1px rgba(94, 234, 212, .16), 0 14px 30px rgba(2, 8, 18, .36);
+  --workflow-node-selected-shadow: 0 0 0 2px rgba(94, 234, 212, .28), 0 14px 30px rgba(2, 8, 18, .40);
+
+  --workflow-node-meta-bg: rgba(7, 18, 31, .82);
+  --workflow-node-meta-ink: #b8c9db;
+
+  --workflow-node-delete-bg: rgba(127, 29, 29, .32);
+  --workflow-node-delete-line: rgba(255, 108, 122, .34);
+  --workflow-node-delete-hover-bg: #be123c;
+
+  --workflow-node-end-title: #99f6e4;
+  --workflow-node-custom-icon-bg: rgba(148, 163, 184, .14);
+  --workflow-node-custom-icon-ink: #b8c9db;
+
+  --workflow-edge-delete-bg: rgba(127, 29, 29, .32);
+  --workflow-edge-delete-hover-bg: #be123c;
+  --workflow-edge-delete-shadow: 0 10px 22px rgba(127, 29, 29, .34);
+
+  --workflow-board-bg: linear-gradient(180deg, rgba(11, 22, 36, .98), rgba(8, 18, 31, .99));
+  --workflow-toolbar-bg: rgba(10, 22, 36, .94);
+
+  --workflow-edge-stroke: #5eead4;
+  --workflow-edge-underlay: rgba(105, 132, 167, .22);
+  --workflow-edge-route: #33d69f;
+  --workflow-edge-draft: #94a3b8;
+  --workflow-edge-shadow: none;
+
+  --workflow-node-start-bg: linear-gradient(180deg, rgba(8, 28, 24, .98), rgba(7, 20, 20, .98));
+  --workflow-node-start-line: rgba(51, 214, 159, .34);
+
+  --workflow-node-end-bg: linear-gradient(180deg, rgba(8, 28, 28, .98), rgba(7, 22, 22, .98));
+  --workflow-node-end-shadow: 0 10px 22px rgba(2, 8, 18, .26), 0 1px 0 rgba(255,255,255,.03);
+
+  --workflow-node-icon-bg: rgba(94, 234, 212, .12);
+  --workflow-node-icon-line: rgba(94, 234, 212, .16);
+
+  --workflow-node-skill-icon-bg: #10271d;
+  --workflow-node-tool-icon-bg: #1a1230;
+  --workflow-node-start-icon-bg: #10271d;
+  --workflow-node-end-icon-bg: rgba(94, 234, 212, .12);
+  --workflow-node-end-icon-ink: #5eead4;
+
+  --workflow-node-flag-bg: rgba(245, 158, 11, .14);
+  --workflow-node-flag-line: rgba(251, 191, 36, .28);
+
+  --workflow-order-chip-bg: rgba(6, 15, 26, .8);
+  --workflow-order-chip-line: rgba(131, 157, 189, .18);
+  --workflow-order-chip-ink: #d6e0ec;
+
+  --workflow-runtime-head-bg: rgba(8, 18, 31, .48);
+  --workflow-runtime-metric-bg: rgba(8, 18, 31, .58);
+  --workflow-runtime-block-bg: rgba(8, 18, 31, .64);
+  --workflow-runtime-block-pre-bg: rgba(7, 17, 31, .84);
+
+  --log-bg: #0b1120;
+  --log-running-line: #5eead4;
+  --log-running-shadow: 0 0 0 3px rgba(94, 234, 212, .18);
+  --log-border: rgba(94, 234, 212, .22);
+  --log-ink: #dbeafe;
+}

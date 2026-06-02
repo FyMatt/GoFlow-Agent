@@ -15,4 +15,5 @@ operations-specialist:
     - network_tools/device_discovery_plan
     - network_tools/device_command_plan
     - network_tools/device_config_dry_run
+    - network_tools/device_restconf_live_apply
   max_iterations: 8

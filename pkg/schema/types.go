@@ -147,6 +147,16 @@ const (
 	StreamEventWorkflowResult StreamEventType = "workflow_result"
 )
 
+const (
+	StopReasonStop            = "stop"
+	StopReasonToolCalls       = "tool_calls"
+	StopReasonMaxTokens       = "max_tokens"
+	StopReasonLength          = "length"
+	StopReasonIterationBudget = "iteration_budget"
+	StopReasonCancelled       = "cancelled"
+	StopReasonError           = "error"
+)
+
 // PromptBudget is an approximate pre-call token budget for one LLM request.
 type PromptBudget struct {
 	EstimatedPromptTokens            int                  `json:"estimated_prompt_tokens,omitempty"`
@@ -205,6 +215,13 @@ type PromptBudget struct {
 	ArtifactRefs                     []string             `json:"artifact_refs,omitempty"`
 	InjectedToolSchemas              []PromptToolSchema   `json:"injected_tool_schemas,omitempty"`
 	FilteredToolSchemas              []PromptToolSchema   `json:"filtered_tool_schemas,omitempty"`
+	EstimatedInputCost               float64              `json:"estimated_input_cost,omitempty"`
+	EstimatedOutputCost              float64              `json:"estimated_output_cost,omitempty"`
+	EstimatedTotalCost               float64              `json:"estimated_total_cost,omitempty"`
+	CostCurrency                     string               `json:"cost_currency,omitempty"`
+	PricingSource                    string               `json:"pricing_source,omitempty"`
+	PricingProvider                  string               `json:"pricing_provider,omitempty"`
+	PricingModel                     string               `json:"pricing_model,omitempty"`
 }
 
 // PromptContextBlock identifies a compact context block injected into a model
@@ -239,28 +256,63 @@ type PromptToolSchema struct {
 
 // StreamEvent represents incremental agent or provider output.
 type StreamEvent struct {
-	Type             StreamEventType  `json:"type"`
-	RunID            string           `json:"run_id,omitempty"`
-	Content          string           `json:"content,omitempty"`
-	ToolName         string           `json:"tool_name,omitempty"`
-	ToolCallID       string           `json:"tool_call_id,omitempty"`
-	ArgumentsSummary string           `json:"arguments_summary,omitempty"`
-	AgentID          string           `json:"agent_id,omitempty"`
-	Mode             string           `json:"mode,omitempty"`
-	IsError          bool             `json:"is_error,omitempty"`
-	NeedsAction      bool             `json:"needs_action,omitempty"`
-	Suspended        bool             `json:"suspended,omitempty"`
-	TaskStage        string           `json:"task_stage,omitempty"`
-	PromptTokens     int              `json:"prompt_tokens,omitempty"`
-	OutputTokens     int              `json:"output_tokens,omitempty"`
-	CachedTokens     int              `json:"cached_tokens,omitempty"`
-	WorkflowName     string           `json:"workflow_name,omitempty"`
-	WorkflowStatus   string           `json:"workflow_status,omitempty"`
-	NextStage        string           `json:"next_stage,omitempty"`
-	PendingApproval  bool             `json:"pending_approval,omitempty"`
-	WorkflowResult   *WorkflowResult  `json:"workflow_result,omitempty"`
-	PromptBudget     *PromptBudget    `json:"prompt_budget,omitempty"`
-	Risk             *ToolRiskProfile `json:"risk,omitempty"`
+	Type                        StreamEventType  `json:"type"`
+	RunID                       string           `json:"run_id,omitempty"`
+	Content                     string           `json:"content,omitempty"`
+	Reason                      string           `json:"reason,omitempty"`
+	Severity                    string           `json:"severity,omitempty"`
+	BudgetScope                 string           `json:"budget_scope,omitempty"`
+	BudgetReason                string           `json:"budget_reason,omitempty"`
+	BudgetMetric                string           `json:"budget_metric,omitempty"`
+	BudgetUsed                  int              `json:"budget_used,omitempty"`
+	BudgetSoftLimit             int              `json:"budget_soft_limit,omitempty"`
+	BudgetHardLimit             int              `json:"budget_hard_limit,omitempty"`
+	BudgetRemaining             int              `json:"budget_remaining,omitempty"`
+	BudgetPromptTokens          int              `json:"budget_prompt_tokens,omitempty"`
+	BudgetEstimatedPromptTokens int              `json:"budget_estimated_prompt_tokens,omitempty"`
+	BudgetNetPromptTokens       int              `json:"budget_net_prompt_tokens,omitempty"`
+	BudgetGrossPromptTokens     int              `json:"budget_gross_prompt_tokens,omitempty"`
+	BudgetSavedTokens           int              `json:"budget_saved_tokens,omitempty"`
+	BudgetMemorySavedTokens     int              `json:"budget_memory_saved_tokens,omitempty"`
+	BudgetHistorySavedTokens    int              `json:"budget_history_saved_tokens,omitempty"`
+	BudgetArtifactSavedTokens   int              `json:"budget_artifact_saved_tokens,omitempty"`
+	BudgetSkillSavedTokens      int              `json:"budget_skill_saved_tokens,omitempty"`
+	BudgetToolSchemaSavedTokens int              `json:"budget_tool_schema_saved_tokens,omitempty"`
+	BudgetReportedPromptTokens  int              `json:"budget_reported_prompt_tokens,omitempty"`
+	BudgetOutputTokens          int              `json:"budget_output_tokens,omitempty"`
+	BudgetCachedTokens          int              `json:"budget_cached_tokens,omitempty"`
+	BudgetTotalTokens           int              `json:"budget_total_tokens,omitempty"`
+	BudgetLLMCalls              int              `json:"budget_llm_calls,omitempty"`
+	BudgetContinuations         int              `json:"budget_continuations,omitempty"`
+	BudgetEstimatedInputCost    float64          `json:"budget_estimated_input_cost,omitempty"`
+	BudgetEstimatedOutputCost   float64          `json:"budget_estimated_output_cost,omitempty"`
+	BudgetEstimatedTotalCost    float64          `json:"budget_estimated_total_cost,omitempty"`
+	BudgetCostCurrency          string           `json:"budget_cost_currency,omitempty"`
+	BudgetPricingSource         string           `json:"budget_pricing_source,omitempty"`
+	ContractCheck               string           `json:"contract_check,omitempty"`
+	SourceRef                   string           `json:"source_ref,omitempty"`
+	StopReason                  string           `json:"stop_reason,omitempty"`
+	ContinuationCount           int              `json:"continuation_count,omitempty"`
+	Incomplete                  bool             `json:"incomplete,omitempty"`
+	ToolName                    string           `json:"tool_name,omitempty"`
+	ToolCallID                  string           `json:"tool_call_id,omitempty"`
+	ArgumentsSummary            string           `json:"arguments_summary,omitempty"`
+	AgentID                     string           `json:"agent_id,omitempty"`
+	Mode                        string           `json:"mode,omitempty"`
+	IsError                     bool             `json:"is_error,omitempty"`
+	NeedsAction                 bool             `json:"needs_action,omitempty"`
+	Suspended                   bool             `json:"suspended,omitempty"`
+	TaskStage                   string           `json:"task_stage,omitempty"`
+	PromptTokens                int              `json:"prompt_tokens,omitempty"`
+	OutputTokens                int              `json:"output_tokens,omitempty"`
+	CachedTokens                int              `json:"cached_tokens,omitempty"`
+	WorkflowName                string           `json:"workflow_name,omitempty"`
+	WorkflowStatus              string           `json:"workflow_status,omitempty"`
+	NextStage                   string           `json:"next_stage,omitempty"`
+	PendingApproval             bool             `json:"pending_approval,omitempty"`
+	WorkflowResult              *WorkflowResult  `json:"workflow_result,omitempty"`
+	PromptBudget                *PromptBudget    `json:"prompt_budget,omitempty"`
+	Risk                        *ToolRiskProfile `json:"risk,omitempty"`
 }
 
 // ChatRequest is the provider-neutral chat completion request.
@@ -282,14 +334,19 @@ type TokenUsage struct {
 
 // TokenUsageSample captures one reported model usage sample with runtime labels.
 type TokenUsageSample struct {
-	AgentID      string `json:"agent_id,omitempty"`
-	Mode         string `json:"mode,omitempty"`
-	WorkflowName string `json:"workflow_name,omitempty"`
-	TaskStage    string `json:"task_stage,omitempty"`
-	PromptTokens int    `json:"prompt_tokens,omitempty"`
-	OutputTokens int    `json:"output_tokens,omitempty"`
-	CachedTokens int    `json:"cached_tokens,omitempty"`
-	TotalTokens  int    `json:"total_tokens,omitempty"`
+	AgentID             string  `json:"agent_id,omitempty"`
+	Mode                string  `json:"mode,omitempty"`
+	WorkflowName        string  `json:"workflow_name,omitempty"`
+	TaskStage           string  `json:"task_stage,omitempty"`
+	PromptTokens        int     `json:"prompt_tokens,omitempty"`
+	OutputTokens        int     `json:"output_tokens,omitempty"`
+	CachedTokens        int     `json:"cached_tokens,omitempty"`
+	TotalTokens         int     `json:"total_tokens,omitempty"`
+	EstimatedInputCost  float64 `json:"estimated_input_cost,omitempty"`
+	EstimatedOutputCost float64 `json:"estimated_output_cost,omitempty"`
+	EstimatedTotalCost  float64 `json:"estimated_total_cost,omitempty"`
+	CostCurrency        string  `json:"cost_currency,omitempty"`
+	PricingSource       string  `json:"pricing_source,omitempty"`
 }
 
 // ChatResponse is the provider-neutral chat completion response.
@@ -381,70 +438,136 @@ type Activation struct {
 
 // WorkflowResult captures a staged workflow response.
 type WorkflowResult struct {
-	RunID                    string                `json:"run_id,omitempty"`
-	Name                     string                `json:"name"`
-	Status                   string                `json:"status"`
-	PendingApproval          bool                  `json:"pending_approval,omitempty"`
-	PendingInput             bool                  `json:"pending_input,omitempty"`
-	PendingFields            []WorkflowInputField  `json:"pending_input_fields,omitempty"`
-	PendingSubWorkflow       bool                  `json:"pending_sub_workflow,omitempty"`
-	PendingSubWorkflowName   string                `json:"pending_sub_workflow_name,omitempty"`
-	PendingSubWorkflowRunID  string                `json:"pending_sub_workflow_run_id,omitempty"`
-	PendingSubWorkflowStatus string                `json:"pending_sub_workflow_status,omitempty"`
-	ApprovalPrompt           string                `json:"approval_prompt,omitempty"`
-	CompletedStages          []WorkflowStageResult `json:"completed_stages,omitempty"`
-	NextStage                string                `json:"next_stage,omitempty"`
-	FinalSummary             string                `json:"final_summary,omitempty"`
+	RunID                       string                `json:"run_id,omitempty"`
+	Name                        string                `json:"name"`
+	Status                      string                `json:"status"`
+	PendingApproval             bool                  `json:"pending_approval,omitempty"`
+	PendingInput                bool                  `json:"pending_input,omitempty"`
+	PendingFields               []WorkflowInputField  `json:"pending_input_fields,omitempty"`
+	PendingSubWorkflow          bool                  `json:"pending_sub_workflow,omitempty"`
+	PendingSubWorkflowName      string                `json:"pending_sub_workflow_name,omitempty"`
+	PendingSubWorkflowRunID     string                `json:"pending_sub_workflow_run_id,omitempty"`
+	PendingSubWorkflowStatus    string                `json:"pending_sub_workflow_status,omitempty"`
+	ApprovalPrompt              string                `json:"approval_prompt,omitempty"`
+	CompletedStages             []WorkflowStageResult `json:"completed_stages,omitempty"`
+	NextStage                   string                `json:"next_stage,omitempty"`
+	FinalSummary                string                `json:"final_summary,omitempty"`
+	BudgetScope                 string                `json:"budget_scope,omitempty"`
+	BudgetReason                string                `json:"budget_reason,omitempty"`
+	BudgetMetric                string                `json:"budget_metric,omitempty"`
+	BudgetUsed                  int                   `json:"budget_used,omitempty"`
+	BudgetSoftLimit             int                   `json:"budget_soft_limit,omitempty"`
+	BudgetHardLimit             int                   `json:"budget_hard_limit,omitempty"`
+	BudgetRemaining             int                   `json:"budget_remaining,omitempty"`
+	BudgetPromptTokens          int                   `json:"budget_prompt_tokens,omitempty"`
+	BudgetEstimatedPromptTokens int                   `json:"budget_estimated_prompt_tokens,omitempty"`
+	BudgetNetPromptTokens       int                   `json:"budget_net_prompt_tokens,omitempty"`
+	BudgetGrossPromptTokens     int                   `json:"budget_gross_prompt_tokens,omitempty"`
+	BudgetSavedTokens           int                   `json:"budget_saved_tokens,omitempty"`
+	BudgetMemorySavedTokens     int                   `json:"budget_memory_saved_tokens,omitempty"`
+	BudgetHistorySavedTokens    int                   `json:"budget_history_saved_tokens,omitempty"`
+	BudgetArtifactSavedTokens   int                   `json:"budget_artifact_saved_tokens,omitempty"`
+	BudgetSkillSavedTokens      int                   `json:"budget_skill_saved_tokens,omitempty"`
+	BudgetToolSchemaSavedTokens int                   `json:"budget_tool_schema_saved_tokens,omitempty"`
+	BudgetReportedPromptTokens  int                   `json:"budget_reported_prompt_tokens,omitempty"`
+	BudgetOutputTokens          int                   `json:"budget_output_tokens,omitempty"`
+	BudgetCachedTokens          int                   `json:"budget_cached_tokens,omitempty"`
+	BudgetTotalTokens           int                   `json:"budget_total_tokens,omitempty"`
+	BudgetLLMCalls              int                   `json:"budget_llm_calls,omitempty"`
+	BudgetContinuations         int                   `json:"budget_continuations,omitempty"`
+	BudgetEstimatedInputCost    float64               `json:"budget_estimated_input_cost,omitempty"`
+	BudgetEstimatedOutputCost   float64               `json:"budget_estimated_output_cost,omitempty"`
+	BudgetEstimatedTotalCost    float64               `json:"budget_estimated_total_cost,omitempty"`
+	BudgetCostCurrency          string                `json:"budget_cost_currency,omitempty"`
+	BudgetPricingSource         string                `json:"budget_pricing_source,omitempty"`
 }
 
 // WorkflowInputField describes a manual workflow input form field.
 type WorkflowInputField struct {
-	Name        string   `json:"name"`
-	Label       string   `json:"label,omitempty"`
-	Type        string   `json:"type,omitempty"`
-	Description string   `json:"description,omitempty"`
-	Placeholder string   `json:"placeholder,omitempty"`
-	Group       string   `json:"group,omitempty"`
-	Required    bool     `json:"required,omitempty"`
-	Default     string   `json:"default,omitempty"`
-	Options     []string `json:"options,omitempty"`
-	Rows        int      `json:"rows,omitempty"`
-	Min         string   `json:"min,omitempty"`
-	Max         string   `json:"max,omitempty"`
-	Pattern     string   `json:"pattern,omitempty"`
-	Multiple    bool     `json:"multiple,omitempty"`
-	Advanced    bool     `json:"advanced,omitempty"`
+	Name          string   `json:"name"`
+	Label         string   `json:"label,omitempty"`
+	LabelZH       string   `json:"label_zh,omitempty"`
+	Type          string   `json:"type,omitempty"`
+	Description   string   `json:"description,omitempty"`
+	DescriptionZH string   `json:"description_zh,omitempty"`
+	Placeholder   string   `json:"placeholder,omitempty"`
+	PlaceholderZH string   `json:"placeholder_zh,omitempty"`
+	Group         string   `json:"group,omitempty"`
+	GroupZH       string   `json:"group_zh,omitempty"`
+	Required      bool     `json:"required,omitempty"`
+	Default       string   `json:"default,omitempty"`
+	Options       []string `json:"options,omitempty"`
+	Rows          int      `json:"rows,omitempty"`
+	Min           string   `json:"min,omitempty"`
+	Max           string   `json:"max,omitempty"`
+	Pattern       string   `json:"pattern,omitempty"`
+	Multiple      bool     `json:"multiple,omitempty"`
+	Advanced      bool     `json:"advanced,omitempty"`
 }
 
 // WorkflowStageResult captures one stage in a workflow response.
 type WorkflowStageResult struct {
-	Stage        string            `json:"stage"`
-	AgentID      string            `json:"agent_id"`
-	NodeType     string            `json:"node_type,omitempty"`
-	Skill        string            `json:"skill,omitempty"`
-	Tool         string            `json:"tool,omitempty"`
-	Status       string            `json:"status,omitempty"`
-	Attempts     int               `json:"attempts,omitempty"`
-	Inputs       map[string]string `json:"inputs,omitempty"`
-	InputValues  map[string]any    `json:"input_values,omitempty"`
-	Outputs      map[string]string `json:"outputs,omitempty"`
-	OutputValues map[string]any    `json:"output_values,omitempty"`
-	Metadata     map[string]string `json:"metadata,omitempty"`
-	Result       AgentResult       `json:"result"`
+	Stage                       string            `json:"stage"`
+	AgentID                     string            `json:"agent_id"`
+	NodeType                    string            `json:"node_type,omitempty"`
+	Skill                       string            `json:"skill,omitempty"`
+	Tool                        string            `json:"tool,omitempty"`
+	Status                      string            `json:"status,omitempty"`
+	Attempts                    int               `json:"attempts,omitempty"`
+	Inputs                      map[string]string `json:"inputs,omitempty"`
+	InputValues                 map[string]any    `json:"input_values,omitempty"`
+	Outputs                     map[string]string `json:"outputs,omitempty"`
+	OutputValues                map[string]any    `json:"output_values,omitempty"`
+	Metadata                    map[string]string `json:"metadata,omitempty"`
+	Result                      AgentResult       `json:"result"`
+	BudgetScope                 string            `json:"budget_scope,omitempty"`
+	BudgetReason                string            `json:"budget_reason,omitempty"`
+	BudgetMetric                string            `json:"budget_metric,omitempty"`
+	BudgetUsed                  int               `json:"budget_used,omitempty"`
+	BudgetSoftLimit             int               `json:"budget_soft_limit,omitempty"`
+	BudgetHardLimit             int               `json:"budget_hard_limit,omitempty"`
+	BudgetRemaining             int               `json:"budget_remaining,omitempty"`
+	BudgetPromptTokens          int               `json:"budget_prompt_tokens,omitempty"`
+	BudgetEstimatedPromptTokens int               `json:"budget_estimated_prompt_tokens,omitempty"`
+	BudgetNetPromptTokens       int               `json:"budget_net_prompt_tokens,omitempty"`
+	BudgetGrossPromptTokens     int               `json:"budget_gross_prompt_tokens,omitempty"`
+	BudgetSavedTokens           int               `json:"budget_saved_tokens,omitempty"`
+	BudgetMemorySavedTokens     int               `json:"budget_memory_saved_tokens,omitempty"`
+	BudgetHistorySavedTokens    int               `json:"budget_history_saved_tokens,omitempty"`
+	BudgetArtifactSavedTokens   int               `json:"budget_artifact_saved_tokens,omitempty"`
+	BudgetSkillSavedTokens      int               `json:"budget_skill_saved_tokens,omitempty"`
+	BudgetToolSchemaSavedTokens int               `json:"budget_tool_schema_saved_tokens,omitempty"`
+	BudgetReportedPromptTokens  int               `json:"budget_reported_prompt_tokens,omitempty"`
+	BudgetOutputTokens          int               `json:"budget_output_tokens,omitempty"`
+	BudgetCachedTokens          int               `json:"budget_cached_tokens,omitempty"`
+	BudgetTotalTokens           int               `json:"budget_total_tokens,omitempty"`
+	BudgetLLMCalls              int               `json:"budget_llm_calls,omitempty"`
+	BudgetContinuations         int               `json:"budget_continuations,omitempty"`
+	BudgetEstimatedInputCost    float64           `json:"budget_estimated_input_cost,omitempty"`
+	BudgetEstimatedOutputCost   float64           `json:"budget_estimated_output_cost,omitempty"`
+	BudgetEstimatedTotalCost    float64           `json:"budget_estimated_total_cost,omitempty"`
+	BudgetCostCurrency          string            `json:"budget_cost_currency,omitempty"`
+	BudgetPricingSource         string            `json:"budget_pricing_source,omitempty"`
 }
 
 // AgentResult is the final answer returned by the agent.
 type AgentResult struct {
-	Output          string              `json:"output"`
-	MatchedSkill    *Skill              `json:"matched_skill,omitempty"`
-	ToolResults     []ToolResult        `json:"tool_results,omitempty"`
-	AgentID         string              `json:"agent_id,omitempty"`
-	Mode            string              `json:"mode,omitempty"`
-	Model           string              `json:"model,omitempty"`
-	Structured      []StructuredSection `json:"structured,omitempty"`
-	AuditTrail      []AuditEntry        `json:"audit_trail,omitempty"`
-	Findings        []Finding           `json:"findings,omitempty"`
-	Changes         []Change            `json:"changes,omitempty"`
-	Verification    []Verification      `json:"verification,omitempty"`
-	ResponseMessage Message             `json:"-"`
+	Output            string              `json:"output"`
+	MatchedSkill      *Skill              `json:"matched_skill,omitempty"`
+	ToolResults       []ToolResult        `json:"tool_results,omitempty"`
+	AgentID           string              `json:"agent_id,omitempty"`
+	Mode              string              `json:"mode,omitempty"`
+	Model             string              `json:"model,omitempty"`
+	StopReason        string              `json:"stop_reason,omitempty"`
+	Incomplete        bool                `json:"incomplete,omitempty"`
+	IncompleteReason  string              `json:"incomplete_reason,omitempty"`
+	ContinuationCount int                 `json:"continuation_count,omitempty"`
+	QualityStatus     string              `json:"quality_status,omitempty"`
+	ContractStatus    string              `json:"contract_status,omitempty"`
+	Structured        []StructuredSection `json:"structured,omitempty"`
+	AuditTrail        []AuditEntry        `json:"audit_trail,omitempty"`
+	Findings          []Finding           `json:"findings,omitempty"`
+	Changes           []Change            `json:"changes,omitempty"`
+	Verification      []Verification      `json:"verification,omitempty"`
+	ResponseMessage   Message             `json:"-"`
 }

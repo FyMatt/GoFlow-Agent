@@ -58,14 +58,14 @@ Workflow Studio 中把推荐模板打开成一个新的可编辑图，方便你�
 
 | Kit | 成熟度 | 主 Agent | 主工作流模板 | Team Template | 常见二开方向 |
 | --- | --- | --- | --- | --- | --- |
-| `multi-domain-agent-kit` | guided | `chat` | `multi-domain-intake-router` | 全部领域 Team | 调整拆解规则、选中并行分支、团队引用和最终交接要求 |
+| `multi-domain-agent-kit` | production-ready | `chat` | `multi-domain-intake-router` | 全部领域 Team | 调整 branch selection、branch pruning、max-parallel、per-branch tool allowlists、join conflict diagnostics 和最终交接要求 |
 | `software-engineering-kit` | production-ready | `software-engineer` | `engineering-parallel-delivery`、`plan-fix-audit`、`software-team-review-gate` | `software-task-team` | 调整编码、测试、审计、并行 Worker 交付和审批策略 |
 | `web-security-kit` | production-ready | `web-security-researcher` | `web-research-risk` | `web-research-team` | 调整目标录入、证据采集和风险门禁 |
-| `security-research-kit` | guided | `security-researcher` | `security-audit-evidence-gate` | `audit-security-team` | 调整授权范围、严重性规则和报告格式 |
-| `binary-analysis-kit` | guided | `binary-analyst` | `binary-triage` | `binary-triage-team` | 增加二进制辅助工具、输出章节和复核门禁 |
-| `documentation-kit` | guided | `documentation-specialist` | `docs-review-publish` | `documentation-team` | 调整文档风格、发布检查表和验收条件 |
+| `security-research-kit` | production-ready | `security-researcher` | `security-audit-evidence-gate` | `audit-security-team` | 调整授权范围、disallowed exploitation blockers、严重性规则、red/blue handoff 和 disclosure-safe 报告格式 |
+| `binary-analysis-kit` | production-ready | `binary-analyst` | `binary-triage` | `binary-triage-team` | 调整 static evidence、format/section summary、entropy/packing hints、symbol hints、bounded artifact window 和 unsafe dynamic analysis blockers |
+| `documentation-kit` | production-ready | `documentation-specialist` | `docs-review-publish` | `documentation-team` | 调整文档风格、command accuracy、link integrity、bilingual parity、redaction、发布检查表和验收条件 |
 | `operations-runbook-kit` | production-ready | `operations-specialist` | `operations-runbook` | `operations-runbook-team` | 自定义预检、回滚、审批门禁和网络设备规划契约 |
-| `customer-support-kit` | guided | `support-specialist` | `customer-support-triage` | `customer-support-team` | 调整录入字段、回复策略和升级规则 |
+| `customer-support-kit` | production-ready | `support-specialist` | `customer-support-triage` | `customer-support-team` | 调整 ticket context、product area、customer impact、privacy flags、回复策略、升级规则和 reviewer quorum |
 | `agent-framework-kit` | production-ready | `framework-extension-architect` | `agent-framework-extension`、`engineering-parallel-delivery` | `framework-extension-team` | 创建并物化新的垂直 Agent/Skill/Tool/Workflow/Team/Policy/Kit 包 |
 
 推荐操作顺序：
@@ -83,7 +83,17 @@ python scripts/validate_resource_links.py
 
 它会指出具体哪个 Kit 或 scaffold preset 指向了不存在的资源。
 
-当前 production-ready 校验会要求领域专用 MCP 工具、安全契约字段、测试、配置、文档、release/deployment 校验依据，以及物化资源的 activation guidance。当前达到 production-ready 的内置包是 `operations-runbook-kit`、`web-security-kit`、`software-engineering-kit` 和 `agent-framework-kit`。
+当前 production-ready 校验会要求领域专用 MCP 工具、安全契约字段、测试、配置、文档、release/deployment 校验依据，以及物化资源的 activation guidance。当前达到 production-ready 的内置包是 `operations-runbook-kit`、`web-security-kit`、`software-engineering-kit`、`agent-framework-kit`、`security-research-kit`、`binary-analysis-kit`、`documentation-kit`、`customer-support-kit` 和 `multi-domain-agent-kit`。
+
+`security-research-kit` 同时覆盖防御性审计和授权攻击性验证，但必须保持授权、非破坏、限速、可审计，并把 disallowed exploitation、缺少授权、证据不足、exploitability 未决、red/blue handoff 和 disclosure-safe 报告作为可定位诊断。
+
+`binary-analysis-kit` 默认只做静态分析，通过 `python_notes/binary_format_summary`、`binary_entropy_map`、`binary_symbol_hints`、`binary_strings`、`hex_preview` 和 `binary_extract_window` 提供 static evidence、format/section summary、import/export hints、entropy/packing hints、symbol/function clues、offset refs 和 bounded artifacts。unsafe dynamic analysis 必须有 sandbox plan、approval 和 artifact isolation。
+
+`documentation-kit` 把 publish readiness 作为质量门禁，检查 audience fit、command accuracy、link integrity、bilingual parity、version/platform notes、redaction 和 stale references。`markdown_link_check` 只检查本地 Markdown 链接和 anchor，不联网。
+
+`customer-support-kit` 会先结构化 ticket context，跟踪 product area、customer impact、SLA/priority、privacy flags、legal/billing/security escalation、customer-facing reply、internal notes、source attribution 和 reviewer quorum。
+
+`multi-domain-agent-kit` 面向并发协作：记录 branch-selection reason、branch pruning、max-parallel decisions、per-branch tool allowlists、cost attribution、artifact handoff、missing worker artifacts 和 join conflict diagnostics，让使用者能在 Studio 中定位哪个分支被剪枝、哪个分支阻塞、哪里汇聚冲突。
 
 `operations-runbook-kit` 内置引用了 `network_tools`，用于网络设备场景，但这些工具只做规划和策略检查：校验授权范围、允许的主机、凭据引用、命令白名单、干跑状态、回滚计划和审计证据，不会连接设备，也不会应用配置。如果部署方要增加真实 SSH/API 连接器，应继续复用这些输入、审批、回滚和证据契约，这样普通用户看到的是安全引导流程，专家模式和二开开发者也能检查真实工具边界。
 
@@ -309,6 +319,20 @@ GoFlow 的内置 Workflow Template 来自 `internal/agent/templates/workflows/*.
 
 内置 Workflow Template 按质量门禁式交付起步模板维护：包含验收标准、可回放产物、质量门禁或策略门禁，以及最终报告/交接类输出。用户可以直接运行，也可以 fork 后微调，而不需要先修补图结构。
 
+## 资源工作流能力与 live 边界
+
+现有资源工作流已经可以完成工程化协作，而不是只把一个大 prompt 丢给模型。一个 workflow 可以收集结构化输入、按条件选择分支、运行多 Agent 团队节点、限制 worker 上下文、产出 artifact、只 join 实际激活的分支、执行 policy/quality gate、等待人工审批或补充输入、重试失败阶段、继续未完成模型输出，并通过 Studio 或 API 恢复 durable run。
+
+Workflow Studio 会把阶段状态、预算压力、契约失败、质量失败、artifact、并行分支/汇聚诊断和执行准备阻断显示在图节点、悬浮详情、选中节点诊断和运行日志里。使用者发现问题后，能定位到具体节点、缺失契约、source ref 或质量门禁，而不是只能看最终失败文本。
+
+真实外部变更仍然保持保守边界。模板可以做规划、dry-run、操作 runbook、风险审计和 live 前证据准备，但 GoFlow 不会因为某个节点写了“执行”就默认安全地连 SSH、NETCONF、RESTCONF、云 API 或网络设备去改配置。要接入真正 live connector，需要先定义目标资产清单、凭据引用方式、授权范围、回滚存储、命令或目标 allowlist、审计证据和审批策略。
+
+对未来可能 live 的阶段，使用 `stage.execution`：
+
+- `mode: planning`、`dry_run`、`manual`、`disabled` 只声明执行边界，不阻断普通图执行。
+- `mode: live` 会在模型或工具执行前检查准备项，缺少审批、授权范围、回滚、凭据引用、allowlist、必填参数或 live 工具白名单时，用 `contract_check=execution_readiness` 阻断。
+- Studio 会显示 execution mode、ready 状态、risk、boundary、missing 和 source ref，帮助定位问题所在。
+
 ### Team Template
 
 路径：`templates/teams/*.yaml`
@@ -434,6 +458,31 @@ Web Studio 的 Kit 列表会同时显示数量和具体引用名称，例如
 5. Workflow 负责把阶段串起来。
 6. Team Template 负责多角色协作。
 7. Kit 负责把整套东西打包复用。
+
+## 记忆与已学会的解决方案
+
+GoFlow 的记忆默认是 summary-first：提示词只带入项目画像、压缩上下文、文件摘要、artifact 引用和最相关的活跃解决方案，完整内容按引用延迟加载。
+
+已学会的解决方案保存在 `.goflow/memory/solutions.json`，会记录问题签名、决策、正确做法、验证命令、适用条件、失效条件、置信度和使用次数。活跃方案可以进入搜索和提示词；退役或已被替代的方案保留审计记录，但默认不会再被检索进提示词。当前任务命中方案的 `invalid_when` 规则时，GoFlow 会记录省略诊断，不会把该方案注入提示词，也不会增加复用次数。
+
+常用 CLI：
+
+- `/memory solutions`：查看解决方案、验证命令、适用/失效条件和使用次数。
+- `/memory solution retire <id> [--reason <text>]`：退役过期方案。
+- `/memory solution supersede <id> --superseded-by <id> [--reason <text>]`：把旧方案标记为被另一个活跃方案替代。
+- `/memory solution restore <id>`：恢复退役方案，让它重新参与检索。
+
+Web Studio 的 Memory 页在普通模式只展示活跃方案和验证结果；专家模式会展示方案 ID、失效条件、使用次数、退役/替代状态、生命周期动作，以及替代链路的治理图，方便定位哪条经验已经过期或被新方案替换。
+
+## 受控 Live 连接器与安全 Kit
+
+本轮资源计划新增了一个受控 live 连接器和一个授权红队验证资源，但默认边界仍然是安全、可审计、可定位的。
+
+- `operations-runbook-kit` 现在可以引用 `network_tools/device_restconf_live_apply`。它只支持 HTTPS RESTCONF/API 的单次受控变更，不是裸 SSH/NETCONF 执行器。
+- live 阶段必须同时满足 `stage.execution.mode: live`、`allow_live_tools: [network_tools/device_restconf_live_apply]`、审批、授权范围、凭据引用、目标/路径/方法 allowlist、dry-run 确认、回滚计划和变更单。
+- MCP server 还必须显式设置 `GOFLOW_NETWORK_TOOLS_ENABLE_LIVE=1`。没有这个开关时，工具只返回 blocked audit payload，不会发送请求。
+- Workflow Studio 会显示 execution mode、risk、boundary、missing readiness、source ref 和 blocked event，方便使用者定位是哪个节点、哪个准备项没满足。
+- `web-security-kit`、`security-research-kit` 和 `multi-domain-agent-kit` 现在包含 `authorized-red-team-validation`。它覆盖授权范围内的攻击路径/可利用性验证、非破坏 canary evidence、阻断项报告和 blue-team handoff，不是默认无授权攻击工具。
 
 ## CLI 和 Web 的关系
 

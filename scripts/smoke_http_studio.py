@@ -81,7 +81,7 @@ def assert_contains(label: str, text: str, needles: list[str]) -> None:
 def build_binary(tmpdir: Path, env: dict[str, str]) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
     binary = tmpdir / f"goflow-smoke{suffix}"
-    run_checked(["go", "build", "-o", str(binary), "./cmd/goflow"], env)
+    run_checked(["go", "build", "-buildvcs=false", "-o", str(binary), "./cmd/goflow"], env)
     return binary
 
 
@@ -227,6 +227,55 @@ def write_smoke_artifact(workspace: Path) -> dict:
     return {"hash": digest, "ref": ref, "content": content, "title": obj["title"]}
 
 
+def write_smoke_memory(workspace: Path) -> None:
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    memory_dir = workspace / ".goflow" / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "solutions.json").write_text(
+        json.dumps(
+            {
+                "updated_at": now,
+                "solutions": [
+                    {
+                        "id": "sol-smoke-active",
+                        "created_at": now,
+                        "updated_at": now,
+                        "last_used_at": now,
+                        "problem_signature": "Smoke provider retry decision",
+                        "problem": "Smoke run needs a reusable retry decision",
+                        "decision": "Reuse the verified smoke retry path",
+                        "solution": "Prefer the active retry decision before asking again",
+                        "applicability": ["same smoke retry signature"],
+                        "invalid_when": ["provider retry contract changes"],
+                        "verification_command": "go test ./internal/memory",
+                        "confidence": "high",
+                        "resolved": True,
+                        "use_count": 2,
+                    },
+                    {
+                        "id": "sol-smoke-old",
+                        "created_at": now,
+                        "updated_at": now,
+                        "retired_at": now,
+                        "problem_signature": "Old smoke retry decision",
+                        "decision": "Use the old retry path",
+                        "solution": "Old retry path kept for audit",
+                        "verification_command": "go test ./internal/memory",
+                        "confidence": "medium",
+                        "resolved": True,
+                        "retired": True,
+                        "retired_reason": "Superseded in smoke fixture",
+                        "superseded_by": "sol-smoke-active",
+                    },
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def smoke_endpoint(base_url: str, path: str, needles: list[str], expected_status: int = 200) -> None:
     status, body, _ = request_text(f"{base_url}{path}")
     if status != expected_status:
@@ -331,16 +380,14 @@ def main() -> int:
     try:
         runtime_home = tmpdir / "runtime"
         cache_dir = tmpdir / "gocache"
-        gotmp_dir = tmpdir / "gotmp"
         workspace = tmpdir / "workspace"
         runtime_home.mkdir()
         cache_dir.mkdir()
-        gotmp_dir.mkdir()
         workspace.mkdir()
         smoke_artifact = write_smoke_artifact(workspace)
+        write_smoke_memory(workspace)
         config_path = write_smoke_runtime_config(runtime_home)
         env.setdefault("GOCACHE", str(cache_dir))
-        env.setdefault("GOTMPDIR", str(gotmp_dir))
         binary = args.binary
         if not args.skip_build:
             binary = build_binary(tmpdir, env)
@@ -363,8 +410,8 @@ def main() -> int:
             stderr=subprocess.STDOUT,
         )
         wait_for_server(base_url, proc, args.timeout)
-        smoke_endpoint(base_url, "/console", ["GoFlow Console", "Agent Workbench", "/assets/app.js"])
-        smoke_endpoint(base_url, "/workflows", ["GoFlow Console", "Workflows", "/assets/app.js"])
+        smoke_endpoint(base_url, "/console", ["GoFlow Console", "Agent Workbench", "/assets/styles.css", "/assets/styles-enhanced.css", "/assets/app.js"])
+        smoke_endpoint(base_url, "/workflows", ["GoFlow Console", "Workflows", "/assets/styles.css", "/assets/styles-enhanced.css", "/assets/app.js"])
         smoke_endpoint(base_url, "/assets/app.js", ["renderWorkflows", "renderCatalog", "renderSettings", "renderMemory"])
         smoke_endpoint(
             base_url,
@@ -386,6 +433,8 @@ def main() -> int:
                 "memory-artifact-index",
                 "data-artifact-open",
                 "memory-artifact-load-button",
+                "memory-solution-governance",
+                "data-solution-supersede",
             ],
         )
         smoke_endpoint(
@@ -467,6 +516,8 @@ def main() -> int:
                 "memory.recentArtifacts",
                 "memory.artifactLoading",
                 "memory.loadArtifact",
+                "memory.solutionSupersede",
+                "memory.solutionGraph",
                 "workflow.contextContractTitle",
                 "workflow.contextInclude",
                 "workflow.contextMaxTokens",
@@ -501,15 +552,38 @@ def main() -> int:
                 "memory-artifact-index",
                 "memory-artifact-load-button",
                 "memory-artifact-body",
+                "memory-solution-governance",
+                "memory-solution-supersede",
                 "run-history-lazy-stack",
                 "run-history-lazy-panel",
                 "run-history-lazy-timeline",
             ],
         )
+        smoke_endpoint(
+            base_url,
+            "/assets/styles-enhanced.css",
+            [
+                "GoFlow Agent - Enhanced UI Styles",
+                "--primary: #0d9488",
+                "--canvas-surface-bg",
+                "--workflow-node-selected-shadow",
+                ":root[data-theme='dark']",
+            ],
+        )
         session = smoke_json_endpoint(base_url, "/api/session", ["active_agent", "mode"])
-        memory = smoke_json_endpoint(base_url, "/api/memory", ["project", "file_index", "errors"])
+        memory = smoke_json_endpoint(base_url, "/api/memory", ["project", "file_index", "errors", "solutions"])
         if "Full artifact body for memory viewer" in json.dumps(memory):
             raise AssertionError(f"/api/memory should not include full artifact content: {memory!r}")
+        if "Smoke provider retry decision" not in json.dumps(memory):
+            raise AssertionError(f"/api/memory missing smoke solution memory: {memory!r}")
+        superseded = post_json_endpoint(
+            base_url,
+            "/api/memory/solutions/sol-smoke-old/supersede",
+            {"superseded_by": "sol-smoke-active", "reason": "smoke supersede action"},
+            {200},
+        )
+        if "sol-smoke-active" not in json.dumps(superseded):
+            raise AssertionError(f"solution supersede action did not preserve replacement ref: {superseded!r}")
         artifact_index = smoke_json_endpoint(base_url, "/api/artifacts?limit=1", ["objects"])
         index_text = json.dumps(artifact_index)
         if smoke_artifact["hash"] not in index_text or smoke_artifact["title"] not in index_text:

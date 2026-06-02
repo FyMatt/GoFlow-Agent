@@ -28,7 +28,7 @@ mcp_servers:
     enabled: true
     timeout: 30s
     workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP, GOFLOW_NETWORK_TOOLS_ENABLE_LIVE, GOFLOW_NETWORK_TOOLS_TOKEN, GOFLOW_RESTCONF_TOKEN]
     isolation: process_group
     restart_limit: 3
     cooldown: 10s

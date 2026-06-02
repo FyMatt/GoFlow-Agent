@@ -34,8 +34,11 @@ role_templates:
     skill: code-audit
     responsibilities:
       - check accuracy
+      - check link integrity and anchors
+      - check bilingual parity and version/platform notes
       - check install/deployment steps
       - flag missing warnings
+    tools: [python_notes/markdown_link_check, python_notes/redaction_check]
     consumes: [draft_changes]
     produces: [review_notes]
   - name: publish-operator
@@ -45,6 +48,7 @@ role_templates:
     responsibilities:
       - prepare release handoff
       - list verification and publish commands
+      - preserve publish readiness blockers
       - wait for operator approval
     consumes: [review_notes]
     produces: [publish_handoff]

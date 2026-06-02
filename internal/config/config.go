@@ -31,19 +31,20 @@ type AgentConfig struct {
 
 // AgentProfile configures one named agent runtime.
 type AgentProfile struct {
-	Name             string       `yaml:"name"`
-	Description      string       `yaml:"description"`
-	SystemPrompt     string       `yaml:"system_prompt"`
-	Provider         string       `yaml:"provider"`
-	Model            string       `yaml:"model"`
-	Temperature      float64      `yaml:"temperature"`
-	MaxTokens        int          `yaml:"max_tokens"`
-	MaxIterations    int          `yaml:"max_iterations"`
-	AllowedToolKinds []ToolKind   `yaml:"allowed_tool_kinds"`
-	AllowedTools     []string     `yaml:"allowed_tools"`
-	ToolPolicy       ToolPolicy   `yaml:"tool_policy"`
-	Mode             string       `yaml:"mode"`
-	SkillOverride    *SkillConfig `yaml:"skill,omitempty"`
+	Name             string        `yaml:"name"`
+	Description      string        `yaml:"description"`
+	SystemPrompt     string        `yaml:"system_prompt"`
+	Provider         string        `yaml:"provider"`
+	Model            string        `yaml:"model"`
+	Pricing          PricingConfig `yaml:"pricing,omitempty"`
+	Temperature      float64       `yaml:"temperature"`
+	MaxTokens        int           `yaml:"max_tokens"`
+	MaxIterations    int           `yaml:"max_iterations"`
+	AllowedToolKinds []ToolKind    `yaml:"allowed_tool_kinds"`
+	AllowedTools     []string      `yaml:"allowed_tools"`
+	ToolPolicy       ToolPolicy    `yaml:"tool_policy"`
+	Mode             string        `yaml:"mode"`
+	SkillOverride    *SkillConfig  `yaml:"skill,omitempty"`
 }
 
 // LLMConfig configures the model provider.
@@ -52,6 +53,7 @@ type LLMConfig struct {
 	BaseURL               string        `yaml:"base_url"`
 	APIKey                string        `yaml:"api_key"`
 	Model                 string        `yaml:"model"`
+	Pricing               PricingConfig `yaml:"pricing,omitempty"`
 	FallbackProvider      string        `yaml:"fallback_provider"`
 	ProviderMessageFields []string      `yaml:"provider_message_fields"`
 	Timeout               time.Duration `yaml:"timeout"`
@@ -59,6 +61,17 @@ type LLMConfig struct {
 	MaxTokens             int           `yaml:"max_tokens"`
 	RetryCount            int           `yaml:"retry_count"`
 	RetryBackoff          time.Duration `yaml:"retry_backoff"`
+}
+
+// PricingConfig describes operator-maintained model pricing metadata.
+// Values are denominated per one million tokens and are intentionally optional:
+// GoFlow only estimates monetary cost when operators configure current prices.
+type PricingConfig struct {
+	Currency                    string  `yaml:"currency,omitempty"`
+	InputPerMillionTokens       float64 `yaml:"input_per_million_tokens,omitempty"`
+	OutputPerMillionTokens      float64 `yaml:"output_per_million_tokens,omitempty"`
+	CachedInputPerMillionTokens float64 `yaml:"cached_input_per_million_tokens,omitempty"`
+	Source                      string  `yaml:"source,omitempty"`
 }
 
 // MCPServerRef declares a configured MCP server.

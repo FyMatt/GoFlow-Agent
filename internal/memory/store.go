@@ -505,6 +505,32 @@ func (s *Store) RetireSolution(id, reason, supersededBy string) (SolutionKnowled
 	})
 }
 
+// SupersedeSolution retires a solution and records the active solution that
+// should replace it for future retrieval.
+func (s *Store) SupersedeSolution(id, supersededBy, reason string) (SolutionKnowledgeBase, error) {
+	supersededBy = strings.TrimSpace(supersededBy)
+	if supersededBy == "" {
+		return SolutionKnowledgeBase{}, fmt.Errorf("superseding solution id is required")
+	}
+	if strings.TrimSpace(id) == supersededBy {
+		return SolutionKnowledgeBase{}, fmt.Errorf("solution cannot supersede itself")
+	}
+	replacement, ok, err := s.Solution(supersededBy)
+	if err != nil {
+		return SolutionKnowledgeBase{}, err
+	}
+	if !ok {
+		return SolutionKnowledgeBase{}, fmt.Errorf("superseding solution %q not found", supersededBy)
+	}
+	if replacement.Retired {
+		return SolutionKnowledgeBase{}, fmt.Errorf("superseding solution %q is retired", supersededBy)
+	}
+	if strings.TrimSpace(reason) == "" {
+		reason = "superseded by a better solution"
+	}
+	return s.RetireSolution(id, reason, supersededBy)
+}
+
 // RestoreSolution reactivates a retired solution.
 func (s *Store) RestoreSolution(id string) (SolutionKnowledgeBase, error) {
 	return s.updateSolutionLifecycle(id, func(item *SolutionMemory) {
@@ -897,9 +923,10 @@ func (s *Store) searchResultsWithIndex(query string, limit int, index FileIndex)
 			Path:    filepath.ToSlash(solutionMemoryRelativePath),
 			Summary: item.SearchSummary(),
 			Metadata: map[string]string{
-				"solution_id": item.ID,
-				"resolved":    fmt.Sprintf("%t", item.Resolved),
-				"confidence":  item.Confidence,
+				"solution_id":  item.ID,
+				"resolved":     fmt.Sprintf("%t", item.Resolved),
+				"confidence":   item.Confidence,
+				"invalid_when": strings.Join(item.InvalidWhen, "\n"),
 			},
 		}, haystack)
 	}
@@ -964,6 +991,13 @@ func (s *Store) PromptContextFresh(ctx context.Context, query, taskID string) (P
 		if result.Kind == "solution" && len(solutionRetrievalIDs) >= 2 {
 			continue
 		}
+		if result.Kind == "solution" {
+			if invalidated, rule := solutionInvalidatedByQuery(result.Metadata["invalid_when"], query); invalidated {
+				ref := firstString(result.Metadata["solution_id"], result.Title)
+				promptCtx.Omitted = append(promptCtx.Omitted, fmt.Sprintf("solution memory %s omitted because invalidation rule matched: %s", ref, rule))
+				continue
+			}
+		}
 		block := PromptBlock{
 			Kind:     result.Kind,
 			Title:    result.Title,
@@ -1021,6 +1055,120 @@ func (s *Store) PromptContextFresh(ctx context.Context, query, taskID string) (P
 	}
 	promptCtx.EstimatedSavedTokens = estimateSavedTokens(promptCtx)
 	return promptCtx, nil
+}
+
+func solutionInvalidatedByQuery(invalidWhen, query string) (bool, string) {
+	queryTokens := solutionInvalidationTokenSet(query)
+	if len(queryTokens) == 0 || strings.TrimSpace(invalidWhen) == "" {
+		return false, ""
+	}
+	for _, rule := range solutionInvalidationClauses(invalidWhen) {
+		ruleTokens := solutionInvalidationTokens(rule)
+		if len(ruleTokens) < 2 {
+			if solutionInvalidationPhraseMatch(rule, query) {
+				return true, strings.TrimSpace(rule)
+			}
+			continue
+		}
+		matched := true
+		for _, token := range ruleTokens {
+			if _, ok := queryTokens[token]; !ok {
+				matched = false
+				break
+			}
+		}
+		if matched {
+			return true, strings.TrimSpace(rule)
+		}
+	}
+	return false, ""
+}
+
+func solutionInvalidationPhraseMatch(rule, query string) bool {
+	rule = strings.TrimSpace(strings.ToLower(rule))
+	query = strings.TrimSpace(strings.ToLower(query))
+	if rule == "" || query == "" || !containsNonASCIILetter(rule) {
+		return false
+	}
+	return utf8.RuneCountInString(rule) >= 4 && strings.Contains(query, rule)
+}
+
+func containsNonASCIILetter(value string) bool {
+	for _, r := range value {
+		if r > unicode.MaxASCII && unicode.IsLetter(r) {
+			return true
+		}
+	}
+	return false
+}
+
+func solutionInvalidationClauses(value string) []string {
+	value = strings.ReplaceAll(value, "\r\n", "\n")
+	value = strings.NewReplacer(",", "\n", ";", "\n", "|", "\n").Replace(value)
+	raw := strings.FieldsFunc(value, func(r rune) bool { return r == '\n' })
+	clauses := make([]string, 0, len(raw))
+	for _, item := range raw {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		lowered := " " + strings.ToLower(item) + " "
+		lowered = strings.ReplaceAll(lowered, " or ", "\n")
+		lowered = strings.ReplaceAll(lowered, " and ", "\n")
+		for _, clause := range strings.Split(lowered, "\n") {
+			clause = strings.TrimSpace(clause)
+			if clause != "" {
+				clauses = append(clauses, clause)
+			}
+		}
+	}
+	return clauses
+}
+
+func solutionInvalidationTokenSet(value string) map[string]struct{} {
+	tokens := solutionInvalidationTokens(value)
+	out := make(map[string]struct{}, len(tokens))
+	for _, token := range tokens {
+		out[token] = struct{}{}
+	}
+	return out
+}
+
+func solutionInvalidationTokens(value string) []string {
+	parts := strings.FieldsFunc(strings.ToLower(value), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	})
+	tokens := make([]string, 0, len(parts))
+	for _, part := range parts {
+		token := normalizeSolutionInvalidationToken(part)
+		if token == "" || isSolutionInvalidationStopWord(token) {
+			continue
+		}
+		tokens = append(tokens, token)
+	}
+	return tokens
+}
+
+func normalizeSolutionInvalidationToken(value string) string {
+	value = strings.TrimSpace(strings.ToLower(value))
+	if len(value) <= 2 {
+		return value
+	}
+	for _, suffix := range []string{"ing", "ed", "es", "s"} {
+		if len(value) > len(suffix)+2 && strings.HasSuffix(value, suffix) {
+			return strings.TrimSuffix(value, suffix)
+		}
+	}
+	return value
+}
+
+func isSolutionInvalidationStopWord(value string) bool {
+	switch value {
+	case "a", "an", "and", "are", "as", "be", "been", "being", "by", "for", "from", "had", "has", "have", "if", "in", "is", "it", "of", "on", "or", "that", "the", "this", "to", "was", "were", "when", "with", "without":
+		return true
+	default:
+		return false
+	}
 }
 
 func (s *Store) searchWithFileIndex(query string, limit int, index FileIndex) (SearchResponse, error) {

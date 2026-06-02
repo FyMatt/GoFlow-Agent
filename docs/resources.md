@@ -70,14 +70,14 @@ the relationship before the user materializes it.
 
 | Kit | Maturity | Primary agent | Main workflow template | Team template | Typical customization |
 | --- | --- | --- | --- | --- | --- |
-| `multi-domain-agent-kit` | guided | `chat` | `multi-domain-intake-router` | all domain teams | adjust decomposition rules, selected parallel branches, and final handoff requirements |
+| `multi-domain-agent-kit` | production-ready | `chat` | `multi-domain-intake-router` | all domain teams | adjust branch selection, branch pruning, max-parallel limits, per-branch tool allowlists, join conflict diagnostics, and final handoff requirements |
 | `software-engineering-kit` | production-ready | `software-engineer` | `engineering-parallel-delivery`, `plan-fix-audit`, `software-team-review-gate` | `software-task-team` | adjust coding, test, review, parallel worker delivery, and approval policy |
-| `web-security-kit` | production-ready | `web-security-researcher` | `web-research-risk` | `web-research-team` | tune target intake, evidence collection, and risk gates |
-| `security-research-kit` | guided | `security-researcher` | `security-audit-evidence-gate` | `audit-security-team` | tune scope confirmation, severity rules, and report shape |
-| `binary-analysis-kit` | guided | `binary-analyst` | `binary-triage` | `binary-triage-team` | add binary helper tools, output sections, and review gates |
-| `documentation-kit` | guided | `documentation-specialist` | `docs-review-publish` | `documentation-team` | edit doc style, publish checklist, and acceptance criteria |
+| `web-security-kit` | production-ready | `web-security-researcher` | `web-research-risk`, `authorized-red-team-validation` | `web-research-team` | tune target intake, evidence collection, risk gates, and authorized red-team validation |
+| `security-research-kit` | production-ready | `security-researcher` | `security-audit-evidence-gate`, `authorized-red-team-validation` | `audit-security-team` | tune scope confirmation, disallowed exploitation blockers, severity rules, offensive-validation boundaries, red/blue handoff, and disclosure-safe report shape |
+| `binary-analysis-kit` | production-ready | `binary-analyst` | `binary-triage` | `binary-triage-team` | tune static evidence tools, format/section summary, entropy/packing hints, symbol hints, bounded artifact windows, unsafe dynamic analysis blockers, and review gates |
+| `documentation-kit` | production-ready | `documentation-specialist` | `docs-review-publish` | `documentation-team` | edit doc style, command accuracy, link integrity, bilingual parity, redaction, publish checklist, and acceptance criteria |
 | `operations-runbook-kit` | production-ready | `operations-specialist` | `operations-runbook` | `operations-runbook-team` | customize prechecks, rollback, approval gates, and network-device planning contracts |
-| `customer-support-kit` | guided | `support-specialist` | `customer-support-triage` | `customer-support-team` | adjust intake fields, response policy, and escalation rules |
+| `customer-support-kit` | production-ready | `support-specialist` | `customer-support-triage` | `customer-support-team` | adjust ticket context, product area, customer impact, privacy flags, response policy, escalation rules, and reviewer quorum |
 | `agent-framework-kit` | production-ready | `framework-extension-architect` | `agent-framework-extension`, `engineering-parallel-delivery` | `framework-extension-team` | build and materialize a new vertical Agent/Skill/Tool/Workflow/Team/Policy/Kit package |
 
 Recommended workflow:
@@ -130,22 +130,61 @@ Production-ready validation currently requires domain-specific MCP tools,
 safety contract terms, tests, config, docs, release/deployment validation, and
 evidence that materialized resources expose activation guidance. The current
 production-ready packs are `operations-runbook-kit`, `web-security-kit`,
-`software-engineering-kit`, and `agent-framework-kit`.
+`software-engineering-kit`, `agent-framework-kit`, `security-research-kit`,
+`binary-analysis-kit`, `documentation-kit`, `customer-support-kit`, and
+`multi-domain-agent-kit`.
 
-The operations pack includes `network_tools` for device work, but those tools
-are deliberately planning-only. They validate authorized scope, allowed hosts,
-credential references, command allowlists, dry-run status, rollback, and audit
-evidence. They do not connect to devices or apply configuration. If a
-deployment adds a real SSH/API connector, keep that connector behind the same
-contracts and approvals so ordinary users see a safe guided flow while expert
-users can inspect the exact tool and evidence boundary.
+The operations pack includes `network_tools` for device work. The planning
+tools validate authorized scope, allowed hosts, credential references, command
+allowlists, dry-run status, rollback, and audit evidence without connecting to
+devices. `network_tools/device_restconf_live_apply` adds a narrow controlled
+HTTPS RESTCONF/API live connector, but it only sends a request when the workflow
+stage is live-ready, the tool is listed in `allow_live_tools`, the operator has
+provided approval/rollback/allowlist/credential evidence, and
+`GOFLOW_NETWORK_TOOLS_ENABLE_LIVE=1` is present in the MCP server environment.
+Raw SSH and NETCONF apply are still separate future connectors.
+
+Security kits now include both defensive and authorized offensive resources.
+`web-vulnerability-research` and `vulnerability-research` cover defensive
+evidence collection and remediation analysis. `authorized-red-team-validation`
+adds attack-path and exploitability validation under written authorization,
+allowed hosts, allowed actions, exclusions, rate limits, non-destructive canary
+evidence, blocked-action reporting, and blue-team handoff. It is not a default
+unsanctioned attack tool; active validation must remain scoped and approval
+gated. The security packs also record disallowed exploitation, missing
+authorization, weak evidence, unresolved exploitability, red/blue handoff, and
+disclosure-safe reporting as inspectable workflow diagnostics.
+
+The binary analysis pack is static by default. It uses
+`python_notes/binary_format_summary`, `binary_entropy_map`,
+`binary_symbol_hints`, `binary_strings`, `hex_preview`, and
+`binary_extract_window` for static evidence, format/section summary,
+import/export hints, entropy/packing hints, symbol/function clues, offset
+references, and bounded artifacts. Unsafe dynamic analysis stays blocked unless
+the operator supplies a sandbox plan, approval, and artifact isolation.
+
+The documentation pack now treats publish readiness as a quality gate. Review
+stages call out audience fit, command accuracy, link integrity, bilingual
+parity, version/platform notes, redaction, stale references, and publish
+approval. `python_notes/markdown_link_check` checks local Markdown links and
+anchors without network access, and `redaction_check` catches sensitive example
+or incident data before publication.
+
+The customer support pack structures ticket context before drafting. It tracks
+product area, customer impact, SLA/priority, privacy flags, legal/billing/
+security escalation, customer-facing replies, internal notes, source
+attribution, and reviewer quorum. The Workflow Studio graph and selected-node
+diagnostics should make privacy, escalation, missing-information, and reviewer
+quorum blockers visible before handoff.
 
 The `multi-domain-agent-kit` starter is also engineered for parallel domain
 delivery. The recommended workflow first decomposes the request, then activates
 only the selected domain workers, then joins, audits, and hands off a compact
 report. Simple mode keeps the intake and final outcome visible. Expert mode
-adds active branches, branch contracts, model routes, token budgets, and
-artifact refs.
+adds active branches, branch contracts, branch-selection reason, branch
+pruning, max-parallel decisions, per-branch tool allowlists, model routes, cost
+attribution, token budgets, artifact refs, branch blockers, missing worker
+artifacts, and join conflict diagnostics.
 
 ## Memory And Learned Solutions
 
@@ -170,18 +209,28 @@ solution block as `content=decision`; the model is instructed to reuse that
 decision when it still applies, instead of asking the operator to make the same
 choice again. This keeps the framework improving with use while preserving the
 token strategy: only the top matching solution summaries are injected, and the
-full history stays behind refs.
+full history stays behind refs. If the current task matches a solution's
+`invalid_when` rule, GoFlow records an omission diagnostic and does not inject
+or count that solution as reused.
 
 CLI surfaces:
 
 - `/memory solutions`: list learned decisions, correct solutions, verification,
   applicability, invalidation, confidence, and use count.
+- `/memory solution retire <id> [--reason <text>]`: keep a stale solution
+  auditable while removing it from search and prompt retrieval.
+- `/memory solution supersede <id> --superseded-by <id> [--reason <text>]`:
+  retire a stale solution and link it to the replacing active solution.
+- `/memory solution restore <id>`: make a retired solution active and
+  retrievable again.
 - `/memory search <query>`: searches project, context, tasks, errors,
   solutions, and file summaries.
 
 Web Studio Memory shows learned solutions directly. Simple mode focuses on the
 problem, chosen solution, and verification. Expert mode additionally shows the
-solution ID, applicability, invalidation, last-used timestamp, and use count.
+solution ID, applicability, invalidation, last-used timestamp, use count,
+retired/superseded state, lifecycle actions, and a compact governance graph for
+replacement chains.
 
 ## File Content Rule
 
@@ -422,6 +471,36 @@ The software delivery templates are also token-budgeted engineering examples:
 stronger routes handle decomposition, aggregation, audit, and recovery; lower
 cost worker routes execute bounded slices with stage-scoped tools, worker JSON
 contracts, and artifact-first handoffs.
+
+Workflow resources can already coordinate serious work without relying on one
+large prompt. A graph can collect structured inputs, route to selected
+branches, run multi-agent team stages, cap worker context, publish artifacts,
+join only the active branches, evaluate policy or quality gates, pause for
+approval or input, retry failed stages, continue incomplete model output, and
+resume durable runs from Studio or the API. Studio shows stage status, budget
+pressure, contract failures, quality failures, artifacts, branch/join
+diagnostics, and execution-readiness blockers on the graph and selected node.
+
+The current resource workflow boundary is intentionally conservative for real
+external changes. Templates may plan, dry-run, produce operator runbooks, and
+prepare evidence for live work, but GoFlow does not claim unmanaged SSH,
+NETCONF, RESTCONF, cloud, or device mutation is safe just because a workflow
+node says "execute". A true live connector should be added only with an
+operator-owned target inventory, credential reference strategy, authorization
+scope, rollback storage, command or target allowlists, audit evidence, and
+approval policy.
+
+For workflow stages that may become live later, use `stage.execution`:
+
+- `mode: planning`, `dry_run`, `manual`, or `disabled` records the execution
+  boundary without blocking normal graph execution.
+- `mode: live` requires readiness evidence before the stage can call a model or
+  tool. Missing approval, authorized scope, rollback, credential ref,
+  allowlist, required params, or live-tool constraints blocks the stage with
+  `contract_check=execution_readiness`.
+- Workflow Studio surfaces the execution mode, readiness state, risk, boundary,
+  missing items, and source reference so users can locate the exact node and
+  field that stopped the run.
 
 ### Team Templates
 

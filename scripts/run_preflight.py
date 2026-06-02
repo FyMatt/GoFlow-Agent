@@ -7,6 +7,7 @@ import argparse
 import os
 import subprocess
 import sys
+import time
 from pathlib import Path
 
 
@@ -38,12 +39,43 @@ def parse_args() -> argparse.Namespace:
     return parser.parse_args()
 
 
-def run(label: str, command: list[str]) -> None:
+def run(
+    label: str,
+    command: list[str],
+    *,
+    attempts: int = 1,
+    retry_markers: list[str] | None = None,
+    retry_delay_seconds: float = 2.0,
+) -> None:
     print(f"\n==> {label}", flush=True)
     print("+ " + " ".join(command), flush=True)
-    completed = subprocess.run(command, cwd=ROOT, env=os.environ.copy())
-    if completed.returncode != 0:
-        raise SystemExit(completed.returncode)
+    last_returncode = 0
+    for attempt in range(1, attempts + 1):
+        if attempts > 1:
+            print(f"attempt {attempt}/{attempts}", flush=True)
+        completed = subprocess.run(
+            command,
+            cwd=ROOT,
+            env=os.environ.copy(),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.STDOUT,
+            text=True,
+            errors="replace",
+        )
+        output = completed.stdout or ""
+        if output:
+            print(output, end="" if output.endswith("\n") else "\n", flush=True)
+        if completed.returncode == 0:
+            return
+        last_returncode = completed.returncode
+        retryable = attempt < attempts
+        if retryable and retry_markers:
+            retryable = any(marker in output for marker in retry_markers)
+        if not retryable:
+            raise SystemExit(completed.returncode)
+        print(f"{label} failed with a retryable startup error; retrying in {retry_delay_seconds:g}s", flush=True)
+        time.sleep(retry_delay_seconds)
+    raise SystemExit(last_returncode)
 
 
 def main() -> int:
@@ -72,7 +104,19 @@ def main() -> int:
         browser_command = [python, "scripts/smoke_http_browser.py"]
         if args.browser_required:
             browser_command.append("--required")
-        run("Browser Studio smoke", browser_command)
+        run(
+            "Browser Studio smoke",
+            browser_command,
+            attempts=3,
+            retry_markers=[
+                "Access is denied",
+                "Crashpad",
+                "Mojo",
+                "crash server failed to launch",
+                "拒绝访问",
+            ],
+            retry_delay_seconds=3.0,
+        )
 
     run("Deployment asset validation", [python, "scripts/validate_deployment_assets.py"])
     for target in args.release_target or []:

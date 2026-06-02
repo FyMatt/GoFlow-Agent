@@ -33,6 +33,15 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 SMOKE_LAZY_TIMELINE_MARKER = "SMOKE_LAZY_TIMELINE_DETAIL_LOADED"
+WINDOWS_EDGE_SANDBOX_FLAGS = [
+    "--disable-features=RendererCodeIntegrity,NetworkServiceSandbox,CalculateNativeWinOcclusion,EdgeStartupBoost",
+    "--disable-component-update",
+    "--disable-sync",
+    "--disable-domain-reliability",
+    "--disable-client-side-phishing-detection",
+    "--disable-default-apps",
+    "--metrics-recording-only",
+]
 
 
 class BrowserSmokeUnavailable(RuntimeError):
@@ -62,6 +71,19 @@ def run_checked(args: list[str], env: dict[str, str]) -> None:
         raise AssertionError(f"{' '.join(args)} failed with {completed.returncode}\n{completed.stdout}")
 
 
+def run_go_build_checked(args: list[str], env: dict[str, str]) -> None:
+    last_output = ""
+    for attempt in range(1, 4):
+        completed = subprocess.run(args, cwd=ROOT, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.STDOUT)
+        last_output = completed.stdout
+        if completed.returncode == 0:
+            return
+        if "Access is denied" not in last_output or attempt == 3:
+            break
+        time.sleep(0.8 * attempt)
+    raise AssertionError(f"{' '.join(args)} failed with build retries\n{last_output}")
+
+
 def request_text(url: str, timeout: float = 5.0) -> tuple[int, str]:
     request = urllib.request.Request(url, headers={"User-Agent": "goflow-browser-smoke/1"})
     try:
@@ -83,7 +105,7 @@ def assert_asset_contains(base_url: str, path: str, needles: list[str]) -> None:
 def build_binary(tmpdir: Path, env: dict[str, str]) -> Path:
     suffix = ".exe" if os.name == "nt" else ""
     binary = tmpdir / f"goflow-browser-smoke{suffix}"
-    run_checked(["go", "build", "-o", str(binary), "./cmd/goflow"], env)
+    run_go_build_checked(["go", "build", "-buildvcs=false", "-o", str(binary), "./cmd/goflow"], env)
     return binary
 
 
@@ -190,6 +212,197 @@ def write_smoke_runtime_config(runtime_home: Path) -> Path:
     return config_path
 
 
+def write_smoke_workflow_graph(runtime_home: Path) -> None:
+    workflow_dir = runtime_home / "workflows" / "plan-implement-audit"
+    workflow_dir.mkdir(parents=True, exist_ok=True)
+    (workflow_dir / "workflow.yaml").write_text(
+        textwrap.dedent(
+            """
+            name: plan-implement-audit
+            description: Browser smoke graph used to validate node-level budget recovery actions.
+            budget:
+              hard_prompt_tokens: 240
+            stages:
+              - name: plan
+                node_type: skill
+                agent: planner
+                skill: execution-plan
+                outputs:
+                  plan: result.output
+                  summary: result.summary
+                next:
+                  - quality
+              - name: quality
+                node_type: quality_gate
+                next:
+                  - audit
+              - name: audit
+                node_type: skill
+                agent: auditor
+                skill: code-audit
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    contract_dir = runtime_home / "workflows" / "smoke-contract-workflow"
+    contract_dir.mkdir(parents=True, exist_ok=True)
+    (contract_dir / "workflow.yaml").write_text(
+        textwrap.dedent(
+            """
+            name: smoke-contract-workflow
+            description: Browser smoke graph used to validate contract failure and model escalation diagnostics.
+            stages:
+              - name: plan
+                node_type: skill
+                agent: planner
+                skill: execution-plan
+                params:
+                  contract_required: "true"
+                  on_contract_fail: block
+                  require_json_output: "true"
+                  required_json_keys: summary
+                  escalate_model: strong-smoke-model
+                outputs:
+                  summary: result.summary
+                next:
+                  - audit
+              - name: audit
+                node_type: skill
+                agent: auditor
+                skill: code-audit
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    complex_dir = runtime_home / "workflows" / "complex-project-delivery"
+    complex_dir.mkdir(parents=True, exist_ok=True)
+    (complex_dir / "workflow.yaml").write_text(
+        textwrap.dedent(
+            """
+            name: complex-project-delivery
+            description: Browser smoke graph used to validate complex delivery stage runtime visualization.
+            stages:
+              - name: plan
+                node_type: skill
+                agent: planner
+                skill: execution-plan
+                outputs:
+                  project_plan: result.output
+                next:
+                  - iteration
+                position: {x: 100, y: 240}
+              - name: iteration
+                node_type: agent
+                agent: fixer
+                skill: code-writing
+                outputs:
+                  plan_update: result.plan_update
+                  remaining_work: result.blockers
+                next:
+                  - final-validation
+                position: {x: 560, y: 240}
+              - name: final-validation
+                node_type: skill
+                agent: auditor
+                skill: code-audit
+                outputs:
+                  final_validation: result.output
+                next:
+                  - final-report
+                position: {x: 1020, y: 240}
+              - name: final-report
+                node_type: skill
+                agent: planner
+                skill: execution-plan
+                outputs:
+                  final_report: result.output
+                position: {x: 1480, y: 240}
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    conflict_dir = runtime_home / "workflows" / "smoke-parallel-conflict"
+    conflict_dir.mkdir(parents=True, exist_ok=True)
+    (conflict_dir / "workflow.yaml").write_text(
+        textwrap.dedent(
+            """
+            name: smoke-parallel-conflict
+            description: Browser smoke graph used to validate parallel file conflict diagnostics.
+            stages:
+              - name: split
+                node_type: parallel
+                params:
+                  concurrent: true
+                next:
+                  - implement
+                  - audit
+              - name: implement
+                node_type: skill
+                agent: fixer
+                skill: code-writing
+                next:
+                  - join
+              - name: audit
+                node_type: skill
+                agent: auditor
+                skill: code-audit
+                next:
+                  - join
+              - name: join
+                node_type: join
+                params:
+                  wait_for: implement,audit
+                next:
+                  - report
+              - name: report
+                node_type: skill
+                agent: planner
+                skill: execution-plan
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+    live_readiness_dir = runtime_home / "workflows" / "smoke-live-readiness-workflow"
+    live_readiness_dir.mkdir(parents=True, exist_ok=True)
+    (live_readiness_dir / "workflow.yaml").write_text(
+        textwrap.dedent(
+            """
+            name: smoke-live-readiness-workflow
+            description: Browser smoke graph used to validate live execution readiness diagnostics.
+            stages:
+              - name: apply-live
+                node_type: tool
+                agent: operations-specialist
+                skill: execution-plan
+                tool: network_tools/device_restconf_live_apply
+                approval: true
+                execution:
+                  mode: live
+                  risk_level: high
+                  boundary: production-restconf-change
+                  requires_approval: true
+                  requires_authorized_scope: true
+                  requires_rollback: true
+                  requires_credential_ref: true
+                  requires_allowlist: true
+                  allow_live_tools:
+                    - network_tools/device_restconf_live_apply
+                  required_params:
+                    - approval_ref
+                    - change_ticket
+                    - allowed_hosts
+                    - allowed_paths
+                params:
+                  host: router-edge-01.example.com
+                  endpoint: https://router-edge-01.example.com/restconf/data/native/interface
+                  method: PATCH
+                position: {x: 280, y: 240}
+            """
+        ).lstrip(),
+        encoding="utf-8",
+    )
+
+
 def write_smoke_artifact(workspace: Path) -> dict:
     content = "# Smoke artifact\n\nFull artifact body for memory viewer."
     encoded = content.encode("utf-8")
@@ -227,11 +440,70 @@ def write_smoke_artifact(workspace: Path) -> dict:
     return {"hash": digest, "ref": ref, "content": content, "title": obj["title"]}
 
 
+def write_smoke_memory(workspace: Path) -> None:
+    now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    memory_dir = workspace / ".goflow" / "memory"
+    memory_dir.mkdir(parents=True, exist_ok=True)
+    (memory_dir / "solutions.json").write_text(
+        json.dumps(
+            {
+                "updated_at": now,
+                "solutions": [
+                    {
+                        "id": "sol-smoke-active",
+                        "created_at": now,
+                        "updated_at": now,
+                        "last_used_at": now,
+                        "problem_signature": "Smoke provider retry decision",
+                        "problem": "Smoke run needs a reusable retry decision",
+                        "decision": "Reuse the verified smoke retry path",
+                        "solution": "Prefer the active retry decision before asking again",
+                        "applicability": ["same smoke retry signature"],
+                        "invalid_when": ["provider retry contract changes"],
+                        "verification_command": "go test ./internal/memory",
+                        "confidence": "high",
+                        "resolved": True,
+                        "use_count": 2,
+                    },
+                    {
+                        "id": "sol-smoke-old",
+                        "created_at": now,
+                        "updated_at": now,
+                        "retired_at": now,
+                        "problem_signature": "Old smoke retry decision",
+                        "decision": "Use the old retry path",
+                        "solution": "Old retry path kept for audit",
+                        "verification_command": "go test ./internal/memory",
+                        "confidence": "medium",
+                        "resolved": True,
+                        "retired": True,
+                        "retired_reason": "Superseded in smoke fixture",
+                        "superseded_by": "sol-smoke-active",
+                    },
+                ],
+            },
+            indent=2,
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+
+
 def write_smoke_session(workspace: Path) -> dict:
     now = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     run_id = "run-agent-smoke-lazy"
+    workflow_run_id = "wf-smoke-budget-diagnostics"
+    blocked_workflow_run_id = "wf-smoke-contract-blocked"
+    model_escalated_workflow_run_id = "wf-smoke-model-escalated"
+    complex_delivery_run_id = "wf-smoke-complex-delivery"
+    quality_workflow_run_id = "wf-smoke-quality-gate-failed"
+    parallel_conflict_workflow_run_id = "wf-smoke-parallel-file-conflict"
+    budget_approval_run_id = "wf-smoke-budget-approval"
+    execution_readiness_run_id = "wf-smoke-execution-readiness-blocked"
     artifact_ref = "goflow://session-artifacts/artifact-agent-smoke"
     artifact_content = "# Smoke artifact\n\nFull artifact body for run history viewer."
+    workflow_artifact_ref = f"goflow://workflow-runs/{workflow_run_id}/artifacts/plan-report"
+    workflow_artifact_content = "Budget warning artifact body for selected-node artifact inspection."
     session_dir = workspace / ".goflow"
     session_dir.mkdir(parents=True, exist_ok=True)
     snapshot = {
@@ -296,7 +568,826 @@ def write_smoke_session(workspace: Path) -> dict:
             }
         ],
         "workflow": {},
-        "workflow_runs": [],
+        "workflow_runs": [
+            {
+                "id": workflow_run_id,
+                "name": "smoke-budget-workflow",
+                "status": "completed",
+                "request": "Smoke workflow for budget diagnostics.",
+                "summary": "Smoke workflow completed with visible budget attribution.",
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": now,
+                "attempt": 1,
+                "budget_scope": "prompt",
+                "budget_reason": "budget_soft_limit_hit",
+                "budget_metric": "prompt_tokens",
+                "budget_used": 180,
+                "budget_soft_limit": 160,
+                "budget_hard_limit": 240,
+                "budget_remaining": 60,
+                "budget_prompt_tokens": 100,
+                "budget_estimated_prompt_tokens": 100,
+                "budget_net_prompt_tokens": 100,
+                "budget_gross_prompt_tokens": 175,
+                "budget_saved_tokens": 75,
+                "budget_memory_saved_tokens": 12,
+                "budget_history_saved_tokens": 8,
+                "budget_artifact_saved_tokens": 5,
+                "budget_skill_saved_tokens": 20,
+                "budget_tool_schema_saved_tokens": 30,
+                "budget_output_tokens": 10,
+                "budget_total_tokens": 110,
+                "budget_llm_calls": 1,
+                "artifacts_count": 1,
+                "artifacts": [
+                    {
+                        "id": "artifact-workflow-budget-plan",
+                        "stage": "plan",
+                        "kind": "report",
+                        "title": "Smoke plan budget artifact",
+                        "summary": "Artifact evidence for the budget diagnostic smoke run.",
+                        "content": workflow_artifact_content,
+                        "artifact_ref": workflow_artifact_ref,
+                        "content_bytes": len(workflow_artifact_content.encode("utf-8")),
+                        "stored_bytes": len(workflow_artifact_content.encode("utf-8")),
+                        "mime": "text/plain",
+                        "metadata": {
+                            "source_ref": "workflow.budget.prompt_tokens",
+                            "hash": "smoke-plan-budget-artifact"
+                        }
+                    }
+                ],
+                "completed_stages": [
+                    {
+                        "stage": "plan",
+                        "status": "completed",
+                        "summary": "Planner produced a compact result.",
+                        "budget_scope": "prompt",
+                        "budget_reason": "budget_soft_limit_hit",
+                        "budget_metric": "prompt_tokens",
+                        "budget_used": 180,
+                        "budget_soft_limit": 160,
+                        "budget_hard_limit": 240,
+                        "budget_remaining": 60,
+                        "budget_prompt_tokens": 100,
+                        "budget_estimated_prompt_tokens": 100,
+                        "budget_net_prompt_tokens": 100,
+                        "budget_gross_prompt_tokens": 175,
+                        "budget_saved_tokens": 75,
+                        "budget_memory_saved_tokens": 12,
+                        "budget_history_saved_tokens": 8,
+                        "budget_artifact_saved_tokens": 5,
+                        "budget_skill_saved_tokens": 20,
+                        "budget_tool_schema_saved_tokens": 30,
+                        "budget_output_tokens": 10,
+                        "budget_total_tokens": 110,
+                        "budget_llm_calls": 1,
+                        "source_ref": "workflow.budget.prompt_tokens",
+                        "metadata": {
+                            "budget_saved_tokens": "75",
+                            "budget_gross_prompt_tokens": "175",
+                            "budget_net_prompt_tokens": "100",
+                            "budget.reason": "budget_soft_limit_hit",
+                            "model.soft_budget_route": "true",
+                            "model.soft_budget_route_ref": "stage.params.soft_budget_*",
+                            "model.provider": "backup",
+                            "model.model": "small-worker",
+                            "model.max_tokens": "900",
+                            "model.temperature": "0.1",
+                            "source_ref": "workflow.budget.prompt_tokens"
+                        },
+                        "artifacts": [
+                            {
+                                "id": "artifact-workflow-budget-plan",
+                                "stage": "plan",
+                                "kind": "report",
+                                "title": "Smoke plan budget artifact",
+                                "summary": "Artifact evidence for the budget diagnostic smoke run.",
+                                "content": workflow_artifact_content,
+                                "artifact_ref": workflow_artifact_ref,
+                                "content_bytes": len(workflow_artifact_content.encode("utf-8")),
+                                "stored_bytes": len(workflow_artifact_content.encode("utf-8")),
+                                "mime": "text/plain",
+                                "metadata": {
+                                    "source_ref": "workflow.budget.prompt_tokens",
+                                    "hash": "smoke-plan-budget-artifact"
+                                }
+                            }
+                        ],
+                        "result": {"output": "Planner result", "summary": "Planner summary"}
+                    }
+                ],
+                "events_count": 5,
+                "events": [
+                    {
+                        "seq": 1,
+                        "at": now,
+                        "type": "prompt_budget",
+                        "stage": "plan",
+                        "content": "Prompt budget attribution recorded.",
+                        "budget_estimated_prompt_tokens": 100,
+                        "budget_net_prompt_tokens": 100,
+                        "budget_gross_prompt_tokens": 175,
+                        "budget_saved_tokens": 75,
+                        "budget_memory_saved_tokens": 12,
+                        "budget_history_saved_tokens": 8,
+                        "budget_artifact_saved_tokens": 5,
+                        "budget_skill_saved_tokens": 20,
+                        "budget_tool_schema_saved_tokens": 30,
+                        "prompt_budget": {
+                            "estimated_prompt_tokens": 100,
+                            "memory_estimated_saved_tokens": 12,
+                            "history_estimated_saved_tokens": 8,
+                            "artifact_omitted_tokens": 5,
+                            "skill_omitted_tokens": 20,
+                            "tool_schema_estimated_saved_tokens": 30
+                        }
+                    },
+                    {
+                        "seq": 2,
+                        "at": now,
+                        "type": "status",
+                        "stage": "plan",
+                        "content": "soft budget model route applied at stage plan: provider=backup model=small-worker max_tokens=900 temperature=0.1",
+                        "reason": "budget_model_route_applied",
+                        "severity": "info",
+                        "source_ref": "stage.params.soft_budget_*"
+                    },
+                    {
+                        "seq": 3,
+                        "at": now,
+                        "type": "status",
+                        "stage": "plan",
+                        "content": "Smoke workflow budget warning marker.",
+                        "reason": "budget_soft_limit_hit",
+                        "budget_reason": "budget_soft_limit_hit",
+                        "budget_scope": "prompt",
+                        "budget_metric": "prompt_tokens",
+                        "budget_used": 180,
+                        "budget_soft_limit": 160,
+                        "budget_hard_limit": 240,
+                        "budget_remaining": 60,
+                        "severity": "warning",
+                        "source_ref": "workflow.budget.prompt_tokens"
+                    },
+                    {
+                        "seq": 4,
+                        "at": now,
+                        "type": "token_usage",
+                        "stage": "plan",
+                        "prompt_tokens": 90,
+                        "output_tokens": 10
+                    }
+                ],
+            },
+            {
+                "id": blocked_workflow_run_id,
+                "name": "smoke-contract-workflow",
+                "status": "blocked",
+                "next_stage": "plan",
+                "request": "Smoke workflow for blocked-stage diagnostics.",
+                "summary": "Smoke workflow blocked by contract validation.",
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": now,
+                "attempt": 1,
+                "reason": "contract_validation_failed",
+                "contract_check": "smoke_summary_contract_required",
+                "source_ref": "stages.plan.acceptance[0]",
+                "completed_stages": [
+                    {
+                        "stage": "plan",
+                        "status": "blocked",
+                        "summary": "Contract validation failed: missing required acceptance evidence.",
+                        "reason": "contract_validation_failed",
+                        "severity": "error",
+                        "contract_check": "smoke_summary_contract_required",
+                        "source_ref": "stages.plan.acceptance[0]",
+                        "metadata": {
+                            "contract_failed": "true",
+                            "reason": "contract_validation_failed",
+                            "contract_check": "smoke_summary_contract_required",
+                            "source_ref": "stages.plan.acceptance[0]"
+                        },
+                        "acceptance": [
+                            {
+                                "name": "summary-present",
+                                "status": "failed",
+                                "reason": "Missing required summary evidence"
+                            }
+                        ],
+                        "result": {"output": "Partial planner result without required acceptance evidence."}
+                    }
+                ],
+                "events_count": 2,
+                "events": [
+                    {
+                        "seq": 1,
+                        "at": now,
+                        "type": "contract_validation_failed",
+                        "stage": "plan",
+                        "content": "contract_validation_failed: missing required acceptance evidence.",
+                        "reason": "contract_validation_failed",
+                        "severity": "error",
+                        "contract_check": "smoke_summary_contract_required",
+                        "source_ref": "stages.plan.acceptance[0]"
+                    },
+                    {
+                        "seq": 2,
+                        "at": now,
+                        "type": "workflow_result",
+                        "workflow_name": "smoke-contract-workflow",
+                        "workflow_status": "blocked",
+                        "content": "Workflow blocked by contract validation.",
+                        "reason": "contract_validation_failed",
+                        "contract_check": "smoke_summary_contract_required",
+                        "source_ref": "stages.plan.acceptance[0]"
+                    }
+                ],
+            },
+            {
+                "id": execution_readiness_run_id,
+                "name": "smoke-live-readiness-workflow",
+                "status": "blocked",
+                "request": "Smoke workflow for live execution readiness diagnostics.",
+                "summary": "Smoke live RESTCONF stage blocked before tool execution because required readiness evidence is missing.",
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": now,
+                "attempt": 1,
+                "reason": "execution_readiness_blocked",
+                "contract_check": "execution_readiness",
+                "source_ref": "stage.execution.allow_live_tools",
+                "completed_stages": [
+                    {
+                        "stage": "apply-live",
+                        "status": "blocked",
+                        "node_type": "tool",
+                        "agent_id": "operations-specialist",
+                        "skill": "execution-plan",
+                        "tool": "network_tools/device_restconf_live_apply",
+                        "summary": "Live RESTCONF apply blocked by missing execution readiness evidence.",
+                        "reason": "execution_readiness_blocked",
+                        "severity": "error",
+                        "contract_check": "execution_readiness",
+                        "source_ref": "stage.execution.allow_live_tools",
+                        "outputs": {
+                            "execution_mode": "live",
+                            "execution_ready": "false",
+                            "execution_risk_level": "high",
+                            "execution_boundary": "production-restconf-change",
+                            "execution_missing": "approval,authorized_scope,rollback_plan,credential_ref,allowlist,allow_live_tools:network_tools/device_restconf_live_apply"
+                        },
+                        "metadata": {
+                            "contract_failed": "true",
+                            "reason": "execution_readiness_blocked",
+                            "contract_check": "execution_readiness",
+                            "source_ref": "stage.execution.allow_live_tools",
+                            "execution.mode": "live",
+                            "execution.ready": "false",
+                            "execution.risk_level": "high",
+                            "execution.boundary": "production-restconf-change",
+                            "execution.missing": "approval,authorized_scope,rollback_plan,credential_ref,allowlist,allow_live_tools:network_tools/device_restconf_live_apply",
+                            "execution.reason": "workflow stage apply-live is live but missing execution readiness",
+                            "execution.source_ref": "stage.execution.allow_live_tools"
+                        },
+                        "result": {
+                            "output": "Live RESTCONF apply blocked before tool execution. Missing approval, authorized_scope, rollback_plan, credential_ref, allowlist, and allow_live_tools."
+                        }
+                    }
+                ],
+                "events_count": 2,
+                "events": [
+                    {
+                        "seq": 1,
+                        "at": now,
+                        "type": "execution_readiness_blocked",
+                        "stage": "apply-live",
+                        "content": "execution_readiness_blocked: missing approval, authorized_scope, rollback_plan, credential_ref, allowlist, allow_live_tools:network_tools/device_restconf_live_apply",
+                        "reason": "execution_readiness_blocked",
+                        "severity": "error",
+                        "contract_check": "execution_readiness",
+                        "source_ref": "stage.execution.allow_live_tools",
+                        "metadata": {
+                            "execution.mode": "live",
+                            "execution.ready": "false",
+                            "execution.risk_level": "high",
+                            "execution.boundary": "production-restconf-change",
+                            "execution.missing": "approval,authorized_scope,rollback_plan,credential_ref,allowlist,allow_live_tools:network_tools/device_restconf_live_apply"
+                        }
+                    },
+                    {
+                        "seq": 2,
+                        "at": now,
+                        "type": "workflow_result",
+                        "workflow_name": "smoke-live-readiness-workflow",
+                        "workflow_status": "blocked",
+                        "content": "Workflow blocked by live execution readiness.",
+                        "reason": "execution_readiness_blocked",
+                        "contract_check": "execution_readiness",
+                        "source_ref": "stage.execution.allow_live_tools"
+                    }
+                ],
+            },
+            {
+                "id": model_escalated_workflow_run_id,
+                "name": "smoke-contract-workflow",
+                "status": "completed",
+                "request": "Smoke workflow recovered by model escalation.",
+                "summary": "Smoke workflow recovered the contract failure with a stronger model route.",
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": now,
+                "attempt": 1,
+                "reason": "model_escalated",
+                "source_ref": "stage.params.escalate_model",
+                "completed_stages": [
+                    {
+                        "stage": "plan",
+                        "status": "completed",
+                        "node_type": "skill",
+                        "skill": "execution-plan",
+                        "agent_id": "planner",
+                        "summary": "Escalated model produced contract-satisfying JSON.",
+                        "reason": "model_escalated",
+                        "source_ref": "stage.params.escalate_model",
+                        "metadata": {
+                            "model.escalated": "true",
+                            "model.route": "model_escalated",
+                            "model.model": "strong-smoke-model",
+                            "model.escalation_ref": "stage.params.escalate_model",
+                            "source_ref": "stage.params.escalate_model",
+                            "reason": "model_escalated"
+                        },
+                        "outputs": {
+                            "summary": "model escalation recovered"
+                        },
+                        "output_values": {
+                            "summary": "model escalation recovered"
+                        },
+                        "result": {
+                            "output": "{\"summary\":\"model escalation recovered\"}",
+                            "summary": "model escalation recovered",
+                            "model": "strong-smoke-model"
+                        }
+                    },
+                    {
+                        "stage": "audit",
+                        "status": "completed",
+                        "node_type": "skill",
+                        "skill": "code-audit",
+                        "agent_id": "auditor",
+                        "summary": "Audit ran after model escalation.",
+                        "result": {"output": "Audit after escalation passed."}
+                    }
+                ],
+                "events_count": 4,
+                "events": [
+                    {
+                        "seq": 1,
+                        "at": now,
+                        "type": "contract_validation_failed",
+                        "stage": "plan",
+                        "content": "contract_validation_failed: JSON summary was missing.",
+                        "reason": "contract_validation_failed",
+                        "severity": "error",
+                        "contract_check": "json_output:summary",
+                        "source_ref": "result.output"
+                    },
+                    {
+                        "seq": 2,
+                        "at": now,
+                        "type": "status",
+                        "stage": "plan",
+                        "content": "model escalated for stage plan: model=strong-smoke-model",
+                        "reason": "model_escalated",
+                        "severity": "info",
+                        "source_ref": "stage.params.escalate_model"
+                    },
+                    {
+                        "seq": 3,
+                        "at": now,
+                        "type": "status",
+                        "stage": "plan",
+                        "content": "workflow stage plan retry attempt 2: contract_validation_failed",
+                        "reason": "stage_retry",
+                        "severity": "warning",
+                        "source_ref": "stage.retry.attempt[2]"
+                    },
+                    {
+                        "seq": 4,
+                        "at": now,
+                        "type": "workflow_result",
+                        "workflow_name": "smoke-contract-workflow",
+                        "workflow_status": "completed",
+                        "content": "Workflow recovered by model escalation.",
+                        "reason": "model_escalated",
+                        "source_ref": "stage.params.escalate_model"
+                    }
+                ],
+            },
+            {
+                "id": complex_delivery_run_id,
+                "name": "complex-project-delivery",
+                "status": "completed",
+                "request": "Smoke workflow for complex delivery visualization.",
+                "summary": "Complex delivery completed with a project plan, one iteration, final validation, and final report.",
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": now,
+                "attempt": 1,
+                "completed_stages": [
+                    {
+                        "stage": "plan",
+                        "status": "completed",
+                        "node_type": "skill",
+                        "skill": "execution-plan",
+                        "agent_id": "planner",
+                        "summary": "Plan created for Slice A.",
+                        "outputs": {
+                            "project_plan": "Project Plan: deliver Slice A\nWork Slices: Slice A updates README.md\nVerification Strategy: go test ./...\nDefinition of Done: README updated and tests pass"
+                        },
+                        "result": {
+                            "output": "Project Plan: deliver Slice A\nWork Slices: Slice A updates README.md\nVerification Strategy: go test ./...\nDefinition of Done: README updated and tests pass"
+                        }
+                    },
+                    {
+                        "stage": "iteration",
+                        "status": "completed",
+                        "node_type": "agent",
+                        "skill": "code-writing",
+                        "agent_id": "fixer",
+                        "summary": "Slice A implemented and marked complete.",
+                        "outputs": {
+                            "plan_update": "Slice A complete",
+                            "remaining_work": "none",
+                            "summary": "PROJECT_COMPLETE"
+                        },
+                        "result": {
+                            "output": "Iteration Number: 1\nSelected Work Slice: Slice A\nImplementation Summary: README.md updated\nVerification Performed: go test ./... passed\nPlan Update: Slice A complete\nRemaining Work: none\nCompletion Decision: PROJECT_COMPLETE\nNext Action: final validation"
+                        }
+                    },
+                    {
+                        "stage": "final-validation",
+                        "status": "completed",
+                        "node_type": "skill",
+                        "skill": "code-audit",
+                        "agent_id": "auditor",
+                        "summary": "Final validation passed.",
+                        "outputs": {
+                            "final_validation": "Final Validation Result: pass\nCommands Run: go test ./...\nRequirements Coverage: Slice A covered\nFailures: none\nResidual Risks: none"
+                        },
+                        "result": {
+                            "output": "Final Validation Result: pass\nCommands Run: go test ./...\nRequirements Coverage: Slice A covered\nFailures: none\nResidual Risks: none"
+                        }
+                    },
+                    {
+                        "stage": "final-report",
+                        "status": "completed",
+                        "node_type": "skill",
+                        "skill": "execution-plan",
+                        "agent_id": "planner",
+                        "summary": "Completion report produced.",
+                        "outputs": {
+                            "final_report": "Completion Summary: Slice A delivered\nRequirements Delivered: README update\nFiles Changed: README.md\nVerification Evidence: go test ./... passed\nResidual Risks: none\nArtifact References: project-plan, final-validation-report"
+                        },
+                        "result": {
+                            "output": "Completion Summary: Slice A delivered\nRequirements Delivered: README update\nFiles Changed: README.md\nVerification Evidence: go test ./... passed\nResidual Risks: none\nArtifact References: project-plan, final-validation-report"
+                        }
+                    }
+                ],
+                "events_count": 4,
+                "events": [
+                    {"seq": 1, "at": now, "type": "task_stage", "stage": "plan", "content": "Project plan created for Slice A."},
+                    {"seq": 2, "at": now, "type": "task_stage", "stage": "iteration", "content": "Iteration completed with PROJECT_COMPLETE."},
+                    {"seq": 3, "at": now, "type": "task_stage", "stage": "final-validation", "content": "Final validation passed."},
+                    {"seq": 4, "at": now, "type": "workflow_result", "workflow_name": "complex-project-delivery", "workflow_status": "completed", "content": "Complex delivery completed."}
+                ],
+            },
+            {
+                "id": quality_workflow_run_id,
+                "name": "plan-implement-audit",
+                "status": "blocked",
+                "request": "Smoke workflow for quality gate diagnostics.",
+                "summary": "Smoke workflow blocked by a failed quality gate.",
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": now,
+                "attempt": 1,
+                "reason": "quality_gate_failed",
+                "contract_check": "quality_gate",
+                "source_ref": "acceptance_failed=1; verification_failed=1",
+                "completed_stages": [
+                    {
+                        "stage": "quality",
+                        "status": "blocked",
+                        "node_type": "quality_gate",
+                        "summary": "Quality gate failed because required acceptance and verification evidence is missing.",
+                        "reason": "quality_gate_failed",
+                        "severity": "error",
+                        "contract_check": "quality_gate",
+                        "source_ref": "acceptance_failed=1; verification_failed=1",
+                        "quality_status": "failed",
+                        "quality_score": 61,
+                        "quality_failures": "acceptance_failed=1; verification_failed=1; missing evidence artifact",
+                        "metadata": {
+                            "quality_failed": "true",
+                            "quality_status": "failed",
+                            "score": "61",
+                            "failures": "acceptance_failed=1; verification_failed=1; missing evidence artifact",
+                            "warnings": "verification status unknown for audit evidence",
+                            "reason": "quality_gate_failed",
+                            "contract_check": "quality_gate",
+                            "source_ref": "acceptance_failed=1; verification_failed=1",
+                            "severity": "error"
+                        },
+                        "outputs": {
+                            "quality_status": "failed",
+                            "score": "61",
+                            "failures": "acceptance_failed=1; verification_failed=1; missing evidence artifact",
+                            "warnings": "verification status unknown for audit evidence",
+                            "route": "fail",
+                            "acceptance_failed": "1",
+                            "verification_failed": "1"
+                        },
+                        "result": {
+                            "output": "Quality gate failed: acceptance_failed=1; verification_failed=1; missing evidence artifact.",
+                            "outputs": {
+                                "quality_status": "failed",
+                                "score": 61,
+                                "failures": "acceptance_failed=1; verification_failed=1; missing evidence artifact",
+                                "route": "fail"
+                            },
+                            "quality_status": "failed"
+                        }
+                    }
+                ],
+                "events_count": 2,
+                "events": [
+                    {
+                        "seq": 1,
+                        "at": now,
+                        "type": "quality_gate_failed",
+                        "stage": "quality",
+                        "content": "Quality gate failed: acceptance_failed=1; verification_failed=1; missing evidence artifact.",
+                        "reason": "quality_gate_failed",
+                        "severity": "error",
+                        "contract_check": "quality_gate",
+                        "source_ref": "acceptance_failed=1; verification_failed=1",
+                        "quality_status": "failed",
+                        "quality_score": 61,
+                        "failures": "acceptance_failed=1; verification_failed=1; missing evidence artifact"
+                    },
+                    {
+                        "seq": 2,
+                        "at": now,
+                        "type": "workflow_result",
+                        "workflow_name": "plan-implement-audit",
+                        "workflow_status": "blocked",
+                        "content": "Workflow blocked by quality gate failure.",
+                        "reason": "quality_gate_failed",
+                        "contract_check": "quality_gate",
+                        "source_ref": "acceptance_failed=1; verification_failed=1"
+                    }
+                ],
+            },
+            {
+                "id": parallel_conflict_workflow_run_id,
+                "name": "smoke-parallel-conflict",
+                "status": "completed",
+                "request": "Smoke workflow for parallel file conflict diagnostics.",
+                "summary": "Smoke workflow completed with a warning for parallel branches touching the same file.",
+                "started_at": now,
+                "updated_at": now,
+                "completed_at": now,
+                "attempt": 1,
+                "reason": "parallel_file_conflict",
+                "contract_check": "parallel_file_ownership",
+                "source_ref": "internal/shared.go:audit,implement",
+                "completed_stages": [
+                    {
+                        "stage": "implement",
+                        "status": "completed",
+                        "node_type": "skill",
+                        "skill": "code-writing",
+                        "agent_id": "fixer",
+                        "summary": "Implement branch changed internal/shared.go.",
+                        "severity": "warning",
+                        "contract_check": "parallel_file_ownership",
+                        "source_ref": "internal/shared.go:audit,implement",
+                        "metadata": {
+                            "parallel_branch_owner": "implement",
+                            "parallel_file_conflict": "true",
+                            "parallel_file_conflict_paths": "internal/shared.go",
+                            "parallel_file_conflict_owners": "audit, implement",
+                            "parallel_file_conflict_source_ref": "internal/shared.go:audit,implement",
+                            "contract_check": "parallel_file_ownership",
+                            "severity": "warning"
+                        },
+                        "outputs": {
+                            "changed_files": "internal/shared.go",
+                            "parallel_file_conflict": "true",
+                            "parallel_file_conflict_paths": "internal/shared.go",
+                            "parallel_file_conflict_owners": "audit, implement",
+                            "parallel_file_conflict_source_ref": "internal/shared.go:audit,implement"
+                        },
+                        "result": {
+                            "output": "Implementation branch touched internal/shared.go.",
+                            "outputs": {
+                                "changed_files": ["internal/shared.go"],
+                                "parallel_file_conflict": True,
+                                "parallel_file_conflict_paths": ["internal/shared.go"],
+                                "parallel_file_conflict_owners": ["audit", "implement"],
+                                "parallel_file_conflict_source_ref": "internal/shared.go:audit,implement"
+                            }
+                        }
+                    },
+                    {
+                        "stage": "audit",
+                        "status": "completed",
+                        "node_type": "skill",
+                        "skill": "code-audit",
+                        "agent_id": "auditor",
+                        "summary": "Audit branch also changed internal/shared.go.",
+                        "severity": "warning",
+                        "contract_check": "parallel_file_ownership",
+                        "source_ref": "internal/shared.go:audit,implement",
+                        "metadata": {
+                            "parallel_branch_owner": "audit",
+                            "parallel_file_conflict": "true",
+                            "parallel_file_conflict_paths": "internal/shared.go",
+                            "parallel_file_conflict_owners": "audit, implement",
+                            "parallel_file_conflict_source_ref": "internal/shared.go:audit,implement",
+                            "contract_check": "parallel_file_ownership",
+                            "severity": "warning"
+                        },
+                        "outputs": {
+                            "changed_files": "internal/shared.go",
+                            "parallel_file_conflict": "true",
+                            "parallel_file_conflict_paths": "internal/shared.go",
+                            "parallel_file_conflict_owners": "audit, implement",
+                            "parallel_file_conflict_source_ref": "internal/shared.go:audit,implement"
+                        },
+                        "result": {
+                            "output": "Audit branch touched internal/shared.go.",
+                            "outputs": {
+                                "changed_files": ["internal/shared.go"],
+                                "parallel_file_conflict": True,
+                                "parallel_file_conflict_paths": ["internal/shared.go"],
+                                "parallel_file_conflict_owners": ["audit", "implement"],
+                                "parallel_file_conflict_source_ref": "internal/shared.go:audit,implement"
+                            }
+                        }
+                    },
+                    {
+                        "stage": "join",
+                        "status": "completed",
+                        "node_type": "join",
+                        "summary": "Join completed after recording the parallel file conflict warning.",
+                        "reason": "parallel_file_conflict",
+                        "severity": "warning",
+                        "contract_check": "parallel_file_ownership",
+                        "source_ref": "internal/shared.go:audit,implement",
+                        "metadata": {
+                            "parallel_file_conflict": "true",
+                            "parallel_file_conflict_paths": "internal/shared.go",
+                            "parallel_file_conflict_owners": "audit, implement",
+                            "parallel_file_conflict_source_ref": "internal/shared.go:audit,implement",
+                            "contract_check": "parallel_file_ownership",
+                            "severity": "warning"
+                        },
+                        "outputs": {
+                            "parallel_file_conflict": "true",
+                            "parallel_file_conflict_paths": "internal/shared.go",
+                            "parallel_file_conflict_owners": "audit, implement",
+                            "parallel_file_conflict_source_ref": "internal/shared.go:audit,implement"
+                        },
+                        "result": {
+                            "output": "Parallel file conflict warning before join: internal/shared.go:audit,implement.",
+                            "outputs": {
+                                "parallel_file_conflict": True,
+                                "parallel_file_conflict_paths": ["internal/shared.go"],
+                                "parallel_file_conflict_owners": ["audit", "implement"],
+                                "parallel_file_conflict_source_ref": "internal/shared.go:audit,implement"
+                            }
+                        }
+                    },
+                    {
+                        "stage": "report",
+                        "status": "completed",
+                        "node_type": "skill",
+                        "skill": "execution-plan",
+                        "agent_id": "planner",
+                        "summary": "Report captured the warning without blocking delivery.",
+                        "result": {"output": "Workflow completed; inspect join for parallel file conflict warning."}
+                    }
+                ],
+                "events_count": 4,
+                "events": [
+                    {
+                        "seq": 1,
+                        "at": now,
+                        "type": "task_stage",
+                        "stage": "implement",
+                        "content": "parallel branch implement completed with changed_files=internal/shared.go",
+                        "reason": "parallel_branch",
+                        "source_ref": "split"
+                    },
+                    {
+                        "seq": 2,
+                        "at": now,
+                        "type": "task_stage",
+                        "stage": "audit",
+                        "content": "parallel branch audit completed with changed_files=internal/shared.go",
+                        "reason": "parallel_branch",
+                        "source_ref": "split"
+                    },
+                    {
+                        "seq": 3,
+                        "at": now,
+                        "type": "status",
+                        "stage": "join",
+                        "content": "parallel branch direct-write handoff warning before join: implement:params.tools=file_tools/write_file",
+                        "reason": "parallel_patch_artifact_required",
+                        "severity": "warning",
+                        "contract_check": "parallel_patch_artifact_handoff",
+                        "source_ref": "implement:params.tools=file_tools/write_file"
+                    },
+                    {
+                        "seq": 4,
+                        "at": now,
+                        "type": "status",
+                        "stage": "join",
+                        "content": "parallel_file_conflict before join: internal/shared.go:audit,implement",
+                        "reason": "parallel_file_conflict",
+                        "severity": "warning",
+                        "contract_check": "parallel_file_ownership",
+                        "source_ref": "internal/shared.go:audit,implement"
+                    },
+                    {
+                        "seq": 5,
+                        "at": now,
+                        "type": "workflow_result",
+                        "workflow_name": "smoke-parallel-conflict",
+                        "workflow_status": "completed",
+                        "content": "Workflow completed with a parallel file conflict warning.",
+                        "reason": "parallel_file_conflict",
+                        "contract_check": "parallel_file_ownership",
+                        "source_ref": "internal/shared.go:audit,implement"
+                    }
+                ],
+            },
+            {
+                "id": budget_approval_run_id,
+                "name": "plan-implement-audit",
+                "status": "awaiting_budget_approval",
+                "request": "Smoke workflow paused for hard budget approval.",
+                "summary": "Smoke workflow paused at a hard prompt budget boundary.",
+                "started_at": now,
+                "updated_at": now,
+                "attempt": 1,
+                "next_stage": "plan",
+                "approval_prompt": "Hard prompt budget limit hit before the plan stage could continue.",
+                "reason": "budget_hard_limit_hit",
+                "budget_scope": "prompt",
+                "budget_reason": "budget_hard_limit_hit",
+                "budget_metric": "prompt_tokens",
+                "budget_used": 250,
+                "budget_soft_limit": 200,
+                "budget_hard_limit": 240,
+                "budget_remaining": 0,
+                "budget_prompt_tokens": 250,
+                "budget_estimated_prompt_tokens": 250,
+                "budget_net_prompt_tokens": 250,
+                "budget_gross_prompt_tokens": 300,
+                "budget_saved_tokens": 50,
+                "budget_total_tokens": 250,
+                "budget_llm_calls": 1,
+                "source_ref": "workflow.budget.prompt_tokens",
+                "events_count": 1,
+                "events": [
+                    {
+                        "seq": 1,
+                        "at": now,
+                        "type": "budget_hard_limit_hit",
+                        "stage": "plan",
+                        "content": "Hard prompt budget limit hit before the plan stage could continue.",
+                        "reason": "budget_hard_limit_hit",
+                        "budget_reason": "budget_hard_limit_hit",
+                        "budget_scope": "prompt",
+                        "budget_metric": "prompt_tokens",
+                        "budget_used": 250,
+                        "budget_soft_limit": 200,
+                        "budget_hard_limit": 240,
+                        "budget_remaining": 0,
+                        "severity": "warning",
+                        "source_ref": "workflow.budget.prompt_tokens",
+                        "needs_action": True
+                    }
+                ],
+            }
+        ],
         "messages": [],
         "blackboard": [],
         "artifacts": [
@@ -336,7 +1427,19 @@ def write_smoke_session(workspace: Path) -> dict:
         ],
     }
     (session_dir / "session.json").write_text(json.dumps(snapshot, indent=2) + "\n", encoding="utf-8")
-    return {"run_id": run_id, "marker": SMOKE_LAZY_TIMELINE_MARKER, "artifact_ref": artifact_ref}
+    return {
+        "run_id": run_id,
+        "workflow_run_id": workflow_run_id,
+        "blocked_workflow_run_id": blocked_workflow_run_id,
+        "model_escalated_workflow_run_id": model_escalated_workflow_run_id,
+        "execution_readiness_run_id": execution_readiness_run_id,
+        "complex_delivery_run_id": complex_delivery_run_id,
+        "quality_workflow_run_id": quality_workflow_run_id,
+        "parallel_conflict_workflow_run_id": parallel_conflict_workflow_run_id,
+        "budget_approval_run_id": budget_approval_run_id,
+        "marker": SMOKE_LAZY_TIMELINE_MARKER,
+        "artifact_ref": artifact_ref,
+    }
 
 
 def wait_for_server(base_url: str, proc: subprocess.Popen[str], timeout: float) -> None:
@@ -398,40 +1501,58 @@ def find_browser(explicit: Path | None, required: bool) -> Path | None:
 
 
 def render_dom(browser: Path, url: str, timeout: float, profile_dir: Path) -> str:
-    base_command = [
-        str(browser),
-        "--disable-gpu",
-        "--disable-dev-shm-usage",
-        "--disable-extensions",
-        "--disable-background-networking",
-        "--no-first-run",
-        "--no-default-browser-check",
-        "--no-sandbox",
-        f"--user-data-dir={profile_dir}",
-        "--virtual-time-budget=6000",
-        "--dump-dom",
-        url,
-    ]
     failures = []
-    for headless_flag in ("--headless=new", "--headless"):
-        command = [base_command[0], headless_flag, *base_command[1:]]
+    for launch_attempt in range(1, 4):
+        page_profile = Path(tempfile.mkdtemp(prefix="goflow-browser-page-", dir=profile_dir))
+        crash_dir = page_profile / "crash-dumps"
+        crash_dir.mkdir(parents=True, exist_ok=True)
+        base_command = [
+            str(browser),
+            "--disable-gpu",
+            "--disable-dev-shm-usage",
+            "--disable-extensions",
+            "--disable-background-networking",
+            "--disable-breakpad",
+            "--disable-crash-reporter",
+            "--disable-crashpad",
+            *WINDOWS_EDGE_SANDBOX_FLAGS,
+            "--no-first-run",
+            "--no-default-browser-check",
+            "--no-sandbox",
+            f"--crash-dumps-dir={crash_dir}",
+            f"--user-data-dir={page_profile}",
+            "--virtual-time-budget=6000",
+            "--dump-dom",
+            url,
+        ]
+        attempt_failures = []
         try:
-            completed = subprocess.run(
-                command,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                timeout=timeout,
-            )
-        except subprocess.TimeoutExpired as exc:
-            output = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
-            failures.append(f"{headless_flag}: timed out after {timeout}s\n{output[-2000:]}")
-            continue
-        if completed.returncode == 0:
-            return completed.stdout
-        failures.append(f"{headless_flag}: exit {completed.returncode}\n{completed.stdout[-3000:]}")
+            for headless_flag in ("--headless=new", "--headless"):
+                command = [base_command[0], headless_flag, *base_command[1:]]
+                try:
+                    completed = subprocess.run(
+                        command,
+                        text=True,
+                        encoding="utf-8",
+                        errors="replace",
+                        stdout=subprocess.PIPE,
+                        stderr=subprocess.STDOUT,
+                        timeout=timeout,
+                    )
+                except subprocess.TimeoutExpired as exc:
+                    output = (exc.stdout or "") if isinstance(exc.stdout, str) else ""
+                    attempt_failures.append(f"{headless_flag}: timed out after {timeout}s\n{output[-2000:]}")
+                    continue
+                if completed.returncode == 0:
+                    return completed.stdout
+                attempt_failures.append(f"{headless_flag}: exit {completed.returncode}\n{completed.stdout[-3000:]}")
+        finally:
+            shutil.rmtree(page_profile, ignore_errors=True)
+        failures.extend(f"attempt {launch_attempt} {failure}" for failure in attempt_failures)
+        combined = "\n".join(attempt_failures).lower()
+        if "crashpad" not in combined and "mojo" not in combined and "access is denied" not in combined and "拒绝访问" not in combined:
+            break
+        time.sleep(0.6 * launch_attempt)
     raise BrowserSmokeUnavailable(f"browser failed for {url}\n" + "\n".join(failures))
 
 
@@ -439,6 +1560,8 @@ def evaluate_browser_json(browser: Path, url: str, script: str, timeout: float, 
     debug_port = free_port()
     debug_profile = profile_dir / f"debug-{secrets.token_hex(4)}"
     debug_profile.mkdir()
+    crash_dir = debug_profile / "crash-dumps"
+    crash_dir.mkdir(parents=True, exist_ok=True)
     command = [
         str(browser),
         "--headless=new",
@@ -446,9 +1569,14 @@ def evaluate_browser_json(browser: Path, url: str, script: str, timeout: float, 
         "--disable-dev-shm-usage",
         "--disable-extensions",
         "--disable-background-networking",
+        "--disable-breakpad",
+        "--disable-crash-reporter",
+        "--disable-crashpad",
+        *WINDOWS_EDGE_SANDBOX_FLAGS,
         "--no-first-run",
         "--no-default-browser-check",
         "--no-sandbox",
+        f"--crash-dumps-dir={crash_dir}",
         f"--user-data-dir={debug_profile}",
         f"--remote-debugging-port={debug_port}",
         "--window-size=1440,1100",
@@ -959,8 +2087,8 @@ def assert_workflow_metadata_zh(browser: Path, base_url: str, timeout: float, pr
             missingNode: false,
             hasMeta: Boolean(panel && !panel.classList.contains("hidden") && text),
             text,
-            hasDescription: text.includes("传给运行时并在 Studio 中展示的额外节点参数"),
-            hasExample: text.includes("purpose: 说明这个阶段需要产出什么"),
+            hasDescription: text.includes("负责此阶段的智能体配置。"),
+            hasExample: text.includes("先生成一份可供后续阶段消费的计划。") && text.includes("下游节点引用 stages.plan.outputs.plan"),
             hasPlanExample: text.includes("计划阶段"),
             englishLeaks: [
               "Extra node parameters passed to the runtime and shown in Studio.",
@@ -1000,19 +2128,21 @@ def assert_simple_workflow_build_path(browser: Path, base_url: str, timeout: flo
           await new Promise(resolve => setTimeout(resolve, 250));
           const conditionButton = document.querySelector('[data-template="condition"]');
           if (!conditionButton) return { missingPalette: true };
+          const beforeConditionCount = document.querySelectorAll('.flow-node.condition').length;
           conditionButton.click();
           const nodeDeadline = Date.now() + 5000;
-          while (Date.now() < nodeDeadline && !document.querySelector('.flow-node[data-stage-name^="condition"]')) {
+          while (Date.now() < nodeDeadline && document.querySelectorAll('.flow-node.condition').length <= beforeConditionCount) {
             await new Promise(resolve => setTimeout(resolve, 120));
           }
-          const node = document.querySelector('.flow-node[data-stage-name^="condition"]');
+          const conditionNodes = Array.from(document.querySelectorAll('.flow-node.condition'));
+          const node = conditionNodes[conditionNodes.length - 1];
           const inspector = document.querySelector("#stageForm");
           const taskEditor = document.querySelector("#stageTaskEditor");
           const routePreview = document.querySelector("#stageRoutePreview");
           const rawFields = document.querySelector(".workflow-raw-fields");
           const validate = document.querySelector("#validateGraph");
           const statusBeforeDismiss = document.querySelector("#workflowBoardStatus");
-          if (!node || !inspector || !taskEditor || !validate) return { missingNode: true };
+          if (!node || !inspector || !taskEditor || !validate) return { missingNode: true, beforeConditionCount, conditionCount: conditionNodes.length, canvasText: document.querySelector("#canvas")?.textContent || "" };
           validate.click();
           const validationDeadline = Date.now() + 5000;
           let panel = document.querySelector("#workflowValidationPanel");
@@ -1270,6 +2400,15 @@ def assert_run_history_lazy_loading(browser: Path, base_url: str, timeout: float
         (async () => {{
           const marker = {json.dumps(smoke_run["marker"])};
           const runID = {json.dumps(smoke_run["run_id"])};
+          const runKey = `agent:${{runID}}`;
+          const listDeadline = Date.now() + 6000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
           const deadline = Date.now() + 6000;
           while (Date.now() < deadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
             await new Promise(resolve => setTimeout(resolve, 120));
@@ -1279,7 +2418,7 @@ def assert_run_history_lazy_loading(browser: Path, base_url: str, timeout: float
           const panel = stack?.querySelector('[data-history-lazy-panel="timeline"]');
           const button = panel?.querySelector('[data-history-load="timeline"]');
           const content = panel?.querySelector('[data-history-lazy-content="timeline"]');
-          if (!detail || !stack || !panel || !button || !content) return {{ missing: true }};
+          if (!detail || !stack || !panel || !button || !content) return {{ missing: true, hasRunButton: Boolean(runButton), detailText: detail ? detail.textContent : "" }};
           const beforeBodyHasMarker = document.body.textContent.includes(marker);
           const beforeContentHasMarker = content.textContent.includes(marker);
           const beforeDetailScrollWidth = Math.round(detail.scrollWidth);
@@ -1339,6 +2478,15 @@ def assert_run_history_artifacts_lazy_loading(browser: Path, base_url: str, time
         (async () => {{
           const artifactRef = {json.dumps(smoke_run["artifact_ref"])};
           const runID = {json.dumps(smoke_run["run_id"])};
+          const runKey = `agent:${{runID}}`;
+          const listDeadline = Date.now() + 6000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
           const deadline = Date.now() + 6000;
           while (Date.now() < deadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
             await new Promise(resolve => setTimeout(resolve, 120));
@@ -1347,7 +2495,7 @@ def assert_run_history_artifacts_lazy_loading(browser: Path, base_url: str, time
           const panel = stack?.querySelector('[data-history-lazy-panel="artifacts"]');
           const button = panel?.querySelector('[data-history-load="artifacts"]');
           const content = panel?.querySelector('[data-history-lazy-content="artifacts"]');
-          if (!stack || !panel || !button || !content) return {{ missing: true }};
+          if (!stack || !panel || !button || !content) return {{ missing: true, hasRunButton: Boolean(runButton), detailText: document.querySelector("#runHistoryDetail")?.textContent || "" }};
           const beforeBodyHasArtifact = document.body.textContent.includes("Smoke Artifact Result");
           const beforeContentHasArtifact = content.textContent.includes("Smoke Artifact Result");
           button.click();
@@ -1399,6 +2547,935 @@ def assert_run_history_artifacts_lazy_loading(browser: Path, base_url: str, time
         raise AssertionError(f"run history artifacts should surface the ref in the DOM, got {metrics}")
 
 
+def assert_workflow_budget_diagnostics_visible(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const runID = {json.dumps(smoke_run["workflow_run_id"])};
+          const runKey = `workflow:${{runID}}`;
+          const listDeadline = Date.now() + 6000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
+          const deadline = Date.now() + 6000;
+          while (Date.now() < deadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const stack = document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`);
+          const context = detail?.querySelector(".run-history-contextual-summary");
+          const tokenDetails = context?.querySelector(".run-history-token-details");
+          const timelinePanel = stack?.querySelector('[data-history-lazy-panel="timeline"]');
+          const timelineButton = timelinePanel?.querySelector('[data-history-load="timeline"]');
+          const timelineContent = timelinePanel?.querySelector('[data-history-lazy-content="timeline"]');
+          if (!detail || !stack || !context || !tokenDetails || !timelinePanel || !timelineButton || !timelineContent) return {{ missing: true, hasRunButton: Boolean(runButton), detailText: detail ? detail.textContent : "" }};
+          const beforeTimelineText = timelineContent.textContent;
+          timelineButton.click();
+          const loadedDeadline = Date.now() + 6000;
+          while (Date.now() < loadedDeadline && !timelineContent.textContent.includes("Budget warning")) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          return {{
+            missing: false,
+            detailText: detail.textContent,
+            contextText: context.textContent,
+            tokenText: tokenDetails.textContent,
+            beforeTimelineText,
+            timelineText: timelineContent.textContent,
+            timelineLoaded: timelinePanel.classList.contains("loaded"),
+            timelineBusy: timelineButton.getAttribute("aria-busy"),
+            timelineDisabled: timelineButton.disabled,
+            detailScrollWidth: Math.round(detail.scrollWidth),
+            detailClientWidth: Math.round(detail.clientWidth)
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missing"):
+        raise AssertionError(f"workflow budget diagnostics missing expected run history nodes, got {metrics}")
+    detail_text = str(metrics.get("detailText", ""))
+    token_text = str(metrics.get("tokenText", ""))
+    timeline_text = str(metrics.get("timelineText", ""))
+    if "Saved tokens" not in token_text or "75 tokens" not in token_text:
+        raise AssertionError(f"run history should show saved-token attribution, got {metrics}")
+    if "Gross prompt baseline" not in token_text or "175 tokens" not in token_text:
+        raise AssertionError(f"run history should show gross prompt baseline, got {metrics}")
+    if "Net prompt sent" not in token_text or "100 tokens" not in token_text:
+        raise AssertionError(f"run history should show net prompt sent, got {metrics}")
+    if "Budget limit" not in token_text or "Prompt tokens: 180 / 240" not in token_text:
+        raise AssertionError(f"run history should show budget limit diagnostics, got {metrics}")
+    if "Budget warning" not in timeline_text or "workflow.budget.prompt_tokens" not in timeline_text:
+        raise AssertionError(f"lazy workflow timeline should expose the budget warning source, got {metrics}")
+    if "Budget warning" in str(metrics.get("beforeTimelineText", "")):
+        raise AssertionError(f"budget timeline details should stay lazy before click, got {metrics}")
+    if not metrics.get("timelineLoaded") or not metrics.get("timelineDisabled") or metrics.get("timelineBusy") != "false":
+        raise AssertionError(f"budget timeline lazy panel should settle after load, got {metrics}")
+    if int(metrics.get("detailScrollWidth") or 0) > int(metrics.get("detailClientWidth") or 0) + 2:
+        raise AssertionError(f"workflow budget diagnostics should not overflow horizontally, got {metrics}")
+    if "Smoke workflow completed with visible budget attribution" not in detail_text:
+        raise AssertionError(f"workflow budget smoke should select the seeded workflow run, got {metrics}")
+
+
+def assert_workflow_studio_budget_diagnostics_visible(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const runID = {json.dumps(smoke_run["workflow_run_id"])};
+          const runKey = `workflow:${{runID}}`;
+          const listDeadline = Date.now() + 8000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
+          const deadline = Date.now() + 8000;
+          while (Date.now() < deadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const openButton = Array.from(detail?.querySelectorAll("button[data-history-action]") || [])
+            .find(button => button.dataset.historyAction === "open_workflow_studio" || button.textContent.includes("Open in Studio"));
+          if (!detail || !openButton) return {{ missingChatAction: true, detailText: detail ? detail.textContent : "" }};
+          openButton.click();
+          const studioDeadline = Date.now() + 8000;
+          while (Date.now() < studioDeadline && !document.querySelector('.flow-node[data-stage-name="plan"].has-runtime')) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const node = document.querySelector('.flow-node[data-stage-name="plan"]');
+          const sideTab = document.querySelector('#workflowSideTabRuntime');
+          if (sideTab && !sideTab.classList.contains("active")) sideTab.click();
+          const runtimeButton = node?.querySelector('[data-node-runtime-open]');
+          if (runtimeButton) runtimeButton.click();
+          const detailDeadline = Date.now() + 8000;
+          let stageRuntime = document.querySelector("#stageRuntime");
+          while (
+            Date.now() < detailDeadline &&
+            (!stageRuntime || stageRuntime.classList.contains("hidden") || !stageRuntime.textContent.includes("Budget limit"))
+          ) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+            stageRuntime = document.querySelector("#stageRuntime");
+          }}
+          const artifactPanelBefore = document.querySelector('#stageRuntime [data-runtime-diagnostic-panel="artifact"]');
+          const artifactLoadButton = artifactPanelBefore?.querySelector('[data-stage-runtime-load]');
+          if (artifactLoadButton) artifactLoadButton.click();
+          const artifactDeadline = Date.now() + 8000;
+          let artifactPanel = document.querySelector('#stageRuntime [data-runtime-diagnostic-panel="artifact"]');
+          while (
+            Date.now() < artifactDeadline &&
+            (!artifactPanel || !artifactPanel.textContent.includes("Smoke plan budget artifact"))
+          ) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+            stageRuntime = document.querySelector("#stageRuntime");
+            artifactPanel = document.querySelector('#stageRuntime [data-runtime-diagnostic-panel="artifact"]');
+          }}
+          const output = document.querySelector("#runOutput");
+          const saved = JSON.parse(localStorage.getItem("goflow.workflowStudio.activeRun") || "null");
+          return {{
+            missingChatAction: false,
+            hash: location.hash,
+            savedRunID: saved && saved.runID,
+            nodeExists: Boolean(node),
+            nodeClass: node ? node.className : "",
+            nodeText: node ? node.textContent : "",
+            hasRuntimeButton: Boolean(runtimeButton),
+            runtimePaneHidden: Boolean(document.querySelector("#workflowRuntimePane")?.classList.contains("hidden")),
+            stageRuntimeText: stageRuntime ? stageRuntime.textContent : "",
+            artifactPanelVisible: Boolean(artifactPanel),
+            artifactLoadVisible: Boolean(artifactLoadButton),
+            artifactText: artifactPanel ? artifactPanel.textContent : "",
+            runOutputText: output ? output.textContent : "",
+            canvasScrollWidth: Math.round(document.querySelector("#canvas")?.scrollWidth || 0),
+            canvasClientWidth: Math.round(document.querySelector("#canvas")?.clientWidth || 0)
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingChatAction"):
+        raise AssertionError(f"workflow history should expose Open in Studio action, got {metrics}")
+    if metrics.get("hash") != "#workflows" or metrics.get("savedRunID") != smoke_run["workflow_run_id"]:
+        raise AssertionError(f"Open in Studio should focus the saved workflow run, got {metrics}")
+    if not metrics.get("nodeExists") or "has-runtime" not in str(metrics.get("nodeClass", "")):
+        raise AssertionError(f"Workflow Studio should mark the plan node with runtime diagnostics, got {metrics}")
+    node_text = str(metrics.get("nodeText", ""))
+    if "budget:" not in node_text or "Prompt tokens" not in node_text:
+        raise AssertionError(f"Workflow Studio node should show budget evidence, got {metrics}")
+    if not metrics.get("hasRuntimeButton") or metrics.get("runtimePaneHidden"):
+        raise AssertionError(f"Workflow Studio should provide an obvious runtime detail path, got {metrics}")
+    stage_text = str(metrics.get("stageRuntimeText", ""))
+    required_stage = [
+        "budget_soft_limit_hit",
+        "Budget limit",
+        "Prompt tokens: 180 / 240",
+        "Saved tokens",
+        "75",
+        "Gross prompt baseline",
+        "175",
+        "Net prompt sent",
+        "100",
+        "workflow.budget.prompt_tokens",
+        "View prompt budget",
+        "View model route",
+        "backup",
+        "small-worker",
+        "stage.params.soft_budget_*",
+        "Open artifacts",
+    ]
+    missing_stage = [needle for needle in required_stage if needle not in stage_text]
+    if missing_stage:
+        raise AssertionError(f"Workflow Studio selected-node runtime is missing {missing_stage}, got {metrics}")
+    artifact_text = str(metrics.get("artifactText", ""))
+    required_artifact = ["Smoke plan budget artifact", "Budget warning artifact body", "goflow://workflow-runs"]
+    missing_artifact = [needle for needle in required_artifact if needle not in artifact_text]
+    if not metrics.get("artifactPanelVisible") or missing_artifact:
+        raise AssertionError(f"Workflow Studio selected-node runtime should open stage artifacts, missing {missing_artifact}, got {metrics}")
+    output_text = str(metrics.get("runOutputText", ""))
+    if "Budget warning" not in output_text or "workflow.budget.prompt_tokens" not in output_text:
+        raise AssertionError(f"Workflow Studio run log should expose budget warning source, got {metrics}")
+
+
+def assert_workflow_budget_approval_action_visible(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const runID = {json.dumps(smoke_run["budget_approval_run_id"])};
+          const runKey = `workflow:${{runID}}`;
+          const listDeadline = Date.now() + 8000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
+          const detailDeadline = Date.now() + 8000;
+          while (Date.now() < detailDeadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const openButton = Array.from(detail?.querySelectorAll("button[data-history-action]") || [])
+            .find(button => button.dataset.historyAction === "open_workflow_studio");
+          if (!detail || !openButton) return {{ missingChatAction: true, detailText: detail ? detail.textContent : "" }};
+          openButton.click();
+          const studioDeadline = Date.now() + 8000;
+          while (Date.now() < studioDeadline && !document.querySelector('.flow-node[data-stage-name="plan"].has-runtime')) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const node = document.querySelector('.flow-node[data-stage-name="plan"]');
+          const sideTab = document.querySelector('#workflowSideTabRuntime');
+          if (sideTab && !sideTab.classList.contains("active")) sideTab.click();
+          const runtimeButton = node?.querySelector('[data-node-runtime-open]');
+          if (runtimeButton) runtimeButton.click();
+          const actionDeadline = Date.now() + 10000;
+          let stageRuntime = document.querySelector("#stageRuntime");
+          let approveButton = document.querySelector('#stageRuntime [data-workflow-run-action="approve_budget"]');
+          while (
+            Date.now() < actionDeadline &&
+            (!stageRuntime || stageRuntime.classList.contains("hidden") || !approveButton)
+          ) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+            stageRuntime = document.querySelector("#stageRuntime");
+            approveButton = document.querySelector('#stageRuntime [data-workflow-run-action="approve_budget"]');
+          }}
+          const saved = JSON.parse(localStorage.getItem("goflow.workflowStudio.activeRun") || "null");
+          return {{
+            missingChatAction: false,
+            hash: location.hash,
+            savedRunID: saved && saved.runID,
+            nodeExists: Boolean(node),
+            nodeClass: node ? node.className : "",
+            nodeText: node ? node.textContent : "",
+            hasRuntimeButton: Boolean(runtimeButton),
+            approveActionVisible: Boolean(approveButton),
+            approveActionDisabled: approveButton ? approveButton.disabled : null,
+            stageRuntimeText: stageRuntime ? stageRuntime.textContent : ""
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingChatAction"):
+        raise AssertionError(f"budget approval run should expose Open in Studio action, got {metrics}")
+    if metrics.get("hash") != "#workflows" or metrics.get("savedRunID") != smoke_run["budget_approval_run_id"]:
+        raise AssertionError(f"Open in Studio should focus the budget approval run, got {metrics}")
+    if not metrics.get("nodeExists") or "runtime-waiting" not in str(metrics.get("nodeClass", "")):
+        raise AssertionError(f"Workflow Studio should mark the budget approval node as waiting, got {metrics}")
+    if not metrics.get("hasRuntimeButton"):
+        raise AssertionError(f"Workflow Studio should expose runtime details for the budget approval node, got {metrics}")
+    if not metrics.get("approveActionVisible") or metrics.get("approveActionDisabled"):
+        raise AssertionError(f"Workflow Studio selected-node runtime should expose an enabled approve budget action, got {metrics}")
+    stage_text = str(metrics.get("stageRuntimeText", ""))
+    required = ["Approve budget", "View prompt budget", "budget_hard_limit_hit", "Prompt tokens: 250 / 240", "workflow.budget.prompt_tokens"]
+    missing = [needle for needle in required if needle not in stage_text]
+    if missing:
+        raise AssertionError(f"Workflow Studio budget approval runtime is missing {missing}, got {metrics}")
+
+
+def assert_workflow_blocked_diagnostics_visible(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const runID = {json.dumps(smoke_run["blocked_workflow_run_id"])};
+          const runKey = `workflow:${{runID}}`;
+          const listDeadline = Date.now() + 8000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
+          const detailDeadline = Date.now() + 8000;
+          while (Date.now() < detailDeadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const stack = document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`);
+          const timelinePanel = stack?.querySelector('[data-history-lazy-panel="timeline"]');
+          const timelineButton = timelinePanel?.querySelector('[data-history-load="timeline"]');
+          const timelineContent = timelinePanel?.querySelector('[data-history-lazy-content="timeline"]');
+          if (!detail || !stack || !timelinePanel || !timelineButton || !timelineContent) {{
+            return {{ missingChatNodes: true, hasRunButton: Boolean(runButton), detailText: detail ? detail.textContent : "" }};
+          }}
+          timelineButton.click();
+          const timelineDeadline = Date.now() + 8000;
+          while (Date.now() < timelineDeadline && !timelineContent.textContent.includes("contract_validation_failed")) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const timelineText = timelineContent.textContent;
+          const openButton = Array.from(detail.querySelectorAll("button[data-history-action]") || [])
+            .find(button => button.dataset.historyAction === "open_workflow_studio");
+          if (!openButton) return {{ missingStudioAction: true, detailText: detail.textContent, timelineText }};
+          openButton.click();
+          const studioDeadline = Date.now() + 8000;
+          while (Date.now() < studioDeadline && !document.querySelector('.flow-node[data-stage-name="plan"].has-runtime')) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const node = document.querySelector('.flow-node[data-stage-name="plan"]');
+          const sideTab = document.querySelector('#workflowSideTabRuntime');
+          if (sideTab && !sideTab.classList.contains("active")) sideTab.click();
+          const runtimeButton = node?.querySelector('[data-node-runtime-open]');
+          if (runtimeButton) runtimeButton.click();
+          const runtimeDeadline = Date.now() + 8000;
+          let stageRuntime = document.querySelector("#stageRuntime");
+          while (
+            Date.now() < runtimeDeadline &&
+            (!stageRuntime || stageRuntime.classList.contains("hidden") || !stageRuntime.textContent.includes("contract_validation_failed"))
+          ) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+            stageRuntime = document.querySelector("#stageRuntime");
+          }}
+          const actionDeadline = Date.now() + 6000;
+          let retryButton = document.querySelector('#stageRuntime [data-workflow-run-action="retry"]');
+          let escalateButton = document.querySelector('#stageRuntime [data-workflow-run-action="escalate_model"]');
+          while (Date.now() < actionDeadline && (!retryButton || !escalateButton)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+            retryButton = document.querySelector('#stageRuntime [data-workflow-run-action="retry"]');
+            escalateButton = document.querySelector('#stageRuntime [data-workflow-run-action="escalate_model"]');
+          }}
+          const output = document.querySelector("#runOutput");
+          const saved = JSON.parse(localStorage.getItem("goflow.workflowStudio.activeRun") || "null");
+          return {{
+            missingChatNodes: false,
+            missingStudioAction: false,
+            hash: location.hash,
+            savedRunID: saved && saved.runID,
+            timelineText,
+            nodeExists: Boolean(node),
+            nodeClass: node ? node.className : "",
+            nodeText: node ? node.textContent : "",
+            hasRuntimeButton: Boolean(runtimeButton),
+            retryActionVisible: Boolean(retryButton),
+            retryActionDisabled: retryButton ? retryButton.disabled : null,
+            escalateActionVisible: Boolean(escalateButton),
+            escalateActionDisabled: escalateButton ? escalateButton.disabled : null,
+            stageRuntimeText: stageRuntime ? stageRuntime.textContent : "",
+            runOutputText: output ? output.textContent : ""
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingChatNodes") or metrics.get("missingStudioAction"):
+        raise AssertionError(f"blocked workflow diagnostics missing Chat history path, got {metrics}")
+    if metrics.get("hash") != "#workflows" or metrics.get("savedRunID") != smoke_run["blocked_workflow_run_id"]:
+        raise AssertionError(f"Open in Studio should focus the blocked workflow run, got {metrics}")
+    timeline_text = str(metrics.get("timelineText", ""))
+    required_timeline = ["contract_validation_failed", "smoke_summary_contract_required", "stages.plan.acceptance[0]"]
+    missing_timeline = [needle for needle in required_timeline if needle not in timeline_text]
+    if missing_timeline:
+        raise AssertionError(f"Chat lazy timeline is missing blocked-stage diagnostics {missing_timeline}, got {metrics}")
+    if not metrics.get("nodeExists") or "runtime-error" not in str(metrics.get("nodeClass", "")):
+        raise AssertionError(f"Workflow Studio should mark the blocked plan node as runtime error, got {metrics}")
+    node_text = str(metrics.get("nodeText", ""))
+    if "contract:" not in node_text or "smoke_summary_contract_required" not in node_text:
+        raise AssertionError(f"Workflow Studio node should show the blocked contract check, got {metrics}")
+    if not metrics.get("hasRuntimeButton"):
+        raise AssertionError(f"Workflow Studio should expose runtime details for the blocked node, got {metrics}")
+    if not metrics.get("retryActionVisible") or metrics.get("retryActionDisabled"):
+        raise AssertionError(f"Workflow Studio selected-node runtime should expose an enabled retry action for blocked runs, got {metrics}")
+    if not metrics.get("escalateActionVisible") or metrics.get("escalateActionDisabled"):
+        raise AssertionError(f"Workflow Studio selected-node runtime should expose an enabled model escalation action for blocked contract runs, got {metrics}")
+    stage_text = str(metrics.get("stageRuntimeText", ""))
+    required_stage = ["contract_validation_failed", "smoke_summary_contract_required", "stages.plan.acceptance[0]", "View missing contract", "Escalate model"]
+    missing_stage = [needle for needle in required_stage if needle not in stage_text]
+    if missing_stage:
+        raise AssertionError(f"Workflow Studio selected-node runtime is missing blocked diagnostics {missing_stage}, got {metrics}")
+    output_text = str(metrics.get("runOutputText", ""))
+    if "Contract failure" not in output_text or "contract_validation_failed" not in output_text or "stages.plan.acceptance[0]" not in output_text:
+        raise AssertionError(f"Workflow Studio run log should expose contract failure diagnostics, got {metrics}")
+
+
+def assert_workflow_execution_readiness_visible(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const runID = {json.dumps(smoke_run["execution_readiness_run_id"])};
+          const runKey = `workflow:${{runID}}`;
+          const listDeadline = Date.now() + 8000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
+          const detailDeadline = Date.now() + 8000;
+          while (Date.now() < detailDeadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const stack = document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`);
+          const timelinePanel = stack?.querySelector('[data-history-lazy-panel="timeline"]');
+          const timelineButton = timelinePanel?.querySelector('[data-history-load="timeline"]');
+          const timelineContent = timelinePanel?.querySelector('[data-history-lazy-content="timeline"]');
+          if (!detail || !stack || !timelinePanel || !timelineButton || !timelineContent) {{
+            return {{ missingChatNodes: true, hasRunButton: Boolean(runButton), detailText: detail ? detail.textContent : "" }};
+          }}
+          timelineButton.click();
+          const timelineDeadline = Date.now() + 8000;
+          while (Date.now() < timelineDeadline && !timelineContent.textContent.includes("execution_readiness_blocked")) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const timelineText = timelineContent.textContent;
+          const openButton = Array.from(detail.querySelectorAll("button[data-history-action]") || [])
+            .find(button => button.dataset.historyAction === "open_workflow_studio");
+          if (!openButton) return {{ missingStudioAction: true, detailText: detail.textContent, timelineText }};
+          openButton.click();
+          const studioDeadline = Date.now() + 8000;
+          while (Date.now() < studioDeadline && !document.querySelector('.flow-node[data-stage-name="apply-live"].has-runtime')) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const node = document.querySelector('.flow-node[data-stage-name="apply-live"]');
+          const sideTab = document.querySelector('#workflowSideTabRuntime');
+          if (sideTab && !sideTab.classList.contains("active")) sideTab.click();
+          const runtimeButton = node?.querySelector('[data-node-runtime-open]');
+          if (runtimeButton) runtimeButton.click();
+          const runtimeDeadline = Date.now() + 8000;
+          let stageRuntime = document.querySelector("#stageRuntime");
+          while (
+            Date.now() < runtimeDeadline &&
+            (!stageRuntime || stageRuntime.classList.contains("hidden") || !stageRuntime.textContent.includes("execution_readiness"))
+          ) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+            stageRuntime = document.querySelector("#stageRuntime");
+          }}
+          const output = document.querySelector("#runOutput");
+          const saved = JSON.parse(localStorage.getItem("goflow.workflowStudio.activeRun") || "null");
+          return {{
+            missingChatNodes: false,
+            missingStudioAction: false,
+            hash: location.hash,
+            savedRunID: saved && saved.runID,
+            timelineText,
+            nodeExists: Boolean(node),
+            nodeClass: node ? node.className : "",
+            nodeText: node ? node.textContent : "",
+            hasRuntimeButton: Boolean(runtimeButton),
+            stageRuntimeText: stageRuntime ? stageRuntime.textContent : "",
+            runOutputText: output ? output.textContent : ""
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingChatNodes") or metrics.get("missingStudioAction"):
+        raise AssertionError(f"execution readiness diagnostics missing Chat history path, got {metrics}")
+    if metrics.get("hash") != "#workflows" or metrics.get("savedRunID") != smoke_run["execution_readiness_run_id"]:
+        raise AssertionError(f"Open in Studio should focus the execution-readiness workflow run, got {metrics}")
+    timeline_text = str(metrics.get("timelineText", ""))
+    required_timeline = ["execution_readiness_blocked", "execution_readiness", "stage.execution.allow_live_tools"]
+    missing_timeline = [needle for needle in required_timeline if needle not in timeline_text]
+    if missing_timeline:
+        raise AssertionError(f"Chat lazy timeline is missing execution-readiness diagnostics {missing_timeline}, got {metrics}")
+    if not metrics.get("nodeExists") or "runtime-error" not in str(metrics.get("nodeClass", "")):
+        raise AssertionError(f"Workflow Studio should mark the live-readiness node as runtime error, got {metrics}")
+    node_text = str(metrics.get("nodeText", ""))
+    required_node = ["Execution blocked", "live"]
+    missing_node = [needle for needle in required_node if needle not in node_text]
+    if missing_node:
+        raise AssertionError(f"Workflow Studio node should show live-readiness evidence {missing_node}, got {metrics}")
+    if not metrics.get("hasRuntimeButton"):
+        raise AssertionError(f"Workflow Studio should expose runtime details for the execution-readiness node, got {metrics}")
+    stage_text = str(metrics.get("stageRuntimeText", ""))
+    required_stage = [
+        "Execution readiness blocked",
+        "execution_readiness",
+        "Execution ready",
+        "No",
+        "Execution boundary",
+        "production-restconf-change",
+        "stage.execution.allow_live_tools",
+        "network_tools/device_restconf_live_apply",
+    ]
+    missing_stage = [needle for needle in required_stage if needle not in stage_text]
+    if missing_stage:
+        raise AssertionError(f"Workflow Studio selected-node runtime is missing execution-readiness diagnostics {missing_stage}, got {metrics}")
+    output_text = str(metrics.get("runOutputText", ""))
+    if "execution_readiness_blocked" not in output_text or "stage.execution.allow_live_tools" not in output_text:
+        raise AssertionError(f"Workflow Studio run log should expose execution-readiness diagnostics, got {metrics}")
+
+
+def assert_workflow_model_escalation_diagnostics_visible(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const runID = {json.dumps(smoke_run["model_escalated_workflow_run_id"])};
+          const runKey = `workflow:${{runID}}`;
+          const listDeadline = Date.now() + 8000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
+          const detailDeadline = Date.now() + 8000;
+          while (Date.now() < detailDeadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const stack = document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`);
+          const timelinePanel = stack?.querySelector('[data-history-lazy-panel="timeline"]');
+          const timelineButton = timelinePanel?.querySelector('[data-history-load="timeline"]');
+          const timelineContent = timelinePanel?.querySelector('[data-history-lazy-content="timeline"]');
+          if (!detail || !stack || !timelinePanel || !timelineButton || !timelineContent) {{
+            return {{ missingChatNodes: true, hasRunButton: Boolean(runButton), detailText: detail ? detail.textContent : "" }};
+          }}
+          timelineButton.click();
+          const timelineDeadline = Date.now() + 8000;
+          while (Date.now() < timelineDeadline && !timelineContent.textContent.includes("model_escalated")) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const timelineText = timelineContent.textContent;
+          const openButton = Array.from(detail.querySelectorAll("button[data-history-action]") || [])
+            .find(button => button.dataset.historyAction === "open_workflow_studio");
+          if (!openButton) return {{ missingStudioAction: true, detailText: detail.textContent, timelineText }};
+          openButton.click();
+          const studioDeadline = Date.now() + 8000;
+          while (Date.now() < studioDeadline && !document.querySelector('.flow-node[data-stage-name="plan"].has-runtime')) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const node = document.querySelector('.flow-node[data-stage-name="plan"]');
+          const sideTab = document.querySelector('#workflowSideTabRuntime');
+          if (sideTab && !sideTab.classList.contains("active")) sideTab.click();
+          const runtimeButton = node?.querySelector('[data-node-runtime-open]');
+          if (runtimeButton) runtimeButton.click();
+          const runtimeDeadline = Date.now() + 8000;
+          let stageRuntime = document.querySelector("#stageRuntime");
+          while (
+            Date.now() < runtimeDeadline &&
+            (!stageRuntime || stageRuntime.classList.contains("hidden") || !stageRuntime.textContent.includes("model_escalated"))
+          ) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+            stageRuntime = document.querySelector("#stageRuntime");
+          }}
+          const output = document.querySelector("#runOutput");
+          const saved = JSON.parse(localStorage.getItem("goflow.workflowStudio.activeRun") || "null");
+          return {{
+            missingChatNodes: false,
+            missingStudioAction: false,
+            hash: location.hash,
+            savedRunID: saved && saved.runID,
+            timelineText,
+            nodeExists: Boolean(node),
+            nodeClass: node ? node.className : "",
+            nodeText: node ? node.textContent : "",
+            hasRuntimeButton: Boolean(runtimeButton),
+            stageRuntimeText: stageRuntime ? stageRuntime.textContent : "",
+            runOutputText: output ? output.textContent : ""
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingChatNodes") or metrics.get("missingStudioAction"):
+        raise AssertionError(f"model escalation diagnostics missing Chat history path, got {metrics}")
+    if metrics.get("hash") != "#workflows" or metrics.get("savedRunID") != smoke_run["model_escalated_workflow_run_id"]:
+        raise AssertionError(f"Open in Studio should focus the model-escalated workflow run, got {metrics}")
+    timeline_text = str(metrics.get("timelineText", ""))
+    required_timeline = ["model_escalated", "stage_retry", "stage.params.escalate_model"]
+    missing_timeline = [needle for needle in required_timeline if needle not in timeline_text]
+    if missing_timeline:
+        raise AssertionError(f"Chat lazy timeline is missing model escalation diagnostics {missing_timeline}, got {metrics}")
+    if not metrics.get("nodeExists") or "has-runtime" not in str(metrics.get("nodeClass", "")):
+        raise AssertionError(f"Workflow Studio should mark the model-escalated plan node with runtime diagnostics, got {metrics}")
+    node_text = str(metrics.get("nodeText", ""))
+    if "model escalated" not in node_text:
+        raise AssertionError(f"Workflow Studio node should show model escalation chip, got {metrics}")
+    if not metrics.get("hasRuntimeButton"):
+        raise AssertionError(f"Workflow Studio should expose runtime details for the model-escalated node, got {metrics}")
+    stage_text = str(metrics.get("stageRuntimeText", ""))
+    required_stage = ["Model escalation", "model_escalated", "strong-smoke-model", "stage.params.escalate_model"]
+    missing_stage = [needle for needle in required_stage if needle not in stage_text]
+    if missing_stage:
+        raise AssertionError(f"Workflow Studio selected-node runtime is missing model escalation diagnostics {missing_stage}, got {metrics}")
+    output_text = str(metrics.get("runOutputText", ""))
+    if "model_escalated" not in output_text or "stage_retry" not in output_text or "stage.params.escalate_model" not in output_text:
+        raise AssertionError(f"Workflow Studio run log should expose model escalation diagnostics, got {metrics}")
+
+
+def assert_complex_delivery_runtime_visualization_visible(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const runID = {json.dumps(smoke_run["complex_delivery_run_id"])};
+          const runKey = `workflow:${{runID}}`;
+          const listDeadline = Date.now() + 8000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) runButton.click();
+          const detailDeadline = Date.now() + 8000;
+          while (Date.now() < detailDeadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const openButton = Array.from(detail?.querySelectorAll("button[data-history-action]") || [])
+            .find(button => button.dataset.historyAction === "open_workflow_studio");
+          if (!detail || !openButton) return {{ missingStudioAction: true, detailText: detail ? detail.textContent : "" }};
+          openButton.click();
+          const studioDeadline = Date.now() + 8000;
+          while (Date.now() < studioDeadline && !document.querySelector('.flow-node[data-stage-name="plan"].has-runtime')) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const sideTab = document.querySelector('#workflowSideTabRuntime');
+          if (sideTab && !sideTab.classList.contains("active")) sideTab.click();
+          const stages = ["plan", "iteration", "final-validation", "final-report"];
+          const texts = {{}};
+          for (const stageName of stages) {{
+            const node = document.querySelector(`.flow-node[data-stage-name="${{stageName}}"]`);
+            const button = node?.querySelector('[data-node-runtime-open]');
+            if (button) button.click();
+            const deadline = Date.now() + 8000;
+            let panel = document.querySelector("#stageRuntime");
+            while (Date.now() < deadline && (!panel || panel.classList.contains("hidden") || !panel.textContent.includes(stageName === "plan" ? "Project plan" : stageName === "iteration" ? "Current iteration" : stageName === "final-validation" ? "Final validation" : "Final report"))) {{
+              await new Promise(resolve => setTimeout(resolve, 120));
+              panel = document.querySelector("#stageRuntime");
+            }}
+            texts[stageName] = panel ? panel.textContent : "";
+          }}
+          const saved = JSON.parse(localStorage.getItem("goflow.workflowStudio.activeRun") || "null");
+          return {{
+            missingStudioAction: false,
+            hash: location.hash,
+            savedRunID: saved && saved.runID,
+            texts
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingStudioAction"):
+        raise AssertionError(f"complex delivery run should open in Workflow Studio, got {metrics}")
+    if metrics.get("hash") != "#workflows" or metrics.get("savedRunID") != smoke_run["complex_delivery_run_id"]:
+        raise AssertionError(f"Open in Studio should focus the complex delivery run, got {metrics}")
+    texts = metrics.get("texts") or {}
+    required = {
+        "plan": ["Project plan", "Work slices", "Slice A", "Verification strategy", "go test ./...", "Definition of done"],
+        "iteration": ["Current iteration", "Selected slice", "Slice A", "Remaining work", "none", "PROJECT_COMPLETE"],
+        "final-validation": ["Final validation", "Commands run", "go test ./...", "Requirements coverage", "Slice A covered"],
+        "final-report": ["Final report", "Requirements delivered", "README", "Verification evidence", "Artifact references"],
+    }
+    for stage, needles in required.items():
+        text = str(texts.get(stage, ""))
+        missing = [needle for needle in needles if needle not in text]
+        if missing:
+            raise AssertionError(f"complex delivery runtime visualization for {stage} is missing {missing}, got {metrics}")
+
+
+def assert_workflow_quality_gate_diagnostics_visible(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const runID = {json.dumps(smoke_run["quality_workflow_run_id"])};
+          const runKey = `workflow:${{runID}}`;
+          const listDeadline = Date.now() + 8000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
+          const detailDeadline = Date.now() + 8000;
+          while (Date.now() < detailDeadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const stack = document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`);
+          const timelinePanel = stack?.querySelector('[data-history-lazy-panel="timeline"]');
+          const timelineButton = timelinePanel?.querySelector('[data-history-load="timeline"]');
+          const timelineContent = timelinePanel?.querySelector('[data-history-lazy-content="timeline"]');
+          if (!detail || !stack || !timelinePanel || !timelineButton || !timelineContent) {{
+            return {{ missingChatNodes: true, hasRunButton: Boolean(runButton), detailText: detail ? detail.textContent : "" }};
+          }}
+          timelineButton.click();
+          const timelineDeadline = Date.now() + 8000;
+          while (Date.now() < timelineDeadline && !timelineContent.textContent.includes("quality_gate_failed")) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const timelineText = timelineContent.textContent;
+          const openButton = Array.from(detail.querySelectorAll("button[data-history-action]") || [])
+            .find(button => button.dataset.historyAction === "open_workflow_studio");
+          if (!openButton) return {{ missingStudioAction: true, detailText: detail.textContent, timelineText }};
+          openButton.click();
+          const studioDeadline = Date.now() + 8000;
+          while (Date.now() < studioDeadline && !document.querySelector('.flow-node[data-stage-name="quality"].has-runtime')) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const node = document.querySelector('.flow-node[data-stage-name="quality"]');
+          const sideTab = document.querySelector('#workflowSideTabRuntime');
+          if (sideTab && !sideTab.classList.contains("active")) sideTab.click();
+          const runtimeButton = node?.querySelector('[data-node-runtime-open]');
+          if (runtimeButton) runtimeButton.click();
+          const runtimeDeadline = Date.now() + 8000;
+          let stageRuntime = document.querySelector("#stageRuntime");
+          while (
+            Date.now() < runtimeDeadline &&
+            (!stageRuntime || stageRuntime.classList.contains("hidden") || !stageRuntime.textContent.includes("View quality gate"))
+          ) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+            stageRuntime = document.querySelector("#stageRuntime");
+          }}
+          const output = document.querySelector("#runOutput");
+          const saved = JSON.parse(localStorage.getItem("goflow.workflowStudio.activeRun") || "null");
+          return {{
+            missingChatNodes: false,
+            missingStudioAction: false,
+            hash: location.hash,
+            savedRunID: saved && saved.runID,
+            timelineText,
+            nodeExists: Boolean(node),
+            nodeClass: node ? node.className : "",
+            nodeText: node ? node.textContent : "",
+            hasRuntimeButton: Boolean(runtimeButton),
+            stageRuntimeText: stageRuntime ? stageRuntime.textContent : "",
+            runOutputText: output ? output.textContent : ""
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingChatNodes") or metrics.get("missingStudioAction"):
+        raise AssertionError(f"quality gate diagnostics missing Chat history path, got {metrics}")
+    if metrics.get("hash") != "#workflows" or metrics.get("savedRunID") != smoke_run["quality_workflow_run_id"]:
+        raise AssertionError(f"Open in Studio should focus the quality gate workflow run, got {metrics}")
+    timeline_text = str(metrics.get("timelineText", ""))
+    required_timeline = ["quality_gate_failed", "acceptance_failed=1", "verification_failed=1", "quality_gate"]
+    missing_timeline = [needle for needle in required_timeline if needle not in timeline_text]
+    if missing_timeline:
+        raise AssertionError(f"Chat lazy timeline is missing quality gate diagnostics {missing_timeline}, got {metrics}")
+    if not metrics.get("nodeExists") or "runtime-error" not in str(metrics.get("nodeClass", "")):
+        raise AssertionError(f"Workflow Studio should mark the quality gate node as runtime error, got {metrics}")
+    node_text = str(metrics.get("nodeText", ""))
+    if "quality:" not in node_text or "failed" not in node_text:
+        raise AssertionError(f"Workflow Studio node should show quality failure evidence, got {metrics}")
+    if not metrics.get("hasRuntimeButton"):
+        raise AssertionError(f"Workflow Studio should expose runtime details for the quality gate node, got {metrics}")
+    stage_text = str(metrics.get("stageRuntimeText", ""))
+    required_stage = [
+        "Quality gate failure",
+        "View quality gate",
+        "Quality status",
+        "failed",
+        "Quality score",
+        "61",
+        "Quality failures",
+        "acceptance_failed=1",
+        "verification_failed=1",
+        "quality_gate",
+    ]
+    missing_stage = [needle for needle in required_stage if needle not in stage_text]
+    if missing_stage:
+        raise AssertionError(f"Workflow Studio selected-node runtime is missing quality gate diagnostics {missing_stage}, got {metrics}")
+    output_text = str(metrics.get("runOutputText", ""))
+    if "Quality gate failure" not in output_text or "quality_gate_failed" not in output_text or "acceptance_failed=1" not in output_text:
+        raise AssertionError(f"Workflow Studio run log should expose quality gate failure diagnostics, got {metrics}")
+
+
+def assert_workflow_parallel_file_conflict_diagnostics_visible(browser: Path, base_url: str, timeout: float, profile_dir: Path, smoke_run: dict) -> None:
+    metrics = evaluate_browser_json(
+        browser,
+        f"{base_url}/console#playground",
+        f"""
+        (async () => {{
+          const runID = {json.dumps(smoke_run["parallel_conflict_workflow_run_id"])};
+          const runKey = `workflow:${{runID}}`;
+          const listDeadline = Date.now() + 8000;
+          while (Date.now() < listDeadline && !document.querySelector(`[data-history-run="${{runKey}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const runButton = document.querySelector(`[data-history-run="${{runKey}}"]`);
+          if (runButton && !runButton.classList.contains("active")) {{
+            runButton.click();
+          }}
+          const detailDeadline = Date.now() + 8000;
+          while (Date.now() < detailDeadline && !document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`)) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const detail = document.querySelector("#runHistoryDetail");
+          const stack = document.querySelector(`[data-history-lazy-stack][data-run-id="${{runID}}"]`);
+          const timelinePanel = stack?.querySelector('[data-history-lazy-panel="timeline"]');
+          const timelineButton = timelinePanel?.querySelector('[data-history-load="timeline"]');
+          const timelineContent = timelinePanel?.querySelector('[data-history-lazy-content="timeline"]');
+          if (!detail || !stack || !timelinePanel || !timelineButton || !timelineContent) {{
+            return {{ missingChatNodes: true, hasRunButton: Boolean(runButton), detailText: detail ? detail.textContent : "" }};
+          }}
+          timelineButton.click();
+          const timelineDeadline = Date.now() + 8000;
+          while (Date.now() < timelineDeadline && !timelineContent.textContent.includes("parallel_file_conflict")) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const timelineText = timelineContent.textContent;
+          const openButton = Array.from(detail.querySelectorAll("button[data-history-action]") || [])
+            .find(button => button.dataset.historyAction === "open_workflow_studio");
+          if (!openButton) return {{ missingStudioAction: true, detailText: detail.textContent, timelineText }};
+          openButton.click();
+          const studioDeadline = Date.now() + 8000;
+          while (Date.now() < studioDeadline && !document.querySelector('.flow-node[data-stage-name="join"].has-runtime')) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+          }}
+          const node = document.querySelector('.flow-node[data-stage-name="join"]');
+          const sideTab = document.querySelector('#workflowSideTabRuntime');
+          if (sideTab && !sideTab.classList.contains("active")) sideTab.click();
+          const runtimeButton = node?.querySelector('[data-node-runtime-open]');
+          if (runtimeButton) runtimeButton.click();
+          const runtimeDeadline = Date.now() + 8000;
+          let stageRuntime = document.querySelector("#stageRuntime");
+          while (
+            Date.now() < runtimeDeadline &&
+            (!stageRuntime || stageRuntime.classList.contains("hidden") || !stageRuntime.textContent.includes("View file conflicts"))
+          ) {{
+            await new Promise(resolve => setTimeout(resolve, 120));
+            stageRuntime = document.querySelector("#stageRuntime");
+          }}
+          const output = document.querySelector("#runOutput");
+          const saved = JSON.parse(localStorage.getItem("goflow.workflowStudio.activeRun") || "null");
+          return {{
+            missingChatNodes: false,
+            missingStudioAction: false,
+            hash: location.hash,
+            savedRunID: saved && saved.runID,
+            timelineText,
+            nodeExists: Boolean(node),
+            nodeClass: node ? node.className : "",
+            nodeText: node ? node.textContent : "",
+            hasRuntimeButton: Boolean(runtimeButton),
+            stageRuntimeText: stageRuntime ? stageRuntime.textContent : "",
+            runOutputText: output ? output.textContent : ""
+          }};
+        }})()
+        """,
+        timeout,
+        profile_dir,
+    )
+    if metrics.get("missingChatNodes") or metrics.get("missingStudioAction"):
+        raise AssertionError(f"parallel file conflict diagnostics missing Chat history path, got {metrics}")
+    if metrics.get("hash") != "#workflows" or metrics.get("savedRunID") != smoke_run["parallel_conflict_workflow_run_id"]:
+        raise AssertionError(f"Open in Studio should focus the parallel conflict workflow run, got {metrics}")
+    timeline_text = str(metrics.get("timelineText", ""))
+    required_timeline = [
+        "parallel_file_conflict",
+        "internal/shared.go",
+        "implement",
+        "audit",
+        "parallel_file_ownership",
+        "parallel_patch_artifact_required",
+        "parallel_patch_artifact_handoff",
+        "write_file",
+    ]
+    missing_timeline = [needle for needle in required_timeline if needle not in timeline_text]
+    if missing_timeline:
+        raise AssertionError(f"Chat lazy timeline is missing parallel file conflict diagnostics {missing_timeline}, got {metrics}")
+    if not metrics.get("nodeExists") or "runtime-waiting" not in str(metrics.get("nodeClass", "")):
+        raise AssertionError(f"Workflow Studio should mark the join node as warning/waiting for the file conflict, got {metrics}")
+    node_text = str(metrics.get("nodeText", ""))
+    if "file conflict" not in node_text.lower() or "internal/shared.go" not in node_text:
+        raise AssertionError(f"Workflow Studio join node should show file conflict evidence, got {metrics}")
+    if not metrics.get("hasRuntimeButton"):
+        raise AssertionError(f"Workflow Studio should expose runtime details for the join conflict node, got {metrics}")
+    stage_text = str(metrics.get("stageRuntimeText", ""))
+    required_stage = [
+        "Parallel file conflict",
+        "View file conflicts",
+        "Conflict files",
+        "internal/shared.go",
+        "Conflict owners",
+        "implement",
+        "audit",
+        "parallel_file_ownership",
+        "View handoff warning",
+        "parallel_patch_artifact_handoff",
+        "write_file",
+    ]
+    missing_stage = [needle for needle in required_stage if needle not in stage_text]
+    if missing_stage:
+        raise AssertionError(f"Workflow Studio selected-node runtime is missing file conflict diagnostics {missing_stage}, got {metrics}")
+    output_text = str(metrics.get("runOutputText", ""))
+    if (
+        "File conflict warning" not in output_text
+        or "parallel_file_conflict" not in output_text
+        or "internal/shared.go" not in output_text
+        or "Parallel handoff warning" not in output_text
+        or "parallel_patch_artifact_required" not in output_text
+        or "write_file" not in output_text
+    ):
+        raise AssertionError(f"Workflow Studio run log should expose file conflict warning diagnostics, got {metrics}")
+
+
 def zh_url(base_url: str, path: str) -> str:
     if "#" in path:
         before_hash, fragment = path.split("#", 1)
@@ -1428,24 +3505,24 @@ def main() -> int:
             "GOFLOW_BACKUP_MODEL": env.get("GOFLOW_BACKUP_MODEL", "smoke-backup-model"),
         }
     )
-    tmpdir = Path(tempfile.mkdtemp(prefix="goflow-browser-smoke-"))
+    smoke_tmp_root = ROOT / ".smoke-tmp"
+    smoke_tmp_root.mkdir(exist_ok=True)
+    tmpdir = Path(tempfile.mkdtemp(prefix="goflow-browser-smoke-", dir=smoke_tmp_root))
     proc: subprocess.Popen[str] | None = None
     try:
         runtime_home = tmpdir / "runtime"
         cache_dir = tmpdir / "gocache"
-        gotmp_dir = tmpdir / "gotmp"
         workspace = tmpdir / "workspace"
-        profile_dir = tmpdir / "browser-profile"
+        profile_dir = Path(tempfile.mkdtemp(prefix="goflow-browser-profile-"))
         runtime_home.mkdir()
         cache_dir.mkdir()
-        gotmp_dir.mkdir()
         workspace.mkdir()
-        profile_dir.mkdir()
         smoke_artifact = write_smoke_artifact(workspace)
+        write_smoke_memory(workspace)
         smoke_run = write_smoke_session(workspace)
+        write_smoke_workflow_graph(runtime_home)
         config_path = write_smoke_runtime_config(runtime_home)
         env.setdefault("GOCACHE", str(cache_dir))
-        env.setdefault("GOTMPDIR", str(gotmp_dir))
         binary = args.binary
         if not args.skip_build:
             binary = build_binary(tmpdir, env)
@@ -1489,6 +3566,11 @@ def main() -> int:
             base_url,
             "/assets/styles.css",
             ["run-history-lazy-stack", "run-history-lazy-panel", "run-history-lazy-timeline"],
+        )
+        assert_asset_contains(
+            base_url,
+            "/assets/styles-enhanced.css",
+            ["GoFlow Agent - Enhanced UI Styles", "--primary: #0d9488", "--workflow-node-selected-shadow"],
         )
         try:
             console_dom = render_dom(browser, f"{base_url}/console", args.timeout, profile_dir)
@@ -1597,6 +3679,10 @@ def main() -> int:
                 "memory-artifact-form",
                 "memory-artifact-index",
                 "memory-artifact-load-button",
+                "memory-solution-governance",
+                "data-solution-supersede",
+                "Smoke provider retry decision",
+                "go test ./internal/memory",
                 "Artifact viewer",
                 "Recent artifacts",
                 "Smoke Artifact Report",
@@ -1608,6 +3694,15 @@ def main() -> int:
         assert_workflow_developer_fields_folded(browser, base_url, args.timeout, profile_dir)
         assert_run_history_lazy_loading(browser, base_url, args.timeout, profile_dir, smoke_run)
         assert_run_history_artifacts_lazy_loading(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_workflow_budget_diagnostics_visible(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_workflow_studio_budget_diagnostics_visible(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_workflow_budget_approval_action_visible(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_workflow_blocked_diagnostics_visible(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_workflow_execution_readiness_visible(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_workflow_model_escalation_diagnostics_visible(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_complex_delivery_runtime_visualization_visible(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_workflow_quality_gate_diagnostics_visible(browser, base_url, args.timeout, profile_dir, smoke_run)
+        assert_workflow_parallel_file_conflict_diagnostics_visible(browser, base_url, args.timeout, profile_dir, smoke_run)
         assert_rendered(
             "/console#settings",
             settings_dom,
@@ -1633,6 +3728,9 @@ def main() -> int:
                 "memory-artifact-form",
                 "memory-artifact-index",
                 "memory-artifact-load-button",
+                "memory-solution-governance",
+                "data-solution-supersede",
+                "Smoke provider retry decision",
                 "产物查看器",
                 "最近产物",
                 "只有需要 sha256 引用时才加载完整内容。",
@@ -1725,6 +3823,7 @@ def main() -> int:
             except subprocess.TimeoutExpired:
                 proc.kill()
                 proc.wait(timeout=5)
+        shutil.rmtree(profile_dir, ignore_errors=True)
         shutil.rmtree(tmpdir, ignore_errors=True)
 
 

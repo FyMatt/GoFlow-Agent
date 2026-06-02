@@ -2,6 +2,7 @@ package session
 
 import (
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -327,6 +328,7 @@ func (s *State) CompleteWorkflowRun(runID, status, summary, nextStage, approvalP
 	} else {
 		run.PendingFields = nil
 	}
+	run = updateWorkflowRunBudgetSummary(run)
 	if !strings.EqualFold(run.Status, "awaiting_tool_approval") {
 		run.PendingCallID = ""
 		run.PendingToolName = ""
@@ -341,6 +343,7 @@ func (s *State) CompleteWorkflowRun(runID, status, summary, nextStage, approvalP
 	}
 	if len(stages) > 0 {
 		run.CompletedStages = enrichWorkflowRunStages(run, stages, now)
+		run.CompletedStages = enrichWorkflowRunStageBudgets(run.CompletedStages, run.Events)
 		run.CompletedStages = s.normalizeWorkflowRunStagePayloadsLocked(run.ID, run.Name, run.CompletedStages)
 		run.CompletedStages = s.externalizeWorkflowRunStageArtifactsLocked(run.CompletedStages, now)
 		run.Artifacts = workflowRunArtifacts(run.CompletedStages)
@@ -370,6 +373,7 @@ func (s *State) AppendWorkflowRunEvent(runID string, event WorkflowRunEventSnaps
 	event = s.normalizeWorkflowRunEventLocked(runID, run.Name, event)
 	run.Events = appendWorkflowRunEventLocked(run.Events, event)
 	run.UpdatedAt = now
+	run = updateWorkflowRunBudgetSummary(run)
 	s.workflowRuns[index] = run
 }
 
@@ -490,11 +494,598 @@ func isTerminalWorkflowStatus(status string) bool {
 
 func workflowRunActive(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "running", "cancelling", "awaiting_sub_workflow":
+	case "running", "cancelling", "awaiting_sub_workflow", "paused_need_more_budget", "awaiting_budget_approval":
 		return true
 	default:
 		return false
 	}
+}
+
+func updateWorkflowRunBudgetSummary(run WorkflowRunSnapshot) WorkflowRunSnapshot {
+	var estimatedPromptTokens, reportedPromptTokens, outputTokens, cachedTokens, promptBudgetCalls, reportedCalls, continuations int
+	var cumulativeEstimatedPromptTokens, cumulativeReportedPromptTokens, cumulativeOutputTokens, cumulativeCachedTokens, cumulativeLLMCalls, cumulativeContinuations int
+	var netPromptTokens, grossPromptTokens, savedTokens, memorySavedTokens, historySavedTokens, artifactSavedTokens, skillSavedTokens, toolSchemaSavedTokens int
+	var cumulativeNetPromptTokens, cumulativeGrossPromptTokens, cumulativeSavedTokens, cumulativeMemorySavedTokens, cumulativeHistorySavedTokens, cumulativeArtifactSavedTokens, cumulativeSkillSavedTokens, cumulativeToolSchemaSavedTokens int
+	var estimatedInputCost, estimatedOutputCost, cumulativeEstimatedInputCost, cumulativeEstimatedOutputCost, cumulativeEstimatedTotalCost float64
+	var costCurrency, pricingSource string
+	promptCostFromBudget := false
+	for _, event := range run.Events {
+		switch strings.ToLower(strings.TrimSpace(event.Type)) {
+		case "prompt_budget":
+			if event.PromptBudget != nil {
+				estimatedPromptTokens += event.PromptBudget.EstimatedPromptTokens
+				estimatedInputCost += event.PromptBudget.EstimatedInputCost
+				if event.PromptBudget.EstimatedInputCost > 0 {
+					promptCostFromBudget = true
+				}
+				if strings.TrimSpace(costCurrency) == "" {
+					costCurrency = event.PromptBudget.CostCurrency
+				}
+				if strings.TrimSpace(pricingSource) == "" {
+					pricingSource = event.PromptBudget.PricingSource
+				}
+				attribution := promptBudgetTokenAttribution(*event.PromptBudget)
+				netPromptTokens += attribution.NetPromptTokens
+				grossPromptTokens += attribution.GrossPromptTokens
+				savedTokens += attribution.SavedTokens
+				memorySavedTokens += attribution.MemorySavedTokens
+				historySavedTokens += attribution.HistorySavedTokens
+				artifactSavedTokens += attribution.ArtifactSavedTokens
+				skillSavedTokens += attribution.SkillSavedTokens
+				toolSchemaSavedTokens += attribution.ToolSchemaSavedTokens
+			} else if event.BudgetEstimatedPromptTokens > 0 {
+				if event.BudgetEstimatedPromptTokens > estimatedPromptTokens {
+					estimatedPromptTokens = event.BudgetEstimatedPromptTokens
+				}
+			}
+			promptBudgetCalls++
+		case "token_usage":
+			reportedPromptTokens += maxInt(event.PromptTokens, event.BudgetReportedPromptTokens)
+			outputTokens += maxInt(event.OutputTokens, event.BudgetOutputTokens)
+			cachedTokens += maxInt(event.CachedTokens, event.BudgetCachedTokens)
+			if !promptCostFromBudget {
+				estimatedInputCost += event.BudgetEstimatedInputCost
+			}
+			estimatedOutputCost += event.BudgetEstimatedOutputCost
+			if strings.TrimSpace(costCurrency) == "" {
+				costCurrency = event.BudgetCostCurrency
+			}
+			if strings.TrimSpace(pricingSource) == "" {
+				pricingSource = event.BudgetPricingSource
+			}
+			reportedCalls++
+		}
+		if event.BudgetEstimatedPromptTokens > 0 {
+			cumulativeEstimatedPromptTokens = maxInt(cumulativeEstimatedPromptTokens, event.BudgetEstimatedPromptTokens)
+		}
+		if event.BudgetNetPromptTokens > 0 {
+			cumulativeNetPromptTokens = maxInt(cumulativeNetPromptTokens, event.BudgetNetPromptTokens)
+		}
+		if event.BudgetGrossPromptTokens > 0 {
+			cumulativeGrossPromptTokens = maxInt(cumulativeGrossPromptTokens, event.BudgetGrossPromptTokens)
+		}
+		if event.BudgetSavedTokens > 0 {
+			cumulativeSavedTokens = maxInt(cumulativeSavedTokens, event.BudgetSavedTokens)
+		}
+		if event.BudgetMemorySavedTokens > 0 {
+			cumulativeMemorySavedTokens = maxInt(cumulativeMemorySavedTokens, event.BudgetMemorySavedTokens)
+		}
+		if event.BudgetHistorySavedTokens > 0 {
+			cumulativeHistorySavedTokens = maxInt(cumulativeHistorySavedTokens, event.BudgetHistorySavedTokens)
+		}
+		if event.BudgetArtifactSavedTokens > 0 {
+			cumulativeArtifactSavedTokens = maxInt(cumulativeArtifactSavedTokens, event.BudgetArtifactSavedTokens)
+		}
+		if event.BudgetSkillSavedTokens > 0 {
+			cumulativeSkillSavedTokens = maxInt(cumulativeSkillSavedTokens, event.BudgetSkillSavedTokens)
+		}
+		if event.BudgetToolSchemaSavedTokens > 0 {
+			cumulativeToolSchemaSavedTokens = maxInt(cumulativeToolSchemaSavedTokens, event.BudgetToolSchemaSavedTokens)
+		}
+		if event.BudgetReportedPromptTokens > 0 {
+			cumulativeReportedPromptTokens = maxInt(cumulativeReportedPromptTokens, event.BudgetReportedPromptTokens)
+		}
+		if event.BudgetOutputTokens > 0 {
+			cumulativeOutputTokens = maxInt(cumulativeOutputTokens, event.BudgetOutputTokens)
+		}
+		if event.BudgetCachedTokens > 0 {
+			cumulativeCachedTokens = maxInt(cumulativeCachedTokens, event.BudgetCachedTokens)
+		}
+		if event.BudgetLLMCalls > 0 {
+			cumulativeLLMCalls = maxInt(cumulativeLLMCalls, event.BudgetLLMCalls)
+		}
+		if event.BudgetContinuations > 0 {
+			cumulativeContinuations = maxInt(cumulativeContinuations, event.BudgetContinuations)
+		}
+		if event.BudgetEstimatedInputCost > 0 {
+			cumulativeEstimatedInputCost = maxFloat64(cumulativeEstimatedInputCost, event.BudgetEstimatedInputCost)
+		}
+		if event.BudgetEstimatedOutputCost > 0 {
+			cumulativeEstimatedOutputCost = maxFloat64(cumulativeEstimatedOutputCost, event.BudgetEstimatedOutputCost)
+		}
+		if event.BudgetEstimatedTotalCost > 0 {
+			cumulativeEstimatedTotalCost = maxFloat64(cumulativeEstimatedTotalCost, event.BudgetEstimatedTotalCost)
+		}
+		if strings.TrimSpace(costCurrency) == "" {
+			costCurrency = event.BudgetCostCurrency
+		}
+		if strings.TrimSpace(pricingSource) == "" {
+			pricingSource = event.BudgetPricingSource
+		}
+		if strings.EqualFold(strings.TrimSpace(event.Reason), "continuation_started") {
+			continuations++
+		}
+	}
+	estimatedPromptTokens = maxInt(estimatedPromptTokens, cumulativeEstimatedPromptTokens)
+	netPromptTokens = maxInt(netPromptTokens, cumulativeNetPromptTokens)
+	grossPromptTokens = maxInt(grossPromptTokens, cumulativeGrossPromptTokens)
+	savedTokens = maxInt(savedTokens, cumulativeSavedTokens)
+	memorySavedTokens = maxInt(memorySavedTokens, cumulativeMemorySavedTokens)
+	historySavedTokens = maxInt(historySavedTokens, cumulativeHistorySavedTokens)
+	artifactSavedTokens = maxInt(artifactSavedTokens, cumulativeArtifactSavedTokens)
+	skillSavedTokens = maxInt(skillSavedTokens, cumulativeSkillSavedTokens)
+	toolSchemaSavedTokens = maxInt(toolSchemaSavedTokens, cumulativeToolSchemaSavedTokens)
+	if netPromptTokens == 0 {
+		netPromptTokens = estimatedPromptTokens
+	}
+	if savedTokens == 0 {
+		savedTokens = memorySavedTokens + historySavedTokens + artifactSavedTokens + skillSavedTokens + toolSchemaSavedTokens
+	}
+	if grossPromptTokens == 0 && (netPromptTokens > 0 || savedTokens > 0) {
+		grossPromptTokens = netPromptTokens + savedTokens
+	}
+	reportedPromptTokens = maxInt(reportedPromptTokens, cumulativeReportedPromptTokens)
+	outputTokens = maxInt(outputTokens, cumulativeOutputTokens)
+	cachedTokens = maxInt(cachedTokens, cumulativeCachedTokens)
+	estimatedInputCost = maxFloat64(estimatedInputCost, cumulativeEstimatedInputCost)
+	estimatedOutputCost = maxFloat64(estimatedOutputCost, cumulativeEstimatedOutputCost)
+	estimatedTotalCost := estimatedInputCost + estimatedOutputCost
+	estimatedTotalCost = maxFloat64(estimatedTotalCost, cumulativeEstimatedTotalCost)
+	llmCalls := promptBudgetCalls
+	if llmCalls == 0 {
+		llmCalls = reportedCalls
+	}
+	llmCalls = maxInt(llmCalls, cumulativeLLMCalls)
+	continuations = maxInt(continuations, cumulativeContinuations)
+	promptTokens := reportedPromptTokens
+	if estimatedPromptTokens > promptTokens {
+		promptTokens = estimatedPromptTokens
+	}
+	run.BudgetPromptTokens = promptTokens
+	run.BudgetEstimatedPromptTokens = estimatedPromptTokens
+	run.BudgetNetPromptTokens = netPromptTokens
+	run.BudgetGrossPromptTokens = grossPromptTokens
+	run.BudgetSavedTokens = savedTokens
+	run.BudgetMemorySavedTokens = memorySavedTokens
+	run.BudgetHistorySavedTokens = historySavedTokens
+	run.BudgetArtifactSavedTokens = artifactSavedTokens
+	run.BudgetSkillSavedTokens = skillSavedTokens
+	run.BudgetToolSchemaSavedTokens = toolSchemaSavedTokens
+	run.BudgetReportedPromptTokens = reportedPromptTokens
+	run.BudgetOutputTokens = outputTokens
+	run.BudgetCachedTokens = cachedTokens
+	run.BudgetTotalTokens = promptTokens + outputTokens
+	run.BudgetLLMCalls = llmCalls
+	run.BudgetContinuations = continuations
+	run.BudgetEstimatedInputCost = estimatedInputCost
+	run.BudgetEstimatedOutputCost = estimatedOutputCost
+	run.BudgetEstimatedTotalCost = estimatedTotalCost
+	run.BudgetCostCurrency = strings.TrimSpace(costCurrency)
+	run.BudgetPricingSource = strings.TrimSpace(pricingSource)
+	run.BudgetScope = ""
+	run.BudgetReason = ""
+	run.BudgetMetric = ""
+	run.BudgetUsed = 0
+	run.BudgetSoftLimit = 0
+	run.BudgetHardLimit = 0
+	run.BudgetRemaining = 0
+	for i := len(run.Events) - 1; i >= 0; i-- {
+		event := run.Events[i]
+		if workflowRunEventHasBudgetDiagnostic(event) && run.BudgetMetric == "" && run.BudgetSoftLimit == 0 && run.BudgetHardLimit == 0 {
+			run.BudgetMetric = strings.TrimSpace(event.BudgetMetric)
+			run.BudgetUsed = event.BudgetUsed
+			run.BudgetSoftLimit = event.BudgetSoftLimit
+			run.BudgetHardLimit = event.BudgetHardLimit
+			run.BudgetRemaining = event.BudgetRemaining
+		}
+		if strings.TrimSpace(event.BudgetScope) == "" && !strings.EqualFold(strings.TrimSpace(event.Reason), "budget_hard_limit_hit") {
+			continue
+		}
+		if strings.TrimSpace(event.BudgetScope) != "" {
+			run.BudgetScope = strings.TrimSpace(event.BudgetScope)
+		}
+		if strings.TrimSpace(event.BudgetReason) != "" {
+			run.BudgetReason = strings.TrimSpace(event.BudgetReason)
+		} else if strings.TrimSpace(event.Reason) != "" {
+			run.BudgetReason = strings.TrimSpace(event.Reason)
+		}
+		break
+	}
+	return run
+}
+
+func workflowRunEventHasBudgetDiagnostic(event WorkflowRunEventSnapshot) bool {
+	return strings.TrimSpace(event.BudgetMetric) != "" ||
+		event.BudgetUsed > 0 ||
+		event.BudgetSoftLimit > 0 ||
+		event.BudgetHardLimit > 0 ||
+		event.BudgetRemaining > 0
+}
+
+type promptBudgetAttribution struct {
+	NetPromptTokens       int
+	GrossPromptTokens     int
+	SavedTokens           int
+	MemorySavedTokens     int
+	HistorySavedTokens    int
+	ArtifactSavedTokens   int
+	SkillSavedTokens      int
+	ToolSchemaSavedTokens int
+}
+
+func promptBudgetTokenAttribution(budget schema.PromptBudget) promptBudgetAttribution {
+	attribution := promptBudgetAttribution{
+		NetPromptTokens:       budget.EstimatedPromptTokens,
+		MemorySavedTokens:     budget.MemoryEstimatedSavedTokens,
+		HistorySavedTokens:    budget.HistoryEstimatedSavedTokens,
+		ArtifactSavedTokens:   budget.ArtifactOmittedTokens,
+		SkillSavedTokens:      budget.SkillOmittedTokens,
+		ToolSchemaSavedTokens: budget.ToolSchemaEstimatedSavedTokens,
+	}
+	attribution.SavedTokens = attribution.MemorySavedTokens +
+		attribution.HistorySavedTokens +
+		attribution.ArtifactSavedTokens +
+		attribution.SkillSavedTokens +
+		attribution.ToolSchemaSavedTokens
+	attribution.GrossPromptTokens = attribution.NetPromptTokens + attribution.SavedTokens
+	return attribution
+}
+
+type workflowRunStageBudgetUsage struct {
+	Scope                 string
+	Reason                string
+	Metric                string
+	Used                  int
+	SoftLimit             int
+	HardLimit             int
+	Remaining             int
+	EstimatedPromptTokens int
+	NetPromptTokens       int
+	GrossPromptTokens     int
+	SavedTokens           int
+	MemorySavedTokens     int
+	HistorySavedTokens    int
+	ArtifactSavedTokens   int
+	SkillSavedTokens      int
+	ToolSchemaSavedTokens int
+	ReportedPromptTokens  int
+	OutputTokens          int
+	CachedTokens          int
+	LLMCalls              int
+	Continuations         int
+	EstimatedInputCost    float64
+	EstimatedOutputCost   float64
+	EstimatedTotalCost    float64
+	CostCurrency          string
+	PricingSource         string
+	PromptCostFromBudget  bool
+}
+
+func workflowRunStageBudgetUsageByStage(events []WorkflowRunEventSnapshot) map[string]workflowRunStageBudgetUsage {
+	if len(events) == 0 {
+		return nil
+	}
+	usages := make(map[string]workflowRunStageBudgetUsage)
+	for _, event := range events {
+		stage := strings.ToLower(strings.TrimSpace(event.Stage))
+		if stage == "" {
+			continue
+		}
+		usage := usages[stage]
+		switch strings.ToLower(strings.TrimSpace(event.Type)) {
+		case "prompt_budget":
+			if event.PromptBudget != nil {
+				usage.EstimatedPromptTokens += event.PromptBudget.EstimatedPromptTokens
+				usage.EstimatedInputCost += event.PromptBudget.EstimatedInputCost
+				if event.PromptBudget.EstimatedInputCost > 0 {
+					usage.PromptCostFromBudget = true
+				}
+				if strings.TrimSpace(usage.CostCurrency) == "" {
+					usage.CostCurrency = event.PromptBudget.CostCurrency
+				}
+				if strings.TrimSpace(usage.PricingSource) == "" {
+					usage.PricingSource = event.PromptBudget.PricingSource
+				}
+				attribution := promptBudgetTokenAttribution(*event.PromptBudget)
+				usage.NetPromptTokens += attribution.NetPromptTokens
+				usage.GrossPromptTokens += attribution.GrossPromptTokens
+				usage.SavedTokens += attribution.SavedTokens
+				usage.MemorySavedTokens += attribution.MemorySavedTokens
+				usage.HistorySavedTokens += attribution.HistorySavedTokens
+				usage.ArtifactSavedTokens += attribution.ArtifactSavedTokens
+				usage.SkillSavedTokens += attribution.SkillSavedTokens
+				usage.ToolSchemaSavedTokens += attribution.ToolSchemaSavedTokens
+			} else if event.BudgetEstimatedPromptTokens > 0 {
+				usage.EstimatedPromptTokens = maxInt(usage.EstimatedPromptTokens, event.BudgetEstimatedPromptTokens)
+			} else if event.PromptTokens > 0 {
+				usage.EstimatedPromptTokens += event.PromptTokens
+			}
+			usage.LLMCalls++
+		case "token_usage":
+			usage.ReportedPromptTokens += maxInt(event.PromptTokens, event.BudgetReportedPromptTokens)
+			usage.OutputTokens += maxInt(event.OutputTokens, event.BudgetOutputTokens)
+			usage.CachedTokens += maxInt(event.CachedTokens, event.BudgetCachedTokens)
+			if !usage.PromptCostFromBudget {
+				usage.EstimatedInputCost += event.BudgetEstimatedInputCost
+			}
+			usage.EstimatedOutputCost += event.BudgetEstimatedOutputCost
+			if strings.TrimSpace(usage.CostCurrency) == "" {
+				usage.CostCurrency = event.BudgetCostCurrency
+			}
+			if strings.TrimSpace(usage.PricingSource) == "" {
+				usage.PricingSource = event.BudgetPricingSource
+			}
+			if usage.LLMCalls == 0 {
+				usage.LLMCalls = 1
+			}
+		}
+		if event.BudgetEstimatedPromptTokens > 0 {
+			usage.EstimatedPromptTokens = maxInt(usage.EstimatedPromptTokens, event.BudgetEstimatedPromptTokens)
+		}
+		if event.BudgetNetPromptTokens > 0 {
+			usage.NetPromptTokens = maxInt(usage.NetPromptTokens, event.BudgetNetPromptTokens)
+		}
+		if event.BudgetGrossPromptTokens > 0 {
+			usage.GrossPromptTokens = maxInt(usage.GrossPromptTokens, event.BudgetGrossPromptTokens)
+		}
+		if event.BudgetSavedTokens > 0 {
+			usage.SavedTokens = maxInt(usage.SavedTokens, event.BudgetSavedTokens)
+		}
+		if event.BudgetMemorySavedTokens > 0 {
+			usage.MemorySavedTokens = maxInt(usage.MemorySavedTokens, event.BudgetMemorySavedTokens)
+		}
+		if event.BudgetHistorySavedTokens > 0 {
+			usage.HistorySavedTokens = maxInt(usage.HistorySavedTokens, event.BudgetHistorySavedTokens)
+		}
+		if event.BudgetArtifactSavedTokens > 0 {
+			usage.ArtifactSavedTokens = maxInt(usage.ArtifactSavedTokens, event.BudgetArtifactSavedTokens)
+		}
+		if event.BudgetSkillSavedTokens > 0 {
+			usage.SkillSavedTokens = maxInt(usage.SkillSavedTokens, event.BudgetSkillSavedTokens)
+		}
+		if event.BudgetToolSchemaSavedTokens > 0 {
+			usage.ToolSchemaSavedTokens = maxInt(usage.ToolSchemaSavedTokens, event.BudgetToolSchemaSavedTokens)
+		}
+		if event.BudgetReportedPromptTokens > 0 {
+			usage.ReportedPromptTokens = maxInt(usage.ReportedPromptTokens, event.BudgetReportedPromptTokens)
+		}
+		if event.BudgetOutputTokens > 0 {
+			usage.OutputTokens = maxInt(usage.OutputTokens, event.BudgetOutputTokens)
+		}
+		if event.BudgetCachedTokens > 0 {
+			usage.CachedTokens = maxInt(usage.CachedTokens, event.BudgetCachedTokens)
+		}
+		if event.BudgetLLMCalls > 0 {
+			usage.LLMCalls = maxInt(usage.LLMCalls, event.BudgetLLMCalls)
+		}
+		if event.BudgetContinuations > 0 {
+			usage.Continuations = maxInt(usage.Continuations, event.BudgetContinuations)
+		}
+		if event.BudgetEstimatedInputCost > 0 {
+			usage.EstimatedInputCost = maxFloat64(usage.EstimatedInputCost, event.BudgetEstimatedInputCost)
+		}
+		if event.BudgetEstimatedOutputCost > 0 {
+			usage.EstimatedOutputCost = maxFloat64(usage.EstimatedOutputCost, event.BudgetEstimatedOutputCost)
+		}
+		if event.BudgetEstimatedTotalCost > 0 {
+			usage.EstimatedTotalCost = maxFloat64(usage.EstimatedTotalCost, event.BudgetEstimatedTotalCost)
+		}
+		if strings.TrimSpace(usage.CostCurrency) == "" {
+			usage.CostCurrency = event.BudgetCostCurrency
+		}
+		if strings.TrimSpace(usage.PricingSource) == "" {
+			usage.PricingSource = event.BudgetPricingSource
+		}
+		if strings.EqualFold(strings.TrimSpace(event.Reason), "continuation_started") {
+			usage.Continuations++
+		}
+		if strings.TrimSpace(event.BudgetScope) != "" {
+			usage.Scope = strings.TrimSpace(event.BudgetScope)
+		}
+		if strings.TrimSpace(event.BudgetReason) != "" {
+			usage.Reason = strings.TrimSpace(event.BudgetReason)
+		} else if strings.TrimSpace(event.Reason) != "" {
+			usage.Reason = strings.TrimSpace(event.Reason)
+		}
+		if workflowRunEventHasBudgetDiagnostic(event) {
+			usage.Metric = strings.TrimSpace(event.BudgetMetric)
+			usage.Used = event.BudgetUsed
+			usage.SoftLimit = event.BudgetSoftLimit
+			usage.HardLimit = event.BudgetHardLimit
+			usage.Remaining = event.BudgetRemaining
+		}
+		usages[stage] = usage
+	}
+	if len(usages) == 0 {
+		return nil
+	}
+	return usages
+}
+
+func applyWorkflowRunStageBudgetUsage(stage *WorkflowRunStageSnapshot, usage workflowRunStageBudgetUsage) {
+	if stage == nil {
+		return
+	}
+	promptTokens := usage.ReportedPromptTokens
+	if usage.EstimatedPromptTokens > promptTokens {
+		promptTokens = usage.EstimatedPromptTokens
+	}
+	if usage.NetPromptTokens == 0 {
+		usage.NetPromptTokens = usage.EstimatedPromptTokens
+	}
+	if usage.SavedTokens == 0 {
+		usage.SavedTokens = usage.MemorySavedTokens + usage.HistorySavedTokens + usage.ArtifactSavedTokens + usage.SkillSavedTokens + usage.ToolSchemaSavedTokens
+	}
+	if usage.GrossPromptTokens == 0 && (usage.NetPromptTokens > 0 || usage.SavedTokens > 0) {
+		usage.GrossPromptTokens = usage.NetPromptTokens + usage.SavedTokens
+	}
+	if usage.EstimatedTotalCost == 0 && (usage.EstimatedInputCost > 0 || usage.EstimatedOutputCost > 0) {
+		usage.EstimatedTotalCost = usage.EstimatedInputCost + usage.EstimatedOutputCost
+	}
+	if strings.TrimSpace(stage.BudgetScope) == "" {
+		stage.BudgetScope = usage.Scope
+	}
+	if strings.TrimSpace(stage.BudgetReason) == "" {
+		stage.BudgetReason = usage.Reason
+	}
+	if strings.TrimSpace(stage.BudgetMetric) == "" {
+		stage.BudgetMetric = usage.Metric
+	}
+	if workflowRunStageBudgetUsageHasDiagnostic(usage) {
+		stage.BudgetUsed = usage.Used
+		stage.BudgetSoftLimit = usage.SoftLimit
+		stage.BudgetHardLimit = usage.HardLimit
+		stage.BudgetRemaining = usage.Remaining
+	}
+	stage.BudgetPromptTokens = maxInt(stage.BudgetPromptTokens, promptTokens)
+	stage.BudgetEstimatedPromptTokens = maxInt(stage.BudgetEstimatedPromptTokens, usage.EstimatedPromptTokens)
+	stage.BudgetNetPromptTokens = maxInt(stage.BudgetNetPromptTokens, usage.NetPromptTokens)
+	stage.BudgetGrossPromptTokens = maxInt(stage.BudgetGrossPromptTokens, usage.GrossPromptTokens)
+	stage.BudgetSavedTokens = maxInt(stage.BudgetSavedTokens, usage.SavedTokens)
+	stage.BudgetMemorySavedTokens = maxInt(stage.BudgetMemorySavedTokens, usage.MemorySavedTokens)
+	stage.BudgetHistorySavedTokens = maxInt(stage.BudgetHistorySavedTokens, usage.HistorySavedTokens)
+	stage.BudgetArtifactSavedTokens = maxInt(stage.BudgetArtifactSavedTokens, usage.ArtifactSavedTokens)
+	stage.BudgetSkillSavedTokens = maxInt(stage.BudgetSkillSavedTokens, usage.SkillSavedTokens)
+	stage.BudgetToolSchemaSavedTokens = maxInt(stage.BudgetToolSchemaSavedTokens, usage.ToolSchemaSavedTokens)
+	stage.BudgetReportedPromptTokens = maxInt(stage.BudgetReportedPromptTokens, usage.ReportedPromptTokens)
+	stage.BudgetOutputTokens = maxInt(stage.BudgetOutputTokens, usage.OutputTokens)
+	stage.BudgetCachedTokens = maxInt(stage.BudgetCachedTokens, usage.CachedTokens)
+	stage.BudgetLLMCalls = maxInt(stage.BudgetLLMCalls, usage.LLMCalls)
+	stage.BudgetContinuations = maxInt(stage.BudgetContinuations, usage.Continuations)
+	stage.BudgetTotalTokens = maxInt(stage.BudgetTotalTokens, stage.BudgetPromptTokens+stage.BudgetOutputTokens)
+	stage.BudgetEstimatedInputCost = maxFloat64(stage.BudgetEstimatedInputCost, usage.EstimatedInputCost)
+	stage.BudgetEstimatedOutputCost = maxFloat64(stage.BudgetEstimatedOutputCost, usage.EstimatedOutputCost)
+	stage.BudgetEstimatedTotalCost = maxFloat64(stage.BudgetEstimatedTotalCost, usage.EstimatedTotalCost)
+	if strings.TrimSpace(stage.BudgetCostCurrency) == "" {
+		stage.BudgetCostCurrency = strings.TrimSpace(usage.CostCurrency)
+	}
+	if strings.TrimSpace(stage.BudgetPricingSource) == "" {
+		stage.BudgetPricingSource = strings.TrimSpace(usage.PricingSource)
+	}
+	workflowRunStageBudgetMetadata(stage)
+}
+
+func workflowRunStageBudgetUsageHasDiagnostic(usage workflowRunStageBudgetUsage) bool {
+	return strings.TrimSpace(usage.Metric) != "" ||
+		usage.Used > 0 ||
+		usage.SoftLimit > 0 ||
+		usage.HardLimit > 0 ||
+		usage.Remaining > 0
+}
+
+func workflowRunStageBudgetMetadata(stage *WorkflowRunStageSnapshot) {
+	if stage == nil {
+		return
+	}
+	if strings.TrimSpace(stage.BudgetScope) == "" &&
+		strings.TrimSpace(stage.BudgetReason) == "" &&
+		stage.BudgetPromptTokens == 0 &&
+		stage.BudgetEstimatedPromptTokens == 0 &&
+		stage.BudgetNetPromptTokens == 0 &&
+		stage.BudgetGrossPromptTokens == 0 &&
+		stage.BudgetSavedTokens == 0 &&
+		stage.BudgetMemorySavedTokens == 0 &&
+		stage.BudgetHistorySavedTokens == 0 &&
+		stage.BudgetArtifactSavedTokens == 0 &&
+		stage.BudgetSkillSavedTokens == 0 &&
+		stage.BudgetToolSchemaSavedTokens == 0 &&
+		stage.BudgetReportedPromptTokens == 0 &&
+		stage.BudgetOutputTokens == 0 &&
+		stage.BudgetCachedTokens == 0 &&
+		stage.BudgetTotalTokens == 0 &&
+		stage.BudgetLLMCalls == 0 &&
+		stage.BudgetContinuations == 0 &&
+		stage.BudgetEstimatedInputCost == 0 &&
+		stage.BudgetEstimatedOutputCost == 0 &&
+		stage.BudgetEstimatedTotalCost == 0 &&
+		strings.TrimSpace(stage.BudgetCostCurrency) == "" &&
+		strings.TrimSpace(stage.BudgetPricingSource) == "" &&
+		strings.TrimSpace(stage.BudgetMetric) == "" &&
+		stage.BudgetUsed == 0 &&
+		stage.BudgetSoftLimit == 0 &&
+		stage.BudgetHardLimit == 0 &&
+		stage.BudgetRemaining == 0 {
+		return
+	}
+	if stage.Metadata == nil {
+		stage.Metadata = map[string]string{}
+	}
+	setString := func(key, value string) {
+		if strings.TrimSpace(value) != "" {
+			stage.Metadata[key] = strings.TrimSpace(value)
+		}
+	}
+	setInt := func(key string, value int) {
+		if value > 0 {
+			stage.Metadata[key] = strconv.Itoa(value)
+		}
+	}
+	setString("budget_scope", stage.BudgetScope)
+	setString("budget_reason", stage.BudgetReason)
+	setString("budget_metric", stage.BudgetMetric)
+	setInt("budget_used", stage.BudgetUsed)
+	setInt("budget_soft_limit", stage.BudgetSoftLimit)
+	setInt("budget_hard_limit", stage.BudgetHardLimit)
+	setInt("budget_remaining", stage.BudgetRemaining)
+	setInt("budget_prompt_tokens", stage.BudgetPromptTokens)
+	setInt("budget_estimated_prompt_tokens", stage.BudgetEstimatedPromptTokens)
+	setInt("budget_net_prompt_tokens", stage.BudgetNetPromptTokens)
+	setInt("budget_gross_prompt_tokens", stage.BudgetGrossPromptTokens)
+	setInt("budget_saved_tokens", stage.BudgetSavedTokens)
+	setInt("budget_memory_saved_tokens", stage.BudgetMemorySavedTokens)
+	setInt("budget_history_saved_tokens", stage.BudgetHistorySavedTokens)
+	setInt("budget_artifact_saved_tokens", stage.BudgetArtifactSavedTokens)
+	setInt("budget_skill_saved_tokens", stage.BudgetSkillSavedTokens)
+	setInt("budget_tool_schema_saved_tokens", stage.BudgetToolSchemaSavedTokens)
+	setInt("budget_reported_prompt_tokens", stage.BudgetReportedPromptTokens)
+	setInt("budget_output_tokens", stage.BudgetOutputTokens)
+	setInt("budget_cached_tokens", stage.BudgetCachedTokens)
+	setInt("budget_total_tokens", stage.BudgetTotalTokens)
+	setInt("budget_llm_calls", stage.BudgetLLMCalls)
+	setInt("budget_continuations", stage.BudgetContinuations)
+	setFloat := func(key string, value float64) {
+		if value > 0 {
+			stage.Metadata[key] = strconv.FormatFloat(value, 'f', -1, 64)
+		}
+	}
+	setFloat("budget_estimated_input_cost", stage.BudgetEstimatedInputCost)
+	setFloat("budget_estimated_output_cost", stage.BudgetEstimatedOutputCost)
+	setFloat("budget_estimated_total_cost", stage.BudgetEstimatedTotalCost)
+	setString("budget_cost_currency", stage.BudgetCostCurrency)
+	setString("budget_pricing_source", stage.BudgetPricingSource)
+}
+
+func firstWorkflowRunNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
+func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func maxFloat64(left, right float64) float64 {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func trimWorkflowRunText(value string) string {
@@ -522,6 +1113,7 @@ func copyWorkflowRunSnapshot(run WorkflowRunSnapshot) WorkflowRunSnapshot {
 	}
 	run.PendingResponseMessage = schema.CopyMessage(run.PendingResponseMessage)
 	run.CompletedStages = copyWorkflowRunStageSnapshots(run.CompletedStages)
+	run = updateWorkflowRunBudgetSummary(run)
 	if len(run.Events) > 0 {
 		run.Events = append([]WorkflowRunEventSnapshot(nil), run.Events...)
 		for i := range run.Events {
@@ -681,6 +1273,29 @@ func enrichWorkflowRunStages(run WorkflowRunSnapshot, stages []WorkflowRunStageS
 		stage.Artifacts = buildWorkflowRunStageArtifacts(*stage)
 	}
 	return copied
+}
+
+func enrichWorkflowRunStageBudgets(stages []WorkflowRunStageSnapshot, events []WorkflowRunEventSnapshot) []WorkflowRunStageSnapshot {
+	if len(stages) == 0 || len(events) == 0 {
+		return stages
+	}
+	usages := workflowRunStageBudgetUsageByStage(events)
+	if len(usages) == 0 {
+		return stages
+	}
+	out := copyWorkflowRunStageSnapshots(stages)
+	for i := range out {
+		stage := strings.ToLower(strings.TrimSpace(out[i].Stage))
+		if stage == "" {
+			continue
+		}
+		usage, ok := usages[stage]
+		if !ok {
+			continue
+		}
+		applyWorkflowRunStageBudgetUsage(&out[i], usage)
+	}
+	return out
 }
 
 func firstWorkflowRunStageEventAt(events []WorkflowRunEventSnapshot, stage string) string {

@@ -98,7 +98,7 @@ func TestAnthropicClientChatUsesAnthropicMessagesAPI(t *testing.T) {
 	if resp.Message.Content != "hello back" {
 		t.Fatalf("unexpected response: %#v", resp)
 	}
-	if resp.StopReason != "end_turn" {
+	if resp.StopReason != schema.StopReasonStop {
 		t.Fatalf("unexpected stop reason: %#v", resp)
 	}
 	if resp.Usage.PromptTokens != 120 || resp.Usage.OutputTokens != 20 || resp.Usage.CachedTokens != 15 {

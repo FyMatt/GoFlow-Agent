@@ -66,6 +66,10 @@ graph:
           node_type: agent
           agent: planner
           skill: execution-plan
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: extension-design
           params:
             output_contract: Emit sections named Extension Summary, Resource Map, Agent Contract, Skill Contract, Tool Boundary, Workflow Data Flow, Team Roles, Policy Gates, Files To Create, Restart/Reload Notes, and Acceptance Criteria.
             purpose: Design a linked GoFlow extension package that can be materialized as versionable resources.
@@ -112,6 +116,10 @@ graph:
           node_type: skill
           agent: auditor
           skill: code-audit
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: design-review
           params:
             output_contract: Emit sections named Review Decision, Missing Contracts, Safety Risks, Validation Gaps, Required Changes, and Recommendation. Use approved only when ready to materialize.
             review_scope: Review the extension design for over-broad agents, missing skill/tool contracts, missing workflow data flow, missing validation, unsafe tool permissions, and restart/reload ambiguity.
@@ -166,6 +174,10 @@ graph:
           node_type: checkpoint
           agent: ""
           skill: ""
+          execution:
+            mode: manual
+            risk_level: medium
+            boundary: operator-review
           params:
             prompt: Review the extension design, safety review, and resource map before generating files.
           next:
@@ -177,6 +189,11 @@ graph:
           node_type: agent
           agent: fixer
           skill: code-writing
+          execution:
+            mode: dry_run
+            risk_level: medium
+            boundary: workspace-resource-materialization
+            requires_approval: true
           params:
             purpose: Create or update the requested GoFlow extension resources under their modular folders. Prefer scaffold commands or validated YAML formats where possible.
           input:
@@ -208,6 +225,10 @@ graph:
           node_type: skill
           agent: auditor
           skill: code-audit
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: final-review
           params:
             review_scope: Check whether the generated resources match the design, remain workspace scoped, declare validation/restart guidance, and avoid unrelated edits.
           input:
@@ -229,6 +250,10 @@ graph:
           node_type: skill
           agent: planner
           skill: execution-plan
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: revision-plan
           input:
             failures: stages.quality.outputs.failures
             review: stages.review-design.outputs.review
@@ -243,6 +268,10 @@ graph:
           node_type: skill
           agent: chat
           skill: execution-plan
+          execution:
+            mode: manual
+            risk_level: medium
+            boundary: operator-handoff
           input:
             changes: stages.materialize.outputs.changes
             review: stages.final-review.outputs.review

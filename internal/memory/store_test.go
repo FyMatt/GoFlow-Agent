@@ -248,6 +248,73 @@ func TestSolutionMemoryLearnsSearchesInjectsAndMarksUsage(t *testing.T) {
 	}
 }
 
+func TestPromptContextSkipsInvalidatedSolutionMemory(t *testing.T) {
+	root := t.TempDir()
+	store := NewStore(root)
+	if err := store.Ensure(); err != nil {
+		t.Fatalf("Ensure: %v", err)
+	}
+	kb, err := store.UpsertSolution(SolutionMemory{
+		ProblemSignature:    "provider retry requires thinking payload",
+		Problem:             "provider returns reasoning_content retry error",
+		Decision:            "send the provider thinking payload back on retry",
+		Solution:            "preserve reasoning_content and replay it only when the provider asks for it",
+		Applicability:       []string{"same provider retry error"},
+		InvalidWhen:         []string{"provider protocol changes"},
+		VerificationCommand: "go test ./internal/llm",
+		Confidence:          "high",
+		Resolved:            true,
+	})
+	if err != nil {
+		t.Fatalf("UpsertSolution: %v", err)
+	}
+	if len(kb.Solutions) != 1 {
+		t.Fatalf("expected solution, got %#v", kb.Solutions)
+	}
+	id := kb.Solutions[0].ID
+
+	ctx, err := store.PromptContextFresh(context.Background(), "provider protocol changed; investigate thinking payload retry", "run-invalidated")
+	if err != nil {
+		t.Fatalf("PromptContextFresh invalidated: %v", err)
+	}
+	if block := findPromptBlockByKind(ctx, "solution"); block.Kind != "" {
+		t.Fatalf("invalidated solution should not be injected, got %#v", block)
+	}
+	omittedInvalidated := false
+	for _, item := range ctx.Omitted {
+		if strings.Contains(item, "invalidation rule matched") && strings.Contains(item, id) {
+			omittedInvalidated = true
+			break
+		}
+	}
+	if !omittedInvalidated {
+		t.Fatalf("expected invalidation omission diagnostic, got %#v", ctx.Omitted)
+	}
+	kb, err = store.Solutions()
+	if err != nil {
+		t.Fatalf("Solutions after invalidated prompt: %v", err)
+	}
+	if kb.Solutions[0].UseCount != 0 {
+		t.Fatalf("invalidated solution should not be marked used, got %#v", kb.Solutions[0])
+	}
+
+	ctx, err = store.PromptContextFresh(context.Background(), "same provider retry error thinking payload", "run-valid")
+	if err != nil {
+		t.Fatalf("PromptContextFresh valid: %v", err)
+	}
+	block := findPromptBlockByKind(ctx, "solution")
+	if block.Kind != "solution" || block.Ref != id {
+		t.Fatalf("expected valid solution prompt block, got %#v in %#v", block, ctx.Blocks)
+	}
+	kb, err = store.Solutions()
+	if err != nil {
+		t.Fatalf("Solutions after valid prompt: %v", err)
+	}
+	if kb.Solutions[0].UseCount != 1 {
+		t.Fatalf("expected valid solution use count, got %#v", kb.Solutions[0])
+	}
+}
+
 func TestSolutionMemoryLifecycleSkipsRetiredRetrieval(t *testing.T) {
 	root := t.TempDir()
 	store := NewStore(root)
@@ -273,12 +340,30 @@ func TestSolutionMemoryLifecycleSkipsRetiredRetrieval(t *testing.T) {
 	}
 	id := kb.Solutions[0].ID
 
-	kb, err = store.RetireSolution(id, "provider protocol changed", "sol-replacement")
+	replacementKB, err := store.UpsertSolution(SolutionMemory{
+		ProblemSignature:    "provider retry uses response id",
+		Problem:             "provider retry requires response id",
+		Decision:            "send the response id on retry",
+		Solution:            "reuse provider response ids for retry continuation",
+		VerificationCommand: "go test ./internal/llm",
+		Confidence:          "high",
+		Resolved:            true,
+	})
 	if err != nil {
-		t.Fatalf("RetireSolution: %v", err)
+		t.Fatalf("Upsert replacement solution: %v", err)
 	}
-	if !kb.Solutions[0].Retired || kb.Solutions[0].RetiredAt == "" || kb.Solutions[0].RetiredReason == "" || kb.Solutions[0].SupersededBy != "sol-replacement" {
-		t.Fatalf("expected retired metadata, got %#v", kb.Solutions[0])
+	replacementID := replacementKB.Solutions[0].ID
+
+	kb, err = store.SupersedeSolution(id, replacementID, "provider protocol changed")
+	if err != nil {
+		t.Fatalf("SupersedeSolution: %v", err)
+	}
+	retiredSolution, ok := findSolutionByID(kb.Solutions, id)
+	if !ok {
+		t.Fatalf("expected superseded solution in kb, got %#v", kb.Solutions)
+	}
+	if !retiredSolution.Retired || retiredSolution.RetiredAt == "" || retiredSolution.RetiredReason == "" || retiredSolution.SupersededBy != replacementID {
+		t.Fatalf("expected superseded metadata, got %#v", retiredSolution)
 	}
 	results, err := store.Search("thinking payload", 10)
 	if err != nil {
@@ -289,7 +374,7 @@ func TestSolutionMemoryLifecycleSkipsRetiredRetrieval(t *testing.T) {
 			t.Fatalf("retired solution should not be searchable by default, got %#v", result)
 		}
 	}
-	ctx, err := store.PromptContextFresh(context.Background(), "thinking payload retry", "run-retired")
+	ctx, err := store.PromptContextFresh(context.Background(), "thinking payload", "run-retired")
 	if err != nil {
 		t.Fatalf("PromptContextFresh retired: %v", err)
 	}
@@ -303,16 +388,24 @@ func TestSolutionMemoryLifecycleSkipsRetiredRetrieval(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Solutions after mark retired: %v", err)
 	}
-	if kb.Solutions[0].UseCount != 0 {
-		t.Fatalf("retired solution should not record use count, got %#v", kb.Solutions[0])
+	retiredSolution, ok = findSolutionByID(kb.Solutions, id)
+	if !ok {
+		t.Fatalf("expected retired solution after mark, got %#v", kb.Solutions)
+	}
+	if retiredSolution.UseCount != 0 {
+		t.Fatalf("retired solution should not record use count, got %#v", retiredSolution)
 	}
 
 	kb, err = store.RestoreSolution(id)
 	if err != nil {
 		t.Fatalf("RestoreSolution: %v", err)
 	}
-	if kb.Solutions[0].Retired || kb.Solutions[0].RetiredAt != "" || kb.Solutions[0].RetiredReason != "" || kb.Solutions[0].SupersededBy != "" {
-		t.Fatalf("expected restored solution lifecycle cleared, got %#v", kb.Solutions[0])
+	restoredSolution, ok := findSolutionByID(kb.Solutions, id)
+	if !ok {
+		t.Fatalf("expected restored solution in kb, got %#v", kb.Solutions)
+	}
+	if restoredSolution.Retired || restoredSolution.RetiredAt != "" || restoredSolution.RetiredReason != "" || restoredSolution.SupersededBy != "" {
+		t.Fatalf("expected restored solution lifecycle cleared, got %#v", restoredSolution)
 	}
 	results, err = store.Search("thinking payload", 10)
 	if err != nil {
@@ -327,6 +420,15 @@ func TestSolutionMemoryLifecycleSkipsRetiredRetrieval(t *testing.T) {
 	if !found {
 		t.Fatalf("expected restored solution in search, got %#v", results.Results)
 	}
+}
+
+func findSolutionByID(items []SolutionMemory, id string) (SolutionMemory, bool) {
+	for _, item := range items {
+		if item.ID == id {
+			return item, true
+		}
+	}
+	return SolutionMemory{}, false
 }
 
 func TestPromptContextFreshInjectsFileSummaryAndRefreshesChangedIndex(t *testing.T) {

@@ -30,6 +30,7 @@ tools:
     - network_tools/device_discovery_plan
     - network_tools/device_command_plan
     - network_tools/device_config_dry_run
+    - network_tools/device_restconf_live_apply
 workflows:
     - plan-fix-audit
 workflow_templates:
@@ -75,7 +76,8 @@ vertical_pack:
     tool_boundaries:
         - Default workflow drafts and reviews runbooks; it does not execute infrastructure changes.
         - network_tools validates device scope, host allowlists, command allowlists, credential refs, dry-run status, rollback, approval metadata, and audit notes.
-        - network_tools does not open device connections or apply configuration; real execution requires a future approved connector with the same contracts.
+        - network_tools planning tools do not open device connections or apply configuration.
+        - network_tools/device_restconf_live_apply is the controlled live RESTCONF/API connector and requires stage.execution live readiness, explicit live enablement, credential refs, approvals, dry-run evidence, rollback, method/path allowlists, and audit output.
     safety_gates:
         - Require approval before execution-capable steps.
         - Require rollback and verification before final handoff.
@@ -93,11 +95,12 @@ vertical_pack:
         - rollback plan
         - network-device discovery plan
         - network-device dry-run plan
+        - controlled RESTCONF live apply audit record
         - final handoff
     simple_mode:
         - Show service or device, change goal, authorized scope, allowed hosts, prechecks, approval status, rollback, and final runbook.
     expert_mode:
-        - Show raw workflow graph, policy gates, network_tools allowlists, credential refs, future connector boundaries, and artifact refs.
+        - Show raw workflow graph, policy gates, network_tools allowlists, credential refs, live connector boundaries, and artifact refs.
     token_strategy:
         - Keep device or environment evidence as summaries and refs.
         - Pass only precheck, rollback, device-plan, and status contracts between stages.

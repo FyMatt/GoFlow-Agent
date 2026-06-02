@@ -8,8 +8,8 @@ stages:
       next:
         - intake
       position:
-        x: 80
-        "y": 300
+        x: 180
+        "y": 1533
     - name: intake
       node_type: agent
       agent: planner
@@ -55,8 +55,8 @@ stages:
       next:
         - plan
       position:
-        x: 520
-        "y": 300
+        x: 640
+        "y": 1515
     - name: plan
       node_type: skill
       agent: planner
@@ -105,8 +105,8 @@ stages:
       next:
         - confirm-plan
       position:
-        x: 1020
-        "y": 300
+        x: 1160
+        "y": 1515
     - name: confirm-plan
       node_type: checkpoint
       agent: ""
@@ -116,8 +116,8 @@ stages:
       next:
         - delivery-loop
       position:
-        x: 1520
-        "y": 300
+        x: 1680
+        "y": 1515
     - name: delivery-loop
       node_type: loop
       agent: ""
@@ -159,8 +159,8 @@ stages:
       next:
         - loop-quality
       position:
-        x: 2020
-        "y": 300
+        x: 2206
+        "y": 1255
     - name: iteration
       node_type: agent
       agent: fixer
@@ -223,8 +223,8 @@ stages:
             enabled: true
             query: '{{input.goal}}'
       position:
-        x: 2020
-        "y": 560
+        x: 2200
+        "y": 1636
     - name: loop-quality
       node_type: quality_gate
       agent: ""
@@ -242,8 +242,8 @@ stages:
         pass: final-validation
         warning: operator-review
       position:
-        x: 2520
-        "y": 300
+        x: 2720
+        "y": 1515
     - name: operator-review
       node_type: checkpoint
       agent: ""
@@ -253,8 +253,8 @@ stages:
       next:
         - final-validation
       position:
-        x: 3020
-        "y": 80
+        x: 3221
+        "y": 1183
     - name: recovery-plan
       node_type: skill
       agent: planner
@@ -293,8 +293,8 @@ stages:
       next:
         - final-quality
       position:
-        x: 3020
-        "y": 520
+        x: 3260
+        "y": 1814
     - name: final-validation
       node_type: skill
       agent: auditor
@@ -349,8 +349,8 @@ stages:
       next:
         - final-quality
       position:
-        x: 3020
-        "y": 300
+        x: 3760
+        "y": 1515
     - name: final-quality
       node_type: quality_gate
       agent: ""
@@ -368,8 +368,8 @@ stages:
         pass: final-report
         warning: final-report
       position:
-        x: 3520
-        "y": 300
+        x: 4280
+        "y": 1515
     - name: final-report
       node_type: skill
       agent: planner
@@ -423,12 +423,12 @@ stages:
       next:
         - end
       position:
-        x: 4020
-        "y": 300
+        x: 4800
+        "y": 1515
     - name: end
       node_type: end
       agent: ""
       skill: ""
       position:
-        x: 4520
-        "y": 300
+        x: 5320
+        "y": 1533

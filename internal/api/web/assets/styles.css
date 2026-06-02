@@ -5,287 +5,291 @@
   --mono: var(--font-mono);
   --duration-fast: .14s;
   --duration-base: .18s;
-  --bg: #f5f7fb;
-  --bg-grad-1: rgba(37, 99, 235, .055);
-  --bg-grad-2: rgba(8, 145, 178, .045);
-  --bg-grad-3: #eef3f8;
-  --bg-grad-4: #f8fafc;
-  --panel: rgba(255, 255, 255, 0.96);
-  --panel-2: #f7f9fc;
-  --panel-3: #eef3f8;
-  --ink: #0f1f33;
-  --muted: #5e7085;
-  --line: rgba(135, 151, 171, 0.28);
-  --line-strong: rgba(86, 102, 123, 0.42);
-  --blue: #2563eb;
-  --green: #059669;
-  --red: #dc2626;
-  --amber: #d97706;
-  --purple: #7c3aed;
-  --cyan: #0891b2;
-  --teal: #0f766e;
-  --brand: #173056;
-  --brand-2: #2c62d6;
-  --sidebar: rgba(250, 252, 255, 0.98);
-  --sidebar-2: rgba(241, 246, 251, 0.98);
-  --shadow: 0 16px 36px rgba(15, 23, 42, .09);
-  --soft-shadow: 0 8px 22px rgba(15, 23, 42, .065);
-  --panel-shadow: 0 1px 2px rgba(15, 23, 42, .055), 0 8px 20px rgba(15, 23, 42, .055);
-  --control-shadow: 0 1px 2px rgba(15, 23, 42, .08);
-  --control-shadow-hover: 0 4px 12px rgba(15, 23, 42, .10);
-  --focus: 0 0 0 3px rgba(37, 99, 235, .18);
-  --control-bg: linear-gradient(180deg, #ffffff, #f5f8fc);
-  --control-bg-hover: linear-gradient(180deg, #ffffff, #eef4fb);
+  --duration-smooth: .28s;
+  --bg: #ffffff;
+  --bg-grad-1: rgba(0, 0, 0, .02);
+  --bg-grad-2: rgba(0, 0, 0, .015);
+  --bg-grad-3: #f5f5f5;
+  --bg-grad-4: #fafafa;
+  --panel: rgba(255, 255, 255, 0.98);
+  --panel-2: #fafafa;
+  --panel-3: #f5f5f5;
+  --ink: #000000;
+  --muted: #666666;
+  --line: rgba(0, 0, 0, 0.12);
+  --line-strong: rgba(0, 0, 0, 0.24);
+  --blue: #808080;
+  --green: #10b981;
+  --red: #ef4444;
+  --amber: #f59e0b;
+  --purple: #808080;
+  --cyan: #808080;
+  --teal: #808080;
+  --brand: #333333;
+  --brand-2: #666666;
+  --sidebar: rgba(255, 255, 255, 0.98);
+  --sidebar-2: rgba(250, 250, 250, 0.98);
+  --shadow: 0 16px 36px rgba(0, 0, 0, .08);
+  --soft-shadow: 0 8px 22px rgba(0, 0, 0, .05);
+  --panel-shadow: 0 1px 2px rgba(0, 0, 0, .04), 0 8px 20px rgba(0, 0, 0, .04);
+  --control-shadow: 0 1px 2px rgba(0, 0, 0, .06);
+  --control-shadow-hover: 0 4px 12px rgba(0, 0, 0, .08);
+  --focus: 0 0 0 3px rgba(0, 0, 0, .12);
+  --control-bg: linear-gradient(180deg, #ffffff, #fafafa);
+  --control-bg-hover: linear-gradient(180deg, #ffffff, #f5f5f5);
   --field-bg: rgba(255, 255, 255, .98);
   --field-shadow: inset 0 1px 0 rgba(255, 255, 255, .68);
-  --sidebar-highlight: linear-gradient(180deg, rgba(241, 246, 255, .98), rgba(228, 238, 250, .98));
-  --topbar-bg: rgba(247, 250, 253, .94);
+  --sidebar-highlight: linear-gradient(180deg, rgba(255, 255, 255, .98), rgba(245, 245, 245, .98));
+  --topbar-bg: rgba(255, 255, 255, .94);
   --runtime-bg: rgba(255, 255, 255, .92);
   --runtime-panel-bg: rgba(255, 255, 255, .92);
-  --accent-line: rgba(37, 99, 235, .20);
-  --hero-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(247,249,252,.98));
-  --hero-bg-accent: linear-gradient(120deg, rgba(37,99,235,.045), rgba(8,145,178,.04));
-  --metric-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(247,250,253,.98));
-  --panel-bg: linear-gradient(180deg, rgba(255,255,255,.97), rgba(247,250,253,.98));
-  --panel-flat-bg: linear-gradient(180deg, rgba(255,255,255,.96), rgba(244,248,252,.98));
-  --message-bg: linear-gradient(180deg, rgba(255,255,255,.99), rgba(246,249,252,.99));
-  --message-code-bg: rgba(237, 244, 255, .92);
-  --message-code-ink: #22406f;
+  --accent-line: rgba(0, 0, 0, .15);
+  --hero-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(250,250,250,.98));
+  --hero-bg-accent: linear-gradient(120deg, rgba(0,0,0,.02), rgba(0,0,0,.015));
+  --metric-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(250,250,250,.98));
+  --panel-bg: linear-gradient(180deg, rgba(255,255,255,.97), rgba(250,250,250,.98));
+  --panel-flat-bg: linear-gradient(180deg, rgba(255,255,255,.96), rgba(245,245,245,.98));
+  --message-bg: linear-gradient(180deg, rgba(255,255,255,.99), rgba(250,250,250,.99));
+  --message-code-bg: rgba(245, 245, 245, .92);
+  --message-code-ink: #333333;
   --badge-good-bg: #ecfdf5;
   --badge-good-line: #a7f3d0;
   --badge-good-ink: #047857;
-  --badge-info-bg: #eff6ff;
-  --badge-info-line: #bfdbfe;
-  --badge-info-ink: #1d4ed8;
+  --badge-info-bg: #f5f5f5;
+  --badge-info-line: #d0d0d0;
+  --badge-info-ink: #333333;
   --badge-warn-bg: #fffbeb;
   --badge-warn-line: #fde68a;
   --badge-warn-ink: #b45309;
   --badge-bad-bg: #fff1f2;
   --badge-bad-line: #fecdd3;
-  --badge-neutral-bg: #eef4fb;
-  --badge-neutral-line: rgba(100, 116, 139, .24);
-  --badge-neutral-ink: #38516b;
+  --badge-neutral-bg: #f5f5f5;
+  --badge-neutral-line: rgba(0, 0, 0, .12);
+  --badge-neutral-ink: #333333;
   --tour-card-bg: #ffffff;
-  --tour-chip-bg: #eef2ff;
-  --tour-progress-bg: #e6ebf2;
-  --tour-scrim: rgba(15, 23, 42, .56);
-  --tour-hole-line: rgba(37, 99, 235, .78);
-  --tour-hole-glow: rgba(37, 99, 235, .18);
-  --nav-ink: #52677f;
-  --nav-active-ink: #102033;
-  --nav-active-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(239,245,252,.98));
-  --nav-active-line: rgba(37, 99, 235, .24);
-  --launchpad-bg: linear-gradient(180deg, rgba(255,255,255,.96), rgba(242,247,252,.96));
-  --runtime-border: rgba(37, 99, 235, .18);
-  --runtime-accent-bg: rgba(237, 244, 255, .9);
+  --tour-chip-bg: #f5f5f5;
+  --tour-progress-bg: #e0e0e0;
+  --tour-scrim: rgba(0, 0, 0, .56);
+  --tour-hole-line: rgba(0, 0, 0, .5);
+  --tour-hole-glow: rgba(0, 0, 0, .12);
+  --nav-ink: #666666;
+  --nav-active-ink: #000000;
+  --nav-active-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(245,245,245,.98));
+  --nav-active-line: rgba(0, 0, 0, .15);
+  --launchpad-bg: linear-gradient(180deg, rgba(255,255,255,.96), rgba(250,250,250,.96));
+  --runtime-border: rgba(0, 0, 0, .12);
+  --runtime-accent-bg: rgba(245, 245, 245, .9);
   --runtime-chip-bg: rgba(255, 255, 255, .88);
-  --runtime-chip-ink: #1e3a5f;
-  --runtime-chip-line: rgba(148, 163, 184, .22);
+  --runtime-chip-ink: #333333;
+  --runtime-chip-line: rgba(0, 0, 0, .12);
   --error-panel-bg: linear-gradient(180deg, rgba(255, 241, 242, .96), rgba(255, 248, 248, .98));
   --error-panel-ink: #9f1239;
   --error-panel-line: rgba(225, 29, 72, .22);
-  --canvas-bg: linear-gradient(180deg, #f8fafc 0%, #eef3f8 100%);
+  --canvas-bg: linear-gradient(180deg, #fafafa 0%, #f0f0f0 100%);
   --canvas-surface-bg:
-    linear-gradient(rgba(107, 132, 162, .105) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(107, 132, 162, .105) 1px, transparent 1px),
-    radial-gradient(circle at 1px 1px, rgba(37, 99, 235, .075) 1px, transparent 0),
-    linear-gradient(180deg, rgba(255,255,255,.99) 0%, rgba(242,247,252,.99) 100%);
+    linear-gradient(rgba(0, 0, 0, .06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(0, 0, 0, .06) 1px, transparent 1px),
+    radial-gradient(circle at 1px 1px, rgba(0, 0, 0, .04) 1px, transparent 0),
+    linear-gradient(180deg, rgba(255,255,255,.99) 0%, rgba(250,250,250,.99) 100%);
   --canvas-guide-bg: rgba(255, 255, 255, .90);
-  --canvas-guide-code-bg: #eef6ff;
-  --canvas-guide-code-ink: #174ea6;
-  --workflow-node-bg: linear-gradient(180deg, rgba(255,255,255,.99), rgba(248,251,255,.99));
-  --workflow-node-line: rgba(111, 132, 158, .28);
-  --workflow-node-strong-line: rgba(37, 99, 235, .34);
-  --workflow-node-shadow: 0 1px 2px rgba(15, 23, 42, .07), 0 10px 22px rgba(15, 23, 42, .075);
-  --workflow-node-hover-shadow: 0 0 0 1px rgba(37, 99, 235, .13), 0 12px 24px rgba(15, 23, 42, .105);
-  --workflow-node-selected-shadow: 0 0 0 2px rgba(37, 99, 235, .24), 0 12px 24px rgba(15, 23, 42, .11);
-  --workflow-node-meta-bg: rgba(244, 248, 253, .94);
-  --workflow-node-meta-ink: #334860;
+  --canvas-guide-code-bg: #f5f5f5;
+  --canvas-guide-code-ink: #333333;
+  --workflow-node-bg: linear-gradient(180deg, rgba(255,255,255,.99), rgba(250,250,250,.99));
+  --workflow-node-line: rgba(0, 0, 0, .15);
+  --workflow-node-strong-line: rgba(0, 0, 0, .25);
+  --workflow-node-shadow: 0 1px 2px rgba(0, 0, 0, .05), 0 10px 22px rgba(0, 0, 0, .06);
+  --workflow-node-hover-shadow: 0 0 0 1px rgba(0, 0, 0, .1), 0 12px 24px rgba(0, 0, 0, .08);
+  --workflow-node-selected-shadow: 0 0 0 2px rgba(0, 0, 0, .2), 0 12px 24px rgba(0, 0, 0, .1);
+  --workflow-node-meta-bg: rgba(245, 245, 245, .94);
+  --workflow-node-meta-ink: #333333;
   --workflow-node-delete-bg: #fff1f2;
   --workflow-node-delete-line: rgba(220, 38, 38, .34);
   --workflow-node-delete-hover-bg: #dc2626;
-  --workflow-node-end-title: #174ea6;
-  --workflow-node-custom-icon-bg: #f1f5f9;
-  --workflow-node-custom-icon-ink: #475569;
+  --workflow-node-end-title: #333333;
+  --workflow-node-custom-icon-bg: #f5f5f5;
+  --workflow-node-custom-icon-ink: #666666;
   --workflow-edge-delete-bg: #fff1f2;
   --workflow-edge-delete-hover-bg: #dc2626;
   --workflow-edge-delete-shadow: 0 8px 18px rgba(220, 38, 38, .18);
-  --workflow-board-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(244,248,252,.98));
-  --workflow-toolbar-bg: rgba(250, 252, 255, .94);
-  --workflow-edge-stroke: #2f6fed;
-  --workflow-edge-underlay: rgba(71, 94, 124, .18);
-  --workflow-edge-route: #059669;
-  --workflow-edge-draft: #64748b;
+  --workflow-board-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(245,245,245,.98));
+  --workflow-toolbar-bg: rgba(255, 255, 255, .94);
+  --workflow-edge-stroke: #666666;
+  --workflow-edge-underlay: rgba(0, 0, 0, .12);
+  --workflow-edge-route: #333333;
+  --workflow-edge-draft: #999999;
   --workflow-edge-shadow: none;
   --workflow-node-start-bg: linear-gradient(180deg, rgba(236,253,245,.98), rgba(218,252,238,.98));
   --workflow-node-start-line: rgba(16, 185, 129, .26);
-  --workflow-node-end-bg: linear-gradient(180deg, rgba(239,246,255,.98), rgba(219,234,254,.98));
-  --workflow-node-end-shadow: 0 8px 18px rgba(37, 99, 235, .10), 0 1px 2px rgba(15, 23, 42, .06);
-  --workflow-node-icon-bg: rgba(37, 99, 235, .10);
-  --workflow-node-icon-line: rgba(37, 99, 235, .12);
-  --workflow-node-skill-icon-bg: #ecfdf5;
-  --workflow-node-tool-icon-bg: #f5f3ff;
-  --workflow-node-start-icon-bg: #ecfdf5;
-  --workflow-node-end-icon-bg: #e0f2fe;
-  --workflow-node-end-icon-ink: #0369a1;
+  --workflow-node-end-bg: linear-gradient(180deg, rgba(236,253,245,.98), rgba(218,252,238,.98));
+  --workflow-node-end-shadow: 0 8px 18px rgba(16, 185, 129, .08), 0 1px 2px rgba(0, 0, 0, .04);
+  --workflow-node-icon-bg: rgba(0, 0, 0, .06);
+  --workflow-node-icon-line: rgba(0, 0, 0, .08);
+  --workflow-node-skill-icon-bg: #f5f5f5;
+  --workflow-node-tool-icon-bg: #f5f5f5;
+  --workflow-node-start-icon-bg: #f5f5f5;
+  --workflow-node-end-icon-bg: #f5f5f5;
+  --workflow-node-end-icon-ink: #333333;
   --workflow-node-flag-bg: #fffbeb;
   --workflow-node-flag-line: #fde68a;
   --workflow-order-chip-bg: rgba(255, 255, 255, .92);
-  --workflow-order-chip-line: rgba(148, 163, 184, .24);
-  --workflow-order-chip-ink: #284158;
+  --workflow-order-chip-line: rgba(0, 0, 0, .12);
+  --workflow-order-chip-ink: #333333;
   --workflow-runtime-head-bg: rgba(255, 255, 255, .58);
   --workflow-runtime-metric-bg: rgba(255, 255, 255, .78);
   --workflow-runtime-block-bg: rgba(255, 255, 255, .78);
-  --workflow-runtime-block-pre-bg: rgba(241, 247, 255, .92);
-  --log-bg: #0b1120;
-  --log-ink: #dbeafe;
-  --log-running-line: #38bdf8;
-  --log-running-shadow: 0 0 0 3px rgba(56, 189, 248, .18);
-  --log-border: rgba(102, 163, 255, .18);
-  --radius: 8px;
-  --radius-sm: 6px;
+  --workflow-runtime-block-pre-bg: rgba(245, 245, 245, .92);
+  --log-bg: #1a1a1a;
+  --log-ink: #e0e0e0;
+  --log-running-line: #666666;
+  --log-running-shadow: 0 0 0 3px rgba(0, 0, 0, .12);
+  --log-border: rgba(0, 0, 0, .12);
+  --radius: 12px;
+  --radius-sm: 8px;
+  --radius-lg: 16px;
+  --radius-xl: 20px;
   --control-height: 42px;
 }
 
 :root[data-theme='dark'] {
   color-scheme: dark;
-  --bg: #07111d;
-  --bg-grad-1: rgba(102, 163, 255, .08);
-  --bg-grad-2: rgba(73, 216, 255, .06);
-  --bg-grad-3: #0a1725;
-  --bg-grad-4: #06111d;
-  --panel: rgba(12, 23, 37, 0.96);
-  --panel-2: #0d1928;
-  --panel-3: #111f31;
-  --ink: #e7eef8;
-  --muted: #96a9bf;
-  --line: rgba(130, 153, 184, 0.22);
-  --line-strong: rgba(155, 179, 210, 0.36);
-  --blue: #66a3ff;
-  --green: #33d69f;
-  --red: #ff6c7a;
-  --amber: #ffbb5c;
-  --purple: #a98bff;
-  --cyan: #49d8ff;
-  --teal: #22c7b8;
-  --brand: #1d4ed8;
-  --brand-2: #60a5fa;
-  --sidebar: rgba(8, 18, 31, 0.98);
-  --sidebar-2: rgba(10, 23, 38, 0.98);
-  --shadow: 0 18px 42px rgba(2, 8, 18, .34);
-  --soft-shadow: 0 10px 26px rgba(2, 8, 18, .24);
-  --panel-shadow: 0 1px 0 rgba(255,255,255,.035), 0 12px 26px rgba(2, 8, 18, .26);
-  --control-shadow: 0 1px 2px rgba(2, 8, 18, .28);
-  --control-shadow-hover: 0 5px 14px rgba(2, 8, 18, .34);
-  --focus: 0 0 0 3px rgba(102, 163, 255, .26);
-  --control-bg: linear-gradient(180deg, rgba(18, 32, 50, .98), rgba(11, 23, 37, .98));
-  --control-bg-hover: linear-gradient(180deg, rgba(24, 42, 64, .98), rgba(13, 27, 43, .98));
-  --field-bg: rgba(8, 18, 31, .94);
-  --field-shadow: inset 0 1px 0 rgba(255, 255, 255, .03);
-  --sidebar-highlight: linear-gradient(180deg, rgba(20, 40, 64, .96), rgba(12, 28, 46, .98));
-  --topbar-bg: rgba(8, 18, 31, .94);
-  --runtime-bg: rgba(10, 22, 36, .90);
-  --runtime-panel-bg: rgba(10, 22, 36, .90);
-  --accent-line: rgba(102, 163, 255, .24);
-  --hero-bg: linear-gradient(180deg, rgba(14, 27, 43, .98), rgba(10, 21, 34, .98));
-  --hero-bg-accent: linear-gradient(120deg, rgba(47,111,237,.075), rgba(15,156,171,.06));
-  --metric-bg: linear-gradient(180deg, rgba(14, 27, 43, .96), rgba(10, 22, 36, .98));
-  --panel-bg: linear-gradient(180deg, rgba(12, 23, 37, .96), rgba(9, 20, 33, .98));
-  --panel-flat-bg: linear-gradient(180deg, rgba(14, 27, 43, .94), rgba(10, 22, 36, .98));
-  --message-bg: linear-gradient(180deg, rgba(14, 27, 43, .98), rgba(10, 22, 36, .98));
-  --message-code-bg: rgba(7, 17, 31, .88);
-  --message-code-ink: #cfe0ff;
+  --bg: #0a0a0a;
+  --bg-grad-1: rgba(255, 255, 255, .02);
+  --bg-grad-2: rgba(255, 255, 255, .01);
+  --bg-grad-3: #0d0d0d;
+  --bg-grad-4: #080808;
+  --panel: rgba(20, 20, 20, 0.96);
+  --panel-2: #1a1a1a;
+  --panel-3: #1f1f1f;
+  --ink: #ffffff;
+  --muted: #b0b0b0;
+  --line: rgba(255, 255, 255, 0.1);
+  --line-strong: rgba(255, 255, 255, 0.2);
+  --blue: #666666;
+  --green: #10b981;
+  --red: #ef4444;
+  --amber: #f59e0b;
+  --purple: #999999;
+  --cyan: #888888;
+  --teal: #777777;
+  --brand: #000000;
+  --brand-2: #666666;
+  --sidebar: rgba(15, 15, 15, 0.98);
+  --sidebar-2: rgba(18, 18, 18, 0.98);
+  --shadow: 0 18px 42px rgba(0, 0, 0, .6);
+  --soft-shadow: 0 10px 26px rgba(0, 0, 0, .4);
+  --panel-shadow: 0 1px 0 rgba(255,255,255,.02), 0 12px 26px rgba(0, 0, 0, .5);
+  --control-shadow: 0 1px 2px rgba(0, 0, 0, .5);
+  --control-shadow-hover: 0 5px 14px rgba(0, 0, 0, .6);
+  --focus: 0 0 0 3px rgba(255, 255, 255, .15);
+  --control-bg: linear-gradient(180deg, rgba(30, 30, 30, .98), rgba(20, 20, 20, .98));
+  --control-bg-hover: linear-gradient(180deg, rgba(40, 40, 40, .98), rgba(25, 25, 25, .98));
+  --field-bg: rgba(15, 15, 15, .94);
+  --field-shadow: inset 0 1px 0 rgba(255, 255, 255, .02);
+  --sidebar-highlight: linear-gradient(180deg, rgba(35, 35, 35, .96), rgba(25, 25, 25, .98));
+  --topbar-bg: rgba(15, 15, 15, .94);
+  --runtime-bg: rgba(18, 18, 18, .90);
+  --runtime-panel-bg: rgba(18, 18, 18, .90);
+  --accent-line: rgba(255, 255, 255, .12);
+  --hero-bg: linear-gradient(180deg, rgba(20, 20, 20, .98), rgba(15, 15, 15, .98));
+  --hero-bg-accent: linear-gradient(120deg, rgba(255,255,255,.02), rgba(255,255,255,.01));
+  --metric-bg: linear-gradient(180deg, rgba(20, 20, 20, .96), rgba(18, 18, 18, .98));
+  --panel-bg: linear-gradient(180deg, rgba(20, 20, 20, .96), rgba(15, 15, 15, .98));
+  --panel-flat-bg: linear-gradient(180deg, rgba(20, 20, 20, .94), rgba(18, 18, 18, .98));
+  --message-bg: linear-gradient(180deg, rgba(20, 20, 20, .98), rgba(18, 18, 18, .98));
+  --message-code-bg: rgba(15, 15, 15, .88);
+  --message-code-ink: #e0e0e0;
   --badge-good-bg: rgba(16, 185, 129, .14);
   --badge-good-line: rgba(52, 211, 153, .28);
-  --badge-good-ink: #7dd3ae;
-  --badge-info-bg: rgba(59, 130, 246, .14);
-  --badge-info-line: rgba(96, 165, 250, .30);
-  --badge-info-ink: #93c5fd;
+  --badge-good-ink: #6ee7b7;
+  --badge-info-bg: rgba(100, 100, 100, .14);
+  --badge-info-line: rgba(150, 150, 150, .30);
+  --badge-info-ink: #d0d0d0;
   --badge-warn-bg: rgba(245, 158, 11, .14);
   --badge-warn-line: rgba(251, 191, 36, .28);
   --badge-warn-ink: #fcd34d;
   --badge-bad-bg: rgba(244, 63, 94, .14);
   --badge-bad-line: rgba(251, 113, 133, .28);
-  --badge-neutral-bg: rgba(148, 163, 184, .12);
-  --badge-neutral-line: rgba(148, 163, 184, .22);
-  --badge-neutral-ink: #c6d3e3;
-  --tour-card-bg: rgba(12, 23, 37, .96);
-  --tour-chip-bg: rgba(37, 99, 235, .14);
-  --tour-progress-bg: rgba(148, 163, 184, .18);
-  --tour-scrim: rgba(2, 8, 18, .68);
-  --tour-hole-line: rgba(102, 163, 255, .84);
-  --tour-hole-glow: rgba(102, 163, 255, .24);
-  --nav-ink: #b7c7db;
-  --nav-active-ink: #f4f8ff;
-  --nav-active-bg: linear-gradient(180deg, rgba(18, 36, 58, .98), rgba(12, 27, 44, .98));
-  --nav-active-line: rgba(102, 163, 255, .24);
-  --launchpad-bg: linear-gradient(180deg, rgba(14,27,43,.98), rgba(9,20,33,.96));
-  --runtime-border: rgba(102, 163, 255, .22);
-  --runtime-accent-bg: rgba(8, 18, 31, .88);
-  --runtime-chip-bg: rgba(8, 18, 31, .78);
-  --runtime-chip-ink: #dbeafe;
-  --runtime-chip-line: rgba(131, 157, 189, .18);
-  --error-panel-bg: linear-gradient(180deg, rgba(56, 18, 27, .94), rgba(38, 12, 20, .98));
+  --badge-bad-ink: #fca5a5;
+  --badge-neutral-bg: rgba(100, 100, 100, .12);
+  --badge-neutral-line: rgba(150, 150, 150, .22);
+  --badge-neutral-ink: #d0d0d0;
+  --tour-card-bg: rgba(20, 20, 20, .96);
+  --tour-chip-bg: rgba(100, 100, 100, .14);
+  --tour-progress-bg: rgba(150, 150, 150, .18);
+  --tour-scrim: rgba(0, 0, 0, .75);
+  --tour-hole-line: rgba(255, 255, 255, .5);
+  --tour-hole-glow: rgba(255, 255, 255, .15);
+  --nav-ink: #c0c0c0;
+  --nav-active-ink: #ffffff;
+  --nav-active-bg: linear-gradient(180deg, rgba(30, 30, 30, .98), rgba(25, 25, 25, .98));
+  --nav-active-line: rgba(255, 255, 255, .15);
+  --launchpad-bg: linear-gradient(180deg, rgba(20,20,20,.98), rgba(15,15,15,.96));
+  --runtime-border: rgba(255, 255, 255, .12);
+  --runtime-accent-bg: rgba(15, 15, 15, .88);
+  --runtime-chip-bg: rgba(15, 15, 15, .78);
+  --runtime-chip-ink: #e0e0e0;
+  --runtime-chip-line: rgba(255, 255, 255, .1);
+  --error-panel-bg: linear-gradient(180deg, rgba(60, 20, 20, .94), rgba(40, 15, 15, .98));
   --error-panel-ink: #ffb6bf;
   --error-panel-line: rgba(255, 108, 122, .34);
-  --canvas-bg: linear-gradient(180deg, #08131f 0%, #0a1624 100%);
+  --canvas-bg: linear-gradient(180deg, #0d0d0d 0%, #0a0a0a 100%);
   --canvas-surface-bg:
-    linear-gradient(rgba(122, 148, 182, .105) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(122, 148, 182, .105) 1px, transparent 1px),
-    radial-gradient(circle at 1px 1px, rgba(73, 216, 255, .11) 1px, transparent 0),
-    linear-gradient(180deg, rgba(8, 18, 31, .99) 0%, rgba(9, 20, 33, .99) 100%);
-  --canvas-guide-bg: rgba(10, 22, 36, .90);
-  --canvas-guide-code-bg: #0f1d30;
-  --canvas-guide-code-ink: #d6e7ff;
-  --workflow-node-bg: linear-gradient(180deg, rgba(14, 27, 43, .99), rgba(10, 21, 34, .99));
-  --workflow-node-line: rgba(131, 157, 189, .24);
-  --workflow-node-strong-line: rgba(102, 163, 255, .38);
-  --workflow-node-shadow: 0 1px 0 rgba(255,255,255,.035), 0 12px 26px rgba(2, 8, 18, .30);
-  --workflow-node-hover-shadow: 0 0 0 1px rgba(102, 163, 255, .16), 0 14px 30px rgba(2, 8, 18, .36);
-  --workflow-node-selected-shadow: 0 0 0 2px rgba(102, 163, 255, .28), 0 14px 30px rgba(2, 8, 18, .40);
-  --workflow-node-meta-bg: rgba(7, 18, 31, .82);
-  --workflow-node-meta-ink: #b8c9db;
+    linear-gradient(rgba(255, 255, 255, .06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .06) 1px, transparent 1px),
+    radial-gradient(circle at 1px 1px, rgba(255, 255, 255, .04) 1px, transparent 0),
+    linear-gradient(180deg, rgba(15, 15, 15, .99) 0%, rgba(12, 12, 12, .99) 100%);
+  --canvas-guide-bg: rgba(18, 18, 18, .90);
+  --canvas-guide-code-bg: #1a1a1a;
+  --canvas-guide-code-ink: #e0e0e0;
+  --workflow-node-bg: linear-gradient(180deg, rgba(20, 20, 20, .99), rgba(15, 15, 15, .99));
+  --workflow-node-line: rgba(255, 255, 255, .15);
+  --workflow-node-strong-line: rgba(255, 255, 255, .25);
+  --workflow-node-shadow: 0 1px 0 rgba(255,255,255,.02), 0 12px 26px rgba(0, 0, 0, .5);
+  --workflow-node-hover-shadow: 0 0 0 1px rgba(255, 255, 255, .15), 0 14px 30px rgba(0, 0, 0, .6);
+  --workflow-node-selected-shadow: 0 0 0 2px rgba(255, 255, 255, .25), 0 14px 30px rgba(0, 0, 0, .65);
+  --workflow-node-meta-bg: rgba(15, 15, 15, .82);
+  --workflow-node-meta-ink: #c0c0c0;
   --workflow-node-delete-bg: rgba(127, 29, 29, .32);
   --workflow-node-delete-line: rgba(255, 108, 122, .34);
   --workflow-node-delete-hover-bg: #be123c;
-  --workflow-node-end-title: #d6e7ff;
-  --workflow-node-custom-icon-bg: rgba(148, 163, 184, .14);
-  --workflow-node-custom-icon-ink: #b8c9db;
+  --workflow-node-end-title: #e0e0e0;
+  --workflow-node-custom-icon-bg: rgba(150, 150, 150, .14);
+  --workflow-node-custom-icon-ink: #c0c0c0;
   --workflow-edge-delete-bg: rgba(127, 29, 29, .32);
   --workflow-edge-delete-hover-bg: #be123c;
   --workflow-edge-delete-shadow: 0 10px 22px rgba(127, 29, 29, .34);
-  --workflow-board-bg: linear-gradient(180deg, rgba(11, 22, 36, .98), rgba(8, 18, 31, .99));
-  --workflow-toolbar-bg: rgba(10, 22, 36, .94);
-  --workflow-edge-stroke: #66a3ff;
-  --workflow-edge-underlay: rgba(105, 132, 167, .22);
-  --workflow-edge-route: #33d69f;
-  --workflow-edge-draft: #94a3b8;
+  --workflow-board-bg: linear-gradient(180deg, rgba(18, 18, 18, .98), rgba(15, 15, 15, .99));
+  --workflow-toolbar-bg: rgba(18, 18, 18, .94);
+  --workflow-edge-stroke: #888888;
+  --workflow-edge-underlay: rgba(255, 255, 255, .1);
+  --workflow-edge-route: #10b981;
+  --workflow-edge-draft: #999999;
   --workflow-edge-shadow: none;
-  --workflow-node-start-bg: linear-gradient(180deg, rgba(8, 28, 24, .98), rgba(7, 20, 20, .98));
-  --workflow-node-start-line: rgba(51, 214, 159, .34);
-  --workflow-node-end-bg: linear-gradient(180deg, rgba(11, 28, 46, .98), rgba(8, 19, 32, .98));
-  --workflow-node-end-shadow: 0 10px 22px rgba(2, 8, 18, .26), 0 1px 0 rgba(255,255,255,.03);
-  --workflow-node-icon-bg: rgba(102, 163, 255, .12);
-  --workflow-node-icon-line: rgba(102, 163, 255, .16);
-  --workflow-node-skill-icon-bg: #10271d;
-  --workflow-node-tool-icon-bg: #1a1230;
-  --workflow-node-start-icon-bg: #10271d;
-  --workflow-node-end-icon-bg: rgba(73, 216, 255, .12);
-  --workflow-node-end-icon-ink: #49d8ff;
+  --workflow-node-start-bg: linear-gradient(180deg, rgba(15, 30, 20, .98), rgba(12, 25, 18, .98));
+  --workflow-node-start-line: rgba(16, 185, 129, .34);
+  --workflow-node-end-bg: linear-gradient(180deg, rgba(20, 20, 20, .98), rgba(15, 15, 15, .98));
+  --workflow-node-end-shadow: 0 10px 22px rgba(0, 0, 0, .5), 0 1px 0 rgba(255,255,255,.02);
+  --workflow-node-icon-bg: rgba(150, 150, 150, .12);
+  --workflow-node-icon-line: rgba(150, 150, 150, .16);
+  --workflow-node-skill-icon-bg: #1a1a1a;
+  --workflow-node-tool-icon-bg: #1a1a1a;
+  --workflow-node-start-icon-bg: #1a2820;
+  --workflow-node-end-icon-bg: rgba(150, 150, 150, .12);
+  --workflow-node-end-icon-ink: #d0d0d0;
   --workflow-node-flag-bg: rgba(245, 158, 11, .14);
   --workflow-node-flag-line: rgba(251, 191, 36, .28);
-  --workflow-order-chip-bg: rgba(6, 15, 26, .8);
-  --workflow-order-chip-line: rgba(131, 157, 189, .18);
-  --workflow-order-chip-ink: #d6e0ec;
-  --workflow-runtime-head-bg: rgba(8, 18, 31, .48);
-  --workflow-runtime-metric-bg: rgba(8, 18, 31, .58);
-  --workflow-runtime-block-bg: rgba(8, 18, 31, .64);
-  --workflow-runtime-block-pre-bg: rgba(7, 17, 31, .84);
-  --log-bg: #0b1120;
-  --log-running-line: #38bdf8;
-  --log-running-shadow: 0 0 0 3px rgba(56, 189, 248, .18);
-  --log-border: rgba(102, 163, 255, .22);
-  --log-ink: #dbeafe;
+  --workflow-order-chip-bg: rgba(15, 15, 15, .8);
+  --workflow-order-chip-line: rgba(255, 255, 255, .1);
+  --workflow-order-chip-ink: #e0e0e0;
+  --workflow-runtime-head-bg: rgba(15, 15, 15, .48);
+  --workflow-runtime-metric-bg: rgba(15, 15, 15, .58);
+  --workflow-runtime-block-bg: rgba(15, 15, 15, .64);
+  --workflow-runtime-block-pre-bg: rgba(12, 12, 12, .84);
+  --log-bg: #0d0d0d;
+  --log-running-line: #888888;
+  --log-running-shadow: 0 0 0 3px rgba(255, 255, 255, .1);
+  --log-border: rgba(255, 255, 255, .12);
+  --log-ink: #e0e0e0;
 }
 
 * { box-sizing: border-box; }
@@ -296,18 +300,19 @@ html {
 body {
   margin: 0;
   min-height: 100vh;
-  font: 14px/1.5 var(--font-sans);
+  font: 14px/1.6 var(--font-sans);
   background:
     linear-gradient(120deg, var(--bg-grad-1), transparent 24%),
     linear-gradient(240deg, var(--bg-grad-2), transparent 22%),
     linear-gradient(180deg, var(--bg) 0%, var(--bg-grad-3) 48%, var(--bg-grad-4) 100%);
   color: var(--ink);
   -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
   text-rendering: optimizeLegibility;
   overflow-x: clip;
 }
 ::selection {
-  background: rgba(37, 99, 235, .18);
+  background: rgba(100, 100, 100, .18);
 }
 .hidden { display: none !important; }
 button, input, textarea, select {
@@ -345,12 +350,13 @@ button {
   border: 1px solid var(--line);
   background: var(--control-bg);
   color: var(--ink);
-  border-radius: var(--radius);
+  border-radius: var(--radius-sm);
   min-height: var(--control-height);
-  padding: 8px 12px;
+  padding: 10px 16px;
   cursor: pointer;
   box-shadow: var(--control-shadow);
-  transition: box-shadow var(--duration-base) ease, border-color var(--duration-base) ease, background var(--duration-base) ease, color var(--duration-base) ease, opacity var(--duration-base) ease;
+  font-weight: 600;
+  transition: all var(--duration-base) ease;
 }
 button svg {
   width: 18px;
@@ -363,19 +369,23 @@ button:hover:not(:disabled) {
   box-shadow: var(--control-shadow-hover);
 }
 button:active:not(:disabled) {
-  border-color: var(--blue);
+  border-color: var(--brand);
   box-shadow: var(--focus);
+  transform: translateY(0);
 }
 button.primary {
   background: linear-gradient(180deg, var(--brand-2), var(--brand));
   border-color: var(--brand);
   color: #fff;
   font-weight: 700;
-  box-shadow: 0 8px 18px rgba(17, 24, 39, .16);
+  box-shadow: 0 8px 18px rgba(13, 148, 136, .16);
+  transition: all var(--duration-base) ease;
 }
 button.primary:hover:not(:disabled) {
   background: linear-gradient(180deg, color-mix(in srgb, var(--brand-2) 86%, white 14%), var(--brand));
   border-color: var(--brand-2);
+  box-shadow: 0 10px 22px rgba(13, 148, 136, .22);
+  transform: translateY(-1px);
 }
 button.danger {
   color: var(--red);
@@ -440,7 +450,7 @@ code, pre {
   height: 11px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #b9c4d4;
+  background: #888888;
   border: 3px solid transparent;
   border-radius: 999px;
   background-clip: padding-box;
@@ -449,7 +459,7 @@ code, pre {
   background: transparent;
 }
 :root[data-theme='dark'] ::-webkit-scrollbar-thumb {
-  background: #34445a;
+  background: #666666;
   border-color: transparent;
 }
 
@@ -840,24 +850,39 @@ h1 {
   align-items: stretch;
 }
 .metric {
-  min-height: 112px;
+  min-height: 120px;
   display: grid;
   align-content: start;
-  gap: 4px;
+  gap: 8px;
   background: var(--metric-bg);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  padding: 15px;
-  box-shadow: var(--soft-shadow);
+  border-radius: var(--radius-lg);
+  padding: 20px 22px;
+  box-shadow: 0 2px 8px rgba(15, 23, 42, .05), 0 1px 2px rgba(15, 23, 42, .04);
+  transition: all var(--duration-smooth) ease;
+}
+.metric:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 8px 20px rgba(15, 23, 42, .08), 0 2px 4px rgba(15, 23, 42, .06);
+  border-color: rgba(13, 148, 136, .2);
 }
 .metric span, .metric small {
   display: block;
   color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+  letter-spacing: .08em;
 }
 .metric strong {
   display: block;
-  font-size: 20px;
-  margin: 5px 0 4px;
+  font-size: 28px;
+  font-weight: 900;
+  margin: 8px 0 4px;
+  background: linear-gradient(135deg, var(--brand), var(--brand-2));
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
 }
 .metric.good { border-left: 4px solid var(--green); }
 .metric.warn { border-left: 4px solid var(--amber); }
@@ -879,36 +904,46 @@ h1 {
   min-width: 0;
   background: var(--panel-bg);
   border: 1px solid var(--line);
-  border-radius: var(--radius);
-  box-shadow: 0 1px 2px rgba(15, 23, 42, .055), 0 8px 20px rgba(15, 23, 42, .055);
-  padding: 16px;
+  border-radius: var(--radius-lg);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, .06), 0 1px 2px rgba(15, 23, 42, .04);
+  padding: 24px 26px;
+  transition: all var(--duration-smooth) ease;
+}
+.panel:hover {
+  box-shadow: 0 4px 16px rgba(15, 23, 42, .08), 0 2px 4px rgba(15, 23, 42, .06);
 }
 .panel h2 {
-  margin: 0 0 10px;
-  font-size: 16px;
-  letter-spacing: 0;
+  margin: 0 0 14px;
+  font-size: 18px;
+  font-weight: 800;
+  letter-spacing: -.01em;
 }
 .muted {
   color: var(--muted);
 }
 .badge {
-  min-height: 26px;
+  min-height: 28px;
   flex: 0 0 auto;
   display: inline-flex;
   align-items: center;
   justify-content: center;
   gap: 6px;
   max-width: 100%;
-  padding: 4px 9px;
+  padding: 5px 12px;
   border: 1px solid var(--badge-neutral-line);
   border-radius: 999px;
   background: var(--badge-neutral-bg);
   color: var(--badge-neutral-ink);
   font-size: 12px;
   font-weight: 800;
-  line-height: 1.25;
+  line-height: 1.3;
   overflow-wrap: normal;
   white-space: nowrap;
+  transition: all var(--duration-base) ease;
+}
+.badge:hover {
+  transform: translateY(-1px);
+  box-shadow: 0 2px 8px rgba(15, 23, 42, .08);
 }
 .badge.good {
   color: var(--green);
@@ -3411,6 +3446,11 @@ button.timeline-jump-latest:active:not(:disabled) {
   background: rgba(255, 187, 92, .82);
   box-shadow: 0 0 0 4px rgba(255, 187, 92, .1);
 }
+.timeline-event.warn .timeline-marker::after {
+  border-color: rgba(255, 187, 92, .34);
+  background: rgba(255, 187, 92, .82);
+  box-shadow: 0 0 0 4px rgba(255, 187, 92, .1);
+}
 .timeline-event.tool .timeline-marker::after {
   border-color: rgba(73, 216, 255, .3);
   background: rgba(73, 216, 255, .76);
@@ -4527,6 +4567,36 @@ button.timeline-jump-latest:active:not(:disabled) {
   font-size: 11px;
   font-style: normal;
   line-height: 1.35;
+}
+.run-history-token-details {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+  margin-top: 5px;
+}
+.run-history-token-details b {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, .95fr) minmax(0, 1.05fr);
+  gap: 6px;
+  align-items: baseline;
+  padding-top: 5px;
+  border-top: 1px solid color-mix(in srgb, var(--runtime-chip-line) 72%, transparent);
+  font-weight: 700;
+}
+.run-history-token-details i,
+.run-history-token-details strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+.run-history-token-details i {
+  color: var(--muted);
+  font-size: 10px;
+  font-style: normal;
+}
+.run-history-token-details strong {
+  color: var(--ink);
+  font-size: 11px;
 }
 .run-history-lazy-stack {
   min-width: 0;
@@ -9162,12 +9232,17 @@ button.timeline-jump-latest:active:not(:disabled) {
   grid-template-columns: minmax(0, 1fr) auto;
   justify-content: space-between;
   align-items: stretch;
-  gap: 24px;
-  min-height: 220px;
+  gap: 32px;
+  min-height: 240px;
+  padding: 32px 36px;
+  border-radius: var(--radius-xl);
   background:
-    radial-gradient(circle at top right, rgba(102, 163, 255, .16), transparent 30%),
+    radial-gradient(circle at top right, rgba(13, 148, 136, .12), transparent 35%),
+    radial-gradient(circle at bottom left, rgba(8, 145, 178, .08), transparent 40%),
     var(--hero-bg),
     var(--hero-bg-accent);
+  border: 1px solid rgba(13, 148, 136, .08);
+  box-shadow: 0 4px 16px rgba(13, 148, 136, .06), 0 1px 3px rgba(15, 23, 42, .04);
 }
 .overview-launchpad + .metric-grid {
   margin-top: 14px;
@@ -9401,13 +9476,72 @@ button.timeline-jump-latest:active:not(:disabled) {
 .studio.simple-mode #stageAdvancedPanel,
 .studio.simple-mode #workflowInspectorPanel-inputs,
 .studio.simple-mode #workflowInspectorPanel-outputs,
+.studio.simple-mode #workflowInspectorPanel-flow,
 .studio.simple-mode #stageArtifactsPanel,
 .studio.simple-mode .workflow-task-open.developer {
   display: none !important;
 }
 
 .studio.simple-mode .workflow-inspector-tabs {
-  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-columns: minmax(0, 1fr);
+}
+
+.studio.simple-mode .workflow-palette-panel {
+  max-height: min(520px, calc(100vh - 220px));
+  overflow: hidden;
+}
+
+.studio.simple-mode .workflow-palette-panel .panel-head p,
+.studio.simple-mode .workflow-palette-panel .panel-head .badge,
+.studio.simple-mode .node-palette button span,
+.studio.simple-mode .node-palette button small,
+.studio.simple-mode .node-palette .palette-meta {
+  display: none;
+}
+
+.studio.simple-mode .workflow-palette-filter {
+  grid-template-columns: minmax(0, 1fr);
+  gap: 6px;
+}
+
+.studio.simple-mode .workflow-palette-filter .badge {
+  display: none;
+}
+
+.studio.simple-mode .node-palette {
+  max-height: min(410px, calc(100vh - 312px));
+  overflow: auto;
+  gap: 7px;
+}
+
+.studio.simple-mode .palette-section {
+  gap: 6px;
+  padding-top: 9px;
+}
+
+.studio.simple-mode .palette-section-head span {
+  display: none;
+}
+
+.studio.simple-mode .palette-section-grid {
+  gap: 6px;
+}
+
+.studio.simple-mode .node-palette button {
+  min-height: 40px;
+  grid-template-columns: 26px minmax(0, 1fr);
+  align-items: center;
+  padding: 7px 9px 7px 12px;
+}
+
+.studio.simple-mode .node-palette button i {
+  grid-row: auto;
+  width: 24px;
+  height: 24px;
+}
+
+.studio.simple-mode .node-palette button strong {
+  font-size: 12px;
 }
 
 .studio.simple-mode .workflow-task-editor-grid {
@@ -9416,6 +9550,12 @@ button.timeline-jump-latest:active:not(:disabled) {
 
 .studio.simple-mode .workflow-task-section {
   background: var(--panel-flat-bg);
+}
+
+.studio.simple-mode .workflow-task-section.input,
+.studio.simple-mode .workflow-task-section.output,
+.studio.simple-mode .workflow-task-section.flow {
+  border-style: dashed;
 }
 
 .studio.focus-mode .studio-right {
@@ -11388,7 +11528,7 @@ button.edge-action:focus-visible {
   box-shadow: var(--workflow-node-shadow);
   cursor: grab;
   user-select: none;
-  transition: border-color .16s ease, box-shadow .16s ease, background .16s ease;
+  transition: border-color var(--duration-base) ease, box-shadow var(--duration-smooth) ease, background var(--duration-base) ease, transform var(--duration-base) ease;
   transform: translateZ(0);
   overflow: visible;
 }
@@ -11417,6 +11557,7 @@ button.edge-action:focus-visible {
 .flow-node:hover {
   border-color: var(--workflow-node-strong-line);
   box-shadow: var(--workflow-node-hover-shadow);
+  transform: translateY(-1px) translateZ(0);
 }
 .flow-node.control-scope-source:hover,
 .flow-node.control-scope-source.selected {
@@ -11436,7 +11577,7 @@ button.edge-action:focus-visible {
 }
 .flow-node:focus-visible {
   outline: 0;
-  border-color: var(--blue);
+  border-color: var(--brand);
   box-shadow: var(--focus), var(--workflow-node-hover-shadow);
 }
 .flow-node.start,
@@ -11462,29 +11603,30 @@ button.edge-action:focus-visible {
   background: var(--workflow-node-start-bg);
 }
 .flow-node.end {
-  border-color: rgba(73, 216, 255, .34);
+  border-color: rgba(94, 234, 212, .34);
   background: var(--workflow-node-end-bg);
   box-shadow: var(--workflow-node-end-shadow);
 }
 .flow-node.tool::before { background: var(--purple); }
 .flow-node.skill::before { background: var(--green); }
-.flow-node.agent::before { background: var(--blue); }
-.flow-node.team::before { background: linear-gradient(90deg, var(--blue), var(--green)); }
+.flow-node.agent::before { background: var(--brand); }
+.flow-node.team::before { background: linear-gradient(90deg, var(--brand), var(--green)); }
 .flow-node.control::before { background: var(--cyan); }
 .flow-node.custom::before { background: #64748b; }
 .flow-node.start::before { background: var(--green); }
-.flow-node.end::before { background: linear-gradient(90deg, var(--blue), var(--cyan)); }
+.flow-node.end::before { background: linear-gradient(90deg, var(--brand), var(--cyan)); }
 .flow-node.selected {
-  border-color: var(--blue);
+  border-color: var(--brand);
   box-shadow: var(--workflow-node-selected-shadow);
+  transform: translateY(-0.5px) translateZ(0);
 }
 .flow-node.connecting {
-  outline: 2px dashed color-mix(in srgb, var(--blue) 58%, transparent);
+  outline: 2px dashed color-mix(in srgb, var(--brand) 58%, transparent);
   outline-offset: 5px;
 }
 .flow-node.connect-target {
-  border-color: color-mix(in srgb, var(--blue) 58%, var(--workflow-node-line) 42%);
-  box-shadow: 0 0 0 3px color-mix(in srgb, var(--blue) 13%, transparent), var(--workflow-node-shadow);
+  border-color: color-mix(in srgb, var(--brand) 58%, var(--workflow-node-line) 42%);
+  box-shadow: 0 0 0 3px color-mix(in srgb, var(--brand) 13%, transparent), var(--workflow-node-shadow);
 }
 .flow-node.needs-approval { box-shadow: 0 0 0 2px rgba(217, 119, 6, .16), var(--workflow-node-shadow); }
 .flow-node.selected.needs-approval { box-shadow: 0 0 0 2px rgba(217, 119, 6, .20), var(--workflow-node-selected-shadow); }
@@ -11494,18 +11636,18 @@ button.edge-action:focus-visible {
 .flow-node.runtime-current,
 .flow-node.runtime-running {
   z-index: 8;
-  border-color: color-mix(in srgb, var(--blue) 78%, var(--workflow-node-strong-line) 22%);
+  border-color: color-mix(in srgb, var(--brand) 78%, var(--workflow-node-strong-line) 22%);
   background:
-    linear-gradient(90deg, color-mix(in srgb, var(--blue) 12%, transparent), transparent 40%),
+    linear-gradient(90deg, color-mix(in srgb, var(--brand) 12%, transparent), transparent 40%),
     var(--workflow-node-bg);
   box-shadow:
-    0 0 0 3px color-mix(in srgb, var(--blue) 22%, transparent),
-    0 0 0 8px color-mix(in srgb, var(--blue) 8%, transparent),
+    0 0 0 3px color-mix(in srgb, var(--brand) 22%, transparent),
+    0 0 0 8px color-mix(in srgb, var(--brand) 8%, transparent),
     var(--workflow-node-hover-shadow);
 }
 .flow-node.runtime-running::before,
 .flow-node.runtime-current::before {
-  background: var(--blue);
+  background: var(--brand);
 }
 .flow-node.runtime-waiting {
   z-index: 8;
@@ -12489,6 +12631,14 @@ button.edge-action:focus-visible {
   border-left-color: var(--amber);
   background: color-mix(in srgb, var(--badge-warn-bg) 34%, var(--runtime-chip-bg));
 }
+.workflow-stage-runtime-explain.blocked {
+  border-color: color-mix(in srgb, var(--amber) 46%, var(--runtime-chip-line));
+  border-left-color: var(--amber);
+  background: color-mix(in srgb, var(--badge-warn-bg) 48%, var(--runtime-chip-bg));
+}
+.workflow-stage-runtime-explain.blocked strong {
+  color: var(--badge-warn-ink);
+}
 .workflow-stage-runtime-explain.success {
   border-color: color-mix(in srgb, var(--green) 32%, var(--runtime-chip-line));
   border-left-color: var(--green);
@@ -12502,6 +12652,237 @@ button.edge-action:focus-visible {
   border-color: color-mix(in srgb, var(--workflow-edge-route) 34%, var(--runtime-chip-line));
   border-left-color: var(--workflow-edge-route);
   background: color-mix(in srgb, var(--badge-good-bg) 42%, var(--runtime-chip-bg));
+}
+.workflow-stage-runtime-diagnostic {
+  min-width: 0;
+  padding: 8px 10px;
+  border: 1px solid var(--badge-warn-line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--badge-warn-bg) 46%, var(--runtime-chip-bg));
+  color: var(--badge-warn-ink);
+  font-size: 12px;
+  font-weight: 760;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+.workflow-stage-runtime-shortcuts {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+.workflow-stage-runtime-shortcut {
+  min-width: 0;
+  border: 1px solid var(--workflow-order-chip-line);
+  border-radius: 8px;
+  background: var(--workflow-order-chip-bg);
+  overflow: hidden;
+}
+.workflow-stage-runtime-shortcut.quality {
+  border-color: color-mix(in srgb, var(--red) 30%, var(--workflow-order-chip-line));
+  background: color-mix(in srgb, var(--badge-bad-bg) 34%, var(--workflow-order-chip-bg));
+}
+.workflow-stage-runtime-shortcut.conflict {
+  border-color: color-mix(in srgb, var(--amber) 36%, var(--workflow-order-chip-line));
+  background: color-mix(in srgb, var(--badge-warn-bg) 44%, var(--workflow-order-chip-bg));
+}
+.workflow-stage-runtime-shortcut.handoff {
+  border-color: color-mix(in srgb, var(--amber) 34%, var(--workflow-order-chip-line));
+  background: color-mix(in srgb, var(--badge-warn-bg) 36%, var(--workflow-order-chip-bg));
+}
+.workflow-stage-runtime-shortcut summary {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 9px 10px;
+  cursor: pointer;
+  list-style: none;
+}
+.workflow-stage-runtime-shortcut summary::-webkit-details-marker {
+  display: none;
+}
+.workflow-stage-runtime-shortcut summary span {
+  display: grid;
+  gap: 3px;
+  min-width: 0;
+}
+.workflow-stage-runtime-shortcut summary strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.3;
+}
+.workflow-stage-runtime-shortcut summary small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.4;
+}
+.workflow-stage-runtime-shortcut summary i {
+  flex: 0 0 auto;
+  color: var(--blue);
+  font-size: 10px;
+  font-style: normal;
+  font-weight: 900;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+.workflow-stage-runtime-shortcut.quality summary i {
+  color: var(--red);
+}
+.workflow-stage-runtime-shortcut.conflict summary i {
+  color: var(--amber);
+}
+.workflow-stage-runtime-shortcut.handoff summary i {
+  color: var(--amber);
+}
+.workflow-stage-runtime-shortcut-grid {
+  display: grid;
+  gap: 6px;
+  padding: 0 10px 10px;
+}
+.workflow-stage-runtime-shortcut-grid span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--runtime-chip-line);
+  border-radius: 7px;
+  background: var(--runtime-chip-bg);
+}
+.workflow-stage-runtime-shortcut-grid small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+.workflow-stage-runtime-shortcut-grid strong {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+.workflow-stage-runtime-artifact-load {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  min-width: 0;
+  padding: 0 10px 10px;
+}
+.workflow-stage-runtime-artifact-load span {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  padding: 7px 8px;
+  border: 1px solid var(--runtime-chip-line);
+  border-radius: 7px;
+  background: var(--runtime-chip-bg);
+}
+.workflow-stage-runtime-artifact-load small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+.workflow-stage-runtime-artifact-load strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 800;
+}
+.workflow-stage-runtime-artifacts {
+  display: grid;
+  gap: 8px;
+  min-width: 0;
+  padding: 0 10px 10px;
+}
+.workflow-stage-runtime-artifact {
+  display: grid;
+  gap: 7px;
+  min-width: 0;
+  padding: 9px;
+  border: 1px solid var(--runtime-chip-line);
+  border-radius: 7px;
+  background: var(--panel);
+}
+.workflow-stage-runtime-artifact.error {
+  border-color: var(--danger);
+}
+.workflow-stage-runtime-artifact-head {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+.workflow-stage-runtime-artifact-head span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: 0;
+  text-transform: uppercase;
+}
+.workflow-stage-runtime-artifact-head strong {
+  color: var(--ink);
+  font-size: 12px;
+  font-weight: 850;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+.workflow-stage-runtime-artifact p {
+  margin: 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.45;
+}
+.workflow-stage-runtime-artifact-meta {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+}
+.workflow-stage-runtime-artifact-meta small {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+  color: var(--muted);
+  font-size: 10px;
+}
+.workflow-stage-runtime-artifact-meta code {
+  min-width: 0;
+  color: var(--ink);
+  font-size: 11px;
+  overflow-wrap: anywhere;
+  white-space: normal;
+}
+.workflow-stage-runtime-artifact-content {
+  min-width: 0;
+}
+.workflow-stage-runtime-artifact-content summary {
+  display: inline-flex;
+  align-items: center;
+  justify-content: flex-start;
+  gap: 0;
+  padding: 0;
+  cursor: pointer;
+  list-style: none;
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 850;
+}
+.workflow-stage-runtime-artifact-content pre {
+  max-height: 220px;
+  margin: 8px 0 0;
+  padding: 8px;
+  overflow: auto;
+  border: 1px solid var(--runtime-chip-line);
+  border-radius: 7px;
+  background: var(--runtime-chip-bg);
+  color: var(--ink);
+  font-size: 11px;
+  line-height: 1.45;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
 .workflow-stage-runtime-facts span {
   display: inline-grid;
@@ -13370,6 +13751,9 @@ button.edge-action:focus-visible {
 .workflow-task-field-grid.two {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
+.workflow-task-field-grid.normal-purpose {
+  grid-template-columns: minmax(0, 1fr);
+}
 .workflow-task-field-grid label,
 .workflow-task-stack label {
   min-width: 0;
@@ -13393,6 +13777,47 @@ button.edge-action:focus-visible {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.35;
+}
+.workflow-task-readonly,
+.workflow-task-auto-policy {
+  min-width: 0;
+  display: grid;
+  gap: 7px;
+  padding: 8px;
+  border: 1px solid var(--runtime-chip-line);
+  border-radius: 8px;
+  background: var(--runtime-chip-bg);
+}
+.workflow-task-readonly small {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  text-transform: uppercase;
+}
+.workflow-task-readonly strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.3;
+}
+.workflow-task-auto-policy > div:first-child {
+  display: grid;
+  gap: 2px;
+}
+.workflow-task-auto-policy > div:first-child strong {
+  color: var(--ink);
+  font-size: 12px;
+  line-height: 1.3;
+}
+.workflow-task-auto-policy > div:first-child span,
+.workflow-task-auto-policy > em {
+  color: var(--muted);
+  font-size: 11px;
+  font-style: normal;
+  line-height: 1.4;
+}
+.workflow-task-auto-ref-list {
+  display: grid;
+  gap: 6px;
 }
 .workflow-task-stack {
   min-width: 0;
@@ -13717,11 +14142,28 @@ button.edge-action:focus-visible {
   line-height: 1.25;
 }
 .workflow-resource-picker-head span,
-.workflow-resource-picker-more,
 .workflow-resource-empty {
   color: var(--muted);
   font-size: 11px;
   line-height: 1.4;
+}
+.workflow-resource-picker-more {
+  justify-self: start;
+  min-height: 30px;
+  padding: 5px 9px;
+  border-color: var(--runtime-chip-line);
+  border-radius: 8px;
+  background: var(--runtime-chip-bg);
+  color: var(--blue);
+  font-size: 11px;
+  font-weight: 850;
+  line-height: 1.3;
+  box-shadow: none;
+}
+.workflow-resource-picker-more:hover,
+.workflow-resource-picker-more:focus-visible {
+  border-color: color-mix(in srgb, var(--blue) 38%, var(--runtime-chip-line));
+  background: color-mix(in srgb, var(--blue) 7%, var(--runtime-chip-bg));
 }
 .workflow-resource-picker-head em {
   flex: 0 1 auto;
@@ -13983,6 +14425,18 @@ button.edge-action:focus-visible {
   font-size: 10px;
   font-style: normal;
   font-weight: 900;
+}
+.workflow-stage-data-flow-policy {
+  margin: 0;
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+}
+.workflow-stage-data-flow.simple {
+  border-left-color: var(--green);
+}
+.workflow-stage-data-flow.simple .workflow-stage-data-flow-head span {
+  color: var(--green);
 }
 .workflow-stage-data-flow-grid {
   grid-template-columns: repeat(2, minmax(0, 1fr));
@@ -20204,64 +20658,64 @@ button.edge-action:focus-visible {
 /* GoFlow visual refresh: dense, technical Agent operations surface. */
 :root {
   --font-sans: "Microsoft YaHei UI", "PingFang SC", "Segoe UI", system-ui, sans-serif;
-  --bg: #eef4f7;
-  --bg-grad-1: rgba(13, 148, 136, .07);
-  --bg-grad-2: rgba(8, 145, 178, .06);
-  --bg-grad-3: #e7eff4;
-  --bg-grad-4: #f7fafb;
-  --panel: rgba(250, 253, 255, .94);
-  --panel-2: #f3f8fa;
-  --panel-3: #e8f1f5;
-  --ink: #10212d;
+  --bg: #f5f5f5;
+  --bg-grad-1: rgba(0, 0, 0, .02);
+  --bg-grad-2: rgba(0, 0, 0, .01);
+  --bg-grad-3: #f0f0f0;
+  --bg-grad-4: #fafafa;
+  --panel: rgba(255, 255, 255, .96);
+  --panel-2: #fafafa;
+  --panel-3: #f0f0f0;
+  --ink: #1a1a1a;
   --text: var(--ink);
-  --muted: #5c7080;
-  --line: rgba(46, 76, 91, .18);
-  --line-strong: rgba(37, 67, 82, .36);
-  --blue: #2166a6;
-  --green: #0d9f72;
-  --red: #d64555;
-  --amber: #c97918;
-  --purple: #6b5fc7;
-  --cyan: #0796b5;
-  --teal: #0f766e;
-  --accent: var(--teal);
-  --brand: #0b625b;
-  --brand-2: #0ea5a4;
-  --sidebar: rgba(244, 250, 251, .96);
-  --sidebar-2: rgba(235, 244, 247, .98);
-  --shadow: 0 18px 44px rgba(21, 37, 49, .12);
-  --soft-shadow: 0 10px 28px rgba(21, 37, 49, .08);
-  --panel-shadow: 0 1px 0 rgba(255,255,255,.76), 0 12px 26px rgba(21, 37, 49, .07);
-  --control-shadow: 0 1px 0 rgba(255,255,255,.72), 0 1px 2px rgba(21, 37, 49, .08);
-  --control-shadow-hover: 0 1px 0 rgba(255,255,255,.84), 0 8px 22px rgba(14, 116, 144, .13);
-  --focus: 0 0 0 3px rgba(14, 165, 164, .22);
-  --control-bg: linear-gradient(180deg, rgba(255,255,255,.97), rgba(239,247,249,.96));
-  --control-bg-hover: linear-gradient(180deg, rgba(255,255,255,.99), rgba(227,243,246,.98));
-  --field-bg: rgba(252, 254, 255, .98);
-  --field-shadow: inset 0 1px 0 rgba(255,255,255,.84);
-  --sidebar-highlight: linear-gradient(180deg, rgba(255,255,255,.98), rgba(229,244,247,.98));
-  --topbar-bg: rgba(244, 250, 251, .88);
-  --runtime-bg: rgba(250, 253, 255, .82);
-  --runtime-panel-bg: rgba(250, 253, 255, .88);
-  --accent-line: rgba(14, 165, 164, .26);
-  --hero-bg: linear-gradient(180deg, rgba(253,255,255,.96), rgba(239,247,249,.96));
-  --hero-bg-accent: linear-gradient(90deg, rgba(14,165,164,.075), rgba(7,150,181,.042) 42%, transparent);
-  --metric-bg: linear-gradient(180deg, rgba(255,255,255,.97), rgba(239,247,249,.96));
-  --panel-bg: linear-gradient(180deg, rgba(255,255,255,.94), rgba(240,247,249,.96));
-  --panel-flat-bg: linear-gradient(180deg, rgba(250,253,255,.91), rgba(236,246,248,.94));
-  --message-bg: linear-gradient(180deg, rgba(255,255,255,.96), rgba(241,248,250,.97));
-  --message-code-bg: #0b1822;
-  --message-code-ink: #d8f6ff;
-  --nav-ink: #516777;
-  --nav-active-ink: #0f2f37;
-  --nav-active-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(226,243,246,.95));
-  --nav-active-line: rgba(14, 165, 164, .34);
-  --runtime-border: rgba(14, 165, 164, .25);
-  --runtime-accent-bg: rgba(229, 247, 249, .84);
-  --runtime-chip-bg: rgba(255,255,255,.74);
-  --runtime-chip-ink: #123d49;
-  --runtime-ink: #123d49;
-  --runtime-chip-line: rgba(67, 97, 112, .18);
+  --muted: #666666;
+  --line: rgba(0, 0, 0, .12);
+  --line-strong: rgba(0, 0, 0, .24);
+  --blue: #666666;
+  --green: #10b981;
+  --red: #ef4444;
+  --amber: #f59e0b;
+  --purple: #666666;
+  --cyan: #666666;
+  --teal: #666666;
+  --accent: #333333;
+  --brand: #333333;
+  --brand-2: #666666;
+  --sidebar: rgba(250, 250, 250, .98);
+  --sidebar-2: rgba(245, 245, 245, .98);
+  --shadow: 0 18px 44px rgba(0, 0, 0, .10);
+  --soft-shadow: 0 10px 28px rgba(0, 0, 0, .06);
+  --panel-shadow: 0 1px 0 rgba(255,255,255,.80), 0 12px 26px rgba(0, 0, 0, .08);
+  --control-shadow: 0 1px 0 rgba(255,255,255,.75), 0 1px 2px rgba(0, 0, 0, .08);
+  --control-shadow-hover: 0 1px 0 rgba(255,255,255,.85), 0 8px 22px rgba(0, 0, 0, .12);
+  --focus: 0 0 0 3px rgba(0, 0, 0, .15);
+  --control-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(250,250,250,.97));
+  --control-bg-hover: linear-gradient(180deg, rgba(255,255,255,.99), rgba(245,245,245,.98));
+  --field-bg: rgba(255, 255, 255, .98);
+  --field-shadow: inset 0 1px 0 rgba(255,255,255,.85);
+  --sidebar-highlight: linear-gradient(180deg, rgba(255,255,255,.98), rgba(245,245,245,.98));
+  --topbar-bg: rgba(250, 250, 250, .90);
+  --runtime-bg: rgba(255, 255, 255, .85);
+  --runtime-panel-bg: rgba(255, 255, 255, .90);
+  --accent-line: rgba(0, 0, 0, .20);
+  --hero-bg: linear-gradient(180deg, rgba(255,255,255,.97), rgba(250,250,250,.97));
+  --hero-bg-accent: linear-gradient(90deg, rgba(0,0,0,.03), rgba(0,0,0,.015) 42%, transparent);
+  --metric-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(250,250,250,.97));
+  --panel-bg: linear-gradient(180deg, rgba(255,255,255,.96), rgba(250,250,250,.97));
+  --panel-flat-bg: linear-gradient(180deg, rgba(255,255,255,.94), rgba(245,245,245,.96));
+  --message-bg: linear-gradient(180deg, rgba(255,255,255,.97), rgba(250,250,250,.98));
+  --message-code-bg: #1a1a1a;
+  --message-code-ink: #e0e0e0;
+  --nav-ink: #666666;
+  --nav-active-ink: #1a1a1a;
+  --nav-active-bg: linear-gradient(180deg, rgba(255,255,255,.98), rgba(245,245,245,.97));
+  --nav-active-line: rgba(0, 0, 0, .25);
+  --runtime-border: rgba(0, 0, 0, .20);
+  --runtime-accent-bg: rgba(240, 240, 240, .85);
+  --runtime-chip-bg: rgba(255,255,255,.80);
+  --runtime-chip-ink: #333333;
+  --runtime-ink: #333333;
+  --runtime-chip-line: rgba(0, 0, 0, .15);
   --canvas-bg: linear-gradient(180deg, #edf5f7 0%, #e3eef3 100%);
   --canvas-surface-bg:
     linear-gradient(rgba(40, 83, 96, .09) 1px, transparent 1px),
@@ -20283,120 +20737,120 @@ button.edge-action:focus-visible {
   --workflow-toolbar-bg: rgba(247,252,253,.9);
   --workflow-edge-stroke: #0e9aa8;
   --workflow-edge-underlay: rgba(35, 65, 79, .18);
-  --workflow-edge-route: #0d9f72;
-  --workflow-node-start-bg: linear-gradient(180deg, rgba(232,250,242,.98), rgba(218,247,239,.98));
-  --workflow-node-start-line: rgba(13, 159, 114, .32);
-  --workflow-node-end-bg: linear-gradient(180deg, rgba(226,248,252,.98), rgba(214,239,247,.98));
-  --workflow-node-end-icon-ink: #087f99;
-  --workflow-node-icon-bg: rgba(14, 165, 164, .12);
-  --workflow-node-icon-line: rgba(14, 165, 164, .18);
-  --workflow-node-skill-icon-bg: rgba(13,159,114,.12);
-  --workflow-node-tool-icon-bg: rgba(107,95,199,.12);
-  --workflow-node-start-icon-bg: rgba(13,159,114,.12);
-  --workflow-node-end-icon-bg: rgba(7,150,181,.12);
-  --log-bg: #07111a;
-  --log-ink: #d9eef5;
-  --log-running-line: #22d3ee;
-  --log-border: rgba(34, 211, 238, .22);
-  --radius: 8px;
-  --radius-sm: 6px;
+  --workflow-edge-route: #666666;
+  --workflow-node-start-bg: linear-gradient(180deg, rgba(240,250,240,.98), rgba(230,245,230,.98));
+  --workflow-node-start-line: rgba(16, 185, 129, .32);
+  --workflow-node-end-bg: linear-gradient(180deg, rgba(250,240,240,.98), rgba(245,230,230,.98));
+  --workflow-node-end-icon-ink: #ef4444;
+  --workflow-node-icon-bg: rgba(0, 0, 0, .08);
+  --workflow-node-icon-line: rgba(0, 0, 0, .12);
+  --workflow-node-skill-icon-bg: rgba(0, 0, 0, .08);
+  --workflow-node-tool-icon-bg: rgba(0, 0, 0, .08);
+  --workflow-node-start-icon-bg: rgba(16, 185, 129, .12);
+  --workflow-node-end-icon-bg: rgba(239, 68, 68, .12);
+  --log-bg: #0a0a0a;
+  --log-ink: #e0e0e0;
+  --log-running-line: #888888;
+  --log-border: rgba(136, 136, 136, .22);
+  --radius: 12px;
+  --radius-sm: 8px;
 }
 
 :root[data-theme='dark'] {
-  --bg: #061014;
-  --bg-grad-1: rgba(20, 184, 166, .075);
-  --bg-grad-2: rgba(34, 211, 238, .055);
-  --bg-grad-3: #07151a;
-  --bg-grad-4: #050b0f;
-  --panel: rgba(10, 22, 27, .96);
-  --panel-2: #0b1a20;
-  --panel-3: #11252c;
-  --ink: #e7f3f6;
+  --bg: #0a0a0a;
+  --bg-grad-1: rgba(26, 26, 26, .075);
+  --bg-grad-2: rgba(38, 38, 38, .055);
+  --bg-grad-3: #121212;
+  --bg-grad-4: #0a0a0a;
+  --panel: rgba(26, 26, 26, .96);
+  --panel-2: #1a1a1a;
+  --panel-3: #262626;
+  --ink: #e0e0e0;
   --text: var(--ink);
-  --muted: #94aeb8;
-  --line: rgba(132, 175, 187, .20);
-  --line-strong: rgba(150, 198, 209, .36);
-  --blue: #5fb3d8;
-  --green: #37d89d;
-  --red: #ff7484;
-  --amber: #ffbf69;
-  --purple: #a99cff;
-  --cyan: #31d5ef;
-  --teal: #22d3c5;
-  --accent: var(--teal);
-  --brand: #0f766e;
-  --brand-2: #22d3c5;
-  --sidebar: rgba(6, 16, 21, .98);
-  --sidebar-2: rgba(8, 20, 26, .98);
-  --shadow: 0 18px 44px rgba(0, 4, 8, .44);
-  --soft-shadow: 0 10px 28px rgba(0, 4, 8, .30);
-  --panel-shadow: 0 1px 0 rgba(255,255,255,.035), 0 16px 34px rgba(0, 4, 8, .30);
-  --control-shadow: 0 1px 0 rgba(255,255,255,.035), 0 1px 2px rgba(0, 4, 8, .34);
-  --control-shadow-hover: 0 1px 0 rgba(255,255,255,.055), 0 10px 24px rgba(3, 35, 43, .42);
-  --focus: 0 0 0 3px rgba(34, 211, 197, .25);
-  --control-bg: linear-gradient(180deg, rgba(18, 38, 46, .98), rgba(10, 25, 31, .98));
-  --control-bg-hover: linear-gradient(180deg, rgba(22, 48, 57, .98), rgba(12, 30, 37, .98));
-  --field-bg: rgba(6, 17, 22, .96);
+  --muted: #b0b0b0;
+  --line: rgba(255, 255, 255, .12);
+  --line-strong: rgba(255, 255, 255, .20);
+  --blue: #888888;
+  --green: #10b981;
+  --red: #ff6c7a;
+  --amber: #f59e0b;
+  --purple: #888888;
+  --cyan: #888888;
+  --teal: #888888;
+  --accent: #888888;
+  --brand: #666666;
+  --brand-2: #888888;
+  --sidebar: rgba(18, 18, 18, .98);
+  --sidebar-2: rgba(22, 22, 22, .98);
+  --shadow: 0 18px 44px rgba(0, 0, 0, .44);
+  --soft-shadow: 0 10px 28px rgba(0, 0, 0, .30);
+  --panel-shadow: 0 1px 0 rgba(255,255,255,.035), 0 16px 34px rgba(0, 0, 0, .30);
+  --control-shadow: 0 1px 0 rgba(255,255,255,.035), 0 1px 2px rgba(0, 0, 0, .34);
+  --control-shadow-hover: 0 1px 0 rgba(255,255,255,.055), 0 10px 24px rgba(0, 0, 0, .42);
+  --focus: 0 0 0 3px rgba(136, 136, 136, .25);
+  --control-bg: linear-gradient(180deg, rgba(38, 38, 38, .98), rgba(26, 26, 26, .98));
+  --control-bg-hover: linear-gradient(180deg, rgba(48, 48, 48, .98), rgba(32, 32, 32, .98));
+  --field-bg: rgba(18, 18, 18, .96);
   --field-shadow: inset 0 1px 0 rgba(255,255,255,.035);
-  --sidebar-highlight: linear-gradient(180deg, rgba(17, 42, 50, .98), rgba(9, 27, 34, .98));
-  --topbar-bg: rgba(6, 16, 21, .84);
-  --runtime-bg: rgba(9, 24, 31, .82);
-  --runtime-panel-bg: rgba(9, 24, 31, .88);
-  --accent-line: rgba(34, 211, 197, .28);
-  --hero-bg: linear-gradient(180deg, rgba(12, 28, 35, .98), rgba(8, 21, 27, .98));
-  --hero-bg-accent: linear-gradient(90deg, rgba(34,211,197,.10), rgba(49,213,239,.055) 42%, transparent);
-  --metric-bg: linear-gradient(180deg, rgba(12, 28, 35, .96), rgba(8, 21, 27, .98));
-  --panel-bg: linear-gradient(180deg, rgba(10, 23, 29, .96), rgba(7, 18, 24, .98));
-  --panel-flat-bg: linear-gradient(180deg, rgba(12, 27, 34, .94), rgba(8, 20, 26, .98));
-  --message-bg: linear-gradient(180deg, rgba(13, 29, 36, .97), rgba(8, 20, 26, .98));
-  --message-code-bg: #050d13;
-  --message-code-ink: #d8f6ff;
-  --nav-ink: #a6bcc5;
-  --nav-active-ink: #f0fbfd;
-  --nav-active-bg: linear-gradient(180deg, rgba(18, 43, 52, .96), rgba(9, 27, 34, .98));
-  --nav-active-line: rgba(34, 211, 197, .36);
-  --runtime-border: rgba(34, 211, 197, .26);
-  --runtime-accent-bg: rgba(10, 40, 48, .76);
-  --runtime-chip-bg: rgba(7, 21, 27, .78);
-  --runtime-chip-ink: #d8f6ff;
-  --runtime-ink: #d8f6ff;
-  --runtime-chip-line: rgba(132, 175, 187, .18);
-  --canvas-bg: linear-gradient(180deg, #071217 0%, #081820 100%);
+  --sidebar-highlight: linear-gradient(180deg, rgba(38, 38, 38, .98), rgba(26, 26, 26, .98));
+  --topbar-bg: rgba(18, 18, 18, .84);
+  --runtime-bg: rgba(22, 22, 22, .82);
+  --runtime-panel-bg: rgba(22, 22, 22, .88);
+  --accent-line: rgba(136, 136, 136, .28);
+  --hero-bg: linear-gradient(180deg, rgba(26, 26, 26, .98), rgba(18, 18, 18, .98));
+  --hero-bg-accent: linear-gradient(90deg, rgba(136,136,136,.10), rgba(136,136,136,.055) 42%, transparent);
+  --metric-bg: linear-gradient(180deg, rgba(26, 26, 26, .96), rgba(18, 18, 18, .98));
+  --panel-bg: linear-gradient(180deg, rgba(26, 26, 26, .96), rgba(18, 18, 18, .98));
+  --panel-flat-bg: linear-gradient(180deg, rgba(28, 28, 28, .94), rgba(20, 20, 20, .98));
+  --message-bg: linear-gradient(180deg, rgba(30, 30, 30, .97), rgba(20, 20, 20, .98));
+  --message-code-bg: #0a0a0a;
+  --message-code-ink: #e0e0e0;
+  --nav-ink: #b0b0b0;
+  --nav-active-ink: #e0e0e0;
+  --nav-active-bg: linear-gradient(180deg, rgba(38, 38, 38, .96), rgba(26, 26, 26, .98));
+  --nav-active-line: rgba(136, 136, 136, .36);
+  --runtime-border: rgba(136, 136, 136, .26);
+  --runtime-accent-bg: rgba(38, 38, 38, .76);
+  --runtime-chip-bg: rgba(26, 26, 26, .78);
+  --runtime-chip-ink: #e0e0e0;
+  --runtime-ink: #e0e0e0;
+  --runtime-chip-line: rgba(255, 255, 255, .18);
+  --canvas-bg: linear-gradient(180deg, #0a0a0a 0%, #121212 100%);
   --canvas-surface-bg:
-    linear-gradient(rgba(116, 164, 177, .095) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(116, 164, 177, .095) 1px, transparent 1px),
-    linear-gradient(135deg, rgba(34,211,197,.055), transparent 36%),
-    linear-gradient(180deg, rgba(6,16,21,.99) 0%, rgba(8,20,26,.99) 100%);
-  --canvas-guide-bg: rgba(8, 22, 28, .90);
-  --canvas-guide-code-bg: #0a2931;
-  --canvas-guide-code-ink: #b7fbff;
-  --workflow-node-bg: linear-gradient(180deg, rgba(13, 30, 37, .99), rgba(8, 21, 27, .99));
-  --workflow-node-line: rgba(132, 175, 187, .22);
-  --workflow-node-strong-line: rgba(34, 211, 197, .40);
-  --workflow-node-shadow: 0 1px 0 rgba(255,255,255,.035), 0 14px 30px rgba(0, 4, 8, .36);
-  --workflow-node-hover-shadow: 0 0 0 1px rgba(34,211,197,.18), 0 18px 36px rgba(0, 4, 8, .46);
-  --workflow-node-selected-shadow: 0 0 0 2px rgba(34,211,197,.32), 0 18px 36px rgba(0, 4, 8, .48);
-  --workflow-node-meta-bg: rgba(6, 22, 28, .88);
-  --workflow-node-meta-ink: #bfd8df;
-  --workflow-board-bg: linear-gradient(180deg, rgba(9, 22, 28, .98), rgba(6, 16, 21, .99));
-  --workflow-toolbar-bg: rgba(8, 20, 26, .90);
-  --workflow-edge-stroke: #31d5ef;
-  --workflow-edge-underlay: rgba(132, 175, 187, .19);
-  --workflow-edge-route: #37d89d;
-  --workflow-node-start-bg: linear-gradient(180deg, rgba(9, 37, 31, .98), rgba(6, 24, 23, .98));
-  --workflow-node-start-line: rgba(55, 216, 157, .32);
-  --workflow-node-end-bg: linear-gradient(180deg, rgba(9, 35, 44, .98), rgba(7, 22, 29, .98));
-  --workflow-node-end-icon-ink: #93f3ff;
-  --workflow-node-icon-bg: rgba(34, 211, 197, .13);
-  --workflow-node-icon-line: rgba(34, 211, 197, .18);
-  --workflow-node-skill-icon-bg: rgba(55,216,157,.12);
-  --workflow-node-tool-icon-bg: rgba(169,156,255,.12);
-  --workflow-node-start-icon-bg: rgba(55,216,157,.12);
-  --workflow-node-end-icon-bg: rgba(49,213,239,.13);
-  --log-bg: #030a0f;
-  --log-ink: #d9eef5;
-  --log-running-line: #31d5ef;
-  --log-border: rgba(49, 213, 239, .22);
+    linear-gradient(rgba(136, 136, 136, .095) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(136, 136, 136, .095) 1px, transparent 1px),
+    linear-gradient(135deg, rgba(136,136,136,.055), transparent 36%),
+    linear-gradient(180deg, rgba(18,18,18,.99) 0%, rgba(20,20,20,.99) 100%);
+  --canvas-guide-bg: rgba(22, 22, 22, .90);
+  --canvas-guide-code-bg: #1a1a1a;
+  --canvas-guide-code-ink: #e0e0e0;
+  --workflow-node-bg: linear-gradient(180deg, rgba(30, 30, 30, .99), rgba(26, 26, 26, .99));
+  --workflow-node-line: rgba(255, 255, 255, .22);
+  --workflow-node-strong-line: rgba(136, 136, 136, .40);
+  --workflow-node-shadow: 0 1px 0 rgba(255,255,255,.035), 0 14px 30px rgba(0, 0, 0, .36);
+  --workflow-node-hover-shadow: 0 0 0 1px rgba(136,136,136,.18), 0 18px 36px rgba(0, 0, 0, .46);
+  --workflow-node-selected-shadow: 0 0 0 2px rgba(136,136,136,.32), 0 18px 36px rgba(0, 0, 0, .48);
+  --workflow-node-meta-bg: rgba(22, 22, 22, .88);
+  --workflow-node-meta-ink: #b0b0b0;
+  --workflow-board-bg: linear-gradient(180deg, rgba(22, 22, 22, .98), rgba(18, 18, 18, .99));
+  --workflow-toolbar-bg: rgba(20, 20, 20, .90);
+  --workflow-edge-stroke: #888888;
+  --workflow-edge-underlay: rgba(255, 255, 255, .19);
+  --workflow-edge-route: #888888;
+  --workflow-node-start-bg: linear-gradient(180deg, rgba(30, 30, 30, .98), rgba(24, 24, 24, .98));
+  --workflow-node-start-line: rgba(136, 136, 136, .32);
+  --workflow-node-end-bg: linear-gradient(180deg, rgba(30, 30, 30, .98), rgba(22, 22, 22, .98));
+  --workflow-node-end-icon-ink: #b0b0b0;
+  --workflow-node-icon-bg: rgba(136, 136, 136, .13);
+  --workflow-node-icon-line: rgba(136, 136, 136, .18);
+  --workflow-node-skill-icon-bg: rgba(136,136,136,.12);
+  --workflow-node-tool-icon-bg: rgba(136,136,136,.12);
+  --workflow-node-start-icon-bg: rgba(136,136,136,.12);
+  --workflow-node-end-icon-bg: rgba(136,136,136,.13);
+  --log-bg: #0a0a0a;
+  --log-ink: #e0e0e0;
+  --log-running-line: #888888;
+  --log-border: rgba(136, 136, 136, .22);
 }
 
 body {
@@ -21092,6 +21546,107 @@ button.timeline-jump-latest:hover:not(:disabled) {
   gap: 12px;
 }
 
+.memory-solution-governance {
+  min-width: 0;
+  display: grid;
+  gap: 10px;
+  padding: 12px;
+  border: 1px solid color-mix(in srgb, var(--green) 20%, var(--line));
+  border-radius: var(--radius);
+  background:
+    linear-gradient(135deg, color-mix(in srgb, var(--green) 7%, transparent), transparent 58%),
+    var(--runtime-chip-bg);
+}
+
+.memory-solution-governance-metrics {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.memory-solution-governance-metrics span {
+  min-width: 0;
+  display: grid;
+  gap: 3px;
+  padding: 9px 10px;
+  border: 1px solid color-mix(in srgb, var(--line) 78%, transparent);
+  border-radius: var(--radius-sm);
+  background: var(--panel-flat-bg);
+}
+
+.memory-solution-governance-metrics b {
+  color: var(--ink);
+  font-size: 17px;
+  line-height: 1.1;
+}
+
+.memory-solution-governance-metrics span {
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 800;
+  overflow-wrap: anywhere;
+}
+
+.memory-solution-graph {
+  display: grid;
+  gap: 8px;
+}
+
+.memory-solution-graph-head {
+  display: flex;
+  align-items: flex-end;
+  justify-content: space-between;
+  gap: 12px;
+}
+
+.memory-solution-graph-head strong {
+  color: var(--ink);
+  font-size: 13px;
+}
+
+.memory-solution-graph-head span {
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.35;
+}
+
+.memory-solution-graph-list {
+  display: grid;
+  gap: 7px;
+}
+
+.memory-solution-graph-edge {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto minmax(0, 1fr);
+  gap: 8px;
+  align-items: center;
+  padding: 8px 9px;
+  border: 1px solid color-mix(in srgb, var(--amber) 18%, var(--line));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--amber) 5%, var(--panel-flat-bg));
+}
+
+.memory-solution-graph-edge code {
+  min-width: 0;
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
+  border-radius: 6px;
+  color: var(--ink);
+  background: var(--message-bg);
+  font-size: 11px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.memory-solution-graph-edge span {
+  color: var(--muted);
+  font-size: 12px;
+  font-weight: 900;
+}
+
 .memory-solution-list {
   grid-template-columns: repeat(2, minmax(0, 1fr));
 }
@@ -21141,13 +21696,51 @@ button.timeline-jump-latest:hover:not(:disabled) {
 }
 
 .memory-solution-actions {
-  display: flex;
-  justify-content: flex-end;
+  min-width: 0;
+  display: grid;
   gap: 8px;
 }
 
 .memory-solution-actions button {
   min-height: 34px;
+}
+
+.memory-solution-actions > button {
+  justify-self: end;
+}
+
+.memory-solution-supersede {
+  min-width: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 1fr) auto;
+  gap: 8px;
+  align-items: end;
+  padding: 9px;
+  border: 1px dashed color-mix(in srgb, var(--amber) 24%, var(--line));
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--amber) 4%, var(--panel-flat-bg));
+}
+
+.memory-solution-supersede label {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+
+.memory-solution-supersede label span {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 850;
+  letter-spacing: .02em;
+  text-transform: uppercase;
+}
+
+.memory-solution-supersede input,
+.memory-solution-supersede select {
+  min-width: 0;
+  width: 100%;
+  height: 34px;
+  font-size: 12px;
 }
 
 .memory-context-panel {
@@ -22450,7 +23043,9 @@ button.timeline-jump-latest:hover:not(:disabled) {
   .memory-primer,
   .memory-artifact-intro,
   .memory-grid,
+  .memory-solution-governance-metrics,
   .memory-solution-list,
+  .memory-solution-supersede,
   .memory-grid-three {
     grid-template-columns: 1fr;
   }
@@ -22556,59 +23151,59 @@ button.timeline-jump-latest:hover:not(:disabled) {
 }
 
 :root[data-theme='dark'] {
-  --bg: #071219;
+  --bg: #0a0a0a;
   --bg-grad-1: transparent;
   --bg-grad-2: transparent;
-  --bg-grad-3: #071219;
-  --bg-grad-4: #071219;
-  --panel: #0c1a23;
-  --panel-2: #10232e;
-  --panel-3: #142b37;
-  --panel-bg: #0c1a23;
-  --panel-flat-bg: #10232e;
-  --ink: #e7f0f4;
-  --muted: #91a6b2;
-  --line: rgba(126, 153, 168, .20);
-  --line-strong: rgba(126, 153, 168, .34);
-  --blue: #6da6df;
-  --green: #40bf8a;
-  --red: #e66c7c;
-  --amber: #d99a45;
-  --purple: #9b91e2;
-  --cyan: #42b5c5;
-  --teal: #33b2a5;
-  --brand: #9fb8c6;
-  --brand-2: #42b5c5;
-  --sidebar: #061018;
-  --sidebar-2: #08151d;
-  --topbar-bg: rgba(7, 18, 25, .96);
-  --control-bg: #10232e;
-  --control-bg-hover: #172f3d;
-  --field-bg: #081820;
-  --hero-bg: #0c1a23;
-  --metric-bg: #0c1a23;
-  --message-bg: #0c1a23;
-  --runtime-bg: #0c1a23;
-  --runtime-panel-bg: #0c1a23;
-  --runtime-accent-bg: #10232e;
-  --runtime-chip-bg: #10232e;
-  --runtime-chip-ink: #c3d1d8;
-  --nav-active-bg: rgba(66, 181, 197, .16);
-  --nav-active-line: rgba(66, 181, 197, .42);
-  --canvas-bg: #091820;
+  --bg-grad-3: #0a0a0a;
+  --bg-grad-4: #0a0a0a;
+  --panel: #1a1a1a;
+  --panel-2: #1f1f1f;
+  --panel-3: #262626;
+  --panel-bg: #1a1a1a;
+  --panel-flat-bg: #1f1f1f;
+  --ink: #e0e0e0;
+  --muted: #b0b0b0;
+  --line: rgba(255, 255, 255, .12);
+  --line-strong: rgba(255, 255, 255, .20);
+  --blue: #888888;
+  --green: #10b981;
+  --red: #ef4444;
+  --amber: #f59e0b;
+  --purple: #888888;
+  --cyan: #888888;
+  --teal: #888888;
+  --brand: #666666;
+  --brand-2: #888888;
+  --sidebar: #151515;
+  --sidebar-2: #181818;
+  --topbar-bg: rgba(18, 18, 18, .96);
+  --control-bg: #1f1f1f;
+  --control-bg-hover: #262626;
+  --field-bg: #151515;
+  --hero-bg: #1a1a1a;
+  --metric-bg: #1a1a1a;
+  --message-bg: #1a1a1a;
+  --runtime-bg: #1a1a1a;
+  --runtime-panel-bg: #1a1a1a;
+  --runtime-accent-bg: #1f1f1f;
+  --runtime-chip-bg: #1f1f1f;
+  --runtime-chip-ink: #b0b0b0;
+  --nav-active-bg: rgba(136, 136, 136, .16);
+  --nav-active-line: rgba(136, 136, 136, .42);
+  --canvas-bg: #151515;
   --canvas-surface-bg:
-    linear-gradient(rgba(126, 153, 168, .14) 1px, transparent 1px),
-    linear-gradient(90deg, rgba(126, 153, 168, .14) 1px, transparent 1px),
-    #091820;
-  --canvas-guide-bg: rgba(12, 26, 35, .92);
-  --workflow-node-bg: #0f222d;
-  --workflow-node-line: rgba(126, 153, 168, .22);
-  --workflow-node-strong-line: rgba(66, 181, 197, .46);
-  --workflow-node-meta-bg: #142b37;
-  --workflow-node-meta-ink: #c3d1d8;
-  --workflow-board-bg: #08151d;
-  --workflow-toolbar-bg: #0c1a23;
-  --workflow-edge-stroke: #42b5c5;
+    linear-gradient(rgba(255, 255, 255, .06) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(255, 255, 255, .06) 1px, transparent 1px),
+    #151515;
+  --canvas-guide-bg: rgba(26, 26, 26, .92);
+  --workflow-node-bg: #1f1f1f;
+  --workflow-node-line: rgba(255, 255, 255, .12);
+  --workflow-node-strong-line: rgba(136, 136, 136, .46);
+  --workflow-node-meta-bg: #262626;
+  --workflow-node-meta-ink: #b0b0b0;
+  --workflow-board-bg: #151515;
+  --workflow-toolbar-bg: #1a1a1a;
+  --workflow-edge-stroke: #888888;
 }
 
 body {
@@ -23628,6 +24223,14 @@ button.primary {
   line-height: 1.45;
   overflow-wrap: anywhere;
 }
+.node-runtime-popover p.node-runtime-popover-diagnostic {
+  padding: 7px 8px;
+  border: 1px solid var(--badge-warn-line);
+  border-radius: 8px;
+  background: color-mix(in srgb, var(--badge-warn-bg) 42%, var(--runtime-chip-bg));
+  color: var(--badge-warn-ink);
+  font-weight: 760;
+}
 
 @media (max-width: 1180px) {
   .workflow-canvas-runner {
@@ -24577,4 +25180,144 @@ input::placeholder {
   background: #e8f4f3 !important;
   color: #0f4f4b !important;
   text-shadow: none !important;
+}
+
+/* Runtime/current node polish. Kept at EOF to override older emphatic runtime styles. */
+.flow-node.runtime-current,
+.flow-node.runtime-current.runtime-running {
+  z-index: 32 !important;
+  border-width: 2px !important;
+  border-color: color-mix(in srgb, var(--blue) 62%, var(--workflow-node-strong-line) 38%) !important;
+  outline: 1px solid color-mix(in srgb, var(--blue) 22%, transparent) !important;
+  outline-offset: 2px !important;
+  transform: translateZ(0) !important;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--blue) 10%, transparent), transparent 46%),
+    var(--workflow-node-bg) !important;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--blue) 12%, transparent),
+    0 12px 28px color-mix(in srgb, var(--blue) 16%, transparent),
+    var(--workflow-node-shadow) !important;
+  animation: none !important;
+}
+
+.flow-node.runtime-current.runtime-waiting {
+  border-color: color-mix(in srgb, var(--amber) 66%, var(--workflow-node-strong-line) 34%) !important;
+  outline-color: color-mix(in srgb, var(--amber) 24%, transparent) !important;
+  background:
+    linear-gradient(90deg, color-mix(in srgb, var(--amber) 12%, transparent), transparent 46%),
+    var(--workflow-node-bg) !important;
+  box-shadow:
+    0 0 0 3px color-mix(in srgb, var(--amber) 14%, transparent),
+    0 12px 28px color-mix(in srgb, var(--amber) 16%, transparent),
+    var(--workflow-node-shadow) !important;
+}
+
+.flow-node.runtime-current::before {
+  width: 5px !important;
+  background: var(--blue) !important;
+  box-shadow: none !important;
+}
+
+.flow-node.runtime-current.runtime-waiting::before {
+  background: var(--amber) !important;
+  box-shadow: none !important;
+}
+
+.flow-node.runtime-current::after {
+  right: 14px !important;
+  top: -18px !important;
+  z-index: 36 !important;
+  min-height: 22px !important;
+  max-width: min(190px, calc(100% - 36px)) !important;
+  padding: 4px 9px !important;
+  border: 1px solid color-mix(in srgb, var(--blue) 34%, var(--workflow-node-line)) !important;
+  background: color-mix(in srgb, var(--panel-bg) 92%, var(--blue) 8%) !important;
+  color: color-mix(in srgb, var(--blue) 72%, var(--ink) 28%) !important;
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--blue) 14%, transparent) !important;
+  font-size: 11px !important;
+  font-weight: 850 !important;
+  line-height: 1.2 !important;
+}
+
+.flow-node.runtime-current.runtime-waiting::after {
+  border-color: color-mix(in srgb, var(--amber) 40%, var(--workflow-node-line)) !important;
+  background: color-mix(in srgb, var(--panel-bg) 90%, var(--amber) 10%) !important;
+  color: color-mix(in srgb, var(--amber) 68%, var(--ink) 32%) !important;
+  box-shadow: 0 8px 18px color-mix(in srgb, var(--amber) 16%, transparent) !important;
+}
+
+:root:not([data-theme='dark']) .workflow-runtime-input,
+:root:not([data-theme='dark']) .workflow-runtime-pane .workflow-runtime-input {
+  border-color: rgba(31, 116, 108, .34) !important;
+  background: #f7fbfb !important;
+  color: #132733 !important;
+}
+
+:root:not([data-theme='dark']) .workflow-runtime-input-head strong,
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-field-title,
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-field-title > span:first-child,
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-toggle strong {
+  color: #132733 !important;
+}
+
+:root:not([data-theme='dark']) .workflow-runtime-input-head small,
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-field small,
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-actions .muted {
+  color: #405965 !important;
+}
+
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-field,
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-toggle,
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-group,
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-advanced,
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-form {
+  border-color: rgba(64, 88, 101, .24) !important;
+  background: #ffffff !important;
+  color: #132733 !important;
+}
+
+:root:not([data-theme='dark']) .workflow-runtime-input input,
+:root:not([data-theme='dark']) .workflow-runtime-input select,
+:root:not([data-theme='dark']) .workflow-runtime-input textarea {
+  border-color: rgba(64, 88, 101, .32) !important;
+  background: #ffffff !important;
+  color: #132733 !important;
+}
+
+:root:not([data-theme='dark']) .workflow-runtime-input .workflow-input-meta span,
+:root:not([data-theme='dark']) .workflow-runtime-input-head > span {
+  border-color: rgba(31, 116, 108, .24) !important;
+  background: #e8f4f3 !important;
+  color: #0f4f4b !important;
+}
+
+:root:not([data-theme='dark']) .result-card.markdown.final,
+:root:not([data-theme='dark']) .result-card.final.markdown {
+  border-color: rgba(31, 116, 108, .42) !important;
+  border-left: 4px solid var(--teal) !important;
+  background: #f8fbfc !important;
+  color: #132733 !important;
+}
+
+:root:not([data-theme='dark']) .result-card.markdown.final :where(p, li, h1, h2, h3, h4, strong, em),
+:root:not([data-theme='dark']) .result-card.final.markdown :where(p, li, h1, h2, h3, h4, strong, em),
+:root:not([data-theme='dark']) .workflow-runtime-final-markdown.run-markdown :where(p, li, strong, em),
+:root:not([data-theme='dark']) .run-delivery-text.run-markdown :where(p, li, strong, em) {
+  color: #132733 !important;
+}
+
+:root:not([data-theme='dark']) .run-markdown code,
+:root:not([data-theme='dark']) .result-card.markdown code {
+  border-color: rgba(31, 116, 108, .38) !important;
+  background: #dff0ee !important;
+  color: #083f3d !important;
+  text-shadow: none !important;
+}
+
+:root:not([data-theme='dark']) .run-markdown pre code,
+:root:not([data-theme='dark']) .result-card.markdown pre code {
+  border-color: transparent !important;
+  background: transparent !important;
+  color: inherit !important;
 }

@@ -14,7 +14,7 @@ tags:
 stages: 9
 graph:
     name: docs-review-publish
-    description: Documentation generation and review workflow.
+    description: Documentation generation and review workflow with audience fit, command accuracy, Link Integrity, Bilingual Parity, redaction, and Publish Readiness evidence.
     stages:
         - name: start
           node_type: start
@@ -30,7 +30,7 @@ graph:
           agent: planner
           skill: execution-plan
           params:
-            output_contract: Emit sections named Documentation Goal, Audience, Source Files, Outline, Acceptance Checks, and Publish Risks.
+            output_contract: Emit sections named Documentation Goal, Audience, Source Files, Outline, Command Accuracy Plan, Link Integrity Plan, Bilingual Parity Plan, Version Platform Notes, Acceptance Checks, and Publish Risks.
             purpose: Plan documentation changes before drafting.
           outputs:
             outline: result.output
@@ -50,6 +50,10 @@ graph:
               ref: result.output
               contains: Acceptance Checks
               expected: plan declares how documentation quality will be checked
+            - name: has-link-integrity-plan
+              ref: result.output
+              contains: Link Integrity Plan
+              expected: plan declares markdown link and anchor validation
           next:
             - draft
           position:
@@ -60,8 +64,8 @@ graph:
           agent: fixer
           skill: code-writing
           params:
-            output_contract: Emit sections named Draft Summary, Files Changed, Content Decisions, Verification Notes, and Publish Notes.
-            edit_policy: Keep documentation changes scoped to the approved outline and preserve unrelated user edits.
+            output_contract: Emit sections named Draft Summary, Files Changed, Content Decisions, Command Accuracy Notes, Link Integrity Notes, Bilingual Parity Notes, Version Platform Notes, Redaction Notes, Verification Notes, and Publish Notes.
+            edit_policy: Keep documentation changes scoped to the approved outline, preserve unrelated user edits, and do not invent commands or platform behavior without source evidence.
           input:
             outline: stages.plan.outputs.outline
           outputs:
@@ -73,7 +77,7 @@ graph:
               kind: report
               title: Documentation draft
               ref: result.output
-              summary: Draft summary, files changed, content decisions, verification notes, and publish notes.
+              summary: Draft summary, files changed, content decisions, command accuracy, link integrity, bilingual parity, version/platform notes, redaction notes, verification notes, and publish notes.
           acceptance_criteria:
             - name: has-draft-summary
               ref: result.output
@@ -94,8 +98,9 @@ graph:
           agent: auditor
           skill: code-audit
           params:
-            output_contract: Emit sections named Review Decision, Accuracy Checks, Broken Links, Missing Context, Readability, and Recommendation.
-            review_scope: Check correctness, missing context, stale instructions, broken links, and release-readiness.
+            output_contract: Emit sections named Review Decision, Audience Fit, Command Accuracy, Link Integrity, Bilingual Parity, Version Platform Notes, Redaction Check, Missing Context, Readability, Publish Readiness, and Recommendation.
+            review_scope: Check correctness, audience fit, command accuracy, missing context, stale version/platform instructions, broken links, bilingual parity, redaction, and release-readiness. Use python_notes/markdown_link_check and python_notes/redaction_check when local files are available.
+            tools: python_notes/markdown_link_check,python_notes/redaction_check
           input:
             draft: stages.draft.outputs.draft
           outputs:
@@ -106,7 +111,7 @@ graph:
               kind: report
               title: Documentation review
               ref: result.output
-              summary: Review decision, accuracy checks, link risks, missing context, readability, and recommendation.
+              summary: Review decision, audience fit, command accuracy, link integrity, bilingual parity, redaction check, missing context, readability, publish readiness, and recommendation.
           acceptance_criteria:
             - name: has-review-decision
               ref: result.output
@@ -116,6 +121,14 @@ graph:
               ref: result.output
               contains: Recommendation
               expected: review gives a concrete publish recommendation
+            - name: has-link-integrity
+              ref: result.output
+              contains: Link Integrity
+              expected: review records local link and anchor status or a blocker
+            - name: has-publish-readiness
+              ref: result.output
+              contains: Publish Readiness
+              expected: review declares publish readiness or blockers
           next:
             - quality
           position:
@@ -128,7 +141,7 @@ graph:
           params:
             stages: plan,draft,review
             min_score: "80"
-            reason: documentation output is missing plan, draft, review, or publish evidence
+            reason: documentation output is missing audience fit, command accuracy, Link Integrity, Bilingual Parity, redaction, or Publish Readiness evidence
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
@@ -145,7 +158,7 @@ graph:
           agent: ""
           skill: ""
           params:
-            prompt: Approve documentation publish or handoff?
+            prompt: Approve documentation publish or handoff after reviewing command accuracy, Link Integrity, Bilingual Parity, redaction, and Publish Readiness blockers?
           next:
             - publish-report
           position:
@@ -156,7 +169,7 @@ graph:
           agent: planner
           skill: execution-plan
           params:
-            output_contract: Emit sections named Revision Required, Blocking Issues, Missing Evidence, Safe Fix Plan, and Publish Recommendation.
+            output_contract: Emit sections named Revision Required, Blocking Issues, Missing Evidence, Command Accuracy Gaps, Link Integrity Gaps, Bilingual Parity Gaps, Redaction Gaps, Safe Fix Plan, and Publish Recommendation.
             purpose: Explain what must change before documentation can be published.
           input:
             failures: stages.quality.outputs.failures
@@ -185,7 +198,7 @@ graph:
           agent: planner
           skill: execution-plan
           params:
-            output_contract: Emit sections named Publish Status, Documentation Changes, Review Evidence, Remaining Risks, and Next Steps.
+            output_contract: Emit sections named Publish Status, Documentation Changes, Review Evidence, Command Accuracy, Link Integrity, Bilingual Parity, Redaction Status, Remaining Risks, and Next Steps.
             purpose: Produce a final user-facing documentation publish or handoff report.
           input:
             draft: stages.draft.outputs.draft

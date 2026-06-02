@@ -191,12 +191,30 @@ func normalizeAnthropicResponse(resp anthropicResponse) schema.ChatResponse {
 			Role:    "assistant",
 			Content: content.String(),
 		},
-		StopReason: resp.StopReason,
+		StopReason: normalizeAnthropicStopReason(resp.StopReason),
 		Usage: schema.TokenUsage{
 			PromptTokens: resp.Usage.InputTokens + resp.Usage.CacheCreationInputTokens + resp.Usage.CacheReadInputTokens,
 			OutputTokens: resp.Usage.OutputTokens,
 			CachedTokens: resp.Usage.CacheReadInputTokens,
 		},
+	}
+}
+
+func normalizeAnthropicStopReason(reason string) string {
+	reason = strings.ToLower(strings.TrimSpace(reason))
+	switch reason {
+	case "":
+		return ""
+	case "end_turn", "stop_sequence":
+		return schema.StopReasonStop
+	case "tool_use":
+		return schema.StopReasonToolCalls
+	case "max_tokens":
+		return schema.StopReasonMaxTokens
+	case "cancelled", "canceled":
+		return schema.StopReasonCancelled
+	default:
+		return reason
 	}
 }
 

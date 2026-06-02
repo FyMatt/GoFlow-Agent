@@ -37,6 +37,9 @@ func (r *Runtime) maybeRunVerifierPass(ctx context.Context, request string, resu
 	if strings.TrimSpace(result.Output) == "" || hasSuspendedToolResult(result.ToolResults) {
 		return nil
 	}
+	if result.Incomplete {
+		return nil
+	}
 	if snapshot := r.SessionSnapshot(); len(snapshot.PendingApprovals) > 0 || strings.TrimSpace(snapshot.PendingHandoff.TargetAgent) != "" || r.workflowInProgress() {
 		return nil
 	}

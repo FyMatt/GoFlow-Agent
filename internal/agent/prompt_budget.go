@@ -21,6 +21,9 @@ const promptBudgetToolDiagnosticLimit = 12
 type promptBudgetContext struct {
 	Memory     *memory.PromptContext
 	ToolPolicy *promptToolPolicyContext
+	Pricing    config.PricingConfig
+	Provider   string
+	Model      string
 }
 
 type promptToolPolicyContext struct {
@@ -33,6 +36,9 @@ func promptBudgetContextWithTools(context promptBudgetContext, profile config.Ag
 		Profile: profile,
 		Tools:   append([]schema.Tool(nil), tools...),
 	}
+	context.Pricing = profile.Pricing
+	context.Provider = strings.TrimSpace(profile.Provider)
+	context.Model = strings.TrimSpace(profile.Model)
 	return context
 }
 
@@ -57,11 +63,16 @@ func emitPromptBudget(handler func(event schema.StreamEvent) error, state *sessi
 		return
 	}
 	_ = handler(schema.StreamEvent{
-		Type:         schema.StreamEventPromptBudget,
-		Content:      "prompt_budget",
-		AgentID:      agentID,
-		Mode:         mode,
-		PromptBudget: &budget,
+		Type:                      schema.StreamEventPromptBudget,
+		Content:                   "prompt_budget",
+		AgentID:                   agentID,
+		Mode:                      mode,
+		PromptBudget:              &budget,
+		BudgetEstimatedInputCost:  budget.EstimatedInputCost,
+		BudgetEstimatedOutputCost: budget.EstimatedOutputCost,
+		BudgetEstimatedTotalCost:  budget.EstimatedTotalCost,
+		BudgetCostCurrency:        budget.CostCurrency,
+		BudgetPricingSource:       budget.PricingSource,
 	})
 }
 
@@ -137,7 +148,7 @@ func estimatePromptBudgetWithContext(agentID, mode string, request schema.ChatRe
 	}
 	omittedContext = append(omittedContext, artifactOmitted...)
 	omittedContext = append(omittedContext, messageOmitted...)
-	return schema.PromptBudget{
+	budget := schema.PromptBudget{
 		EstimatedPromptTokens:            systemTokens + messageTokens + toolTokens,
 		SystemTokens:                     systemTokens,
 		MessageTokens:                    messageTokens,
@@ -193,6 +204,66 @@ func estimatePromptBudgetWithContext(agentID, mode string, request schema.ChatRe
 		InjectedToolSchemas:              injectedToolSchemas,
 		FilteredToolSchemas:              filteredToolSchemas,
 	}
+	applyPromptBudgetCostEstimate(&budget, context)
+	return budget
+}
+
+func applyPromptBudgetCostEstimate(budget *schema.PromptBudget, context promptBudgetContext) {
+	if budget == nil || !pricingHasRates(context.Pricing) {
+		return
+	}
+	budget.EstimatedInputCost = estimateInputTokenCost(budget.EstimatedPromptTokens, 0, context.Pricing)
+	budget.EstimatedTotalCost = budget.EstimatedInputCost
+	budget.CostCurrency = context.Pricing.Currency
+	budget.PricingSource = context.Pricing.Source
+	budget.PricingProvider = context.Provider
+	budget.PricingModel = context.Model
+}
+
+func pricingHasRates(pricing config.PricingConfig) bool {
+	return pricing.InputPerMillionTokens > 0 ||
+		pricing.OutputPerMillionTokens > 0 ||
+		pricing.CachedInputPerMillionTokens > 0
+}
+
+func estimateInputTokenCost(promptTokens, cachedTokens int, pricing config.PricingConfig) float64 {
+	if promptTokens <= 0 {
+		return 0
+	}
+	cached := cachedTokens
+	if cached < 0 {
+		cached = 0
+	}
+	if cached > promptTokens {
+		cached = promptTokens
+	}
+	regular := promptTokens - cached
+	cachedRate := pricing.CachedInputPerMillionTokens
+	if cachedRate <= 0 {
+		cachedRate = pricing.InputPerMillionTokens
+	}
+	return roundEstimatedCost(estimateTokenCost(regular, pricing.InputPerMillionTokens) + estimateTokenCost(cached, cachedRate))
+}
+
+func estimateOutputTokenCost(outputTokens int, pricing config.PricingConfig) float64 {
+	if outputTokens <= 0 {
+		return 0
+	}
+	return roundEstimatedCost(estimateTokenCost(outputTokens, pricing.OutputPerMillionTokens))
+}
+
+func estimateTokenCost(tokens int, perMillion float64) float64 {
+	if tokens <= 0 || perMillion <= 0 {
+		return 0
+	}
+	return float64(tokens) * perMillion / 1000000.0
+}
+
+func roundEstimatedCost(value float64) float64 {
+	if value <= 0 {
+		return 0
+	}
+	return math.Round(value*100000000) / 100000000
 }
 
 func estimateTextTokens(text string) int {
@@ -555,6 +626,13 @@ func limitStrings(values []string, max int) []string {
 }
 
 func maxInt(left, right int) int {
+	if left > right {
+		return left
+	}
+	return right
+}
+
+func maxFloat64(left, right float64) float64 {
 	if left > right {
 		return left
 	}

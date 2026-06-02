@@ -31,6 +31,7 @@ COMMON_ARCHIVE_MEMBERS = [
     "configs/mcp_servers/web_tools.yaml",
     "configs/mcp_servers/network_tools.yaml",
     "skills/execution-plan/SKILL.md",
+    "skills/authorized-red-team-validation/SKILL.md",
     "docs/install.md",
     "docs/install.zh-CN.md",
     "docs/resources.md",

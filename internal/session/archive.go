@@ -11,6 +11,8 @@ import (
 
 const sessionArchiveSuffix = ".full.json.gz"
 
+var fullSessionArchiveRename = os.Rename
+
 func writeFullSessionArchive(sessionPath string, snapshot Snapshot) error {
 	archivePath := fullSessionArchivePath(sessionPath)
 	if archivePath == "" {
@@ -47,8 +49,15 @@ func writeFullSessionArchive(sessionPath string, snapshot Snapshot) error {
 		return err
 	}
 	_ = os.Remove(archivePath)
-	if err := os.Rename(tempPath, archivePath); err != nil {
-		return err
+	if err := fullSessionArchiveRename(tempPath, archivePath); err != nil {
+		data, readErr := os.ReadFile(tempPath)
+		if readErr != nil {
+			return errors.Join(err, readErr)
+		}
+		if writeErr := os.WriteFile(archivePath, data, 0o644); writeErr != nil {
+			return errors.Join(err, writeErr)
+		}
+		return nil
 	}
 	removeTemp = false
 	return nil

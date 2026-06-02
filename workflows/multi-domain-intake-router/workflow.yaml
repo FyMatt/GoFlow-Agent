@@ -15,7 +15,7 @@ stages:
       agent: ""
       skill: ""
       params:
-        fields_json: '{"fields":[{"name":"domain","type":"select","label":"Primary domain","required":true,"options":["auto","software","web_security","security","binary","documentation","operations","support","platform","general"],"default":"auto"},{"name":"goal","type":"textarea","label":"Goal","required":true},{"name":"target","type":"text","label":"Target file, URL, binary, system, device scope, customer context, or platform area"},{"name":"desired_output","type":"select","label":"Desired output","options":["implementation","review_report","runbook","customer_reply","extension_kit","plan","multi_domain_report"],"default":"multi_domain_report"},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","options":["low","medium","high"],"default":"medium"},{"name":"max_parallel_domains","type":"number","label":"Max parallel domains","default":3}]}'
+        fields_json: '{"fields":[{"name":"domain","type":"select","label":"Primary domain","label_zh":"\u4e3b\u8981\u9886\u57df","required":true,"options":["auto","software","web_security","security","binary","documentation","operations","support","platform","general"],"default":"auto"},{"name":"goal","type":"textarea","label":"Goal","label_zh":"\u76ee\u6807","required":true},{"name":"target","type":"text","label":"Target file, URL, binary, system, device scope, customer context, or platform area","label_zh":"\u76ee\u6807\u6587\u4ef6\u3001URL\u3001\u4e8c\u8fdb\u5236\u3001\u7cfb\u7edf\u3001\u8bbe\u5907\u8303\u56f4\u3001\u5ba2\u6237\u4e0a\u4e0b\u6587\u6216\u5e73\u53f0\u533a\u57df"},{"name":"desired_output","type":"select","label":"Desired output","label_zh":"\u671f\u671b\u8f93\u51fa","options":["implementation","review_report","runbook","customer_reply","extension_kit","plan","multi_domain_report"],"default":"multi_domain_report"},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","label_zh":"\u98ce\u9669\u5bb9\u5fcd\u5ea6","options":["low","medium","high"],"default":"medium"},{"name":"max_parallel_domains","type":"number","label":"Max parallel domains","label_zh":"\u6700\u5927\u5e76\u884c\u9886\u57df\u6570","default":3}]}'
         manual: "true"
         prompt: Confirm the goal, target, desired output, risk tolerance, and maximum parallel domain slices before decomposition.
       outputs:
@@ -39,6 +39,10 @@ stages:
         provider: primary
         max_tokens: 1500
         temperature: 0.1
+      execution:
+        mode: planning
+        risk_level: medium
+        boundary: multi-domain-decomposition
       params:
         output_contract: Return compact JSON with summary, active_branches, branch_contracts, shared_context, acceptance_criteria, risk_gates, model_routes, token_budget, and final_report_contract. active_branches must contain only stage names from software-worker, web-security-worker, security-worker, binary-worker, docs-worker, ops-worker, support-worker, platform-worker, or general-worker.
         purpose: Decompose the request into only the domain slices needed for this task, then select bounded parallel worker branches.
@@ -103,6 +107,10 @@ stages:
       params:
         active_branches_ref: stages.decompose.outputs.active_branches
         concurrent: "true"
+        domain_ref: stages.intake.outputs.domain
+        fallback_branch: general-worker
+        max_parallel_domains_ref: stages.intake.outputs.max_parallel_domains
+        selection_error: No runnable domain branch was selected. Review the intake domain and decomposition output.
         token_policy: Fan out only selected branches. Unselected domain workers must not run.
       outputs:
         branch_count: result.branch_count
@@ -128,6 +136,10 @@ stages:
         provider: backup
         max_tokens: 850
         temperature: 0.1
+      execution:
+        mode: dry_run
+        risk_level: medium
+        boundary: workspace-software-slice
       params:
         domain: software-engineering
         output_contract: Return compact JSON with summary, domain, evidence, changed_files, verification, blockers, next_actions, recommended_workflow, and artifact_refs.
@@ -185,6 +197,10 @@ stages:
         provider: backup
         max_tokens: 850
         temperature: 0.1
+      execution:
+        mode: dry_run
+        risk_level: high
+        boundary: authorized-web-evidence
       params:
         domain: web-security
         output_contract: Return compact JSON with summary, domain, evidence, target_scope, findings, verification, blockers, next_actions, recommended_workflow, and artifact_refs.
@@ -241,6 +257,10 @@ stages:
         provider: backup
         max_tokens: 800
         temperature: 0.1
+      execution:
+        mode: planning
+        risk_level: high
+        boundary: defensive-security-scope
       params:
         domain: security-research
         output_contract: Return compact JSON with summary, domain, authorized_scope, findings, evidence, verification, blockers, next_actions, and artifact_refs.
@@ -296,6 +316,10 @@ stages:
         provider: backup
         max_tokens: 800
         temperature: 0.1
+      execution:
+        mode: dry_run
+        risk_level: medium
+        boundary: static-binary-analysis
       params:
         domain: binary-analysis
         output_contract: Return compact JSON with summary, domain, sample_scope, static_evidence, findings, blockers, next_actions, and artifact_refs.
@@ -347,6 +371,10 @@ stages:
         provider: backup
         max_tokens: 750
         temperature: 0.1
+      execution:
+        mode: planning
+        risk_level: low
+        boundary: documentation-scope
       params:
         domain: documentation
         output_contract: Return compact JSON with summary, domain, doc_scope, proposed_changes, evidence, blockers, next_actions, and artifact_refs.
@@ -396,6 +424,10 @@ stages:
         provider: backup
         max_tokens: 800
         temperature: 0.1
+      execution:
+        mode: dry_run
+        risk_level: high
+        boundary: operations-dry-run
       params:
         domain: operations-runbook
         output_contract: Return compact JSON with summary, domain, authorized_scope, prechecks, dry_run_plan, rollback, evidence, blockers, next_actions, and artifact_refs.
@@ -451,6 +483,10 @@ stages:
         provider: backup
         max_tokens: 700
         temperature: 0.1
+      execution:
+        mode: planning
+        risk_level: low
+        boundary: customer-support-draft
       params:
         domain: customer-support
         output_contract: Return compact JSON with summary, domain, customer_context, answer_draft, internal_notes, escalation, blockers, next_actions, and artifact_refs.
@@ -500,6 +536,10 @@ stages:
         provider: backup
         max_tokens: 850
         temperature: 0.1
+      execution:
+        mode: planning
+        risk_level: medium
+        boundary: platform-extension-design
       params:
         domain: agent-framework
         output_contract: Return compact JSON with summary, domain, resource_graph, contracts, validation_plan, activation_steps, blockers, next_actions, and artifact_refs.
@@ -550,6 +590,10 @@ stages:
         provider: backup
         max_tokens: 700
         temperature: 0.1
+      execution:
+        mode: planning
+        risk_level: low
+        boundary: fallback-plan
       params:
         domain: general
         output_contract: Return compact JSON with summary, domain, plan, risks, acceptance_criteria, blockers, next_actions, recommended_workflow, and artifact_refs.
@@ -612,6 +656,10 @@ stages:
         provider: primary
         max_tokens: 1300
         temperature: 0.1
+      execution:
+        mode: planning
+        risk_level: medium
+        boundary: multi-domain-join
       params:
         output_contract: Emit sections named Integrated Multi-Domain Report, Active Branches, Domain Outputs, Conflicts, Missing Evidence, Verification Matrix, Recommended Workflow, Residual Risks, and Audit Request.
         purpose: Merge only the selected worker summaries and artifact refs into one compact multi-domain report.
@@ -684,6 +732,10 @@ stages:
         provider: primary
         max_tokens: 1000
         temperature: 0.1
+      execution:
+        mode: planning
+        risk_level: medium
+        boundary: multi-domain-audit
       params:
         output_contract: Emit sections named Audit Decision, Coverage, Blocking Findings, Safety Notes, Token Discipline, Evidence Gaps, and Recommendation.
         review_scope: Check decomposition fit, selected branch coverage, unsafe tool assumptions, missing evidence, cross-domain conflicts, and token-heavy handoffs.
@@ -767,6 +819,10 @@ stages:
         provider: backup
         max_tokens: 750
         temperature: 0.1
+      execution:
+        mode: manual
+        risk_level: low
+        boundary: final-handoff
       params:
         output_contract: Emit sections named Final Handoff, Active Domains, What Was Done, Evidence, Quality Decision, Remaining Risks, Recommended Next Workflow, and Next Steps.
         purpose: Produce a concise ordinary-user handoff while preserving artifact refs for expert inspection.
@@ -825,6 +881,10 @@ stages:
         provider: primary
         max_tokens: 850
         temperature: 0.1
+      execution:
+        mode: planning
+        risk_level: medium
+        boundary: revision-plan
       params:
         output_contract: Emit sections named Revision Plan, Missing Evidence, Minimal Branch Rerun, Verification Needed, and Handoff.
         purpose: Convert quality failures into a bounded repair plan without rerunning unrelated domains.

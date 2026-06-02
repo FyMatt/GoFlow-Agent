@@ -88,6 +88,23 @@ GoFlow 可以先加载未完整配置的 Provider，让 Web Studio 正常打开�
 仓库建议保留指向环境变量的写法，比如 `${GOFLOW_API_KEY}`，再通过当前 shell、
 `.env` 或本地密钥存储提供真实值。
 
+Provider 和 Agent profile 可以配置可选的 `pricing` 元数据，用于把 token 用量估算成金额。GoFlow 不会内置供应商价格，因为模型价格会变化；只有 operator 配置了当前费率时，Studio 和运行诊断才会显示金额估算：
+
+```yaml
+providers:
+  primary:
+    provider: openai-compatible
+    model: ${GOFLOW_MODEL}
+    pricing:
+      currency: USD
+      input_per_million_tokens: 1.50
+      cached_input_per_million_tokens: 0.15
+      output_per_million_tokens: 4.50
+      source: "2026-05 internal rate card"
+```
+
+Agent 默认继承其 Provider 的 `pricing`；如果 Agent 自己声明 `pricing`，则使用 Agent 级配置。运行时会在 prompt budget、token usage、workflow run、stage、replay 和 Studio 诊断里暴露 `budget_estimated_input_cost`、`budget_estimated_output_cost`、`budget_estimated_total_cost`、`budget_cost_currency` 和 `budget_pricing_source`。这些值只用于可观测性和预算决策，不等同于账单。
+
 ## MCP server 配置
 
 MCP server 建议放在 `configs/mcp_servers/<name>.yaml`。
@@ -238,6 +255,8 @@ CLI 可使用：
 ```
 
 这些诊断用于观察 system prompt、历史记录、工具 schema、Skill 和消息正文分别消耗多少上下文，以及 provider 是否返回 cached tokens。
+
+如果 Provider 或 Agent 配置了 `pricing`，相同诊断还会显示估算输入成本、输出成本、总成本、币种和定价来源。GoFlow 不会为了省钱而截断模型输出或跳过验证；硬预算只会在安全的 workflow 边界暂停，并在 Studio 中暴露恢复动作。
 
 `GET /api/runtime` 和 `GET /api/runtime/cost` 还会返回 `cost.tuning[]`，用于低成本路由的实测调优。GoFlow 不会因为某个 helper 模型便宜就默认启用，而是先根据真实 prompt budget 和 token usage 判断是否值得做 A/B 测试。当前会输出 `router` 和 `summarizer` 两类路线：
 

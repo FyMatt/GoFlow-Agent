@@ -266,6 +266,80 @@ skill:
 	}
 }
 
+func TestLoadNormalizesProviderPricingAndAgentInheritance(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`providers:
+  primary:
+    provider: openai-compatible
+    model: strong-model
+    pricing:
+      currency: usd
+      input_per_million_tokens: 1.5
+      output_per_million_tokens: 4.5
+      cached_input_per_million_tokens: 0.25
+      source: operator-rate-card
+  override:
+    provider: openai-compatible
+    model: cheap-model
+agents:
+  planner:
+    provider: primary
+    mode: plan
+  fixer:
+    provider: override
+    mode: fix
+    pricing:
+      input_per_million_tokens: 0.5
+      output_per_million_tokens: 1.25
+      source: custom-agent-rate
+default_agent: planner
+skill:
+  directory: ./skills
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	planner := cfg.Agents["planner"].Pricing
+	if planner.Currency != "USD" || planner.InputPerMillionTokens != 1.5 || planner.OutputPerMillionTokens != 4.5 || planner.CachedInputPerMillionTokens != 0.25 || planner.Source != "operator-rate-card" {
+		t.Fatalf("expected planner to inherit normalized provider pricing, got %#v", planner)
+	}
+	fixer := cfg.Agents["fixer"].Pricing
+	if fixer.Currency != "USD" || fixer.InputPerMillionTokens != 0.5 || fixer.OutputPerMillionTokens != 1.25 || fixer.Source != "custom-agent-rate" {
+		t.Fatalf("expected fixer agent pricing to be normalized without provider inheritance, got %#v", fixer)
+	}
+}
+
+func TestLoadRejectsNegativePricing(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`providers:
+  primary:
+    provider: openai-compatible
+    model: test-model
+    pricing:
+      input_per_million_tokens: -1
+agents:
+  planner:
+    provider: primary
+default_agent: planner
+skill:
+  directory: ./skills
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "provider primary.pricing.input_per_million_tokens") {
+		t.Fatalf("expected negative provider pricing to be rejected, got %v", err)
+	}
+}
+
 func TestLoadRejectsUnknownCostControlProvider(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "goflow.yaml")

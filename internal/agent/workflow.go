@@ -70,19 +70,47 @@ const (
 
 // WorkflowStageResult captures the outcome of one workflow stage.
 type WorkflowStageResult struct {
-	Stage       WorkflowStage                           `json:"stage"`
-	Agent       string                                  `json:"agent"`
-	NodeType    string                                  `json:"node_type,omitempty"`
-	Skill       string                                  `json:"skill,omitempty"`
-	Tool        string                                  `json:"tool,omitempty"`
-	Status      string                                  `json:"status,omitempty"`
-	Attempts    int                                     `json:"attempts,omitempty"`
-	Input       map[string]string                       `json:"input,omitempty"`
-	InputValues map[string]any                          `json:"input_values,omitempty"`
-	Metadata    map[string]string                       `json:"metadata,omitempty"`
-	Result      schema.AgentResult                      `json:"result"`
-	Output      WorkflowStageOutput                     `json:"output,omitempty"`
-	Acceptance  []session.WorkflowRunAcceptanceSnapshot `json:"acceptance,omitempty"`
+	Stage                       WorkflowStage                           `json:"stage"`
+	Agent                       string                                  `json:"agent"`
+	NodeType                    string                                  `json:"node_type,omitempty"`
+	Skill                       string                                  `json:"skill,omitempty"`
+	Tool                        string                                  `json:"tool,omitempty"`
+	Status                      string                                  `json:"status,omitempty"`
+	Attempts                    int                                     `json:"attempts,omitempty"`
+	Input                       map[string]string                       `json:"input,omitempty"`
+	InputValues                 map[string]any                          `json:"input_values,omitempty"`
+	Metadata                    map[string]string                       `json:"metadata,omitempty"`
+	Result                      schema.AgentResult                      `json:"result"`
+	Output                      WorkflowStageOutput                     `json:"output,omitempty"`
+	Acceptance                  []session.WorkflowRunAcceptanceSnapshot `json:"acceptance,omitempty"`
+	BudgetScope                 string                                  `json:"budget_scope,omitempty"`
+	BudgetReason                string                                  `json:"budget_reason,omitempty"`
+	BudgetMetric                string                                  `json:"budget_metric,omitempty"`
+	BudgetUsed                  int                                     `json:"budget_used,omitempty"`
+	BudgetSoftLimit             int                                     `json:"budget_soft_limit,omitempty"`
+	BudgetHardLimit             int                                     `json:"budget_hard_limit,omitempty"`
+	BudgetRemaining             int                                     `json:"budget_remaining,omitempty"`
+	BudgetPromptTokens          int                                     `json:"budget_prompt_tokens,omitempty"`
+	BudgetEstimatedPromptTokens int                                     `json:"budget_estimated_prompt_tokens,omitempty"`
+	BudgetNetPromptTokens       int                                     `json:"budget_net_prompt_tokens,omitempty"`
+	BudgetGrossPromptTokens     int                                     `json:"budget_gross_prompt_tokens,omitempty"`
+	BudgetSavedTokens           int                                     `json:"budget_saved_tokens,omitempty"`
+	BudgetMemorySavedTokens     int                                     `json:"budget_memory_saved_tokens,omitempty"`
+	BudgetHistorySavedTokens    int                                     `json:"budget_history_saved_tokens,omitempty"`
+	BudgetArtifactSavedTokens   int                                     `json:"budget_artifact_saved_tokens,omitempty"`
+	BudgetSkillSavedTokens      int                                     `json:"budget_skill_saved_tokens,omitempty"`
+	BudgetToolSchemaSavedTokens int                                     `json:"budget_tool_schema_saved_tokens,omitempty"`
+	BudgetReportedPromptTokens  int                                     `json:"budget_reported_prompt_tokens,omitempty"`
+	BudgetOutputTokens          int                                     `json:"budget_output_tokens,omitempty"`
+	BudgetCachedTokens          int                                     `json:"budget_cached_tokens,omitempty"`
+	BudgetTotalTokens           int                                     `json:"budget_total_tokens,omitempty"`
+	BudgetLLMCalls              int                                     `json:"budget_llm_calls,omitempty"`
+	BudgetContinuations         int                                     `json:"budget_continuations,omitempty"`
+	BudgetEstimatedInputCost    float64                                 `json:"budget_estimated_input_cost,omitempty"`
+	BudgetEstimatedOutputCost   float64                                 `json:"budget_estimated_output_cost,omitempty"`
+	BudgetEstimatedTotalCost    float64                                 `json:"budget_estimated_total_cost,omitempty"`
+	BudgetCostCurrency          string                                  `json:"budget_cost_currency,omitempty"`
+	BudgetPricingSource         string                                  `json:"budget_pricing_source,omitempty"`
 }
 
 // WorkflowStageOutput is the workflow-data representation of a completed stage.
@@ -103,20 +131,48 @@ type WorkflowStageOutput struct {
 
 // WorkflowResult represents a workflow run or resume outcome.
 type WorkflowResult struct {
-	RunID                    string                      `json:"run_id,omitempty"`
-	Name                     string                      `json:"name"`
-	Status                   string                      `json:"status"`
-	CompletedStages          []WorkflowStageResult       `json:"completed_stages,omitempty"`
-	PendingApproval          bool                        `json:"pending_approval,omitempty"`
-	PendingInput             bool                        `json:"pending_input,omitempty"`
-	PendingFields            []schema.WorkflowInputField `json:"pending_input_fields,omitempty"`
-	PendingSubWorkflow       bool                        `json:"pending_sub_workflow,omitempty"`
-	PendingSubWorkflowName   string                      `json:"pending_sub_workflow_name,omitempty"`
-	PendingSubWorkflowRunID  string                      `json:"pending_sub_workflow_run_id,omitempty"`
-	PendingSubWorkflowStatus string                      `json:"pending_sub_workflow_status,omitempty"`
-	ApprovalPrompt           string                      `json:"approval_prompt,omitempty"`
-	NextStage                WorkflowStage               `json:"next_stage,omitempty"`
-	FinalSummary             string                      `json:"final_summary,omitempty"`
+	RunID                       string                      `json:"run_id,omitempty"`
+	Name                        string                      `json:"name"`
+	Status                      string                      `json:"status"`
+	CompletedStages             []WorkflowStageResult       `json:"completed_stages,omitempty"`
+	PendingApproval             bool                        `json:"pending_approval,omitempty"`
+	PendingInput                bool                        `json:"pending_input,omitempty"`
+	PendingFields               []schema.WorkflowInputField `json:"pending_input_fields,omitempty"`
+	PendingSubWorkflow          bool                        `json:"pending_sub_workflow,omitempty"`
+	PendingSubWorkflowName      string                      `json:"pending_sub_workflow_name,omitempty"`
+	PendingSubWorkflowRunID     string                      `json:"pending_sub_workflow_run_id,omitempty"`
+	PendingSubWorkflowStatus    string                      `json:"pending_sub_workflow_status,omitempty"`
+	ApprovalPrompt              string                      `json:"approval_prompt,omitempty"`
+	NextStage                   WorkflowStage               `json:"next_stage,omitempty"`
+	FinalSummary                string                      `json:"final_summary,omitempty"`
+	BudgetScope                 string                      `json:"budget_scope,omitempty"`
+	BudgetReason                string                      `json:"budget_reason,omitempty"`
+	BudgetMetric                string                      `json:"budget_metric,omitempty"`
+	BudgetUsed                  int                         `json:"budget_used,omitempty"`
+	BudgetSoftLimit             int                         `json:"budget_soft_limit,omitempty"`
+	BudgetHardLimit             int                         `json:"budget_hard_limit,omitempty"`
+	BudgetRemaining             int                         `json:"budget_remaining,omitempty"`
+	BudgetPromptTokens          int                         `json:"budget_prompt_tokens,omitempty"`
+	BudgetEstimatedPromptTokens int                         `json:"budget_estimated_prompt_tokens,omitempty"`
+	BudgetNetPromptTokens       int                         `json:"budget_net_prompt_tokens,omitempty"`
+	BudgetGrossPromptTokens     int                         `json:"budget_gross_prompt_tokens,omitempty"`
+	BudgetSavedTokens           int                         `json:"budget_saved_tokens,omitempty"`
+	BudgetMemorySavedTokens     int                         `json:"budget_memory_saved_tokens,omitempty"`
+	BudgetHistorySavedTokens    int                         `json:"budget_history_saved_tokens,omitempty"`
+	BudgetArtifactSavedTokens   int                         `json:"budget_artifact_saved_tokens,omitempty"`
+	BudgetSkillSavedTokens      int                         `json:"budget_skill_saved_tokens,omitempty"`
+	BudgetToolSchemaSavedTokens int                         `json:"budget_tool_schema_saved_tokens,omitempty"`
+	BudgetReportedPromptTokens  int                         `json:"budget_reported_prompt_tokens,omitempty"`
+	BudgetOutputTokens          int                         `json:"budget_output_tokens,omitempty"`
+	BudgetCachedTokens          int                         `json:"budget_cached_tokens,omitempty"`
+	BudgetTotalTokens           int                         `json:"budget_total_tokens,omitempty"`
+	BudgetLLMCalls              int                         `json:"budget_llm_calls,omitempty"`
+	BudgetContinuations         int                         `json:"budget_continuations,omitempty"`
+	BudgetEstimatedInputCost    float64                     `json:"budget_estimated_input_cost,omitempty"`
+	BudgetEstimatedOutputCost   float64                     `json:"budget_estimated_output_cost,omitempty"`
+	BudgetEstimatedTotalCost    float64                     `json:"budget_estimated_total_cost,omitempty"`
+	BudgetCostCurrency          string                      `json:"budget_cost_currency,omitempty"`
+	BudgetPricingSource         string                      `json:"budget_pricing_source,omitempty"`
 }
 
 // NewWorkflowRunner constructs a workflow helper for a runtime.
@@ -538,6 +594,12 @@ func (w *WorkflowRunner) startWorkflowRun(ctx context.Context, name, request str
 		opts.RetryOf = strings.TrimSpace(retryOf)
 	}
 	runID := w.runtime.session.StartWorkflowRunWithOptions(name, request, opts)
+	w.runtime.session.SetWorkflow(session.WorkflowSnapshot{
+		RunID:   runID,
+		Name:    name,
+		Status:  "running",
+		Request: request,
+	})
 	w.recordWorkflowStarted(runID, name, request, opts.RetryOf)
 	notifyWorkflowRunStarted(ctx, runID)
 	return runID
@@ -558,6 +620,12 @@ func (w *WorkflowRunner) workflowRunIDForResume(ctx context.Context, name string
 		return runID
 	}
 	runID := w.runtime.session.StartWorkflowRun(name, pending.request)
+	w.runtime.session.SetWorkflow(session.WorkflowSnapshot{
+		RunID:   runID,
+		Name:    name,
+		Status:  "running",
+		Request: pending.request,
+	})
 	w.recordWorkflowStarted(runID, name, pending.request, "")
 	notifyWorkflowRunStarted(ctx, runID)
 	return runID
@@ -584,7 +652,11 @@ func (w *WorkflowRunner) recordWorkflowRunEvents(runID string, handler func(even
 		if w != nil && w.runtime != nil && w.runtime.session != nil {
 			snapshot := w.runtime.session.Snapshot().Workflow
 			runEvent := workflowRunEventSnapshot(event)
+			runEvent = w.workflowRunEventWithBudgetSummary(runEvent)
 			if strings.EqualFold(strings.TrimSpace(snapshot.RunID), strings.TrimSpace(runID)) {
+				if workflowRunEventShouldUseWorkflowStage(runEvent) && strings.TrimSpace(snapshot.NextStage) != "" {
+					runEvent.Stage = snapshot.NextStage
+				}
 				if strings.TrimSpace(runEvent.Stage) == "" {
 					runEvent.Stage = snapshot.NextStage
 				}
@@ -604,6 +676,121 @@ func (w *WorkflowRunner) recordWorkflowRunEvents(runID string, handler func(even
 	}
 }
 
+func workflowRunEventShouldUseWorkflowStage(event session.WorkflowRunEventSnapshot) bool {
+	switch strings.ToLower(strings.TrimSpace(event.Type)) {
+	case string(schema.StreamEventPromptBudget), string(schema.StreamEventTokenUsage):
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *WorkflowRunner) workflowRunEventWithBudgetSummary(event session.WorkflowRunEventSnapshot) session.WorkflowRunEventSnapshot {
+	if w == nil || w.runtime == nil || w.runtime.session == nil {
+		return event
+	}
+	if event.Type == string(schema.StreamEventPromptBudget) && event.PromptBudget != nil {
+		event.PromptTokens = event.PromptBudget.EstimatedPromptTokens
+		applyPromptBudgetAttributionToRunEvent(&event, *event.PromptBudget)
+	}
+	if event.BudgetMetric != "" || event.BudgetSoftLimit > 0 || event.BudgetHardLimit > 0 {
+		return event
+	}
+	eventType := strings.ToLower(strings.TrimSpace(event.Type))
+	switch eventType {
+	case string(schema.StreamEventPromptBudget), string(schema.StreamEventTokenUsage), string(schema.StreamEventWorkflowResult):
+	default:
+		return event
+	}
+	snapshot := w.runtime.session.Snapshot()
+	usage := workflowGraphBudgetUsageFromSession(snapshot)
+	if eventType == string(schema.StreamEventWorkflowResult) {
+		if usage.PromptTokens == 0 && usage.OutputTokens == 0 && usage.LLMCalls == 0 && usage.Continuations == 0 {
+			return event
+		}
+		event.BudgetPromptTokens = maxInt(event.BudgetPromptTokens, usage.PromptTokens)
+		event.BudgetEstimatedPromptTokens = maxInt(event.BudgetEstimatedPromptTokens, usage.EstimatedPromptTokens)
+		event.BudgetNetPromptTokens = maxInt(event.BudgetNetPromptTokens, usage.NetPromptTokens)
+		event.BudgetGrossPromptTokens = maxInt(event.BudgetGrossPromptTokens, usage.GrossPromptTokens)
+		event.BudgetSavedTokens = maxInt(event.BudgetSavedTokens, usage.SavedTokens)
+		event.BudgetMemorySavedTokens = maxInt(event.BudgetMemorySavedTokens, usage.MemorySavedTokens)
+		event.BudgetHistorySavedTokens = maxInt(event.BudgetHistorySavedTokens, usage.HistorySavedTokens)
+		event.BudgetArtifactSavedTokens = maxInt(event.BudgetArtifactSavedTokens, usage.ArtifactSavedTokens)
+		event.BudgetSkillSavedTokens = maxInt(event.BudgetSkillSavedTokens, usage.SkillSavedTokens)
+		event.BudgetToolSchemaSavedTokens = maxInt(event.BudgetToolSchemaSavedTokens, usage.ToolSchemaSavedTokens)
+		event.BudgetReportedPromptTokens = maxInt(event.BudgetReportedPromptTokens, usage.ReportedPromptTokens)
+		event.BudgetOutputTokens = maxInt(event.BudgetOutputTokens, usage.OutputTokens)
+		event.BudgetCachedTokens = maxInt(event.BudgetCachedTokens, usage.CachedTokens)
+		event.BudgetTotalTokens = maxInt(event.BudgetTotalTokens, usage.TotalTokens)
+		event.BudgetLLMCalls = maxInt(event.BudgetLLMCalls, usage.LLMCalls)
+		event.BudgetContinuations = maxInt(event.BudgetContinuations, usage.Continuations)
+		event.BudgetEstimatedInputCost = maxFloat64(event.BudgetEstimatedInputCost, usage.EstimatedInputCost)
+		event.BudgetEstimatedOutputCost = maxFloat64(event.BudgetEstimatedOutputCost, usage.EstimatedOutputCost)
+		event.BudgetEstimatedTotalCost = maxFloat64(event.BudgetEstimatedTotalCost, usage.EstimatedTotalCost)
+		if strings.TrimSpace(event.BudgetCostCurrency) == "" {
+			event.BudgetCostCurrency = usage.CostCurrency
+		}
+		if strings.TrimSpace(event.BudgetPricingSource) == "" {
+			event.BudgetPricingSource = usage.PricingSource
+		}
+	}
+	name := firstWorkflowGraphNonEmpty(event.WorkflowName, snapshot.Workflow.Name)
+	diagnostic := w.workflowGraphBudgetDiagnosticForName(name, usage, "")
+	if !diagnostic.HasConfigured {
+		return event
+	}
+	event.BudgetMetric = diagnostic.Metric
+	event.BudgetUsed = diagnostic.Used
+	event.BudgetSoftLimit = diagnostic.SoftLimit
+	event.BudgetHardLimit = diagnostic.HardLimit
+	event.BudgetRemaining = diagnostic.Remaining
+	if eventType == string(schema.StreamEventWorkflowResult) && strings.TrimSpace(event.BudgetScope) == "" {
+		event.BudgetScope = diagnostic.Scope
+	}
+	return event
+}
+
+func applyPromptBudgetAttributionToRunEvent(event *session.WorkflowRunEventSnapshot, budget schema.PromptBudget) {
+	if event == nil {
+		return
+	}
+	memorySaved := budget.MemoryEstimatedSavedTokens
+	historySaved := budget.HistoryEstimatedSavedTokens
+	artifactSaved := budget.ArtifactOmittedTokens
+	skillSaved := budget.SkillOmittedTokens
+	toolSchemaSaved := budget.ToolSchemaEstimatedSavedTokens
+	saved := memorySaved + historySaved + artifactSaved + skillSaved + toolSchemaSaved
+	netPrompt := budget.EstimatedPromptTokens
+	grossPrompt := netPrompt + saved
+	event.BudgetEstimatedPromptTokens = maxInt(event.BudgetEstimatedPromptTokens, budget.EstimatedPromptTokens)
+	event.BudgetNetPromptTokens = maxInt(event.BudgetNetPromptTokens, netPrompt)
+	event.BudgetGrossPromptTokens = maxInt(event.BudgetGrossPromptTokens, grossPrompt)
+	event.BudgetSavedTokens = maxInt(event.BudgetSavedTokens, saved)
+	event.BudgetMemorySavedTokens = maxInt(event.BudgetMemorySavedTokens, memorySaved)
+	event.BudgetHistorySavedTokens = maxInt(event.BudgetHistorySavedTokens, historySaved)
+	event.BudgetArtifactSavedTokens = maxInt(event.BudgetArtifactSavedTokens, artifactSaved)
+	event.BudgetSkillSavedTokens = maxInt(event.BudgetSkillSavedTokens, skillSaved)
+	event.BudgetToolSchemaSavedTokens = maxInt(event.BudgetToolSchemaSavedTokens, toolSchemaSaved)
+	event.BudgetEstimatedInputCost = maxFloat64(event.BudgetEstimatedInputCost, budget.EstimatedInputCost)
+	event.BudgetEstimatedOutputCost = maxFloat64(event.BudgetEstimatedOutputCost, budget.EstimatedOutputCost)
+	event.BudgetEstimatedTotalCost = maxFloat64(event.BudgetEstimatedTotalCost, budget.EstimatedTotalCost)
+	if strings.TrimSpace(event.BudgetCostCurrency) == "" {
+		event.BudgetCostCurrency = budget.CostCurrency
+	}
+	if strings.TrimSpace(event.BudgetPricingSource) == "" {
+		event.BudgetPricingSource = budget.PricingSource
+	}
+}
+
+func firstWorkflowGraphNonEmpty(values ...string) string {
+	for _, value := range values {
+		if strings.TrimSpace(value) != "" {
+			return strings.TrimSpace(value)
+		}
+	}
+	return ""
+}
+
 func (w *WorkflowRunner) completeWorkflowRun(runID string, result WorkflowResult) {
 	if w == nil || w.runtime == nil || w.runtime.session == nil || strings.TrimSpace(runID) == "" {
 		return
@@ -618,12 +805,45 @@ func (w *WorkflowRunner) completeWorkflowRun(runID string, result WorkflowResult
 		workflowRunStageSnapshots(result.CompletedStages),
 	)
 	w.runtime.session.AppendWorkflowRunEvent(runID, session.WorkflowRunEventSnapshot{
-		Type:            string(schema.StreamEventWorkflowResult),
-		Content:         result.FinalSummary,
-		WorkflowName:    result.Name,
-		WorkflowStatus:  result.Status,
-		NextStage:       string(result.NextStage),
-		PendingApproval: result.PendingApproval,
+		Type:                        string(schema.StreamEventWorkflowResult),
+		Content:                     result.FinalSummary,
+		WorkflowName:                result.Name,
+		WorkflowStatus:              result.Status,
+		NextStage:                   string(result.NextStage),
+		PendingApproval:             result.PendingApproval,
+		Reason:                      result.BudgetReason,
+		BudgetScope:                 result.BudgetScope,
+		BudgetReason:                result.BudgetReason,
+		BudgetMetric:                result.BudgetMetric,
+		BudgetUsed:                  result.BudgetUsed,
+		BudgetSoftLimit:             result.BudgetSoftLimit,
+		BudgetHardLimit:             result.BudgetHardLimit,
+		BudgetRemaining:             result.BudgetRemaining,
+		BudgetPromptTokens:          result.BudgetPromptTokens,
+		BudgetEstimatedPromptTokens: result.BudgetEstimatedPromptTokens,
+		BudgetNetPromptTokens:       result.BudgetNetPromptTokens,
+		BudgetGrossPromptTokens:     result.BudgetGrossPromptTokens,
+		BudgetSavedTokens:           result.BudgetSavedTokens,
+		BudgetMemorySavedTokens:     result.BudgetMemorySavedTokens,
+		BudgetHistorySavedTokens:    result.BudgetHistorySavedTokens,
+		BudgetArtifactSavedTokens:   result.BudgetArtifactSavedTokens,
+		BudgetSkillSavedTokens:      result.BudgetSkillSavedTokens,
+		BudgetToolSchemaSavedTokens: result.BudgetToolSchemaSavedTokens,
+		BudgetReportedPromptTokens:  result.BudgetReportedPromptTokens,
+		BudgetOutputTokens:          result.BudgetOutputTokens,
+		BudgetCachedTokens:          result.BudgetCachedTokens,
+		BudgetTotalTokens:           result.BudgetTotalTokens,
+		BudgetLLMCalls:              result.BudgetLLMCalls,
+		BudgetContinuations:         result.BudgetContinuations,
+		BudgetEstimatedInputCost:    result.BudgetEstimatedInputCost,
+		BudgetEstimatedOutputCost:   result.BudgetEstimatedOutputCost,
+		BudgetEstimatedTotalCost:    result.BudgetEstimatedTotalCost,
+		BudgetCostCurrency:          result.BudgetCostCurrency,
+		BudgetPricingSource:         result.BudgetPricingSource,
+		PromptTokens:                result.BudgetReportedPromptTokens,
+		OutputTokens:                result.BudgetOutputTokens,
+		CachedTokens:                result.BudgetCachedTokens,
+		ContinuationCount:           result.BudgetContinuations,
 	})
 	w.recordWorkflowResultCollaboration(runID, result)
 	if run, ok := w.runtime.session.WorkflowRun(runID); ok {
@@ -1794,6 +2014,74 @@ func (w *WorkflowRunner) recordWorkflowPendingSubWorkflow(runID string, result W
 	})
 }
 
+func (w *WorkflowRunner) pauseWorkflowForIncompleteStage(workflowName string, request string, completed []WorkflowStageResult, stage WorkflowStageResult) WorkflowResult {
+	name := strings.TrimSpace(workflowName)
+	reason := strings.TrimSpace(stage.Result.IncompleteReason)
+	if reason == "" {
+		reason = "workflow stage is incomplete and needs more model output or budget before downstream stages can run"
+	}
+	stage.Status = "incomplete"
+	if stage.Metadata == nil {
+		stage.Metadata = map[string]string{}
+	}
+	stage.Metadata["incomplete"] = "true"
+	stage.Metadata["incomplete_reason"] = reason
+	if strings.TrimSpace(stage.Result.StopReason) != "" {
+		stage.Metadata["stop_reason"] = stage.Result.StopReason
+	}
+	if stage.Result.ContinuationCount > 0 {
+		stage.Metadata["continuation_count"] = strconv.Itoa(stage.Result.ContinuationCount)
+	}
+	nextStage := stage.Stage
+	nextCompleted := append([]WorkflowStageResult(nil), completed...)
+	replaced := false
+	for i := range nextCompleted {
+		if strings.EqualFold(strings.TrimSpace(string(nextCompleted[i].Stage)), strings.TrimSpace(string(stage.Stage))) {
+			nextCompleted[i] = stage
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		nextCompleted = append(nextCompleted, stage)
+	}
+	summary := summarizeWorkflow(nextCompleted)
+	w.persistWorkflowState(name, "paused_need_more_budget", nextStage, request, summary, reason)
+	if w != nil && w.runtime != nil && w.runtime.session != nil {
+		runID := w.runID
+		if strings.TrimSpace(runID) == "" {
+			runID = w.runtime.currentWorkflowRunID()
+		}
+		if strings.TrimSpace(runID) != "" {
+			w.runtime.session.AppendWorkflowRunEvent(runID, session.WorkflowRunEventSnapshot{
+				Type:              "stage_paused",
+				Stage:             string(nextStage),
+				Content:           reason,
+				AgentID:           stage.Agent,
+				Mode:              stage.Result.Mode,
+				NeedsAction:       true,
+				WorkflowName:      name,
+				WorkflowStatus:    "paused_need_more_budget",
+				NextStage:         string(nextStage),
+				StopReason:        stage.Result.StopReason,
+				ContinuationCount: stage.Result.ContinuationCount,
+				Incomplete:        true,
+				BudgetScope:       "output",
+				Severity:          "warning",
+				Reason:            "incomplete_stage",
+			})
+		}
+	}
+	return WorkflowResult{
+		Name:            name,
+		Status:          "paused_need_more_budget",
+		CompletedStages: nextCompleted,
+		ApprovalPrompt:  reason,
+		NextStage:       nextStage,
+		FinalSummary:    summary,
+	}
+}
+
 func (w *WorkflowRunner) recordWorkflowFinalCollaboration(runID string, result WorkflowResult) {
 	content := result.FinalSummary
 	if strings.TrimSpace(content) == "" {
@@ -1923,21 +2211,49 @@ func workflowRunStageSnapshots(stages []WorkflowStageResult) []session.WorkflowR
 	snapshots := make([]session.WorkflowRunStageSnapshot, 0, len(stages))
 	for _, stage := range stages {
 		snapshots = append(snapshots, session.WorkflowRunStageSnapshot{
-			Stage:        string(stage.Stage),
-			AgentID:      stage.Agent,
-			NodeType:     stage.NodeType,
-			Skill:        stage.Skill,
-			Tool:         stage.Tool,
-			Status:       stage.Status,
-			Attempts:     stage.Attempts,
-			Inputs:       copyStringMap(stage.Input),
-			InputValues:  copyWorkflowAnyMap(stage.InputValues),
-			Outputs:      copyStringMap(stage.Output.Variables),
-			OutputValues: copyWorkflowAnyMap(stage.Output.Values),
-			Artifacts:    append([]session.WorkflowRunArtifact(nil), stage.Output.Artifacts...),
-			Acceptance:   append([]session.WorkflowRunAcceptanceSnapshot(nil), stage.Acceptance...),
-			Metadata:     copyStringMap(stage.Metadata),
-			Result:       stage.Result,
+			Stage:                       string(stage.Stage),
+			AgentID:                     stage.Agent,
+			NodeType:                    stage.NodeType,
+			Skill:                       stage.Skill,
+			Tool:                        stage.Tool,
+			Status:                      stage.Status,
+			Attempts:                    stage.Attempts,
+			Inputs:                      copyStringMap(stage.Input),
+			InputValues:                 copyWorkflowAnyMap(stage.InputValues),
+			Outputs:                     copyStringMap(stage.Output.Variables),
+			OutputValues:                copyWorkflowAnyMap(stage.Output.Values),
+			Artifacts:                   append([]session.WorkflowRunArtifact(nil), stage.Output.Artifacts...),
+			Acceptance:                  append([]session.WorkflowRunAcceptanceSnapshot(nil), stage.Acceptance...),
+			Metadata:                    copyStringMap(stage.Metadata),
+			Result:                      stage.Result,
+			BudgetScope:                 stage.BudgetScope,
+			BudgetReason:                stage.BudgetReason,
+			BudgetMetric:                stage.BudgetMetric,
+			BudgetUsed:                  stage.BudgetUsed,
+			BudgetSoftLimit:             stage.BudgetSoftLimit,
+			BudgetHardLimit:             stage.BudgetHardLimit,
+			BudgetRemaining:             stage.BudgetRemaining,
+			BudgetPromptTokens:          stage.BudgetPromptTokens,
+			BudgetEstimatedPromptTokens: stage.BudgetEstimatedPromptTokens,
+			BudgetNetPromptTokens:       stage.BudgetNetPromptTokens,
+			BudgetGrossPromptTokens:     stage.BudgetGrossPromptTokens,
+			BudgetSavedTokens:           stage.BudgetSavedTokens,
+			BudgetMemorySavedTokens:     stage.BudgetMemorySavedTokens,
+			BudgetHistorySavedTokens:    stage.BudgetHistorySavedTokens,
+			BudgetArtifactSavedTokens:   stage.BudgetArtifactSavedTokens,
+			BudgetSkillSavedTokens:      stage.BudgetSkillSavedTokens,
+			BudgetToolSchemaSavedTokens: stage.BudgetToolSchemaSavedTokens,
+			BudgetReportedPromptTokens:  stage.BudgetReportedPromptTokens,
+			BudgetOutputTokens:          stage.BudgetOutputTokens,
+			BudgetCachedTokens:          stage.BudgetCachedTokens,
+			BudgetTotalTokens:           stage.BudgetTotalTokens,
+			BudgetLLMCalls:              stage.BudgetLLMCalls,
+			BudgetContinuations:         stage.BudgetContinuations,
+			BudgetEstimatedInputCost:    stage.BudgetEstimatedInputCost,
+			BudgetEstimatedOutputCost:   stage.BudgetEstimatedOutputCost,
+			BudgetEstimatedTotalCost:    stage.BudgetEstimatedTotalCost,
+			BudgetCostCurrency:          stage.BudgetCostCurrency,
+			BudgetPricingSource:         stage.BudgetPricingSource,
 		})
 	}
 	return snapshots
@@ -1945,26 +2261,62 @@ func workflowRunStageSnapshots(stages []WorkflowStageResult) []session.WorkflowR
 
 func workflowRunEventSnapshot(event schema.StreamEvent) session.WorkflowRunEventSnapshot {
 	return session.WorkflowRunEventSnapshot{
-		Type:             string(event.Type),
-		Content:          event.Content,
-		ToolName:         event.ToolName,
-		ToolCallID:       event.ToolCallID,
-		ArgumentsSummary: event.ArgumentsSummary,
-		AgentID:          event.AgentID,
-		Mode:             event.Mode,
-		IsError:          event.IsError,
-		NeedsAction:      event.NeedsAction,
-		Suspended:        event.Suspended,
-		TaskStage:        event.TaskStage,
-		PromptTokens:     event.PromptTokens,
-		OutputTokens:     event.OutputTokens,
-		CachedTokens:     event.CachedTokens,
-		WorkflowName:     event.WorkflowName,
-		WorkflowStatus:   event.WorkflowStatus,
-		NextStage:        event.NextStage,
-		PendingApproval:  event.PendingApproval,
-		PromptBudget:     event.PromptBudget,
-		Risk:             event.Risk,
+		Type:                        string(event.Type),
+		Stage:                       event.TaskStage,
+		Content:                     event.Content,
+		Reason:                      event.Reason,
+		Severity:                    event.Severity,
+		BudgetScope:                 event.BudgetScope,
+		BudgetReason:                event.BudgetReason,
+		BudgetMetric:                event.BudgetMetric,
+		BudgetUsed:                  event.BudgetUsed,
+		BudgetSoftLimit:             event.BudgetSoftLimit,
+		BudgetHardLimit:             event.BudgetHardLimit,
+		BudgetRemaining:             event.BudgetRemaining,
+		BudgetPromptTokens:          event.BudgetPromptTokens,
+		BudgetEstimatedPromptTokens: event.BudgetEstimatedPromptTokens,
+		BudgetNetPromptTokens:       event.BudgetNetPromptTokens,
+		BudgetGrossPromptTokens:     event.BudgetGrossPromptTokens,
+		BudgetSavedTokens:           event.BudgetSavedTokens,
+		BudgetMemorySavedTokens:     event.BudgetMemorySavedTokens,
+		BudgetHistorySavedTokens:    event.BudgetHistorySavedTokens,
+		BudgetArtifactSavedTokens:   event.BudgetArtifactSavedTokens,
+		BudgetSkillSavedTokens:      event.BudgetSkillSavedTokens,
+		BudgetToolSchemaSavedTokens: event.BudgetToolSchemaSavedTokens,
+		BudgetReportedPromptTokens:  event.BudgetReportedPromptTokens,
+		BudgetOutputTokens:          event.BudgetOutputTokens,
+		BudgetCachedTokens:          event.BudgetCachedTokens,
+		BudgetTotalTokens:           event.BudgetTotalTokens,
+		BudgetLLMCalls:              event.BudgetLLMCalls,
+		BudgetContinuations:         event.BudgetContinuations,
+		BudgetEstimatedInputCost:    event.BudgetEstimatedInputCost,
+		BudgetEstimatedOutputCost:   event.BudgetEstimatedOutputCost,
+		BudgetEstimatedTotalCost:    event.BudgetEstimatedTotalCost,
+		BudgetCostCurrency:          event.BudgetCostCurrency,
+		BudgetPricingSource:         event.BudgetPricingSource,
+		ContractCheck:               event.ContractCheck,
+		SourceRef:                   event.SourceRef,
+		StopReason:                  event.StopReason,
+		ContinuationCount:           event.ContinuationCount,
+		Incomplete:                  event.Incomplete,
+		ToolName:                    event.ToolName,
+		ToolCallID:                  event.ToolCallID,
+		ArgumentsSummary:            event.ArgumentsSummary,
+		AgentID:                     event.AgentID,
+		Mode:                        event.Mode,
+		IsError:                     event.IsError,
+		NeedsAction:                 event.NeedsAction,
+		Suspended:                   event.Suspended,
+		TaskStage:                   event.TaskStage,
+		PromptTokens:                event.PromptTokens,
+		OutputTokens:                event.OutputTokens,
+		CachedTokens:                event.CachedTokens,
+		WorkflowName:                event.WorkflowName,
+		WorkflowStatus:              event.WorkflowStatus,
+		NextStage:                   event.NextStage,
+		PendingApproval:             event.PendingApproval,
+		PromptBudget:                event.PromptBudget,
+		Risk:                        event.Risk,
 	}
 }
 
@@ -2005,6 +2357,7 @@ func (w *WorkflowRunner) runSkillChainFrom(ctx context.Context, request string, 
 		if err := w.runtime.SetActiveAgent(agentID); err != nil {
 			return WorkflowResult{}, err
 		}
+		emitTaskStage(handler, w.runtime.session, agentID, skill.Name, string(stage), "starting workflow stage")
 		result, err := runSkillStage(ctx, w.runtime, agentID, stagePrompt, skill, handler)
 		if err != nil {
 			return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", stage, err)
@@ -2023,7 +2376,11 @@ func (w *WorkflowRunner) runSkillChainFrom(ctx context.Context, request string, 
 				NextStage:       stage,
 			}, nil
 		}
-		completed = append(completed, WorkflowStageResult{Stage: stage, Agent: agentID, Result: result})
+		stageResult := WorkflowStageResult{Stage: stage, Agent: agentID, Result: result}
+		if result.Incomplete {
+			return w.pauseWorkflowForIncompleteStage(workflowNameSkillChain, request, completed, stageResult), nil
+		}
+		completed = append(completed, stageResult)
 		chain = w.extendSkillChain(chain, index, request, result.Output, completed)
 	}
 	finalSummary := summarizeWorkflow(completed)
@@ -2440,6 +2797,9 @@ func (w *WorkflowRunner) RunPlanFixAudit(ctx context.Context, request string, ap
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStagePlan, err)
 	}
 	completed := []WorkflowStageResult{{Stage: WorkflowStagePlan, Agent: workflowAgentPlanner, Result: planResult}}
+	if planResult.Incomplete {
+		return w.pauseWorkflowForIncompleteStage(workflowNamePlanFixAudit, request, nil, completed[0]), nil
+	}
 	w.persistWorkflowState(workflowNamePlanFixAudit, "awaiting_approval", WorkflowStageFix, request, summarizeWorkflow(completed), "Workflow requires approval before running fixer.")
 	if !approve {
 		w.recordWorkflowSummary(fmt.Sprintf("workflow %s awaiting stage approval", workflowNamePlanFixAudit))
@@ -2479,7 +2839,11 @@ func (w *WorkflowRunner) RunPlanFixAudit(ctx context.Context, request string, ap
 			NextStage:       WorkflowStageFix,
 		}, nil
 	}
-	completed = append(completed, WorkflowStageResult{Stage: WorkflowStageFix, Agent: workflowAgentFixer, Result: fixResult})
+	fixStageResult := WorkflowStageResult{Stage: WorkflowStageFix, Agent: workflowAgentFixer, Result: fixResult}
+	if fixResult.Incomplete {
+		return w.pauseWorkflowForIncompleteStage(workflowNamePlanFixAudit, request, completed, fixStageResult), nil
+	}
+	completed = append(completed, fixStageResult)
 
 	if err := w.ensureWorkflowAgent(workflowAgentAuditor); err != nil {
 		return WorkflowResult{}, err
@@ -2492,7 +2856,11 @@ func (w *WorkflowRunner) RunPlanFixAudit(ctx context.Context, request string, ap
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageAudit, err)
 	}
-	completed = append(completed, WorkflowStageResult{Stage: WorkflowStageAudit, Agent: workflowAgentAuditor, Result: auditResult})
+	auditStageResult := WorkflowStageResult{Stage: WorkflowStageAudit, Agent: workflowAgentAuditor, Result: auditResult}
+	if auditResult.Incomplete {
+		return w.pauseWorkflowForIncompleteStage(workflowNamePlanFixAudit, request, completed, auditStageResult), nil
+	}
+	completed = append(completed, auditStageResult)
 	finalSummary := summarizeWorkflow(completed)
 	w.runtime.DisableWorkflowAutoApproval(workflowNamePlanFixAudit)
 	if err := w.runtime.RestoreDefaultAgent(); err != nil {
@@ -2712,6 +3080,9 @@ func (w *WorkflowRunner) runPlanFixAuditApprovedStages(ctx context.Context, requ
 		}, nil
 	}
 	completed = append(completed, WorkflowStageResult{Stage: WorkflowStageFix, Agent: workflowAgentFixer, Result: fixResult})
+	if fixResult.Incomplete {
+		return w.pauseWorkflowForIncompleteStage(workflowNamePlanFixAudit, request, completed[:len(completed)-1], completed[len(completed)-1]), nil
+	}
 	if err := w.ensureWorkflowAgent(workflowAgentAuditor); err != nil {
 		return WorkflowResult{}, err
 	}
@@ -2817,7 +3188,11 @@ func resumePlanFixAuditWorkflow(w *WorkflowRunner, ctx context.Context, pending 
 		if err != nil {
 			return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageAudit, err)
 		}
-		completed = append(completed, WorkflowStageResult{Stage: WorkflowStageAudit, Agent: workflowAgentAuditor, Result: auditResult})
+		auditStageResult := WorkflowStageResult{Stage: WorkflowStageAudit, Agent: workflowAgentAuditor, Result: auditResult}
+		if auditResult.Incomplete {
+			return w.pauseWorkflowForIncompleteStage(workflowNamePlanFixAudit, pending.request, completed, auditStageResult), nil
+		}
+		completed = append(completed, auditStageResult)
 		finalSummary := summarizeWorkflow(completed)
 		w.runtime.DisableWorkflowAutoApproval(workflowNamePlanFixAudit)
 		if w.runtime.approvedWorkflowResumes != nil {
@@ -2950,7 +3325,11 @@ func resumeSkillChainWorkflow(w *WorkflowRunner, ctx context.Context, pending pe
 			NextStage:       pending.stage,
 		}, nil
 	}
-	completed = append(completed, WorkflowStageResult{Stage: pending.stage, Agent: pending.agent, Result: stageResult})
+	resumedStageResult := WorkflowStageResult{Stage: pending.stage, Agent: pending.agent, Result: stageResult}
+	if stageResult.Incomplete {
+		return w.pauseWorkflowForIncompleteStage(workflowNameSkillChain, pending.request, completed, resumedStageResult), nil
+	}
+	completed = append(completed, resumedStageResult)
 	chain = w.extendSkillChain(chain, pending.skillIndex, pending.request, stageResult.Output, completed)
 	return w.runSkillChainFrom(ctx, pending.request, chain, pending.skillIndex+1, completed, handler)
 }
@@ -3039,11 +3418,19 @@ func continueAgentRunWithModelSkillAndOptions(ctx context.Context, runtimeRef *R
 			}
 			return schema.AgentResult{}, fmt.Errorf("llm chat: %w", err)
 		}
-		emitTokenUsage(handler, runtimeRef.session, agentID, mode, resp.Usage)
+		emitTokenUsage(handler, runtimeRef.session, agentID, mode, resp.Usage, promptToolContext)
 		if len(resp.ToolCalls) == 0 {
+			completedResp, continuationCount, incomplete, err := runner.continueOutputLimitResponse(ctx, runner.llm, resp, request, messages, mode, runtimeRef.session, matchedSkill, promptToolContext, len(tools), collectedResults, false, i+1, handler, runtimeRef.audit, &streamedText)
+			if err != nil {
+				return schema.AgentResult{}, err
+			}
+			resp = completedResp
 			emitTaskStage(handler, runtimeRef.session, agentID, mode, "summarize", "preparing stage response")
+			if incomplete {
+				return runner.finalizeIncompleteOutput(agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, resp, collectedResults, false, continuationCount, i+1, handler, runtimeRef.audit)
+			}
 			if strings.TrimSpace(runtimeRef.SessionSnapshot().Workflow.Name) != "" && strings.EqualFold(runtimeRef.SessionSnapshot().Workflow.Status, "running") {
-				return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode, Model: profile.Model, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
+				return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode, Model: profile.Model, StopReason: resp.StopReason, ContinuationCount: continuationCount, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
 			}
 			if !streamedText && handler != nil && resp.Message.Content != "" {
 				if err := handler(schema.StreamEvent{Type: schema.StreamEventText, Content: resp.Message.Content, AgentID: agentID, Mode: mode}); err != nil {
@@ -3053,7 +3440,7 @@ func continueAgentRunWithModelSkillAndOptions(ctx context.Context, runtimeRef *R
 			if handler != nil {
 				_ = handler(schema.StreamEvent{Type: schema.StreamEventDone, Content: resp.Message.Content, AgentID: agentID, Mode: mode})
 			}
-			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode, Model: profile.Model, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
+			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode, Model: profile.Model, StopReason: resp.StopReason, ContinuationCount: continuationCount, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
 		}
 		runFinalToolCalls := finalResponseTurn && shouldRunFinalTurnToolCalls(execCtx, resp.ToolCalls)
 		if finalResponseTurn && !runFinalToolCalls {

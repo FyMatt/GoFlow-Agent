@@ -148,6 +148,8 @@ func (s *Server) handleMemorySolutionAction(w http.ResponseWriter, r *http.Reque
 	switch action {
 	case "retire":
 		kb, err = store.RetireSolution(id, req.Reason, req.SupersededBy)
+	case "supersede":
+		kb, err = store.SupersedeSolution(id, req.SupersededBy, req.Reason)
 	case "restore":
 		kb, err = store.RestoreSolution(id)
 	default:
@@ -157,6 +159,10 @@ func (s *Server) handleMemorySolutionAction(w http.ResponseWriter, r *http.Reque
 	if err != nil {
 		if strings.Contains(err.Error(), "not found") {
 			http.Error(w, err.Error(), http.StatusNotFound)
+			return
+		}
+		if strings.Contains(err.Error(), "required") || strings.Contains(err.Error(), "itself") || strings.Contains(err.Error(), "retired") {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		http.Error(w, err.Error(), http.StatusInternalServerError)

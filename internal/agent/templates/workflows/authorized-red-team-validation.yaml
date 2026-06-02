@@ -1,0 +1,279 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: authorized-red-team-validation
+title: Authorized Red-Team Validation
+description: Scope, approve, validate, and report bounded offensive security checks with non-destructive evidence and blue-team handoff.
+category: security
+tags:
+    - security
+    - red-team
+    - purple-team
+    - authorization
+    - evidence
+    - quality_gate
+stages: 10
+graph:
+    name: authorized-red-team-validation
+    description: Authorized red-team workflow with explicit scope, approval, bounded validation, evidence gate, and remediation handoff.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - scope
+          position:
+            x: 60
+            "y": 240
+        - name: scope
+          node_type: input_gate
+          agent: ""
+          skill: ""
+          execution:
+            mode: manual
+            risk_level: high
+            boundary: authorized-red-team-scope
+          params:
+            fields_json: '{"fields":[{"name":"target","type":"text","label":"Authorized target","required":true},{"name":"authorization","type":"textarea","label":"Authorization statement","required":true},{"name":"allowed_hosts","type":"textarea","label":"Allowed hosts or systems","required":true},{"name":"allowed_actions","type":"textarea","label":"Allowed validation actions and payload classes","required":true},{"name":"exclusions","type":"textarea","label":"Explicit exclusions"},{"name":"rate_limit","type":"text","label":"Rate limit","default":"low-volume manual validation only"},{"name":"active_probe_approved","type":"checkbox","label":"Active canary validation approved","default":false}]}'
+            manual: "true"
+            prompt: Provide written authorization, target scope, allowlists, allowed actions, exclusions, and rate limits before red-team validation.
+          outputs:
+            active_probe_approved: params.active_probe_approved
+            allowed_actions: params.allowed_actions
+            allowed_hosts: params.allowed_hosts
+            authorization: params.authorization
+            exclusions: params.exclusions
+            rate_limit: params.rate_limit
+            target: params.target
+          next:
+            - plan
+          position:
+            x: 310
+            "y": 230
+        - name: plan
+          node_type: skill
+          agent: security-researcher
+          skill: authorized-red-team-validation
+          execution:
+            mode: planning
+            risk_level: high
+            boundary: authorized-red-team-plan
+          params:
+            output_contract: Emit sections named Authorization Boundary, Attack Path Hypothesis, Validation Plan, Evidence Needed, Blocked Actions, and Approval Request.
+            planning_rule: Build only a bounded, non-destructive validation plan. Do not perform active validation in this stage.
+          input:
+            active_probe_approved: stages.scope.outputs.active_probe_approved
+            allowed_actions: stages.scope.outputs.allowed_actions
+            allowed_hosts: stages.scope.outputs.allowed_hosts
+            authorization: stages.scope.outputs.authorization
+            exclusions: stages.scope.outputs.exclusions
+            rate_limit: stages.scope.outputs.rate_limit
+            target: stages.scope.outputs.target
+          outputs:
+            plan: result.output
+            summary: result.summary
+          artifacts:
+            - name: red-team-validation-plan
+              kind: plan
+              title: Authorized red-team validation plan
+              ref: result.output
+              summary: Authorization boundary, attack-path hypothesis, validation plan, evidence requirements, blocked actions, and approval request.
+          acceptance_criteria:
+            - name: has-authorization-boundary
+              ref: result.output
+              contains: Authorization Boundary
+              expected: plan states the authorization boundary
+            - name: has-validation-plan
+              ref: result.output
+              contains: Validation Plan
+              expected: plan includes bounded validation steps
+            - name: has-blocked-actions
+              ref: result.output
+              contains: Blocked Actions
+              expected: plan records out-of-scope or disallowed actions
+          next:
+            - approve-validation
+          position:
+            x: 610
+            "y": 210
+        - name: approve-validation
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          execution:
+            mode: manual
+            risk_level: high
+            boundary: operator-approval
+          params:
+            prompt: Review the red-team validation plan, authorization boundary, allowlists, exclusions, rate limits, and non-destructive payload constraints before validation.
+          next:
+            - validate
+          position:
+            x: 910
+            "y": 210
+        - name: validate
+          node_type: skill
+          agent: security-researcher
+          skill: authorized-red-team-validation
+          execution:
+            mode: dry_run
+            risk_level: high
+            boundary: approved-non-destructive-validation
+            requires_approval: true
+            requires_authorized_scope: true
+            requires_allowlist: true
+          params:
+            output_contract: Emit sections named Authorization Boundary, Attack Path Hypothesis, Validation Plan, Evidence Collected, Confirmed Findings, Blocked Or Out-Of-Scope Actions, Blue-Team Handoff, and Follow-Up Validation.
+            validation_rule: Use only approved, non-destructive, low-volume validation inside the stated allowlist. If tooling cannot safely validate, report a blocker and do not improvise.
+            allowed_tools: web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points,web_tools/fetch_url,web_tools/web_search,file_tools/read_file,file_tools/search_files
+            authorized_scope: stages.scope.outputs.authorization
+            allowed_hosts: stages.scope.outputs.allowed_hosts
+            active_probe_approved: stages.scope.outputs.active_probe_approved
+            allowlist_confirmed: "true"
+          input:
+            active_probe_approved: stages.scope.outputs.active_probe_approved
+            allowed_actions: stages.scope.outputs.allowed_actions
+            allowed_hosts: stages.scope.outputs.allowed_hosts
+            authorization: stages.scope.outputs.authorization
+            exclusions: stages.scope.outputs.exclusions
+            plan: stages.plan.outputs.plan
+            rate_limit: stages.scope.outputs.rate_limit
+            target: stages.scope.outputs.target
+          outputs:
+            evidence: result.output
+            findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: red-team-validation-evidence
+              kind: evidence
+              title: Authorized red-team validation evidence
+              ref: result.output
+              summary: Evidence collected, confirmed findings, blocked actions, and blue-team handoff.
+          acceptance_criteria:
+            - name: has-evidence-collected
+              ref: result.output
+              contains: Evidence Collected
+              expected: validation records collected evidence or a blocker
+            - name: has-blue-team-handoff
+              ref: result.output
+              contains: Blue-Team Handoff
+              expected: validation produces remediation-oriented handoff
+          next:
+            - quality
+          position:
+            x: 1210
+            "y": 210
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: plan,validate
+            min_score: "80"
+            reason: authorized red-team validation lacks scope, approval, evidence, blocked-action handling, or blue-team handoff
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            allow_unknown: "false"
+          routes:
+            pass: report
+            warning: review
+            fail: blocked-report
+          position:
+            x: 1510
+            "y": 240
+        - name: review
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          execution:
+            mode: manual
+            risk_level: medium
+            boundary: warning-review
+          params:
+            prompt: Review warning-level red-team evidence before producing the report.
+          next:
+            - report
+          position:
+            x: 1810
+            "y": 120
+        - name: report
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: remediation-handoff
+          params:
+            output_contract: Emit sections named Red-Team Validation Report, Authorization Boundary, Evidence, Confirmed Findings, Blue-Team Handoff, Residual Risk, and Next Steps.
+            purpose: Produce a remediation-oriented report from the approved validation evidence.
+          input:
+            evidence: stages.validate.outputs.evidence
+            plan: stages.plan.outputs.plan
+            quality_status: stages.quality.outputs.quality_status
+          outputs:
+            report: result.output
+            summary: result.summary
+          artifacts:
+            - name: red-team-validation-report
+              kind: report
+              title: Red-team validation report
+              ref: result.output
+              summary: Authorization boundary, validation evidence, confirmed findings, blue-team handoff, residual risk, and next steps.
+          acceptance_criteria:
+            - name: has-red-team-report
+              ref: result.output
+              contains: Red-Team Validation Report
+              expected: report summarizes the authorized validation result
+            - name: has-next-steps
+              ref: result.output
+              contains: Next Steps
+              expected: report includes next steps
+          next:
+            - end
+          position:
+            x: 2110
+            "y": 160
+        - name: blocked-report
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          execution:
+            mode: planning
+            risk_level: high
+            boundary: blocked-validation
+          params:
+            output_contract: Emit sections named Validation Blocked, Blocking Issues, Missing Authorization Or Evidence, Safe Follow-Up Plan, and Next Steps.
+            purpose: Explain why validation is blocked and what safe evidence or approval is required.
+          input:
+            evidence: stages.validate.outputs.evidence
+            failures: stages.quality.outputs.failures
+            plan: stages.plan.outputs.plan
+          outputs:
+            report: result.output
+            summary: result.summary
+          artifacts:
+            - name: red-team-blocked-report
+              kind: report
+              title: Red-team validation blocked report
+              ref: result.output
+              summary: Blocking issues, missing authorization/evidence, safe follow-up plan, and next steps.
+          acceptance_criteria:
+            - name: has-validation-blocked
+              ref: result.output
+              contains: Validation Blocked
+              expected: blocked report explains why validation cannot proceed
+          next:
+            - end
+          position:
+            x: 1810
+            "y": 390
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 2410
+            "y": 240

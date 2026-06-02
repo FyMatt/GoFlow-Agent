@@ -3121,6 +3121,27 @@ func TestHandleCommandMemorySolutionLifecycle(t *testing.T) {
 	if !strings.Contains(restoreOutput, "solution restored") || !strings.Contains(restoreOutput, "active") {
 		t.Fatalf("expected restored solution output, got %q", restoreOutput)
 	}
+
+	nextKB, err := store.UpsertSolution(memory.SolutionMemory{
+		ProblemSignature: "provider thinking retry replacement",
+		Problem:          "provider accepts response id retry",
+		Decision:         "prefer response id retry",
+		Solution:         "send response id on continuation retry",
+		Confidence:       "high",
+		Resolved:         true,
+	})
+	if err != nil {
+		t.Fatalf("Upsert replacement solution: %v", err)
+	}
+	replacementID := nextKB.Solutions[0].ID
+	supersedeOutput := captureStdout(t, func() {
+		if handled := handleCommand(context.Background(), "/memory solution supersede "+id+" --superseded-by "+replacementID+" --reason better retry contract", nil, nil, runtimeRef); !handled {
+			t.Fatal("expected memory solution supersede command to be handled")
+		}
+	})
+	if !strings.Contains(supersedeOutput, "solution superseded") || !strings.Contains(supersedeOutput, replacementID) || !strings.Contains(supersedeOutput, "superseded by") {
+		t.Fatalf("expected superseded solution output, got %q", supersedeOutput)
+	}
 }
 
 func TestFormatSessionOutputUsesSections(t *testing.T) {

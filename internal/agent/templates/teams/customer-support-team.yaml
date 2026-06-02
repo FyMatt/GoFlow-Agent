@@ -15,8 +15,10 @@ role_templates:
     skill: execution-plan
     responsibilities:
       - classify the customer request
+      - extract ticket context, product area, customer impact, and SLA signals
       - identify priority and impact
       - list missing context
+    tools: [python_notes/support_case_summary]
     produces: [triage, priority, missing_context]
   - name: context-researcher
     label: Context Researcher
@@ -26,6 +28,7 @@ role_templates:
       - collect workspace or knowledge-base context
       - separate facts from assumptions
       - summarize relevant constraints
+      - preserve source attribution for read-only lookup evidence
     consumes: [triage, missing_context]
     produces: [known_facts, context_summary]
   - name: response-writer
@@ -36,6 +39,7 @@ role_templates:
       - draft a concise customer-facing response
       - include next steps
       - avoid unsupported promises
+      - separate customer-facing text from internal notes
     consumes: [triage, known_facts]
     produces: [customer_reply, internal_notes]
   - name: support-reviewer
@@ -45,7 +49,10 @@ role_templates:
     responsibilities:
       - review clarity and accuracy
       - flag privacy or escalation risk
+      - run redaction checks before customer-visible handoff
+      - enforce reviewer quorum for high-impact, SLA, legal, refund, privacy, or security cases
       - approve or request revision
+    tools: [python_notes/redaction_check]
     consumes: [customer_reply, internal_notes]
     produces: [review_decision, risk_notes]
 handoffs:

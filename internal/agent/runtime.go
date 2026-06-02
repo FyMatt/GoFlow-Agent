@@ -476,7 +476,7 @@ func (r *Runtime) workflowInProgress() bool {
 	}
 	status := strings.ToLower(strings.TrimSpace(r.session.Snapshot().Workflow.Status))
 	switch status {
-	case "running", "awaiting_tool_approval", "awaiting_sub_workflow":
+	case "running", "awaiting_tool_approval", "awaiting_sub_workflow", "paused_need_more_budget", "awaiting_budget_approval":
 		return true
 	default:
 		return false
@@ -567,6 +567,9 @@ func (r *Runtime) workflowStageRunnerWithModel(agentID string, runner *AgentRunn
 		if overrideClient, ok := r.clients[provider]; ok {
 			client = overrideClient
 			profile.Provider = provider
+			if providerCfg, ok := r.Provider(provider); ok {
+				profile.Pricing = providerCfg.Pricing
+			}
 		}
 	}
 	if name := strings.TrimSpace(model.Model); name != "" {

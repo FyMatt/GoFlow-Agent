@@ -17,7 +17,7 @@ tags:
 stages: 21
 graph:
     name: multi-domain-intake-router
-    description: Default entry workflow for broad tasks. It uses a strong planning route for decomposition, cheaper bounded domain workers for parallel execution, an artifact-first join, and a quality-gated final handoff.
+    description: Default entry workflow for broad tasks. It uses a strong planning route for branch-selection contracts, cheaper bounded domain workers for selected parallel execution, per-branch tool allowlists, cost attribution, artifact-first join, conflict diagnostics, and a quality-gated final handoff.
     stages:
         - name: start
           node_type: start
@@ -33,7 +33,7 @@ graph:
           agent: ""
           skill: ""
           params:
-            fields_json: '{"fields":[{"name":"domain","type":"select","label":"Primary domain","required":true,"options":["auto","software","web_security","security","binary","documentation","operations","support","platform","general"],"default":"auto"},{"name":"goal","type":"textarea","label":"Goal","required":true},{"name":"target","type":"text","label":"Target file, URL, binary, system, device scope, customer context, or platform area"},{"name":"desired_output","type":"select","label":"Desired output","options":["implementation","review_report","runbook","customer_reply","extension_kit","plan","multi_domain_report"],"default":"multi_domain_report"},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","options":["low","medium","high"],"default":"medium"},{"name":"max_parallel_domains","type":"number","label":"Max parallel domains","default":3}]}'
+            fields_json: '{"fields":[{"name":"domain","type":"select","label":"Primary domain","label_zh":"\u4e3b\u8981\u9886\u57df","required":true,"options":["auto","software","web_security","security","binary","documentation","operations","support","platform","general"],"default":"auto"},{"name":"goal","type":"textarea","label":"Goal","label_zh":"\u76ee\u6807","required":true},{"name":"target","type":"text","label":"Target file, URL, binary, system, device scope, customer context, or platform area","label_zh":"\u76ee\u6807\u6587\u4ef6\u3001URL\u3001\u4e8c\u8fdb\u5236\u3001\u7cfb\u7edf\u3001\u8bbe\u5907\u8303\u56f4\u3001\u5ba2\u6237\u4e0a\u4e0b\u6587\u6216\u5e73\u53f0\u533a\u57df"},{"name":"desired_output","type":"select","label":"Desired output","label_zh":"\u671f\u671b\u8f93\u51fa","options":["implementation","review_report","runbook","customer_reply","extension_kit","plan","multi_domain_report"],"default":"multi_domain_report"},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","label_zh":"\u98ce\u9669\u5bb9\u5fcd\u5ea6","options":["low","medium","high"],"default":"medium"},{"name":"max_parallel_domains","type":"number","label":"Max parallel domains","label_zh":"\u6700\u5927\u5e76\u884c\u9886\u57df\u6570","default":3}]}'
             manual: "true"
             prompt: Confirm the goal, target, desired output, risk tolerance, and maximum parallel domain slices before decomposition.
           outputs:
@@ -57,10 +57,14 @@ graph:
             provider: primary
             max_tokens: 1500
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: multi-domain-decomposition
           params:
-            output_contract: Return compact JSON with summary, active_branches, branch_contracts, shared_context, acceptance_criteria, risk_gates, model_routes, token_budget, and final_report_contract. active_branches must contain only stage names from software-worker, web-security-worker, security-worker, binary-worker, docs-worker, ops-worker, support-worker, platform-worker, or general-worker.
+            output_contract: Return compact JSON with summary, active_branches, branch_selection_reason, pruned_branches, branch_contracts, per_branch_tool_allowlists, shared_context, acceptance_criteria, risk_gates, model_routes, token_budget, cost_attribution, and final_report_contract. active_branches must contain only stage names from software-worker, web-security-worker, security-worker, binary-worker, docs-worker, ops-worker, support-worker, platform-worker, or general-worker.
             purpose: Decompose the request into only the domain slices needed for this task, then select bounded parallel worker branches.
-            token_policy: Select the fewest useful branches, normally one to three. Do not copy raw files, logs, transcripts, secrets, or long evidence. Put details in artifacts or refs.
+            token_policy: Select the fewest useful branches, normally one to three. Do not copy raw files, logs, transcripts, secrets, or long evidence. Put details in artifacts or refs. Explain pruned branches so users can locate why a worker did not run.
           input:
             desired_output: stages.intake.outputs.desired_output
             domain: stages.intake.outputs.domain
@@ -70,7 +74,11 @@ graph:
             target: stages.intake.outputs.target
           outputs:
             active_branches: result.active_branches
+            branch_selection_reason: result.branch_selection_reason
             branch_contracts: result.branch_contracts
+            cost_attribution: result.cost_attribution
+            per_branch_tool_allowlists: result.per_branch_tool_allowlists
+            pruned_branches: result.pruned_branches
             shared_context: result.shared_context
             summary: result.summary
             task_graph: result.output
@@ -89,10 +97,26 @@ graph:
               ref: result.output
               contains: branch_contracts
               expected: each selected branch has a compact contract
+            - name: has-branch-selection-reason
+              ref: result.output
+              contains: branch_selection_reason
+              expected: decomposition explains why selected branches run
+            - name: has-pruned-branches
+              ref: result.output
+              contains: pruned_branches
+              expected: decomposition explains why unselected branches do not run
+            - name: has-per-branch-tool-allowlists
+              ref: result.output
+              contains: per_branch_tool_allowlists
+              expected: decomposition constrains tools per selected branch
             - name: has-token-budget
               ref: result.output
               contains: token_budget
               expected: decomposition declares token discipline
+            - name: has-cost-attribution
+              ref: result.output
+              contains: cost_attribution
+              expected: decomposition declares cost attribution by selected branch
           context:
             include:
                 - workflow.input
@@ -121,10 +145,17 @@ graph:
           params:
             concurrent: "true"
             active_branches_ref: stages.decompose.outputs.active_branches
-            token_policy: Fan out only selected branches. Unselected domain workers must not run.
+            domain_ref: stages.intake.outputs.domain
+            fallback_branch: general-worker
+            max_parallel_domains_ref: stages.intake.outputs.max_parallel_domains
+            selection_error: No runnable domain branch was selected. Review the intake domain and decomposition output.
+            token_policy: Fan out only selected branches. Unselected domain workers must not run. Preserve branch_selection_reason, pruned_branches, max_parallel_domains_ref, per_branch_tool_allowlists, and branch blockers for Studio diagnostics.
           outputs:
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
             branches: result.branches
             branch_count: result.branch_count
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
+            pruned_branches: stages.decompose.outputs.pruned_branches
           next:
             - software-worker
             - web-security-worker
@@ -146,15 +177,21 @@ graph:
             provider: backup
             max_tokens: 850
             temperature: 0.1
+          execution:
+            mode: dry_run
+            risk_level: medium
+            boundary: workspace-software-slice
           params:
             domain: software-engineering
             team_template_ref: software-task-team
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, evidence, changed_files, verification, blockers, next_actions, recommended_workflow, and artifact_refs.
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, evidence, changed_files, verification, cost_attribution, blockers, next_actions, recommended_workflow, and artifact_refs.
             token_policy: Use branch_contracts only. Summarize discovery and verification; do not paste full diffs or large files.
             tools: file_tools/read_file,file_tools/search_files,file_tools/write_file
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
             request: workflow.input
             shared_context: stages.decompose.outputs.shared_context
           outputs:
@@ -203,15 +240,21 @@ graph:
             provider: backup
             max_tokens: 850
             temperature: 0.1
+          execution:
+            mode: dry_run
+            risk_level: high
+            boundary: authorized-web-evidence
           params:
             domain: web-security
             team_template_ref: web-research-team
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, evidence, target_scope, findings, verification, blockers, next_actions, recommended_workflow, and artifact_refs.
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, evidence, target_scope, findings, verification, cost_attribution, blockers, next_actions, recommended_workflow, and artifact_refs.
             token_policy: Use passive or explicitly authorized browser evidence only. Summarize screenshots/assets by ref, never inline large pages or scripts.
             tools: web_tools/fetch_url,web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
             request: workflow.input
             shared_context: stages.decompose.outputs.shared_context
           outputs:
@@ -259,14 +302,21 @@ graph:
             provider: backup
             max_tokens: 800
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: high
+            boundary: defensive-security-scope
           params:
             domain: security-research
             team_template_ref: audit-security-team
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, authorized_scope, findings, evidence, verification, blockers, next_actions, and artifact_refs.
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, authorized_scope, findings, evidence, exploitability_arbitration, verification, cost_attribution, blockers, next_actions, and artifact_refs.
             token_policy: Stay defensive and evidence-first. Do not provide exploit steps beyond authorized scope.
+            tools: file_tools/read_file,file_tools/search_files,web_tools/browser_snapshot,web_tools/browser_probe_points,python_notes/binary_format_summary,python_notes/binary_symbol_hints,python_notes/redaction_check
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
             request: workflow.input
             shared_context: stages.decompose.outputs.shared_context
           outputs:
@@ -314,15 +364,21 @@ graph:
             provider: backup
             max_tokens: 800
             temperature: 0.1
+          execution:
+            mode: dry_run
+            risk_level: medium
+            boundary: static-binary-analysis
           params:
             domain: binary-analysis
             team_template_ref: binary-triage-team
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, sample_scope, static_evidence, findings, blockers, next_actions, and artifact_refs.
-            token_policy: Prefer metadata, strings, and bounded previews. Do not execute untrusted binaries.
-            tools: python_notes/binary_file_info,python_notes/binary_strings,python_notes/hex_preview
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, sample_scope, format_summary, entropy_packing_hints, symbol_hints, static_evidence, cost_attribution, findings, unsafe_dynamic_analysis_blockers, blockers, next_actions, and artifact_refs.
+            token_policy: Prefer metadata, format summary, entropy map, symbol hints, strings, and bounded previews. Do not execute untrusted binaries.
+            tools: python_notes/binary_file_info,python_notes/binary_format_summary,python_notes/binary_entropy_map,python_notes/binary_symbol_hints,python_notes/binary_strings,python_notes/hex_preview,python_notes/binary_extract_window
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
             request: workflow.input
             shared_context: stages.decompose.outputs.shared_context
           outputs:
@@ -365,14 +421,21 @@ graph:
             provider: backup
             max_tokens: 750
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: low
+            boundary: documentation-scope
           params:
             domain: documentation
             team_template_ref: documentation-team
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, doc_scope, proposed_changes, evidence, blockers, next_actions, and artifact_refs.
-            token_policy: Summarize doc impact and cite sections or files by ref.
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, doc_scope, proposed_changes, command_accuracy, link_integrity, bilingual_parity, publish_readiness, cost_attribution, evidence, blockers, next_actions, and artifact_refs.
+            token_policy: Summarize doc impact and cite sections or files by ref. Use link and redaction evidence by ref instead of copying entire docs.
+            tools: file_tools/read_file,file_tools/search_files,file_tools/write_file,python_notes/markdown_link_check,python_notes/redaction_check
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
             request: workflow.input
             shared_context: stages.decompose.outputs.shared_context
           outputs:
@@ -414,15 +477,21 @@ graph:
             provider: backup
             max_tokens: 800
             temperature: 0.1
+          execution:
+            mode: dry_run
+            risk_level: high
+            boundary: operations-dry-run
           params:
             domain: operations-runbook
             team_template_ref: operations-runbook-team
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, authorized_scope, prechecks, dry_run_plan, rollback, evidence, blockers, next_actions, and artifact_refs.
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, authorized_scope, prechecks, dry_run_plan, rollback, evidence, cost_attribution, blockers, next_actions, and artifact_refs.
             token_policy: Plan device/system work with authorized scope, credential refs, allowlists, dry-run and rollback evidence. Do not apply changes directly.
             tools: network_tools/device_discovery_plan,network_tools/device_command_plan,network_tools/device_config_dry_run
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
             request: workflow.input
             shared_context: stages.decompose.outputs.shared_context
           outputs:
@@ -469,14 +538,21 @@ graph:
             provider: backup
             max_tokens: 700
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: low
+            boundary: customer-support-draft
           params:
             domain: customer-support
             team_template_ref: customer-support-team
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, customer_context, answer_draft, internal_notes, escalation, blockers, next_actions, and artifact_refs.
-            token_policy: Separate customer-facing answer from internal notes. Do not invent policy commitments.
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, ticket_context, product_area, customer_impact, privacy_flags, answer_draft, internal_notes, escalation, reviewer_quorum, cost_attribution, blockers, next_actions, and artifact_refs.
+            token_policy: Separate customer-facing answer from internal notes. Do not invent policy commitments. Redact sensitive data before customer-visible output.
+            tools: file_tools/read_file,file_tools/search_files,web_tools/web_search,python_notes/support_case_summary,python_notes/redaction_check
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
             request: workflow.input
             shared_context: stages.decompose.outputs.shared_context
           outputs:
@@ -518,14 +594,20 @@ graph:
             provider: backup
             max_tokens: 850
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: platform-extension-design
           params:
             domain: agent-framework
             team_template_ref: framework-extension-team
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, resource_graph, contracts, validation_plan, activation_steps, blockers, next_actions, and artifact_refs.
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, resource_graph, contracts, validation_plan, activation_steps, cost_attribution, blockers, next_actions, and artifact_refs.
             token_policy: Describe resource contracts and validation refs, not generated full files.
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
             request: workflow.input
             shared_context: stages.decompose.outputs.shared_context
           outputs:
@@ -568,13 +650,18 @@ graph:
             provider: backup
             max_tokens: 700
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: low
+            boundary: fallback-plan
           params:
             domain: general
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, plan, risks, acceptance_criteria, blockers, next_actions, recommended_workflow, and artifact_refs.
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, plan, risks, acceptance_criteria, cost_attribution, blockers, next_actions, recommended_workflow, and artifact_refs.
             token_policy: Produce a concise fallback plan when no specialized domain branch is required.
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
             request: workflow.input
             shared_context: stages.decompose.outputs.shared_context
           outputs:
@@ -617,6 +704,9 @@ graph:
           outputs:
             active_branches: result.wait_for
             branch_count: result.completed_count
+            branch_selection_reason: stages.dispatch.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.dispatch.outputs.per_branch_tool_allowlists
+            pruned_branches: stages.dispatch.outputs.pruned_branches
           next:
             - aggregate
           position:
@@ -630,12 +720,17 @@ graph:
             provider: primary
             max_tokens: 1300
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: multi-domain-join
           params:
-            output_contract: Emit sections named Integrated Multi-Domain Report, Active Branches, Domain Outputs, Conflicts, Missing Evidence, Verification Matrix, Recommended Workflow, Residual Risks, and Audit Request.
-            purpose: Merge only the selected worker summaries and artifact refs into one compact multi-domain report.
+            output_contract: Emit sections named Integrated Multi-Domain Report, Active Branches, Branch Selection Reason, Pruned Branches, Per-Branch Tool Allowlists, Domain Outputs, Artifact Handoff, Join Conflicts, Missing Worker Artifacts, Branch Blockers, Missing Evidence, Verification Matrix, Cost Attribution, Recommended Workflow, Residual Risks, and Audit Request.
+            purpose: Merge only the selected worker summaries and artifact refs into one compact multi-domain report. Unselected branches must remain pruned, and missing selected artifacts or join_conflicts must be visible.
             token_policy: Use summaries, structured fields, and artifact refs. Do not copy full branch reports unless needed for a blocker.
           input:
             active_branches: stages.join.outputs.active_branches
+            branch_selection_reason: stages.join.outputs.branch_selection_reason
             binary_summary: stages.binary-worker.outputs.summary
             docs_summary: stages.docs-worker.outputs.summary
             general_summary: stages.general-worker.outputs.summary
@@ -648,6 +743,8 @@ graph:
             web_security_summary: stages.web-security-worker.outputs.summary
           outputs:
             integrated_report: result.output
+            join_conflicts: result.join_conflicts
+            missing_worker_artifacts: result.missing_worker_artifacts
             summary: result.summary
           artifacts:
             - name: integrated-multi-domain-report
@@ -663,6 +760,14 @@ graph:
               ref: result.output
               contains: Active Branches
               expected: aggregate names active branches
+            - name: has-branch-selection-reason
+              ref: result.output
+              contains: Branch Selection Reason
+              expected: aggregate preserves branch selection diagnostics
+            - name: has-join-conflicts
+              ref: result.output
+              contains: Join Conflicts
+              expected: aggregate records cross-domain conflicts or states none
             - name: has-verification-matrix
               ref: result.output
               contains: Verification Matrix
@@ -702,12 +807,18 @@ graph:
             provider: primary
             max_tokens: 1000
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: multi-domain-audit
           params:
-            output_contract: Emit sections named Audit Decision, Coverage, Blocking Findings, Safety Notes, Token Discipline, Evidence Gaps, and Recommendation.
-            review_scope: Check decomposition fit, selected branch coverage, unsafe tool assumptions, missing evidence, cross-domain conflicts, and token-heavy handoffs.
+            output_contract: Emit sections named Audit Decision, Coverage, Branch Selection Review, Pruned Branch Review, Tool Allowlist Review, Blocking Findings, Branch Blockers, Join Conflicts, Missing Worker Artifacts, Safety Notes, Token Discipline, Cost Attribution, Evidence Gaps, and Recommendation.
+            review_scope: Check decomposition fit, selected branch coverage, branch_selection_reason, pruned_branches, per_branch_tool_allowlists, unsafe tool assumptions, missing worker artifacts, cross-domain conflicts, cost attribution, and token-heavy handoffs.
           input:
             active_branches: stages.join.outputs.active_branches
             integrated_report: stages.aggregate.outputs.integrated_report
+            join_conflicts: stages.aggregate.outputs.join_conflicts
+            missing_worker_artifacts: stages.aggregate.outputs.missing_worker_artifacts
             task_graph: stages.decompose.outputs.task_graph
           outputs:
             audit: result.output
@@ -727,6 +838,14 @@ graph:
               ref: result.output
               contains: Token Discipline
               expected: audit checks compact handoffs
+            - name: has-branch-selection-review
+              ref: result.output
+              contains: Branch Selection Review
+              expected: audit checks selected/pruned branch rationale
+            - name: has-join-conflicts-review
+              ref: result.output
+              contains: Join Conflicts
+              expected: audit reviews join conflict diagnostics
           context:
             include:
                 - stages.aggregate.outputs.summary
@@ -754,7 +873,7 @@ graph:
           params:
             stages: decompose,dispatch,aggregate,audit
             min_score: "85"
-            reason: multi-domain delivery lacks decomposition, selected branch evidence, integrated report, audit coverage, or token discipline
+            reason: multi-domain delivery lacks branch-selection reason, pruned branches, per-branch tool allowlists, selected branch evidence, missing worker artifact diagnostics, join conflicts, integrated report, audit coverage, token discipline, or cost attribution
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
@@ -771,7 +890,7 @@ graph:
           agent: ""
           skill: ""
           params:
-            prompt: Review the active branches, integrated report, audit decision, and unresolved risks before final handoff.
+            prompt: Review the active branches, pruned branches, per-branch tool allowlists, join conflicts, missing worker artifacts, integrated report, audit decision, cost attribution, and unresolved risks before final handoff.
           next:
             - final-report
           position:
@@ -785,14 +904,19 @@ graph:
             provider: backup
             max_tokens: 750
             temperature: 0.1
+          execution:
+            mode: manual
+            risk_level: low
+            boundary: final-handoff
           params:
-            output_contract: Emit sections named Final Handoff, Active Domains, What Was Done, Evidence, Quality Decision, Remaining Risks, Recommended Next Workflow, and Next Steps.
+            output_contract: Emit sections named Final Handoff, Active Domains, Pruned Domains, What Was Done, Evidence, Branch Blockers, Join Conflicts, Cost Attribution, Quality Decision, Remaining Risks, Recommended Next Workflow, and Next Steps.
             purpose: Produce a concise ordinary-user handoff while preserving artifact refs for expert inspection.
             token_policy: Keep the final response short and reference artifacts instead of copying branch reports.
           input:
             active_branches: stages.join.outputs.active_branches
             audit_summary: stages.audit.outputs.summary
             integrated_summary: stages.aggregate.outputs.summary
+            join_conflicts: stages.aggregate.outputs.join_conflicts
             quality_status: stages.quality.outputs.quality_status
           outputs:
             final: result.output
@@ -843,8 +967,12 @@ graph:
             provider: primary
             max_tokens: 850
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: revision-plan
           params:
-            output_contract: Emit sections named Revision Plan, Missing Evidence, Minimal Branch Rerun, Verification Needed, and Handoff.
+            output_contract: Emit sections named Revision Plan, Missing Evidence, Branch Blockers, Join Conflicts, Missing Worker Artifacts, Minimal Branch Rerun, Verification Needed, and Handoff.
             purpose: Convert quality failures into a bounded repair plan without rerunning unrelated domains.
             token_policy: Reference active branches and artifact refs; do not copy full branch reports.
           input:
@@ -890,3 +1018,6 @@ graph:
           position:
             x: 3500
             "y": 360
+            cost_attribution: stages.decompose.outputs.cost_attribution
+            per_branch_tool_allowlists: stages.join.outputs.per_branch_tool_allowlists
+            pruned_branches: stages.join.outputs.pruned_branches

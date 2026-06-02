@@ -101,6 +101,14 @@ type AgentRunEventSnapshot struct {
 	PromptTokens        int                     `json:"prompt_tokens,omitempty"`
 	OutputTokens        int                     `json:"output_tokens,omitempty"`
 	CachedTokens        int                     `json:"cached_tokens,omitempty"`
+	Reason              string                  `json:"reason,omitempty"`
+	Severity            string                  `json:"severity,omitempty"`
+	BudgetScope         string                  `json:"budget_scope,omitempty"`
+	ContractCheck       string                  `json:"contract_check,omitempty"`
+	SourceRef           string                  `json:"source_ref,omitempty"`
+	StopReason          string                  `json:"stop_reason,omitempty"`
+	ContinuationCount   int                     `json:"continuation_count,omitempty"`
+	Incomplete          bool                    `json:"incomplete,omitempty"`
 	PromptBudget        *schema.PromptBudget    `json:"prompt_budget,omitempty"`
 	Risk                *schema.ToolRiskProfile `json:"risk,omitempty"`
 }
@@ -249,7 +257,7 @@ func (s *State) CompleteAgentRun(runID, status string, result schema.AgentResult
 	copied := copyAgentResult(result)
 	run.Result = &copied
 	run.Artifacts = s.buildAgentRunArtifactsLocked(run, now)
-	if !strings.EqualFold(status, "awaiting_tool_approval") {
+	if !strings.EqualFold(status, "awaiting_tool_approval") && !strings.EqualFold(status, "paused_need_more_budget") {
 		run.PendingCallID = ""
 		run.PendingTool = ""
 		run.PendingAgentID = ""
@@ -261,11 +269,18 @@ func (s *State) CompleteAgentRun(runID, status string, result schema.AgentResult
 		eventType = "agent_run_paused"
 	}
 	run.Events = appendAgentRunEventLocked(run.Events, s.normalizeAgentRunEventLocked(run.ID, AgentRunEventSnapshot{
-		At:      now,
-		Type:    eventType,
-		Content: trimAgentRunText(result.Output),
-		AgentID: run.AgentID,
-		Mode:    run.Mode,
+		At:                now,
+		Type:              eventType,
+		Content:           trimAgentRunText(result.Output),
+		AgentID:           run.AgentID,
+		Mode:              run.Mode,
+		NeedsAction:       result.Incomplete,
+		Reason:            result.IncompleteReason,
+		Severity:          agentRunResultSeverity(result),
+		BudgetScope:       agentRunResultBudgetScope(result),
+		StopReason:        result.StopReason,
+		ContinuationCount: result.ContinuationCount,
+		Incomplete:        result.Incomplete,
 	}))
 	s.agentRuns[index] = run
 	return copyAgentRunSnapshot(run), true
@@ -499,6 +514,20 @@ func isTerminalAgentRunStatus(status string) bool {
 	default:
 		return false
 	}
+}
+
+func agentRunResultSeverity(result schema.AgentResult) string {
+	if result.Incomplete {
+		return "warning"
+	}
+	return ""
+}
+
+func agentRunResultBudgetScope(result schema.AgentResult) string {
+	if result.Incomplete {
+		return "output"
+	}
+	return ""
 }
 
 func trimAgentRunText(value string) string {

@@ -3216,7 +3216,7 @@ func handleMemoryCommand(ctx context.Context, fields []string, agentRuntime *age
 		fmt.Print(formatMemorySolutionsOutput(solutionsKB))
 	case "solution":
 		if len(fields) < 4 {
-			fmt.Fprintln(os.Stderr, "usage: /memory solution retire <id> [--reason <text>] [--superseded-by <id>] or /memory solution restore <id>")
+			fmt.Fprintln(os.Stderr, memorySolutionLifecycleUsage())
 			return true
 		}
 		action := strings.ToLower(strings.TrimSpace(fields[2]))
@@ -3231,6 +3231,15 @@ func handleMemoryCommand(ctx context.Context, fields []string, agentRuntime *age
 			}
 			fmt.Println(formatCommandSuccess("solution retired", id))
 			fmt.Print(formatMemorySolutionsOutput(solutionsKB))
+		case "supersede":
+			reason, supersededBy := parseMemorySolutionLifecycleArgs(fields[4:])
+			solutionsKB, err := store.SupersedeSolution(id, supersededBy, reason)
+			if err != nil {
+				fmt.Fprintf(os.Stderr, "memory solution supersede error: %v\n", err)
+				return true
+			}
+			fmt.Println(formatCommandSuccess("solution superseded", id+" -> "+supersededBy))
+			fmt.Print(formatMemorySolutionsOutput(solutionsKB))
 		case "restore":
 			solutionsKB, err := store.RestoreSolution(id)
 			if err != nil {
@@ -3240,7 +3249,7 @@ func handleMemoryCommand(ctx context.Context, fields []string, agentRuntime *age
 			fmt.Println(formatCommandSuccess("solution restored", id))
 			fmt.Print(formatMemorySolutionsOutput(solutionsKB))
 		default:
-			fmt.Fprintln(os.Stderr, "usage: /memory solution retire <id> [--reason <text>] [--superseded-by <id>] or /memory solution restore <id>")
+			fmt.Fprintln(os.Stderr, memorySolutionLifecycleUsage())
 		}
 	case "context", "compact":
 		contextSummary, err := store.Context()
@@ -3253,6 +3262,10 @@ func handleMemoryCommand(ctx context.Context, fields []string, agentRuntime *age
 		fmt.Fprintln(os.Stderr, "usage: /memory [project|search <query>|rebuild|errors|solutions|solution|context]")
 	}
 	return true
+}
+
+func memorySolutionLifecycleUsage() string {
+	return "usage: /memory solution retire <id> [--reason <text>] [--superseded-by <id>] | /memory solution supersede <id> --superseded-by <id> [--reason <text>] | /memory solution restore <id>"
 }
 
 func parseMemorySolutionLifecycleArgs(fields []string) (string, string) {
@@ -3307,10 +3320,13 @@ func formatMemoryDashboardOutput(dashboard memory.Dashboard) string {
 	b.WriteString(styleLabel("errors"))
 	b.WriteString(fmt.Sprintf(" %d known\n", len(dashboard.Errors.Errors)))
 	b.WriteString(styleLabel("solutions"))
-	activeSolutions, retiredSolutions := countCLISolutionsByStatus(dashboard.Solutions.Solutions)
+	activeSolutions, retiredSolutions, supersededSolutions := countCLISolutionsByStatus(dashboard.Solutions.Solutions)
 	b.WriteString(fmt.Sprintf(" %d active", activeSolutions))
 	if retiredSolutions > 0 {
 		b.WriteString(fmt.Sprintf(" / %d retired", retiredSolutions))
+	}
+	if supersededSolutions > 0 {
+		b.WriteString(fmt.Sprintf(" / %d superseded", supersededSolutions))
 	}
 	b.WriteString("\n")
 	b.WriteString(styleLabel("files"))
@@ -3530,21 +3546,24 @@ func formatMemorySolutionsOutput(solutionsKB memory.SolutionKnowledgeBase) strin
 		b.WriteString(styleMuted("no reusable solutions recorded\n"))
 		return b.String()
 	}
-	active, retired := countCLISolutionsByStatus(solutionsKB.Solutions)
+	active, retired, superseded := countCLISolutionsByStatus(solutionsKB.Solutions)
 	b.WriteString(styleLabel("active"))
 	b.WriteString(fmt.Sprintf(" %d ", active))
 	b.WriteString(styleLabel("retired"))
-	b.WriteString(fmt.Sprintf(" %d\n\n", retired))
+	b.WriteString(fmt.Sprintf(" %d ", retired))
+	b.WriteString(styleLabel("superseded"))
+	b.WriteString(fmt.Sprintf(" %d\n\n", superseded))
 	for _, item := range solutionsKB.Solutions {
 		b.WriteString(styleLabel(firstNonEmptyString(item.ID, "solution")))
 		b.WriteString(" ")
 		b.WriteString(truncateCLISummaryValue(firstNonEmptyString(item.ProblemSignature, item.Problem, item.Decision, item.Solution)))
-		if item.Retired {
-			b.WriteString(" ")
-			b.WriteString(styleStatus("retired", "pending"))
-		} else {
+		status := cliSolutionLifecycleStatus(item)
+		if status == "active" {
 			b.WriteString(" ")
 			b.WriteString(styleStatus("active", "ready"))
+		} else {
+			b.WriteString(" ")
+			b.WriteString(styleStatus(status, "pending"))
 		}
 		if item.Confidence != "" {
 			b.WriteString(" confidence=")
@@ -3593,17 +3612,32 @@ func formatMemorySolutionsOutput(solutionsKB memory.SolutionKnowledgeBase) strin
 	return b.String()
 }
 
-func countCLISolutionsByStatus(items []memory.SolutionMemory) (int, int) {
+func countCLISolutionsByStatus(items []memory.SolutionMemory) (int, int, int) {
 	active := 0
 	retired := 0
+	superseded := 0
 	for _, item := range items {
+		if item.Retired && strings.TrimSpace(item.SupersededBy) != "" {
+			superseded++
+			continue
+		}
 		if item.Retired {
 			retired++
 			continue
 		}
 		active++
 	}
-	return active, retired
+	return active, retired, superseded
+}
+
+func cliSolutionLifecycleStatus(item memory.SolutionMemory) string {
+	if item.Retired && strings.TrimSpace(item.SupersededBy) != "" {
+		return "superseded"
+	}
+	if item.Retired {
+		return "retired"
+	}
+	return "active"
 }
 
 func formatArtifactListOutput(artifacts []session.SessionArtifactSnapshot) string {

@@ -10,6 +10,7 @@ tags:
     - security
     - client-assets
     - evidence
+    - red-team
 agents:
     - web-security-researcher
     - security-researcher
@@ -21,6 +22,7 @@ skills:
     - execution-plan
     - web-vulnerability-research
     - vulnerability-research
+    - authorized-red-team-validation
     - code-audit
 tools:
     - web_tools/web_search
@@ -35,6 +37,7 @@ workflows:
 workflow_templates:
     - web-research-risk
     - security-audit-evidence-gate
+    - authorized-red-team-validation
     - human-input-security-review
 team_templates:
     - web-research-team
@@ -65,6 +68,8 @@ vertical_pack:
         - browser DOM and form evidence collection
         - browser probe surface enumeration and approved GET canary validation
         - client-side XSS and security signal review
+        - authorized red-team attack-path validation
+        - non-destructive PoC and canary verification planning
         - evidence-backed remediation report
     required_inputs:
         - target URL
@@ -72,15 +77,18 @@ vertical_pack:
         - allowed hosts
         - desired evidence depth
         - active verification approval status
+        - allowed actions and payload constraints for red-team validation
     tool_boundaries:
         - web_tools/browser_snapshot requires authorized_scope=true and allowed_hosts.
         - web_tools/browser_probe_points requires authorized_scope=true and allowed_hosts, and only runs active GET canary probes when active_probe_approved=true.
         - Browser automation returns compact DOM, form, link, script, signal, screenshot hash, and path summaries instead of full raw evidence by default.
         - Active XSS or SQLi-style probing is not a default passive collection step and must be approval-gated, non-destructive, rate-limited, and scoped.
+        - Authorized red-team validation uses non-destructive canary evidence and stops when an action exceeds scope.
     safety_gates:
         - Reject browser collection without explicit authorized scope.
         - Require host allowlist before browser automation.
         - Route active probing requests through operator approval and evidence capture.
+        - Require written authorization, allowed actions, rate limits, and exclusions before offensive validation.
     quality_gates:
         - Requires target scope.
         - Requires collected source or browser evidence.
@@ -93,11 +101,16 @@ vertical_pack:
         - browser probe-point summary
         - security signal list
         - risk report
+        - red-team validation plan
+        - red-team validation evidence
+        - blue-team handoff
     simple_mode:
         - Show target URL, allowed hosts, authorization checkbox, evidence status, risk level, and final report.
         - Hide payload and browser runtime details unless approval is needed.
+        - Show whether red-team validation is approved, blocked, or complete.
     expert_mode:
         - Show tool allowlists, browser evidence refs, context budgets, approval gates, route conditions, and raw workflow graph.
+        - Show authorization boundary, allowed actions, blocked actions, canary evidence, and red/blue handoff refs.
     token_strategy:
         - Keep browser outputs compact with DOM hashes and previews.
         - Store screenshots as artifact paths and hashes instead of injecting image bytes.
@@ -106,11 +119,13 @@ vertical_pack:
         strong:
             - scope and risk arbitration
             - active verification decision
+            - red-team validation boundary review
             - final remediation synthesis
         worker:
             - asset collection
             - browser snapshot collection
             - probe surface enumeration
+            - authorized canary validation
             - client-side pattern review
         verifier:
             - evidence gate review

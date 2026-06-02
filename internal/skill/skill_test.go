@@ -459,7 +459,7 @@ func TestBuiltInWebAndBinarySecuritySkillsDeclareExpectedTools(t *testing.T) {
 	}
 
 	webSkill := requireBuiltInSkill(t, manager, "web-vulnerability-research")
-	if webSkill.Mode != "audit" || webSkill.PreferredAgent != "auditor" || webSkill.OutputKind != "findings" {
+	if webSkill.Mode != "audit" || webSkill.PreferredAgent != "web-security-researcher" || webSkill.OutputKind != "findings" {
 		t.Fatalf("unexpected web skill execution metadata: %#v", webSkill)
 	}
 	if !stringSliceContains(webSkill.AllowedToolKinds, "network") || stringSliceContains(webSkill.AllowedToolKinds, "write") {

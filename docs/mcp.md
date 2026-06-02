@@ -125,6 +125,7 @@ probe approval as explicit inputs.
 - `device_discovery_plan`
 - `device_command_plan`
 - `device_config_dry_run`
+- `device_restconf_live_apply`
 
 ### Behavior
 
@@ -136,15 +137,33 @@ probe approval as explicit inputs.
 - checks read-only command requests against the operator-provided allowlist
 - builds configuration dry-run plans with rollback, precheck, postcheck,
   approval, and audit evidence requirements
-- never opens a device connection and never applies configuration changes
+- exposes `device_restconf_live_apply` as a controlled live HTTPS RESTCONF/API
+  connector for expert/operator-owned deployments
+- the live connector requires `authorized_scope=true`, `change_approved=true`,
+  `dry_run_confirmed=true`, `credential_ref`, `approval_ref`, `change_ticket`,
+  `allowed_hosts`, `allowed_methods`, `allowed_paths`, JSON payload, and
+  `rollback_plan`
+- the live connector only sends a request when
+  `GOFLOW_NETWORK_TOOLS_ENABLE_LIVE=1` is present in the MCP server
+  environment; otherwise it returns a blocked audit payload and sends no HTTP
+  request
+- `credential_ref` currently supports `env:NAME` or `env://NAME`; the referenced
+  environment variable may contain a bearer token or a complete `Bearer ...` /
+  `Basic ...` authorization value, and the tool does not return that secret
+- live requests are limited to HTTPS `POST`, `PUT`, or `PATCH` against an
+  allowlisted host and allowlisted endpoint path, with a bounded JSON body and
+  compact response preview
 
 `network_tools` is the default operations-domain boundary for network-device
-workflows. It is intentionally a planning and policy-check server, not a raw
-SSH/API executor. A future device connector should consume the same contracts:
-authorized scope, allowed hosts, credential refs, command allowlists, dry-run
-diff, approval metadata, rollback plan, and post-change evidence refs. This
-keeps ordinary users on a safe path while giving expert users enough structure
-to add a real connector without changing the workflow evidence shape.
+workflows. Its planning tools are intentionally planning and policy-check tools,
+not raw SSH/API executors. `device_restconf_live_apply` is the first narrow live
+connector and should be used only from a workflow stage with
+`stage.execution.mode: live`, `allow_live_tools:
+[network_tools/device_restconf_live_apply]`, explicit approval, authorized
+scope, credential ref, allowlists, rollback, and operator-controlled live
+enablement. Raw SSH and NETCONF apply remain out of scope until they have the
+same testable contracts, transcript storage, rollback repository, and sandbox
+story.
 
 ## Built-in `python_notes` server (Python)
 
@@ -157,6 +176,13 @@ to add a real connector without changing the workflow evidence shape.
 - `binary_file_info`
 - `binary_strings`
 - `hex_preview`
+- `binary_format_summary`
+- `binary_entropy_map`
+- `binary_symbol_hints`
+- `binary_extract_window`
+- `markdown_link_check`
+- `support_case_summary`
+- `redaction_check`
 
 ### Purpose
 
@@ -172,7 +198,14 @@ All Python tools resolve paths under `GOFLOW_WORKSPACE_ROOT` and reject path tra
 The extra inspection tools support:
 - Python source structure summaries through `python_ast_summary`
 - bounded JSON field extraction through `json_query`
-- binary triage metadata, strings, and hex previews through the binary helpers
+- binary triage metadata, strings, hex previews, format/section summaries,
+  import/export hints, entropy/packing hints, symbol hints, and bounded
+  artifact windows through the binary helpers
+- documentation publish checks through `markdown_link_check`, which validates
+  local Markdown links and anchors without network access
+- support ticket structure through `support_case_summary`, including priority,
+  customer impact, escalation flags, privacy flags, and missing information
+- disclosure, docs, and support redaction review through `redaction_check`
 
 ## Built-in `skill_runner` server (Go)
 
@@ -384,6 +417,13 @@ Current built-in output should include entries for:
 - `python_notes/binary_file_info`
 - `python_notes/binary_strings`
 - `python_notes/hex_preview`
+- `python_notes/binary_format_summary`
+- `python_notes/binary_entropy_map`
+- `python_notes/binary_symbol_hints`
+- `python_notes/binary_extract_window`
+- `python_notes/markdown_link_check`
+- `python_notes/support_case_summary`
+- `python_notes/redaction_check`
 
 ## Current limitations
 

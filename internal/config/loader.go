@@ -512,6 +512,24 @@ func applyLLMDefaults(cfg *LLMConfig) {
 		cfg.Provider = "openai-compatible"
 	}
 	cfg.ProviderMessageFields = normalizeProviderMessageFields(cfg.ProviderMessageFields)
+	cfg.Pricing = normalizePricingConfig(cfg.Pricing)
+}
+
+func normalizePricingConfig(pricing PricingConfig) PricingConfig {
+	pricing.Currency = strings.ToUpper(strings.TrimSpace(pricing.Currency))
+	pricing.Source = strings.TrimSpace(pricing.Source)
+	if pricing.Currency == "" && pricingConfigured(pricing) {
+		pricing.Currency = "USD"
+	}
+	return pricing
+}
+
+func pricingConfigured(pricing PricingConfig) bool {
+	return pricing.InputPerMillionTokens > 0 ||
+		pricing.OutputPerMillionTokens > 0 ||
+		pricing.CachedInputPerMillionTokens > 0 ||
+		strings.TrimSpace(pricing.Currency) != "" ||
+		strings.TrimSpace(pricing.Source) != ""
 }
 
 func expandEnv(cfg *Config) {
@@ -705,7 +723,11 @@ func normalizeConfig(cfg *Config) {
 			if profile.MaxTokens == 0 {
 				profile.MaxTokens = providerCfg.MaxTokens
 			}
+			if !pricingConfigured(profile.Pricing) {
+				profile.Pricing = providerCfg.Pricing
+			}
 		}
+		profile.Pricing = normalizePricingConfig(profile.Pricing)
 		if profile.MaxIterations <= 0 {
 			profile.MaxIterations = cfg.Agent.MaxIterations
 		}
@@ -818,6 +840,9 @@ func validate(cfg *Config) error {
 		return fmt.Errorf("agent.max_iterations must be greater than 0")
 	}
 	for name, provider := range cfg.Providers {
+		if err := validatePricingConfig("provider "+name+".pricing", provider.Pricing); err != nil {
+			return err
+		}
 		if strings.TrimSpace(provider.FallbackProvider) != "" {
 			if _, ok := cfg.Providers[provider.FallbackProvider]; !ok {
 				return fmt.Errorf("provider %s references unknown fallback_provider %q", name, provider.FallbackProvider)
@@ -836,6 +861,9 @@ func validate(cfg *Config) error {
 		}
 		if profile.MaxIterations <= 0 {
 			return fmt.Errorf("agent %s max_iterations must be greater than 0", name)
+		}
+		if err := validatePricingConfig("agent "+name+".pricing", profile.Pricing); err != nil {
+			return err
 		}
 	}
 	if cfg.Verifier.Enabled {
@@ -873,6 +901,19 @@ func validate(cfg *Config) error {
 		if err := ValidateMCPServerRef(server); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func validatePricingConfig(path string, pricing PricingConfig) error {
+	if pricing.InputPerMillionTokens < 0 {
+		return fmt.Errorf("%s.input_per_million_tokens must not be negative", path)
+	}
+	if pricing.OutputPerMillionTokens < 0 {
+		return fmt.Errorf("%s.output_per_million_tokens must not be negative", path)
+	}
+	if pricing.CachedInputPerMillionTokens < 0 {
+		return fmt.Errorf("%s.cached_input_per_million_tokens must not be negative", path)
 	}
 	return nil
 }

@@ -29,6 +29,10 @@ graph:
           node_type: agent
           agent: planner
           skill: execution-plan
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: operations-planning
           params:
             output_contract: Emit sections named Goal, Preconditions, Prechecks, Execution Steps, Rollback Plan, Success Signals, Risks, and Approvals.
             purpose: Create a runbook plan before drafting operational instructions.
@@ -63,6 +67,11 @@ graph:
           node_type: agent
           agent: fixer
           skill: code-writing
+          execution:
+            mode: dry_run
+            risk_level: medium
+            boundary: workspace-runbook-draft
+            requires_approval: true
           params:
             purpose: Draft or update the runbook document under the confirmed workspace. Keep commands explicit and reversible where possible.
           input:
@@ -98,6 +107,10 @@ graph:
           node_type: skill
           agent: auditor
           skill: code-audit
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: risk-review
           params:
             output_contract: Emit sections named Risk Review, Blocking Issues, Rollback Coverage, Verification, and Recommendation.
             review_scope: Review operational risk, destructive commands, rollback coverage, observability, and missing approvals.
@@ -149,6 +162,10 @@ graph:
           node_type: checkpoint
           agent: ""
           skill: ""
+          execution:
+            mode: manual
+            risk_level: high
+            boundary: operator-handoff
           params:
             prompt: Review the runbook, rollback plan, and risk review before operator handoff.
           next:
@@ -160,6 +177,10 @@ graph:
           node_type: skill
           agent: chat
           skill: execution-plan
+          execution:
+            mode: manual
+            risk_level: high
+            boundary: operator-handoff
           input:
             quality: stages.quality.outputs.quality_status
             risk_review: stages.risk-review.outputs.risk_review
@@ -180,6 +201,10 @@ graph:
           node_type: skill
           agent: planner
           skill: execution-plan
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: revision-plan
           input:
             failures: stages.quality.outputs.failures
             review: stages.risk-review.outputs.risk_review

@@ -105,6 +105,7 @@ GOFLOW_WORKSPACE_ROOT=<workspace path>
 - `device_discovery_plan`
 - `device_command_plan`
 - `device_config_dry_run`
+- `device_restconf_live_apply`
 
 特性：
 
@@ -131,8 +132,17 @@ SSH/API 执行器。未来如果增加真实设备连接器，仍应沿用同一
 - `binary_file_info`
 - `binary_strings`
 - `hex_preview`
+- `binary_format_summary`
+- `binary_entropy_map`
+- `binary_symbol_hints`
+- `binary_extract_window`
+- `markdown_link_check`
+- `support_case_summary`
+- `redaction_check`
 
 这个 server 用于证明 MCP 工具可以跨语言开发。只要进程能按 stdio/JSON-RPC 协议通信，就不要求工具用 Go 编写。
+
+这些工具保持工作区边界和只读默认：二进制工具提供格式/section 摘要、import/export 线索、entropy/packing hints、symbol hints 和 bounded artifact window；`markdown_link_check` 做本地 Markdown 链接与 anchor 检查且不联网；`support_case_summary` 结构化工单优先级、客户影响、升级和 privacy flags；`redaction_check` 用于发布、支持回复和安全报告前的脱敏检查。
 
 ## 内置 `skill_runner`
 
@@ -188,6 +198,24 @@ JSON，也能区分当前是工具拥塞、模型等待、审批暂停，还是�
 - `tools/list`
 - `tools/call`
 - workspace path checking
+
+## Controlled live RESTCONF connector
+
+`network_tools/device_restconf_live_apply` is a controlled live HTTPS
+RESTCONF/API connector. It requires `authorized_scope=true`,
+`change_approved=true`, `dry_run_confirmed=true`, `credential_ref`,
+`approval_ref`, `change_ticket`, `allowed_hosts`, `allowed_methods`,
+`allowed_paths`, JSON payload, and `rollback_plan`.
+
+The connector only sends a request when the MCP server environment explicitly
+sets `GOFLOW_NETWORK_TOOLS_ENABLE_LIVE=1`; otherwise it returns a blocked audit
+payload and sends no HTTP request. `credential_ref` supports `env:NAME` or
+`env://NAME`, and the tool does not return secret material.
+
+Production workflows must still use `stage.execution.mode: live` and
+`allow_live_tools: [network_tools/device_restconf_live_apply]`, so Studio can
+show approval, authorized scope, allowlist, rollback, and evidence diagnostics.
+Raw SSH/NETCONF apply remains out of scope.
 - 严格 JSON schema
 
 更多见 [MCP 工具开发](./mcp-authoring.zh-CN.md)。

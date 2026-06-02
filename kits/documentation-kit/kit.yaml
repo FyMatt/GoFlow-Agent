@@ -25,6 +25,8 @@ tools:
     - file_tools/read_file
     - file_tools/search_files
     - file_tools/write_file
+    - python_notes/markdown_link_check
+    - python_notes/redaction_check
 workflows:
     - plan-fix-audit
 workflow_templates:
@@ -47,38 +49,47 @@ examples:
       agent: documentation-specialist
 vertical_pack:
     domain: documentation
-    maturity: guided
-    summary: Plans, edits, reviews, and prepares publish-ready technical documentation with accuracy and verification checks.
+    maturity: production-ready
+    summary: Plans, edits, reviews, and prepares publish-ready technical documentation with audience fit, command accuracy, link integrity, bilingual parity, version/platform notes, redaction, and publish readiness checks.
     supported_tasks:
         - documentation planning
         - guide updates
         - command verification notes
+        - local Markdown link integrity review
+        - bilingual parity review
+        - version and platform note review
         - publish checklist creation
     required_inputs:
         - target document
         - audience
         - desired change
         - verification expectations
+        - version or platform scope
     tool_boundaries:
         - Read existing docs before edits.
         - Write only scoped documentation files.
-        - Run commands only when verification is needed and approved.
+        - Use markdown_link_check for local link and anchor integrity without network access.
+        - Run commands only when command accuracy verification is needed and approved.
+        - Use redaction_check before publishing docs that include logs, tokens, customer examples, or incident evidence.
     safety_gates:
         - Preserve existing bilingual conventions.
         - Do not invent commands or behavior without source evidence.
+        - Flag stale version/platform references and missing publish approval.
     quality_gates:
         - Requires changed document summary.
-        - Requires accuracy review.
+        - Requires audience fit, command accuracy, link integrity, bilingual parity, and redaction review.
         - Requires publish checklist or residual gaps.
     evidence_artifacts:
         - documentation plan
         - changed file summary
+        - link integrity report
+        - bilingual parity notes
         - verification notes
         - publish checklist
     simple_mode:
-        - Show document target, audience, status, and publish readiness.
+        - Show document target, audience, link integrity, command accuracy, bilingual parity, redaction status, and publish readiness.
     expert_mode:
-        - Show raw diffs, validation commands, style constraints, and artifact refs.
+        - Show raw diffs, validation commands, markdown_link_check output, redaction findings, version/platform notes, style constraints, and artifact refs.
     token_strategy:
         - Use document summaries before full reads.
         - Pass section-level summaries into review.
@@ -88,9 +99,11 @@ vertical_pack:
             - final accuracy review
         worker:
             - scoped doc edits
+            - link integrity scan
             - checklist drafting
         verifier:
             - command and link review
+            - bilingual parity and publish readiness review
 metadata:
     preset: documentation
     recommended_agent: documentation-specialist

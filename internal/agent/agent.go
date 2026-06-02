@@ -45,6 +45,8 @@ type agentRunOptions struct {
 	AllowedTools []string
 }
 
+const maxModelOutputContinuations = 3
+
 // New constructs a new agent instance.
 func New(cfg *config.Config, llm interfaces.LLMClient, skills interfaces.SkillManager, mcp interfaces.MCPClient) *Agent {
 	return &Agent{
@@ -67,6 +69,7 @@ func (a *Agent) RunStream(ctx context.Context, input string, handler func(event 
 		Name:             a.cfg.Agent.Name,
 		Provider:         "default",
 		Model:            a.cfg.LLM.Model,
+		Pricing:          a.cfg.LLM.Pricing,
 		Temperature:      a.cfg.LLM.Temperature,
 		MaxTokens:        a.cfg.LLM.MaxTokens,
 		MaxIterations:    a.cfg.Agent.MaxIterations,
@@ -463,14 +466,22 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 			execCtx.recordAudit(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "llm_error", Detail: err.Error(), DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: effectiveFallbackUsed(r.llm, fallbackUsed)})
 			return schema.AgentResult{}, fmt.Errorf("llm chat: %w", err)
 		}
-		emitTokenUsage(handler, sessionState, r.id, mode, resp.Usage)
+		emitTokenUsage(handler, sessionState, r.id, mode, resp.Usage, promptToolContext)
 
 		if len(resp.ToolCalls) == 0 {
+			completedResp, continuationCount, incomplete, err := r.continueOutputLimitResponse(ctx, r.llm, resp, request, messages, mode, sessionState, state.MatchedSkill, promptToolContext, len(state.Tools), collectedResults, fallbackUsed, iteration, handler, audit, &streamedText)
+			if err != nil {
+				return schema.AgentResult{}, err
+			}
+			resp = completedResp
 			emitTaskStage(handler, sessionState, r.id, mode, "summarize", "preparing final response")
 			if !streamedText && handler != nil && resp.Message.Content != "" {
 				if err := handler(schema.StreamEvent{Type: schema.StreamEventText, Content: resp.Message.Content, AgentID: r.id, Mode: mode}); err != nil {
 					return schema.AgentResult{}, err
 				}
+			}
+			if incomplete {
+				return r.finalizeIncompleteOutput(state, resp, collectedResults, fallbackUsed, continuationCount, iteration, handler, audit)
 			}
 			if handler != nil {
 				_ = handler(schema.StreamEvent{Type: schema.StreamEventDone, Content: resp.Message.Content, AgentID: r.id, Mode: mode})
@@ -481,7 +492,7 @@ func (r *AgentRunner) continueConversation(ctx context.Context, state agentConve
 			}
 			structured := buildStructuredSections(resp.Message.Content, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 			findings, changes, verification := buildStructuredArtifacts(resp.Message.Content, collectedResults, mode)
-			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: profile.Model, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
+			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: profile.Model, StopReason: resp.StopReason, ContinuationCount: continuationCount, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
 		}
 		runFinalToolCalls := finalResponseTurn && shouldRunFinalTurnToolCalls(execCtx, resp.ToolCalls)
 		if finalResponseTurn && !runFinalToolCalls {
@@ -579,7 +590,7 @@ func (r *AgentRunner) finalizeAfterIterationBudget(ctx context.Context, state ag
 	}
 	if handler != nil {
 		emitTaskStage(handler, sessionState, r.id, mode, "summarize", "iteration budget reached")
-		_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "tool iteration budget reached; requesting final summary without additional tool calls", AgentID: r.id, Mode: mode, NeedsAction: true})
+		_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "tool iteration budget reached; requesting final summary without additional tool calls", AgentID: r.id, Mode: mode, NeedsAction: true, Reason: "iteration_budget", Severity: "warning", BudgetScope: "iteration", StopReason: schema.StopReasonIterationBudget, Incomplete: true})
 	}
 	finalMessages := compactMessagesForSummaryPrompt(messages)
 	finalMessages = append(finalMessages, schema.Message{Role: "user", Content: "Tool iteration budget has been reached. Do not call more tools. Do not repeat earlier planning text. Produce a concise final summary from the observations already in this conversation: completed work, verification already available, remaining risk, and the next concrete step if any."})
@@ -604,7 +615,12 @@ func (r *AgentRunner) finalizeAfterIterationBudget(ctx context.Context, state ag
 		}
 		return schema.AgentResult{}, fmt.Errorf("agent exceeded max iterations")
 	}
-	emitTokenUsage(handler, sessionState, r.id, mode, resp.Usage)
+	emitTokenUsage(handler, sessionState, r.id, mode, resp.Usage, promptBudgetContextWithTools(state.PromptContext, state.Profile, state.Tools))
+	completedResp, continuationCount, incomplete, err := r.continueOutputLimitResponse(ctx, summaryLLM, resp, request, finalMessages, mode, sessionState, state.MatchedSkill, promptBudgetContextWithTools(state.PromptContext, state.Profile, state.Tools), len(state.Tools), collectedResults, fallbackUsed, iteration, handler, audit, &streamedText)
+	if err != nil {
+		return schema.AgentResult{}, err
+	}
+	resp = completedResp
 	if len(resp.ToolCalls) > 0 && strings.TrimSpace(resp.Message.Content) == "" {
 		return r.finalizeWithLocalBudgetSummary(state, collectedResults, fallbackUsed, iteration, handler, audit)
 	}
@@ -613,16 +629,27 @@ func (r *AgentRunner) finalizeAfterIterationBudget(ctx context.Context, state ag
 			return schema.AgentResult{}, err
 		}
 	}
-	if handler != nil {
-		_ = handler(schema.StreamEvent{Type: schema.StreamEventDone, Content: resp.Message.Content, AgentID: r.id, Mode: mode})
+	incompleteReason := "tool iteration budget reached before the task could safely continue"
+	if incomplete {
+		incompleteReason = incompleteOutputReason(resp.StopReason, continuationCount)
 	}
+	stopReason := schema.StopReasonIterationBudget
+	if incomplete {
+		stopReason = fallbackText(resp.StopReason, schema.StopReasonIterationBudget)
+	}
+	emitIncompleteDone(handler, r.id, mode, resp.Message.Content, incompleteReason, "iteration_budget", "iteration", stopReason, continuationCount)
 	if audit != nil {
 		fallbackUsed = effectiveFallbackUsed(summaryLLM, fallbackUsed)
-		audit.Record(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "completed_after_iteration_budget", Detail: resp.Message.Content, DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: fallbackUsed, PromptTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.OutputTokens, CachedTokens: resp.Usage.CachedTokens})
+		audit.Record(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "incomplete_after_iteration_budget", Detail: resp.Message.Content, DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: fallbackUsed, PromptTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.OutputTokens, CachedTokens: resp.Usage.CachedTokens})
 	}
 	structured := buildStructuredSections(resp.Message.Content, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 	findings, changes, verification := buildStructuredArtifacts(resp.Message.Content, collectedResults, mode)
-	return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: summaryModel, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
+	verification = append(verification, schema.Verification{Kind: "completion_integrity", Status: "blocked", Detail: incompleteReason})
+	result := schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: summaryModel, StopReason: schema.StopReasonIterationBudget, Incomplete: true, IncompleteReason: incompleteReason, ContinuationCount: continuationCount, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification, ResponseMessage: schema.CopyMessage(resp.Message)}
+	if incomplete {
+		result.StopReason = resp.StopReason
+	}
+	return result, nil
 }
 
 func (r *AgentRunner) finalizeWithLocalBudgetSummary(state agentConversationState, collectedResults []schema.ToolResult, fallbackUsed bool, iteration int, handler func(event schema.StreamEvent) error, audit *runtime.AuditLogger) (schema.AgentResult, error) {
@@ -631,17 +658,19 @@ func (r *AgentRunner) finalizeWithLocalBudgetSummary(state agentConversationStat
 		mode = state.Profile.Mode
 	}
 	output := buildLocalBudgetSummary(collectedResults)
+	reason := "tool iteration budget reached before a final model response was available"
 	if handler != nil {
 		_ = handler(schema.StreamEvent{Type: schema.StreamEventText, Content: output, AgentID: r.id, Mode: mode})
-		_ = handler(schema.StreamEvent{Type: schema.StreamEventDone, Content: output, AgentID: r.id, Mode: mode})
+		emitIncompleteDone(handler, r.id, mode, output, reason, "iteration_budget", "iteration", schema.StopReasonIterationBudget, 0)
 	}
 	if audit != nil {
 		fallbackUsed = effectiveFallbackUsed(r.llm, fallbackUsed)
-		audit.Record(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "completed_after_iteration_budget", Detail: output, DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: fallbackUsed})
+		audit.Record(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "incomplete_after_iteration_budget", Detail: output, DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: fallbackUsed})
 	}
 	structured := buildStructuredSections(output, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 	findings, changes, verification := buildStructuredArtifacts(output, collectedResults, mode)
-	return schema.AgentResult{Output: output, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: state.Profile.Model, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
+	verification = append(verification, schema.Verification{Kind: "completion_integrity", Status: "blocked", Detail: reason})
+	return schema.AgentResult{Output: output, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: state.Profile.Model, StopReason: schema.StopReasonIterationBudget, Incomplete: true, IncompleteReason: reason, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
 }
 
 func (r *AgentRunner) finalizeWithInvalidToolArguments(state agentConversationState, collectedResults []schema.ToolResult, fallbackUsed bool, iteration int, handler func(event schema.StreamEvent) error, audit *runtime.AuditLogger) (schema.AgentResult, error) {
@@ -653,9 +682,10 @@ func (r *AgentRunner) finalizeWithInvalidToolArguments(state agentConversationSt
 	if len(collectedResults) > 0 {
 		output = buildLocalBudgetSummary(collectedResults)
 	}
+	reason := "model produced incomplete tool-call JSON repeatedly"
 	if handler != nil {
 		_ = handler(schema.StreamEvent{Type: schema.StreamEventText, Content: output, AgentID: r.id, Mode: mode})
-		_ = handler(schema.StreamEvent{Type: schema.StreamEventDone, Content: output, AgentID: r.id, Mode: mode})
+		emitIncompleteDone(handler, r.id, mode, output, reason, "invalid_tool_arguments", "tool_call", schema.StopReasonError, 0)
 	}
 	if audit != nil {
 		fallbackUsed = effectiveFallbackUsed(r.llm, fallbackUsed)
@@ -663,7 +693,90 @@ func (r *AgentRunner) finalizeWithInvalidToolArguments(state agentConversationSt
 	}
 	structured := buildStructuredSections(output, state.MatchedSkill, collectedResults, mode, fallbackUsed)
 	findings, changes, verification := buildStructuredArtifacts(output, collectedResults, mode)
-	return schema.AgentResult{Output: output, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: state.Profile.Model, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
+	verification = append(verification, schema.Verification{Kind: "completion_integrity", Status: "blocked", Detail: reason})
+	return schema.AgentResult{Output: output, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: state.Profile.Model, StopReason: schema.StopReasonError, Incomplete: true, IncompleteReason: reason, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification}, nil
+}
+
+func (r *AgentRunner) continueOutputLimitResponse(ctx context.Context, llm interfaces.LLMClient, resp schema.ChatResponse, request schema.ChatRequest, messages []schema.Message, mode string, sessionState *session.State, skill *schema.Skill, promptContext promptBudgetContext, totalToolCount int, collectedResults []schema.ToolResult, fallbackUsed bool, iteration int, handler func(event schema.StreamEvent) error, audit *runtime.AuditLogger, streamedText *bool) (schema.ChatResponse, int, bool, error) {
+	if !isOutputLimitStopReason(resp.StopReason) || len(resp.ToolCalls) > 0 {
+		return resp, 0, false, nil
+	}
+	if strings.TrimSpace(mode) == "" {
+		mode = r.profile.Mode
+	}
+	content := resp.Message.Content
+	currentMessages := schema.CopyMessages(messages)
+	stopReason := resp.StopReason
+	var continuationCount int
+	for continuationCount < maxModelOutputContinuations && isOutputLimitStopReason(stopReason) {
+		continuationCount++
+		emitOutputContinuationEvent(handler, r.id, mode, continuationCount, "model_output_truncated", stopReason, "model stopped at its output limit; continuing instead of marking the task complete")
+		assistant := schema.CopyMessage(resp.Message)
+		if strings.TrimSpace(assistant.Role) == "" {
+			assistant.Role = "assistant"
+		}
+		assistant.Content = content
+		currentMessages = append(currentMessages, assistant, schema.Message{Role: "user", Content: outputContinuationPrompt(continuationCount)})
+		continuationRequest := request
+		continuationRequest.Messages = compactMessagesForConversation(currentMessages)
+		continuationRequest.Tools = nil
+		emitPromptBudget(handler, sessionState, r.id, mode, continuationRequest, skill, totalToolCount, promptContext)
+		emitModelWaitStatus(handler, r.id, mode, modelWaitStatusContext{FinalSummary: true})
+		emitOutputContinuationEvent(handler, r.id, mode, continuationCount, "continuation_started", stopReason, "requesting the next segment of the truncated model output")
+		if streamedText != nil {
+			*streamedText = false
+		}
+		nextResp, err := runAgentChatWithRecovery(ctx, llm, continuationRequest, r.id, mode, handler, streamedText, &currentMessages)
+		if err != nil {
+			if audit != nil {
+				audit.Record(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(skill), Outcome: "continuation_error", Detail: err.Error(), Iteration: iteration, FallbackUsed: effectiveFallbackUsed(llm, fallbackUsed)})
+			}
+			return resp, continuationCount, true, fmt.Errorf("continue truncated output: %w", err)
+		}
+		emitTokenUsage(handler, sessionState, r.id, mode, nextResp.Usage, promptContext)
+		if len(nextResp.ToolCalls) > 0 {
+			resp.Message.Content = strings.TrimSpace(content)
+			resp.StopReason = schema.StopReasonToolCalls
+			resp.ToolCalls = nextResp.ToolCalls
+			return resp, continuationCount, true, nil
+		}
+		nextContent := strings.TrimSpace(nextResp.Message.Content)
+		if nextContent != "" {
+			content = joinContinuationContent(content, nextContent)
+		}
+		stopReason = nextResp.StopReason
+		resp = nextResp
+		resp.Message.Content = content
+		emitOutputContinuationEvent(handler, r.id, mode, continuationCount, "continuation_completed", stopReason, "received continuation segment")
+	}
+	if isOutputLimitStopReason(stopReason) {
+		resp.Message.Content = strings.TrimSpace(content)
+		resp.StopReason = stopReason
+		return resp, continuationCount, true, nil
+	}
+	resp.Message.Content = strings.TrimSpace(content)
+	resp.StopReason = normalizeCompletionStopReason(stopReason)
+	return resp, continuationCount, false, nil
+}
+
+func (r *AgentRunner) finalizeIncompleteOutput(state agentConversationState, resp schema.ChatResponse, collectedResults []schema.ToolResult, fallbackUsed bool, continuationCount, iteration int, handler func(event schema.StreamEvent) error, audit *runtime.AuditLogger) (schema.AgentResult, error) {
+	mode := state.Mode
+	if mode == "" {
+		mode = state.Profile.Mode
+	}
+	reason := incompleteOutputReason(resp.StopReason, continuationCount)
+	if handler != nil {
+		_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: reason, AgentID: r.id, Mode: mode, NeedsAction: true, Reason: "output_limit", Severity: "warning", BudgetScope: "output", StopReason: resp.StopReason, ContinuationCount: continuationCount, Incomplete: true})
+		_ = handler(schema.StreamEvent{Type: schema.StreamEventDone, Content: resp.Message.Content, AgentID: r.id, Mode: mode, NeedsAction: true, Reason: "incomplete", Severity: "warning", StopReason: resp.StopReason, ContinuationCount: continuationCount, Incomplete: true})
+	}
+	if audit != nil {
+		fallbackUsed = effectiveFallbackUsed(r.llm, fallbackUsed)
+		audit.Record(schema.AuditEntry{Type: "request", AgentID: r.id, SkillName: skillName(state.MatchedSkill), Outcome: "incomplete_output_limit", Detail: reason, DurationMs: time.Since(state.StartedAt).Milliseconds(), Iteration: iteration, FallbackUsed: fallbackUsed, PromptTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.OutputTokens, CachedTokens: resp.Usage.CachedTokens})
+	}
+	structured := buildStructuredSections(resp.Message.Content, state.MatchedSkill, collectedResults, mode, fallbackUsed)
+	findings, changes, verification := buildStructuredArtifacts(resp.Message.Content, collectedResults, mode)
+	verification = append(verification, schema.Verification{Kind: "completion_integrity", Status: "blocked", Detail: reason})
+	return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: state.MatchedSkill, ToolResults: collectedResults, AgentID: r.id, Mode: mode, Model: state.Profile.Model, StopReason: resp.StopReason, Incomplete: true, IncompleteReason: reason, ContinuationCount: continuationCount, Structured: structured, AuditTrail: auditEntries(audit), Findings: findings, Changes: changes, Verification: verification, ResponseMessage: schema.CopyMessage(resp.Message)}, nil
 }
 
 func dynamicContextMessages(memoryText string, snapshot session.Snapshot, currentInput string, messages []schema.Message) []schema.Message {
@@ -711,6 +824,89 @@ func buildLocalBudgetSummary(results []schema.ToolResult) string {
 		parts = append(parts, fmt.Sprintf("%s x%d", name, counts[name]))
 	}
 	return fmt.Sprintf("Tool iteration budget reached before the model produced a final no-tool summary. Completed tool calls: %s. I stopped before making additional tool calls.", strings.Join(parts, ", "))
+}
+
+func isOutputLimitStopReason(reason string) bool {
+	switch strings.ToLower(strings.TrimSpace(reason)) {
+	case schema.StopReasonMaxTokens, schema.StopReasonLength, "max_output_tokens", "output_limit":
+		return true
+	default:
+		return false
+	}
+}
+
+func normalizeCompletionStopReason(reason string) string {
+	reason = strings.TrimSpace(reason)
+	if reason == "" {
+		return schema.StopReasonStop
+	}
+	if isOutputLimitStopReason(reason) {
+		return schema.StopReasonMaxTokens
+	}
+	return reason
+}
+
+func outputContinuationPrompt(continuation int) string {
+	return fmt.Sprintf("The previous assistant response stopped at the model output limit. Continue from the exact point where it stopped. Do not restart, summarize, omit remaining required details, or call tools. This is continuation %d.", continuation)
+}
+
+func joinContinuationContent(left, right string) string {
+	left = strings.TrimRight(left, "\r\n\t ")
+	right = strings.TrimLeft(right, "\r\n\t ")
+	if left == "" {
+		return right
+	}
+	if right == "" {
+		return left
+	}
+	return left + "\n" + right
+}
+
+func incompleteOutputReason(stopReason string, continuationCount int) string {
+	if continuationCount > 0 {
+		return fmt.Sprintf("model output remained incomplete after %d continuation attempt(s); stopped with reason %s", continuationCount, fallbackText(stopReason, schema.StopReasonMaxTokens))
+	}
+	return fmt.Sprintf("model output stopped before completion with reason %s", fallbackText(stopReason, schema.StopReasonMaxTokens))
+}
+
+func emitIncompleteDone(handler func(event schema.StreamEvent) error, agentID, mode, content, reason, eventReason, budgetScope, stopReason string, continuationCount int) {
+	if handler == nil {
+		return
+	}
+	_ = handler(schema.StreamEvent{
+		Type:              schema.StreamEventDone,
+		Content:           content,
+		AgentID:           agentID,
+		Mode:              mode,
+		NeedsAction:       true,
+		Reason:            fallbackText(eventReason, "incomplete"),
+		Severity:          "warning",
+		BudgetScope:       budgetScope,
+		StopReason:        stopReason,
+		ContinuationCount: continuationCount,
+		Incomplete:        true,
+		ContractCheck:     "completion_integrity",
+		SourceRef:         reason,
+	})
+}
+
+func emitOutputContinuationEvent(handler func(event schema.StreamEvent) error, agentID, mode string, continuation int, eventName, stopReason, detail string) {
+	if handler == nil {
+		return
+	}
+	_ = handler(schema.StreamEvent{
+		Type:              schema.StreamEventStatus,
+		Content:           eventName + ": " + detail,
+		AgentID:           agentID,
+		Mode:              mode,
+		NeedsAction:       true,
+		Reason:            eventName,
+		Severity:          "warning",
+		BudgetScope:       "output",
+		StopReason:        stopReason,
+		ContinuationCount: continuation,
+		Incomplete:        eventName != "continuation_completed" || isOutputLimitStopReason(stopReason),
+	})
 }
 
 func toolObservationDigestMessage(results []schema.ToolResult) string {
@@ -1046,35 +1242,63 @@ func summarizeToolCallStage(calls []schema.ToolCall, execCtx ExecutionContext) s
 	}
 }
 
-func emitTokenUsage(handler func(event schema.StreamEvent) error, state *session.State, agentID, mode string, usage schema.TokenUsage) {
+func emitTokenUsage(handler func(event schema.StreamEvent) error, state *session.State, agentID, mode string, usage schema.TokenUsage, contexts ...promptBudgetContext) {
 	if !hasTokenUsage(usage) {
 		return
 	}
+	context := promptBudgetContext{}
+	if len(contexts) > 0 {
+		context = contexts[0]
+	}
+	inputCost, outputCost, totalCost, currency, source := tokenUsageCostEstimate(usage, context)
+	taskStage := ""
 	if state != nil {
 		snapshot := state.Snapshot()
+		taskStage = snapshot.TaskStage.Stage
 		state.AddTokenUsage(schema.TokenUsageSample{
-			AgentID:      agentID,
-			Mode:         mode,
-			WorkflowName: snapshot.Workflow.Name,
-			TaskStage:    snapshot.TaskStage.Stage,
-			PromptTokens: usage.PromptTokens,
-			OutputTokens: usage.OutputTokens,
-			CachedTokens: usage.CachedTokens,
-			TotalTokens:  usage.PromptTokens + usage.OutputTokens,
+			AgentID:             agentID,
+			Mode:                mode,
+			WorkflowName:        snapshot.Workflow.Name,
+			TaskStage:           taskStage,
+			PromptTokens:        usage.PromptTokens,
+			OutputTokens:        usage.OutputTokens,
+			CachedTokens:        usage.CachedTokens,
+			TotalTokens:         usage.PromptTokens + usage.OutputTokens,
+			EstimatedInputCost:  inputCost,
+			EstimatedOutputCost: outputCost,
+			EstimatedTotalCost:  totalCost,
+			CostCurrency:        currency,
+			PricingSource:       source,
 		})
 	}
 	if handler == nil {
 		return
 	}
 	_ = handler(schema.StreamEvent{
-		Type:         schema.StreamEventTokenUsage,
-		Content:      "token_usage",
-		AgentID:      agentID,
-		Mode:         mode,
-		PromptTokens: usage.PromptTokens,
-		OutputTokens: usage.OutputTokens,
-		CachedTokens: usage.CachedTokens,
+		Type:                      schema.StreamEventTokenUsage,
+		Content:                   "token_usage",
+		AgentID:                   agentID,
+		Mode:                      mode,
+		TaskStage:                 taskStage,
+		PromptTokens:              usage.PromptTokens,
+		OutputTokens:              usage.OutputTokens,
+		CachedTokens:              usage.CachedTokens,
+		BudgetEstimatedInputCost:  inputCost,
+		BudgetEstimatedOutputCost: outputCost,
+		BudgetEstimatedTotalCost:  totalCost,
+		BudgetCostCurrency:        currency,
+		BudgetPricingSource:       source,
 	})
+}
+
+func tokenUsageCostEstimate(usage schema.TokenUsage, context promptBudgetContext) (float64, float64, float64, string, string) {
+	if !pricingHasRates(context.Pricing) {
+		return 0, 0, 0, "", ""
+	}
+	inputCost := estimateInputTokenCost(usage.PromptTokens, usage.CachedTokens, context.Pricing)
+	outputCost := estimateOutputTokenCost(usage.OutputTokens, context.Pricing)
+	totalCost := roundEstimatedCost(inputCost + outputCost)
+	return inputCost, outputCost, totalCost, context.Pricing.Currency, context.Pricing.Source
 }
 
 func hasTokenUsage(usage schema.TokenUsage) bool {

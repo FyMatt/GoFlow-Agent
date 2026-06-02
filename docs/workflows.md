@@ -256,12 +256,33 @@ Fields:
   `expected`. The backend evaluates these checks after the stage runs, stores
   pass/fail evidence in `completed_stages[].acceptance`, and emits acceptance
   artifacts for replay.
+- Required output contracts can block or route a stage after execution. Set
+  `params.contract_required: "true"` or `params.on_contract_fail: block` to
+  enforce missing acceptance, required verification/evidence, declared
+  artifacts, mapped `outputs`, JSON worker output, required JSON keys, and
+  required sections. Contract failures emit `contract_validation_failed` with
+  `contract_check`, `contract_checks`, `source_ref`, and `source_refs`, so
+  Studio can highlight the exact node and missing output instead of burying the
+  reason in raw logs.
+- Contract failures can also use a configured model escalation route. Set
+  `params.on_contract_fail: escalate` plus one or more of
+  `escalate_provider`, `escalate_model`, `escalate_max_tokens`, and
+  `escalate_temperature` (aliases `model_escalation_*` and
+  `contract_fail_*` are also accepted). The runtime reruns only the failed
+  stage with that route, emits `model_escalated` and `stage_retry`, stores
+  `model.escalated`, `model.route`, and `model.escalation_ref` metadata, then
+  resumes downstream stages in the same workflow run. If no auto-escalation is
+  configured, a blocked run with escalation params exposes an operator
+  `escalate_model` action.
 - `stage.policy`: expression used by `node_type: policy_guard`. It supports the same baseline expression forms as `stage.condition`.
 - `stage.condition`: expression used by `node_type: condition`. Supported baseline forms include truthy references, `exists(ref)`, `has(ref)`, `contains(ref, "text")`, `in("text", ref)`, `matches(ref, "regex")`, `any(ref[, "text"])`, `all(ref[, "text"])`, `len(ref) > 0`, `risk_rank(ref) >= 4`, and comparisons such as `ref == "xss"` or `ref >= 2`. References can address typed nested values such as `stages.collect.outputs.payload.risk` and array items such as `stages.collect.outputs.tags.0`.
 - `stage.routes`: route map for condition nodes, typically `true: verify` and `false: report-clean`.
 - `stage.switch_on`: reference evaluated by `node_type: switch` or `router`.
 - `stage.cases`: switch route map. Case names are matched case-insensitively; `default`, `else`, or `*` can be used as fallback.
-- `stage.retry.max_attempts`: optional bounded retry count for executable stages.
+- `stage.retry.max_attempts`: optional bounded retry count for executable
+  stages. Each retry attempt after the first emits a `stage_retry` diagnostic
+  event with the stage, attempt source reference, and last failure reason when
+  available.
 - `stage.on_error`: optional fallback stage list used when an executable stage still fails after retries.
 - `stage.approval`: if `true`, pause before entering the stage unless the run is pre-approved.
 - `stage.next`: candidate next stage names. If omitted, GoFlow continues to the next stage in file order.
@@ -865,6 +886,17 @@ The default `/actions` response remains the legacy action array. Add
 `?envelope=1` to receive `meta.schema: "goflow.run_actions"`, status,
 `needs_action`, `events_path`, replay/timeline/action paths, a recommended
 action, counts, and the same action list in one payload.
+
+Recovery actions are distinct so operators do not need to guess why a workflow
+paused. `paused_need_more_budget` exposes `continue_output`, hard workflow
+budget pauses expose `approve_budget`, and required contract failures with a
+configured escalation route expose `escalate_model` at
+`POST /api/workflow-runs/{id}/escalate-model` and
+`/escalate-model/stream`. The model escalation action reruns the blocked stage
+with the configured escalation model/budget route and continues downstream
+stages in the same durable run. Studio surfaces the same route through the run
+action list, selected-node inspector, graph chips, and timeline events so the
+blocked node and recovery path stay visible.
 
 Graph workflow
 `checkpoint`, `manual_approval`, `approval_gate`, and executable stages with
@@ -1712,14 +1744,18 @@ larger tasks.
 `multi-domain-intake-router` is the recommended built-in entry template for new
 users and broad deployments. It starts with a structured intake form, uses a
 strong planner route to decompose the request, activates only the selected
-domain worker branches, joins their compact reports, audits cross-domain
-coverage and token discipline, then produces a final handoff. The selectable
+domain workers, joins their compact reports, audits cross-domain coverage and
+token discipline, then produces a quality-gated final handoff. The selectable
+selected domain workers are the only branches that run; pruned branches stay
+visible for diagnosis without spending tokens or calling tools. The selectable
 branches cover software engineering, web security, general security research,
 binary analysis, documentation, operations, customer support,
 platform/framework extension work, and a general fallback. Expert fields expose
-`active_branches_ref`, `wait_for_ref`, model routes, context budgets, branch
-contracts, artifact refs, and linked team template refs so developers can
-extend the orchestration without making ordinary users edit raw maps.
+`active_branches_ref`, `wait_for_ref`, branch-selection reason, pruned branches,
+per-branch tool allowlists, model routes, context budgets, branch contracts,
+cost attribution, artifact refs, join conflict diagnostics, missing worker
+artifacts, and linked team template refs so developers can extend the
+orchestration without making ordinary users edit raw maps.
 
 `complex-project-delivery` is the recommended template for broad implementation
 work that should continue until the accepted requirements are satisfied. It
@@ -2539,6 +2575,99 @@ When a tool call is approved, GoFlow resumes the suspended stage by replaying:
 
 Then the same stage continues and the workflow proceeds to the next stage.
 
+## Execution Readiness Contract
+
+`stage.execution` declares whether a stage is planning-only, a dry run, a manual handoff, disabled, or a live action candidate. This is separate from `approval: true`: approval pauses a stage before it starts, while the execution contract records the target boundary and readiness evidence needed before a live action can run.
+
+Supported fields:
+
+- `mode`: `planning`, `dry_run`, `manual`, `disabled`, or `live`.
+- `risk_level`: `low`, `medium`, `high`, or `critical`.
+- `boundary`: short operator-readable scope such as `workspace-draft`, `lab`, or `production`.
+- `requires_approval`, `requires_authorized_scope`, `requires_rollback`, `requires_credential_ref`, `requires_allowlist`: explicit readiness requirements.
+- `allow_live_tools`: the exact tools that may be used by a live stage.
+- `required_params`: extra stage params that must be present before live execution.
+
+Example:
+
+```yaml
+- name: apply-change
+  node_type: tool
+  agent: fixer
+  skill: code-writing
+  tool: network_ops/apply_config
+  approval: true
+  execution:
+    mode: live
+    risk_level: high
+    boundary: production-router-change
+    requires_authorized_scope: true
+    requires_rollback: true
+    requires_credential_ref: true
+    requires_allowlist: true
+    allow_live_tools: [network_ops/apply_config]
+    required_params: [change_ticket]
+  params:
+    authorized_scope: router-edge-01
+    rollback_plan: artifacts://rollback-plan
+    credential_ref: vault://network/prod/operator
+    allowed_devices: router-edge-01
+    change_ticket: CHG-12345
+```
+
+For `mode: live`, GoFlow blocks before model or tool execution when readiness evidence is missing. The blocked stage is persisted with `contract_check=execution_readiness`, `contract_failed=true`, `execution.mode`, `execution.ready=false`, `execution.missing`, `execution.risk_level`, `execution.boundary`, and `source_ref`. The stream also emits `execution_readiness_blocked`, so Workflow Studio can show the failing node, hover chips, selected-node diagnostics, and the exact missing requirement.
+
+`planning`, `dry_run`, `manual`, and `disabled` do not trigger live-readiness blocking. They still publish execution metadata so operators can see the declared boundary and understand that a template is simulating or handing off instead of applying an external change.
+
+Legacy params such as `execution_mode`, `execution.risk_level`, `authorized_scope`, `rollback_plan`, `credential_ref`, `allowed_hosts`, `allowed_commands`, `allow_live_tools`, and `required_params` are still read for compatibility. Prefer the structured `stage.execution` block for new workflows.
+
+For the built-in controlled RESTCONF/API connector, a live stage must declare
+both workflow-level readiness and tool-level allowlists:
+
+```yaml
+- name: apply-restconf-change
+  node_type: tool
+  agent: operations-specialist
+  skill: execution-plan
+  tool: network_tools/device_restconf_live_apply
+  approval: true
+  execution:
+    mode: live
+    risk_level: high
+    boundary: production-restconf-change
+    requires_approval: true
+    requires_authorized_scope: true
+    requires_rollback: true
+    requires_credential_ref: true
+    requires_allowlist: true
+    allow_live_tools: [network_tools/device_restconf_live_apply]
+    required_params: [approval_ref, change_ticket, allowed_hosts, allowed_paths]
+  params:
+    host: router-edge-01.example.com
+    endpoint: https://router-edge-01.example.com/restconf/data/native/interface
+    method: PATCH
+    credential_ref: env:GOFLOW_RESTCONF_TOKEN
+    approval_ref: approval-123
+    change_ticket: CHG-12345
+    authorized_scope: true
+    allowed_hosts: [router-edge-01.example.com]
+    allowed_methods: [PATCH]
+    allowed_paths: [/restconf/data/native/*]
+    payload:
+      interface:
+        description: approved maintenance update
+    rollback_plan:
+      - restore previous interface description from backup artifact
+    dry_run_confirmed: true
+    change_approved: true
+```
+
+The MCP server still refuses to send the HTTPS request unless
+`GOFLOW_NETWORK_TOOLS_ENABLE_LIVE=1` is present in that server environment. When
+the switch is absent, the tool returns a blocked audit payload rather than
+pretending success. Secrets are resolved only from `env:`/`env://` credential
+refs inside the MCP server and are not included in tool results.
+
 ## Approval Resume Example
 
 Example flow:
@@ -2589,9 +2718,11 @@ During pauses:
 
 1. Keep each stage focused on one role.
 2. Put write or exec stages behind `approval: true`.
-3. Use `next_strategy: select` only when a stage has real alternatives.
-4. Keep `next` edges explicit so branch choices stay bounded.
-5. Match `agent` to the intended permission boundary.
-6. Match `skill` to the intended output shape.
-7. Run the workflow once on a small request and inspect `/status` / `/session` during approval pauses.
+3. Mark planning, dry-run, manual, and live boundaries with `stage.execution`.
+4. For `mode: live`, provide approval, authorized scope, rollback, credential, allowlist, and live-tool constraints before expecting the stage to run.
+5. Use `next_strategy: select` only when a stage has real alternatives.
+6. Keep `next` edges explicit so branch choices stay bounded.
+7. Match `agent` to the intended permission boundary.
+8. Match `skill` to the intended output shape.
+9. Run the workflow once on a small request and inspect `/status`, `/session`, and Workflow Studio runtime diagnostics during approval or readiness pauses.
 

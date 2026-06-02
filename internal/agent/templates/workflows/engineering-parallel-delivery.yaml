@@ -35,6 +35,10 @@ graph:
             provider: primary
             max_tokens: 1800
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: task-decomposition
           params:
             output_contract: Emit sections named Task Graph, Work Slices, Parallel Groups, Ownership, Dependencies, Shared Context Budget, Acceptance Criteria, Verification Plan, Conflict Rules, and Final Report Contract.
             purpose: Decompose the request into small independent engineering slices before any worker starts.
@@ -108,6 +112,10 @@ graph:
             provider: backup
             max_tokens: 900
             temperature: 0.1
+          execution:
+            mode: dry_run
+            risk_level: medium
+            boundary: workspace-slice
           params:
             ownership: Implement only the core/product code slice assigned by Task Graph. Avoid tests/docs unless required to keep the slice coherent.
             worker_contract: engineering_v1
@@ -146,7 +154,6 @@ graph:
               expected: worker records checks attempted
           retry:
             max_attempts: 2
-          approval: true
           context:
             include:
                 - stages.decompose.outputs.task_graph
@@ -167,12 +174,16 @@ graph:
             "y": 90
         - name: worker-tests
           node_type: agent
-          agent: fixer
+          agent: planner
           skill: code-writing
           model:
             provider: backup
             max_tokens: 900
             temperature: 0.1
+          execution:
+            mode: dry_run
+            risk_level: medium
+            boundary: workspace-test-slice
           params:
             ownership: Implement only test, fixture, validation, or deterministic check changes assigned by Task Graph.
             worker_contract: engineering_v1
@@ -207,7 +218,6 @@ graph:
               expected: test worker records checks attempted
           retry:
             max_attempts: 2
-          approval: true
           context:
             include:
                 - stages.decompose.outputs.task_graph
@@ -228,12 +238,16 @@ graph:
             "y": 260
         - name: worker-docs
           node_type: agent
-          agent: planner
+          agent: chat
           skill: execution-plan
           model:
             provider: backup
             max_tokens: 750
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: low
+            boundary: documentation-slice
           params:
             ownership: Produce operator-facing notes, migration guidance, or documentation updates assigned by Task Graph. Do not modify product code.
             worker_contract: engineering_v1
@@ -302,6 +316,10 @@ graph:
             provider: primary
             max_tokens: 1400
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: artifact-join
           params:
             output_contract: Emit sections named Integrated Delivery Report, Worker Outputs, Conflicts, Gaps, Verification Matrix, Residual Risks, and Audit Request.
             purpose: Merge parallel worker results into one compact engineering report before audit.
@@ -375,6 +393,10 @@ graph:
             provider: primary
             max_tokens: 1200
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: delivery-audit
           params:
             output_contract: Emit sections named Audit Decision, Blocking Findings, Acceptance Coverage, Token Discipline, Test Gaps, Safety Notes, and Recommendation.
             review_scope: Review the integrated delivery report and worker artifacts for conflicts, missing acceptance evidence, unsafe edits, and token-heavy handoffs.
@@ -449,6 +471,10 @@ graph:
             provider: primary
             max_tokens: 900
             temperature: 0.1
+          execution:
+            mode: planning
+            risk_level: medium
+            boundary: resolution-plan
           params:
             output_contract: Emit sections named Resolution Plan, Blocking Issues, Minimal Fix Slices, Verification Needed, and Handoff.
             purpose: Convert quality-gate warnings or failures into bounded follow-up slices without replaying branch transcripts.
@@ -503,6 +529,10 @@ graph:
             provider: backup
             max_tokens: 800
             temperature: 0.1
+          execution:
+            mode: manual
+            risk_level: low
+            boundary: final-handoff
           params:
             output_contract: Emit sections named Final Handoff, Completed Slices, Verification, Audit Decision, Remaining Risks, and Next Steps.
             purpose: Produce a concise user-facing handoff from the aggregate report, audit, and quality gate.

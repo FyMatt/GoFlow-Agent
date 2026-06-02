@@ -579,6 +579,38 @@ func TestStateStoresLargeRunPayloadsInCompressedArchive(t *testing.T) {
 	}
 }
 
+func TestStateArchiveFallsBackWhenRenameFails(t *testing.T) {
+	state := New(3)
+	state.AddPrompt("persist this snapshot")
+
+	originalRename := fullSessionArchiveRename
+	fullSessionArchiveRename = func(_, _ string) error {
+		return os.ErrPermission
+	}
+	t.Cleanup(func() {
+		fullSessionArchiveRename = originalRename
+	})
+
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := state.Save(path); err != nil {
+		t.Fatalf("Save with rename fallback: %v", err)
+	}
+	archivePath := fullSessionArchivePath(path)
+	if info, err := os.Stat(archivePath); err != nil {
+		t.Fatalf("expected fallback archive at %s: %v", archivePath, err)
+	} else if info.Size() <= 0 {
+		t.Fatalf("expected fallback archive to contain data")
+	}
+
+	loaded := New(3)
+	if err := loaded.Load(path); err != nil {
+		t.Fatalf("Load fallback archive: %v", err)
+	}
+	if got := loaded.Snapshot().RecentPrompts; len(got) != 1 || got[0] != "persist this snapshot" {
+		t.Fatalf("expected archive snapshot to round trip, got %#v", got)
+	}
+}
+
 func TestStateLoadMigratesOversizedSessionIntoCompressedArchive(t *testing.T) {
 	large := strings.Repeat("x", maxWorkflowRunText*3)
 	raw := Snapshot{
@@ -657,6 +689,57 @@ func TestStateTokenUsageHistoryIsBounded(t *testing.T) {
 	}
 	if got := snapshot.TokenUsages[len(snapshot.TokenUsages)-1].TotalTokens; got != maxTokenUsageHistory+6 {
 		t.Fatalf("expected total tokens to be filled, got %d", got)
+	}
+}
+
+func TestWorkflowRunBudgetSummaryIncludesSavedTokenAttribution(t *testing.T) {
+	state := New(3)
+	runID := state.StartWorkflowRun("budget-flow", "inspect budget")
+	state.AppendWorkflowRunEvent(runID, WorkflowRunEventSnapshot{
+		Type:                        "prompt_budget",
+		Stage:                       "plan",
+		BudgetEstimatedPromptTokens: 100,
+		BudgetNetPromptTokens:       100,
+		BudgetGrossPromptTokens:     175,
+		BudgetSavedTokens:           75,
+		BudgetMemorySavedTokens:     12,
+		BudgetHistorySavedTokens:    8,
+		BudgetArtifactSavedTokens:   5,
+		BudgetSkillSavedTokens:      20,
+		BudgetToolSchemaSavedTokens: 30,
+		PromptBudget: &schema.PromptBudget{
+			EstimatedPromptTokens:          100,
+			MemoryEstimatedSavedTokens:     12,
+			HistoryEstimatedSavedTokens:    8,
+			ArtifactOmittedTokens:          5,
+			SkillOmittedTokens:             20,
+			ToolSchemaEstimatedSavedTokens: 30,
+		},
+	})
+	state.AppendWorkflowRunEvent(runID, WorkflowRunEventSnapshot{
+		Type:         "token_usage",
+		Stage:        "plan",
+		PromptTokens: 90,
+		OutputTokens: 10,
+	})
+	state.CompleteWorkflowRun(runID, "completed", "done", "", "", nil, []WorkflowRunStageSnapshot{{Stage: "plan"}})
+
+	run, ok := state.WorkflowRun(runID)
+	if !ok {
+		t.Fatalf("expected workflow run")
+	}
+	if run.BudgetSavedTokens != 75 || run.BudgetNetPromptTokens != 100 || run.BudgetGrossPromptTokens != 175 {
+		t.Fatalf("unexpected run attribution: saved=%d net=%d gross=%d", run.BudgetSavedTokens, run.BudgetNetPromptTokens, run.BudgetGrossPromptTokens)
+	}
+	if run.BudgetMemorySavedTokens != 12 || run.BudgetHistorySavedTokens != 8 || run.BudgetArtifactSavedTokens != 5 || run.BudgetSkillSavedTokens != 20 || run.BudgetToolSchemaSavedTokens != 30 {
+		t.Fatalf("unexpected saved-token source attribution: %#v", run)
+	}
+	stage := run.CompletedStages[0]
+	if stage.BudgetSavedTokens != 75 || stage.BudgetNetPromptTokens != 100 || stage.BudgetGrossPromptTokens != 175 {
+		t.Fatalf("unexpected stage attribution: saved=%d net=%d gross=%d", stage.BudgetSavedTokens, stage.BudgetNetPromptTokens, stage.BudgetGrossPromptTokens)
+	}
+	if stage.Metadata["budget_saved_tokens"] != "75" || stage.Metadata["budget_gross_prompt_tokens"] != "175" {
+		t.Fatalf("expected attribution metadata, got %#v", stage.Metadata)
 	}
 }
 

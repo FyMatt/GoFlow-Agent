@@ -232,6 +232,134 @@ func TestRunStreamPersistsSkillMatchDiagnostic(t *testing.T) {
 	}
 }
 
+func TestRunStreamContinuesModelOutputLimit(t *testing.T) {
+	llm := &stubLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Role: "assistant", Content: "part 1"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 2"}, StopReason: schema.StopReasonStop},
+	}}
+	mcp := &stubRuntimeMCP{}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "write the full plan", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Incomplete {
+		t.Fatalf("expected completed continued output, got %#v", result)
+	}
+	if result.Output != "part 1\npart 2" {
+		t.Fatalf("unexpected combined output %q", result.Output)
+	}
+	if result.ContinuationCount != 1 {
+		t.Fatalf("expected one continuation, got %d", result.ContinuationCount)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("expected two model calls, got %d", llm.calls)
+	}
+}
+
+func TestRunStreamMarksIncompleteAfterContinuationLimit(t *testing.T) {
+	llm := &stubLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Role: "assistant", Content: "part 1"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 2"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 3"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 4"}, StopReason: schema.StopReasonMaxTokens},
+	}}
+	mcp := &stubRuntimeMCP{}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "write the full plan", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !result.Incomplete {
+		t.Fatalf("expected incomplete result after continuation cap, got %#v", result)
+	}
+	if result.StopReason != schema.StopReasonMaxTokens {
+		t.Fatalf("expected max_tokens stop reason, got %q", result.StopReason)
+	}
+	if result.ContinuationCount != maxModelOutputContinuations {
+		t.Fatalf("expected continuation cap %d, got %d", maxModelOutputContinuations, result.ContinuationCount)
+	}
+	if !strings.Contains(result.IncompleteReason, "model output remained incomplete") {
+		t.Fatalf("unexpected incomplete reason %q", result.IncompleteReason)
+	}
+}
+
+func TestRunStreamMarksIterationBudgetDoneEventIncomplete(t *testing.T) {
+	readCall := schema.ToolCall{
+		ID:        "call_read",
+		Name:      "read_file",
+		Arguments: json.RawMessage(`{"path":"README.md"}`),
+	}
+	readCallAgain := schema.ToolCall{
+		ID:        "call_read_again",
+		Name:      "read_file",
+		Arguments: json.RawMessage(`{"path":"README.md"}`),
+	}
+	llm := &stubLLMClient{responses: []schema.ChatResponse{
+		{
+			Message:    schema.Message{Role: "assistant", Content: "need to inspect", ToolCalls: []schema.ToolCall{readCall}},
+			ToolCalls:  []schema.ToolCall{readCall},
+			StopReason: schema.StopReasonToolCalls,
+		},
+		{
+			Message:    schema.Message{Role: "assistant", Content: "need one more read", ToolCalls: []schema.ToolCall{readCallAgain}},
+			ToolCalls:  []schema.ToolCall{readCallAgain},
+			StopReason: schema.StopReasonToolCalls,
+		},
+		{Message: schema.Message{Role: "assistant", Content: "partial summary after budget"}, StopReason: schema.StopReasonStop},
+	}}
+	mcp := &stubRuntimeMCP{
+		tools:  []schema.Tool{{Name: "read_file", Kind: string(config.ToolKindRead), InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		result: schema.ToolResult{ToolName: "read_file", Content: "README content"},
+	}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+	events := make([]schema.StreamEvent, 0)
+
+	result, err := runner.RunStream(context.Background(), "inspect then finish", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, func(event schema.StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !result.Incomplete || result.StopReason != schema.StopReasonIterationBudget {
+		t.Fatalf("expected incomplete iteration-budget result, got %#v", result)
+	}
+	done := lastStreamEventOfType(events, schema.StreamEventDone)
+	if !done.Incomplete || !done.NeedsAction || done.StopReason != schema.StopReasonIterationBudget || done.BudgetScope != "iteration" {
+		t.Fatalf("expected done event to carry incomplete iteration diagnostics, got %#v in %#v", done, events)
+	}
+}
+
+func lastStreamEventOfType(events []schema.StreamEvent, eventType schema.StreamEventType) schema.StreamEvent {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == eventType {
+			return events[i]
+		}
+	}
+	return schema.StreamEvent{}
+}
+
 type stubRuntimeMCP struct {
 	tools       []schema.Tool
 	calls       int

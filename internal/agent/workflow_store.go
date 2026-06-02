@@ -17,7 +17,22 @@ import (
 type WorkflowGraphDocument struct {
 	Name        string                       `json:"name" yaml:"name"`
 	Description string                       `json:"description,omitempty" yaml:"description,omitempty"`
+	Budget      WorkflowGraphBudgetDocument  `json:"budget,omitempty" yaml:"budget,omitempty"`
 	Stages      []WorkflowGraphStageDocument `json:"stages" yaml:"stages"`
+}
+
+// WorkflowGraphBudgetDocument configures workflow-level model budget limits.
+type WorkflowGraphBudgetDocument struct {
+	SoftPromptTokens  int `json:"soft_prompt_tokens,omitempty" yaml:"soft_prompt_tokens,omitempty"`
+	HardPromptTokens  int `json:"hard_prompt_tokens,omitempty" yaml:"hard_prompt_tokens,omitempty"`
+	SoftOutputTokens  int `json:"soft_output_tokens,omitempty" yaml:"soft_output_tokens,omitempty"`
+	HardOutputTokens  int `json:"hard_output_tokens,omitempty" yaml:"hard_output_tokens,omitempty"`
+	SoftTotalTokens   int `json:"soft_total_tokens,omitempty" yaml:"soft_total_tokens,omitempty"`
+	HardTotalTokens   int `json:"hard_total_tokens,omitempty" yaml:"hard_total_tokens,omitempty"`
+	SoftLLMCalls      int `json:"soft_llm_calls,omitempty" yaml:"soft_llm_calls,omitempty"`
+	HardLLMCalls      int `json:"hard_llm_calls,omitempty" yaml:"hard_llm_calls,omitempty"`
+	SoftContinuations int `json:"soft_continuations,omitempty" yaml:"soft_continuations,omitempty"`
+	HardContinuations int `json:"hard_continuations,omitempty" yaml:"hard_continuations,omitempty"`
 }
 
 // WorkflowGraphStageDocument is one persisted workflow stage.
@@ -28,6 +43,7 @@ type WorkflowGraphStageDocument struct {
 	Skill              string                                     `json:"skill" yaml:"skill"`
 	Tool               string                                     `json:"tool,omitempty" yaml:"tool,omitempty"`
 	Model              WorkflowGraphStageModelDocument            `json:"model,omitempty" yaml:"model,omitempty"`
+	Execution          WorkflowGraphExecutionContractDocument     `json:"execution,omitempty" yaml:"execution,omitempty"`
 	Params             map[string]string                          `json:"params,omitempty" yaml:"params,omitempty"`
 	Input              map[string]string                          `json:"input,omitempty" yaml:"input,omitempty"`
 	Outputs            map[string]string                          `json:"outputs,omitempty" yaml:"outputs,omitempty"`
@@ -59,6 +75,21 @@ type WorkflowGraphStageModelDocument struct {
 	Model       string   `json:"model,omitempty" yaml:"model,omitempty"`
 	MaxTokens   int      `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
 	Temperature *float64 `json:"temperature,omitempty" yaml:"temperature,omitempty"`
+}
+
+// WorkflowGraphExecutionContractDocument declares operator and boundary
+// requirements for stages that may run outside a planning or dry-run boundary.
+type WorkflowGraphExecutionContractDocument struct {
+	Mode                    string   `json:"mode,omitempty" yaml:"mode,omitempty"`
+	RiskLevel               string   `json:"risk_level,omitempty" yaml:"risk_level,omitempty"`
+	Boundary                string   `json:"boundary,omitempty" yaml:"boundary,omitempty"`
+	RequiresApproval        bool     `json:"requires_approval,omitempty" yaml:"requires_approval,omitempty"`
+	RequiresAuthorizedScope bool     `json:"requires_authorized_scope,omitempty" yaml:"requires_authorized_scope,omitempty"`
+	RequiresRollback        bool     `json:"requires_rollback,omitempty" yaml:"requires_rollback,omitempty"`
+	RequiresCredentialRef   bool     `json:"requires_credential_ref,omitempty" yaml:"requires_credential_ref,omitempty"`
+	RequiresAllowlist       bool     `json:"requires_allowlist,omitempty" yaml:"requires_allowlist,omitempty"`
+	AllowLiveTools          []string `json:"allow_live_tools,omitempty" yaml:"allow_live_tools,omitempty"`
+	RequiredParams          []string `json:"required_params,omitempty" yaml:"required_params,omitempty"`
 }
 
 // WorkflowGraphStageContextDocument controls which context a stage receives.
@@ -632,6 +663,7 @@ func (d WorkflowGraphDocument) toInternalGraph() workflowGraph {
 			Skill:              stage.Skill,
 			Tool:               stage.Tool,
 			Model:              workflowGraphStageModelToInternal(stage.Model),
+			Execution:          workflowGraphExecutionToInternal(stage.Execution),
 			Params:             copyStringMap(stage.Params),
 			Input:              copyStringMap(stage.Input),
 			Outputs:            copyStringMap(stage.Outputs),
@@ -651,7 +683,37 @@ func (d WorkflowGraphDocument) toInternalGraph() workflowGraph {
 			Position:           stage.Position,
 		})
 	}
-	return workflowGraph{Name: d.Name, Description: d.Description, Stages: stages}
+	return workflowGraph{Name: d.Name, Description: d.Description, Budget: workflowGraphBudgetToInternal(d.Budget), Stages: stages}
+}
+
+func workflowGraphExecutionToInternal(execution WorkflowGraphExecutionContractDocument) workflowGraphExecutionContract {
+	return workflowGraphExecutionContract{
+		Mode:                    execution.Mode,
+		RiskLevel:               execution.RiskLevel,
+		Boundary:                execution.Boundary,
+		RequiresApproval:        execution.RequiresApproval,
+		RequiresAuthorizedScope: execution.RequiresAuthorizedScope,
+		RequiresRollback:        execution.RequiresRollback,
+		RequiresCredentialRef:   execution.RequiresCredentialRef,
+		RequiresAllowlist:       execution.RequiresAllowlist,
+		AllowLiveTools:          append([]string(nil), execution.AllowLiveTools...),
+		RequiredParams:          append([]string(nil), execution.RequiredParams...),
+	}
+}
+
+func workflowGraphBudgetToInternal(budget WorkflowGraphBudgetDocument) workflowGraphBudget {
+	return workflowGraphBudget{
+		SoftPromptTokens:  budget.SoftPromptTokens,
+		HardPromptTokens:  budget.HardPromptTokens,
+		SoftOutputTokens:  budget.SoftOutputTokens,
+		HardOutputTokens:  budget.HardOutputTokens,
+		SoftTotalTokens:   budget.SoftTotalTokens,
+		HardTotalTokens:   budget.HardTotalTokens,
+		SoftLLMCalls:      budget.SoftLLMCalls,
+		HardLLMCalls:      budget.HardLLMCalls,
+		SoftContinuations: budget.SoftContinuations,
+		HardContinuations: budget.HardContinuations,
+	}
 }
 
 func workflowGraphStageModelToInternal(model WorkflowGraphStageModelDocument) workflowGraphStageModel {
@@ -771,13 +833,19 @@ func (w *WorkflowRunner) validateWorkflowGraphDocumentIssues(name string, doc Wo
 		seen[key] = struct{}{}
 		stageNames[key] = stage.Name
 		internalStage := workflowGraphStage{
-			Name:     stage.Name,
-			NodeType: stage.NodeType,
-			Agent:    stage.Agent,
-			Skill:    stage.Skill,
-			Params:   copyStringMap(stage.Params),
+			Name:      stage.Name,
+			NodeType:  stage.NodeType,
+			Agent:     stage.Agent,
+			Skill:     stage.Skill,
+			Execution: workflowGraphExecutionToInternal(stage.Execution),
+			Params:    copyStringMap(stage.Params),
 		}
 		issues = append(issues, validateWorkflowGraphArtifactIssues(fallbackWorkflowGraphValue(doc.Name, name), stage.Name, stage.Artifacts)...)
+		issues = append(issues, w.validateWorkflowGraphStageSoftBudgetParamIssues(fallbackWorkflowGraphValue(doc.Name, name), stage.Name, stage.Params)...)
+		issues = append(issues, w.validateWorkflowGraphStageModelEscalationParamIssues(fallbackWorkflowGraphValue(doc.Name, name), stage.Name, stage.Params)...)
+		if err := validateWorkflowGraphExecutionContract(fallbackWorkflowGraphValue(doc.Name, name), internalStage); err != nil {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "execution", Message: err.Error()})
+		}
 		if isTeamWorkflowNode(internalStage) {
 			teamName := workflowGraphTeamTemplateName(internalStage)
 			if _, ok := w.TeamTemplate(teamName); !ok {
@@ -879,6 +947,74 @@ func (w *WorkflowRunner) validateWorkflowGraphStageModelIssues(graphName, stageN
 
 func workflowGraphStageModelDocumentConfigured(model WorkflowGraphStageModelDocument) bool {
 	return strings.TrimSpace(model.Provider) != "" || strings.TrimSpace(model.Model) != "" || model.MaxTokens != 0 || model.Temperature != nil
+}
+
+func (w *WorkflowRunner) validateWorkflowGraphStageSoftBudgetParamIssues(graphName, stageName string, params map[string]string) []WorkflowGraphValidationIssue {
+	issues := make([]WorkflowGraphValidationIssue, 0, 4)
+	for _, keys := range [][]string{
+		{"soft_budget_max_tokens", "soft_budget.max_tokens", "budget.soft_max_tokens", "budget_soft_max_tokens"},
+		{"soft_budget_max_parallel_branches", "soft_budget_max_branches", "soft_budget.max_parallel_branches", "budget.soft_max_parallel_branches", "budget_soft_max_parallel_branches"},
+	} {
+		key, value := workflowGraphParamFirstKey(params, keys...)
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 0 {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stageName, Field: "params." + key, Message: fmt.Sprintf("workflow graph %s stage %s params.%s must be a non-negative integer", graphName, stageName, key)})
+		}
+	}
+	if key, value := workflowGraphParamFirstKey(params, "soft_budget_temperature", "soft_budget.temperature", "budget.soft_temperature", "budget_soft_temperature"); value != "" {
+		if _, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err != nil {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stageName, Field: "params." + key, Message: fmt.Sprintf("workflow graph %s stage %s params.%s must be a number", graphName, stageName, key)})
+		}
+	}
+	provider := workflowGraphParamFirst(params, "soft_budget_provider", "soft_budget.provider", "budget.soft_provider", "budget_soft_provider")
+	if provider != "" && w != nil && w.runtime != nil {
+		if _, ok := w.runtime.Provider(provider); !ok {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stageName, Field: "params.soft_budget_provider", Message: fmt.Sprintf("workflow graph %s stage %s references unknown soft budget model provider %s", graphName, stageName, provider)})
+		}
+	}
+	for _, keys := range [][]string{
+		{"soft_budget_max_parallel_branches_ref", "soft_budget_max_branches_ref", "soft_budget.max_parallel_branches_ref", "budget.soft_max_parallel_branches_ref", "budget_soft_max_parallel_branches_ref"},
+	} {
+		key, value := workflowGraphParamFirstKey(params, keys...)
+		if value == "" {
+			continue
+		}
+		if !strings.Contains(value, ".") {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "warning", Stage: stageName, Field: "params." + key, Message: fmt.Sprintf("workflow graph %s stage %s %s should reference an upstream numeric output", graphName, stageName, key)})
+		}
+	}
+	return issues
+}
+
+func (w *WorkflowRunner) validateWorkflowGraphStageModelEscalationParamIssues(graphName, stageName string, params map[string]string) []WorkflowGraphValidationIssue {
+	issues := make([]WorkflowGraphValidationIssue, 0, 4)
+	for _, keys := range [][]string{
+		{"escalate_max_tokens", "escalation_max_tokens", "model_escalation_max_tokens", "contract_fail_max_tokens"},
+	} {
+		key, value := workflowGraphParamFirstKey(params, keys...)
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(strings.TrimSpace(value))
+		if err != nil || parsed < 0 {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stageName, Field: "params." + key, Message: fmt.Sprintf("workflow graph %s stage %s params.%s must be a non-negative integer", graphName, stageName, key)})
+		}
+	}
+	if key, value := workflowGraphParamFirstKey(params, "escalate_temperature", "escalation_temperature", "model_escalation_temperature", "contract_fail_temperature"); value != "" {
+		if _, err := strconv.ParseFloat(strings.TrimSpace(value), 64); err != nil {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stageName, Field: "params." + key, Message: fmt.Sprintf("workflow graph %s stage %s params.%s must be a number", graphName, stageName, key)})
+		}
+	}
+	provider := workflowGraphParamFirst(params, "escalate_provider", "escalation_provider", "model_escalation_provider", "contract_fail_provider", "contract_fail_model_provider")
+	if provider != "" && w != nil && w.runtime != nil {
+		if _, ok := w.runtime.Provider(provider); !ok {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stageName, Field: "params.escalate_provider", Message: fmt.Sprintf("workflow graph %s stage %s references unknown model escalation provider %s", graphName, stageName, provider)})
+		}
+	}
+	return issues
 }
 
 func (w *WorkflowRunner) validateWorkflowGraphStageToolIssues(graphName, stageName, tool string, params map[string]string) []WorkflowGraphValidationIssue {

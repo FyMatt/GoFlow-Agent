@@ -1427,6 +1427,26 @@ func TestServerMemoryEndpoints(t *testing.T) {
 	if restoreResp.Code != http.StatusOK || strings.Contains(restoreResp.Body.String(), `"retired":true`) {
 		t.Fatalf("expected restored solution response, got %d body=%s", restoreResp.Code, restoreResp.Body.String())
 	}
+
+	replacement, err := store.UpsertSolution(memory.SolutionMemory{
+		ProblemSignature: "login validation replacement",
+		Problem:          "replacement login validation approach",
+		Decision:         "validate email and domain before persistence",
+		Solution:         "use the shared validator before saving",
+		Confidence:       "high",
+		Resolved:         true,
+	})
+	if err != nil {
+		t.Fatalf("Upsert replacement solution: %v", err)
+	}
+	replacementID := replacement.Solutions[0].ID
+	supersedeReq := httptest.NewRequest(http.MethodPost, "/api/memory/solutions/"+solutionID+"/supersede", strings.NewReader(`{"reason":"better verified path","superseded_by":"`+replacementID+`"}`))
+	supersedeReq.Header.Set("Content-Type", "application/json")
+	supersedeResp := httptest.NewRecorder()
+	server.ServeHTTP(supersedeResp, supersedeReq)
+	if supersedeResp.Code != http.StatusOK || !strings.Contains(supersedeResp.Body.String(), `"retired":true`) || !strings.Contains(supersedeResp.Body.String(), `"superseded_by":"`+replacementID+`"`) {
+		t.Fatalf("expected superseded solution response, got %d body=%s", supersedeResp.Code, supersedeResp.Body.String())
+	}
 }
 
 func TestServerSessionCompactEndpoint(t *testing.T) {
@@ -9442,6 +9462,279 @@ stages:
 	}
 }
 
+func TestServerWorkflowRunContinueOutputEndpointResumesIncompleteStage(t *testing.T) {
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, session.New(8), []schema.ChatResponse{
+		{Message: schema.Message{Role: "assistant", Content: "partial 1"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "partial 2"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "partial 3"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "partial 4"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "completed plan"}, StopReason: schema.StopReasonStop},
+		{Message: schema.Message{Content: "audit after continue"}},
+	})
+	dir := filepath.Join(runtimeRef.RuntimeHome(), "workflows", "continue-output-flow")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir workflow: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`name: continue-output-flow
+stages:
+  - name: draft
+    agent: planner
+    skill: execution-plan
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	server := NewServer(runtimeRef)
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/workflows/continue-output-flow", strings.NewReader(`{"input":"write the full plan"}`))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startResponse := httptest.NewRecorder()
+	server.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow start 200, got %d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var paused agent.WorkflowResult
+	if err := json.NewDecoder(startResponse.Body).Decode(&paused); err != nil {
+		t.Fatalf("decode paused workflow: %v", err)
+	}
+	if paused.Status != "paused_need_more_budget" || paused.RunID == "" || paused.NextStage != "draft" {
+		t.Fatalf("expected budget pause at draft, got %#v", paused)
+	}
+
+	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+paused.RunID+"/actions", nil)
+	actionsResponse := httptest.NewRecorder()
+	server.ServeHTTP(actionsResponse, actionsRequest)
+	if actionsResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow actions 200, got %d body=%s", actionsResponse.Code, actionsResponse.Body.String())
+	}
+	var actions []workflowRunAction
+	if err := json.NewDecoder(actionsResponse.Body).Decode(&actions); err != nil {
+		t.Fatalf("decode workflow actions: %v", err)
+	}
+	if !workflowActionAvailable(actions, "continue_output", true) || !workflowActionAvailable(actions, "retry", true) || !workflowActionAvailable(actions, "cancel", true) {
+		t.Fatalf("expected continue_output/retry/cancel actions, got %#v", actions)
+	}
+	continueAction := workflowActionByName(actions, "continue_output")
+	if continueAction == nil || continueAction.Kind != "budget_recovery" || !continueAction.SupportsBackground || !continueAction.SupportsStream || !continueAction.AcceptsBody || continueAction.Path != "/api/workflow-runs/"+paused.RunID+"/continue-output" {
+		t.Fatalf("expected machine-readable continue_output action, got %#v", continueAction)
+	}
+
+	continueRequest := httptest.NewRequest(http.MethodPost, "/api/workflow-runs/"+paused.RunID+"/continue-output", nil)
+	continueResponse := httptest.NewRecorder()
+	server.ServeHTTP(continueResponse, continueRequest)
+	if continueResponse.Code != http.StatusOK {
+		t.Fatalf("expected continue-output 200, got %d body=%s", continueResponse.Code, continueResponse.Body.String())
+	}
+	var resumed agent.WorkflowResult
+	if err := json.NewDecoder(continueResponse.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode resumed workflow: %v", err)
+	}
+	if resumed.Status != "completed" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) != 2 {
+		t.Fatalf("expected same workflow run to complete after continue-output, got %#v", resumed)
+	}
+	if resumed.CompletedStages[0].Result.Output != "completed plan" || resumed.CompletedStages[1].Result.Output != "audit after continue" {
+		t.Fatalf("expected continued draft and downstream audit, got %#v", resumed.CompletedStages)
+	}
+	run := workflowRunSnapshotByID(t, runtimeRef, paused.RunID)
+	if run.Status != "completed" || len(run.CompletedStages) != 2 || run.CompletedStages[0].Status == "incomplete" {
+		t.Fatalf("expected persisted completed run after continue-output, got %#v", run)
+	}
+}
+
+func TestServerWorkflowRunApproveBudgetEndpointResumesHardBudgetPause(t *testing.T) {
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, session.New(8), []schema.ChatResponse{
+		{Message: schema.Message{Content: "plan complete"}, Usage: schema.TokenUsage{PromptTokens: 4, OutputTokens: 2}},
+		{Message: schema.Message{Content: "audit complete"}, Usage: schema.TokenUsage{PromptTokens: 3, OutputTokens: 1}},
+	})
+	dir := filepath.Join(runtimeRef.RuntimeHome(), "workflows", "approve-budget-flow")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir workflow: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`name: approve-budget-flow
+budget:
+  hard_llm_calls: 1
+stages:
+  - name: plan
+    agent: planner
+    skill: execution-plan
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	server := NewServer(runtimeRef)
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/workflows/approve-budget-flow", strings.NewReader(`{"input":"ship with budget gate"}`))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startResponse := httptest.NewRecorder()
+	server.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow start 200, got %d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var paused agent.WorkflowResult
+	if err := json.NewDecoder(startResponse.Body).Decode(&paused); err != nil {
+		t.Fatalf("decode paused workflow: %v", err)
+	}
+	if paused.Status != "awaiting_budget_approval" || paused.RunID == "" || paused.NextStage != "audit" {
+		t.Fatalf("expected hard budget pause at audit, got %#v", paused)
+	}
+	if paused.BudgetMetric != "llm_calls" || paused.BudgetHardLimit != 1 || paused.BudgetUsed < 1 {
+		t.Fatalf("expected hard budget diagnostics in pause response, got %#v", paused)
+	}
+
+	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+paused.RunID+"/actions", nil)
+	actionsResponse := httptest.NewRecorder()
+	server.ServeHTTP(actionsResponse, actionsRequest)
+	if actionsResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow actions 200, got %d body=%s", actionsResponse.Code, actionsResponse.Body.String())
+	}
+	var actions []workflowRunAction
+	if err := json.NewDecoder(actionsResponse.Body).Decode(&actions); err != nil {
+		t.Fatalf("decode workflow actions: %v", err)
+	}
+	if !workflowActionAvailable(actions, "approve_budget", true) || workflowActionAvailable(actions, "continue_output", true) || !workflowActionAvailable(actions, "retry", true) || !workflowActionAvailable(actions, "cancel", true) {
+		t.Fatalf("expected approve_budget/retry/cancel actions only, got %#v", actions)
+	}
+	approveAction := workflowActionByName(actions, "approve_budget")
+	if approveAction == nil || approveAction.Kind != "budget_recovery" || !approveAction.SupportsBackground || !approveAction.SupportsStream || !approveAction.AcceptsBody || approveAction.Path != "/api/workflow-runs/"+paused.RunID+"/approve-budget" {
+		t.Fatalf("expected machine-readable approve_budget action, got %#v", approveAction)
+	}
+
+	approveRequest := httptest.NewRequest(http.MethodPost, "/api/workflow-runs/"+paused.RunID+"/approve-budget", nil)
+	approveResponse := httptest.NewRecorder()
+	server.ServeHTTP(approveResponse, approveRequest)
+	if approveResponse.Code != http.StatusOK {
+		t.Fatalf("expected approve-budget 200, got %d body=%s", approveResponse.Code, approveResponse.Body.String())
+	}
+	var resumed agent.WorkflowResult
+	if err := json.NewDecoder(approveResponse.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode resumed workflow: %v", err)
+	}
+	if resumed.Status != "completed" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) != 2 {
+		t.Fatalf("expected same workflow run to complete after budget approval, got %#v", resumed)
+	}
+	run := workflowRunSnapshotByID(t, runtimeRef, paused.RunID)
+	if run.Status != "completed" || run.BudgetLLMCalls < 2 || run.BudgetTotalTokens < 10 {
+		t.Fatalf("expected persisted completed run with budget summary, got %#v", run)
+	}
+	if run.BudgetMetric != "llm_calls" || run.BudgetHardLimit != 1 {
+		t.Fatalf("expected persisted budget limit diagnostics after approval, got %#v", run)
+	}
+	foundApprovalEvent := false
+	for _, event := range run.Events {
+		if event.Type == "workflow_budget_approved" && event.Stage == "audit" {
+			foundApprovalEvent = true
+			break
+		}
+	}
+	if !foundApprovalEvent {
+		t.Fatalf("expected workflow_budget_approved event, got %#v", run.Events)
+	}
+}
+
+func TestServerWorkflowRunEscalateModelEndpointResumesBlockedContractFailure(t *testing.T) {
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, session.New(8), []schema.ChatResponse{
+		{Message: schema.Message{Content: "plain text is not json"}},
+		{Message: schema.Message{Content: `{"summary":"api recovered"}`}},
+		{Message: schema.Message{Content: "audit after escalation"}},
+	})
+	dir := filepath.Join(runtimeRef.RuntimeHome(), "workflows", "escalate-model-action-flow")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir workflow: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "workflow.yaml"), []byte(`name: escalate-model-action-flow
+stages:
+  - name: implement
+    agent: fixer
+    skill: code-writing
+    params:
+      contract_required: "true"
+      require_json_output: "true"
+      required_json_keys: summary
+      escalate_model: strong-api-model
+    next: [audit]
+  - name: audit
+    agent: auditor
+    skill: code-audit
+`), 0o644); err != nil {
+		t.Fatalf("write workflow: %v", err)
+	}
+	server := NewServer(runtimeRef)
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/workflows/escalate-model-action-flow", strings.NewReader(`{"input":"implement as json"}`))
+	startRequest.Header.Set("Content-Type", "application/json")
+	startResponse := httptest.NewRecorder()
+	server.ServeHTTP(startResponse, startRequest)
+	if startResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow start 200, got %d body=%s", startResponse.Code, startResponse.Body.String())
+	}
+	var blocked agent.WorkflowResult
+	if err := json.NewDecoder(startResponse.Body).Decode(&blocked); err != nil {
+		t.Fatalf("decode blocked workflow: %v", err)
+	}
+	if blocked.Status != "blocked" || blocked.RunID == "" || blocked.NextStage != "implement" {
+		t.Fatalf("expected contract block at implement, got %#v", blocked)
+	}
+
+	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+blocked.RunID+"/actions", nil)
+	actionsResponse := httptest.NewRecorder()
+	server.ServeHTTP(actionsResponse, actionsRequest)
+	if actionsResponse.Code != http.StatusOK {
+		t.Fatalf("expected workflow actions 200, got %d body=%s", actionsResponse.Code, actionsResponse.Body.String())
+	}
+	var actions []workflowRunAction
+	if err := json.NewDecoder(actionsResponse.Body).Decode(&actions); err != nil {
+		t.Fatalf("decode workflow actions: %v", err)
+	}
+	if !workflowActionAvailable(actions, "escalate_model", true) || !workflowActionAvailable(actions, "retry", true) {
+		t.Fatalf("expected escalate_model/retry actions, got %#v", actions)
+	}
+	escalateAction := workflowActionByName(actions, "escalate_model")
+	if escalateAction == nil ||
+		escalateAction.Kind != "model_escalation" ||
+		!escalateAction.SupportsBackground ||
+		!escalateAction.SupportsStream ||
+		!escalateAction.AcceptsBody ||
+		escalateAction.Path != "/api/workflow-runs/"+blocked.RunID+"/escalate-model" ||
+		escalateAction.StreamPath != "/api/workflow-runs/"+blocked.RunID+"/escalate-model/stream" {
+		t.Fatalf("expected machine-readable escalate_model action, got %#v", escalateAction)
+	}
+
+	escalateRequest := httptest.NewRequest(http.MethodPost, "/api/workflow-runs/"+blocked.RunID+"/escalate-model", nil)
+	escalateResponse := httptest.NewRecorder()
+	server.ServeHTTP(escalateResponse, escalateRequest)
+	if escalateResponse.Code != http.StatusOK {
+		t.Fatalf("expected escalate-model 200, got %d body=%s", escalateResponse.Code, escalateResponse.Body.String())
+	}
+	var resumed agent.WorkflowResult
+	if err := json.NewDecoder(escalateResponse.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode resumed workflow: %v", err)
+	}
+	if resumed.Status != "completed" || resumed.RunID != blocked.RunID || len(resumed.CompletedStages) != 2 {
+		t.Fatalf("expected same workflow run to complete after model escalation, got %#v", resumed)
+	}
+	if resumed.CompletedStages[0].Metadata["model.escalated"] != "true" ||
+		resumed.CompletedStages[0].Metadata["model.model"] != "strong-api-model" ||
+		resumed.CompletedStages[0].Output.Values["summary"] != "api recovered" {
+		t.Fatalf("expected escalated stage metadata and JSON output, got %#v", resumed.CompletedStages[0])
+	}
+	run := workflowRunSnapshotByID(t, runtimeRef, blocked.RunID)
+	var modelEscalated, stageRetry bool
+	for _, event := range run.Events {
+		if event.Reason == "model_escalated" && event.Stage == "implement" {
+			modelEscalated = true
+		}
+		if event.Reason == "stage_retry" && event.Stage == "implement" {
+			stageRetry = true
+		}
+	}
+	if !modelEscalated || !stageRetry {
+		t.Fatalf("expected model_escalated and stage_retry events, got %#v", run.Events)
+	}
+}
+
 func TestServerWorkflowRunInputEndpointResumesAfterSessionLoad(t *testing.T) {
 	firstState := session.New(8)
 	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, nil)
@@ -10169,7 +10462,12 @@ stages:
 }
 
 func TestServerWorkflowRunHistoryEndpointsRecordStreamedRun(t *testing.T) {
-	runtimeRef := newAPITestRuntime(t)
+	state := session.New(8)
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, []schema.ChatResponse{
+		{Message: schema.Message{Content: "plan ready"}, Usage: schema.TokenUsage{PromptTokens: 11, OutputTokens: 3, CachedTokens: 2}},
+		{Message: schema.Message{Content: "fix completed"}, Usage: schema.TokenUsage{PromptTokens: 13, OutputTokens: 4}},
+		{Message: schema.Message{Content: "audit done"}, Usage: schema.TokenUsage{PromptTokens: 17, OutputTokens: 5}},
+	})
 	server := NewServer(runtimeRef)
 	request := httptest.NewRequest(http.MethodPost, "/api/workflows/plan-fix-audit/stream", strings.NewReader(`{"input":"ship it"}`))
 	request.Header.Set("Content-Type", "application/json")
@@ -10292,6 +10590,64 @@ func TestServerWorkflowRunHistoryEndpointsRecordStreamedRun(t *testing.T) {
 	for _, item := range timeline {
 		if item.Kind != "event" || item.Stage != "plan" {
 			t.Fatalf("expected event-only plan timeline item, got %#v", item)
+		}
+	}
+
+	diagnosticRunID := state.StartWorkflowRun("diagnostic-flow", "ship it")
+	state.AppendWorkflowRunEvent(diagnosticRunID, session.WorkflowRunEventSnapshot{
+		Stage:             "draft",
+		Type:              "stage_paused",
+		Content:           "draft output needs more budget",
+		AgentID:           "planner",
+		NeedsAction:       true,
+		Reason:            "output_limit",
+		Severity:          "warning",
+		BudgetScope:       "output",
+		ContractCheck:     "completion_integrity",
+		SourceRef:         "result.output",
+		StopReason:        schema.StopReasonMaxTokens,
+		ContinuationCount: 3,
+		Incomplete:        true,
+	})
+	state.CompleteWorkflowRun(diagnosticRunID, "paused_need_more_budget", "draft output needs more budget", "draft", "draft output needs more budget", nil, []session.WorkflowRunStageSnapshot{{
+		Stage:    "draft",
+		AgentID:  "planner",
+		NodeType: "agent",
+		Status:   "incomplete",
+		Metadata: map[string]string{
+			"incomplete":         "true",
+			"incomplete_reason":  "draft output needs more budget",
+			"budget_scope":       "output",
+			"contract_check":     "completion_integrity",
+			"source_ref":         "result.output",
+			"stop_reason":        schema.StopReasonMaxTokens,
+			"continuation_count": "3",
+		},
+		Result: schema.AgentResult{
+			Output:            "partial draft",
+			AgentID:           "planner",
+			Incomplete:        true,
+			IncompleteReason:  "draft output needs more budget",
+			StopReason:        schema.StopReasonMaxTokens,
+			ContinuationCount: 3,
+		},
+	}})
+	diagnosticTimelineRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+diagnosticRunID+"/timeline?needs_action=1", nil)
+	diagnosticTimelineResponse := httptest.NewRecorder()
+	server.ServeHTTP(diagnosticTimelineResponse, diagnosticTimelineRequest)
+	if diagnosticTimelineResponse.Code != http.StatusOK {
+		t.Fatalf("expected diagnostic workflow timeline 200, got %d body=%s", diagnosticTimelineResponse.Code, diagnosticTimelineResponse.Body.String())
+	}
+	var diagnosticTimeline []workflowRunTimelineItem
+	if err := json.NewDecoder(diagnosticTimelineResponse.Body).Decode(&diagnosticTimeline); err != nil {
+		t.Fatalf("decode diagnostic workflow timeline: %v", err)
+	}
+	if len(diagnosticTimeline) < 2 {
+		t.Fatalf("expected event and stage diagnostic timeline entries, got %#v", diagnosticTimeline)
+	}
+	for _, item := range diagnosticTimeline {
+		if !item.Incomplete || !item.NeedsAction || item.StopReason != schema.StopReasonMaxTokens || item.BudgetScope != "output" || item.ContractCheck != "completion_integrity" || item.ContinuationCount != 3 {
+			t.Fatalf("expected complete diagnostic fields on timeline item, got %#v", item)
 		}
 	}
 

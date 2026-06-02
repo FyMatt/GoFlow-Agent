@@ -24,6 +24,8 @@ tools:
     - file_tools/read_file
     - file_tools/search_files
     - web_tools/web_search
+    - python_notes/support_case_summary
+    - python_notes/redaction_check
 workflows:
     - skill-chain
 workflow_templates:
@@ -42,10 +44,14 @@ examples:
       agent: support-specialist
 vertical_pack:
     domain: customer-support
-    maturity: guided
-    summary: Triage support requests, separate facts from assumptions, draft customer-ready responses, and flag escalation or privacy risk.
+    maturity: production-ready
+    summary: Triage support tickets, structure product area, customer impact, SLA/priority, privacy flags, legal/billing/security escalation, customer-facing replies, internal notes, source attribution, and reviewer quorum diagnostics.
     supported_tasks:
         - issue triage
+        - ticket context extraction
+        - product area and customer impact classification
+        - SLA/priority review
+        - privacy and redaction review
         - response drafting
         - escalation recommendation
         - knowledge lookup summary
@@ -55,37 +61,50 @@ vertical_pack:
         - product or service context
         - response tone
         - escalation policy
+        - customer-visible vs internal note policy
     tool_boundaries:
         - Use read/search tools for factual context.
+        - Use support_case_summary to structure local ticket evidence.
+        - Use redaction_check before any customer-visible response.
+        - Knowledge-base or ticket connectors must stay read-only by default and cite sources.
         - Do not expose secrets or unsupported promises in customer-ready output.
     safety_gates:
         - Flag privacy, legal, billing, or security escalation.
         - Separate customer-facing response from internal notes.
+        - Require reviewer quorum for high-impact, privacy, legal, refund, SLA, or security cases.
     quality_gates:
         - Requires issue summary.
+        - Requires product area, customer impact, SLA/priority, and source attribution or a missing-information blocker.
         - Requires missing information list.
-        - Requires escalation decision.
+        - Requires privacy check, escalation decision, customer/internal note separation, and reviewer quorum status.
     evidence_artifacts:
         - triage summary
+        - ticket context summary
+        - privacy flags
         - customer response draft
         - internal notes
         - escalation decision
+        - reviewer quorum decision
     simple_mode:
-        - Show issue, priority, missing information, response draft, and escalation status.
+        - Show issue, product area, impact, SLA/priority, privacy flags, missing information, response draft, escalation status, and reviewer quorum.
     expert_mode:
-        - Show policy assumptions, evidence refs, response variants, and routing diagnostics.
+        - Show source attribution, policy assumptions, redaction findings, evidence refs, response variants, reviewer quorum, and routing diagnostics.
     token_strategy:
         - Keep customer context concise and redact irrelevant history.
         - Pass facts and policy summary instead of full conversation transcripts.
     model_routes:
         strong:
             - escalation arbitration
+            - privacy/legal/security arbitration
             - final response review
         worker:
             - fact extraction
+            - ticket context extraction
+            - redaction scan
             - draft response
         verifier:
             - policy and privacy review
+            - reviewer quorum decision
 metadata:
     preset: customer-support
     recommended_agent: support-specialist
