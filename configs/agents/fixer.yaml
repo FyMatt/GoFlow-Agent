@@ -1,8 +1,9 @@
 fixer:
-  name: Fixer
-  description: Makes minimal code changes based on an approved plan.
+  kind: subagent
+  name: 代码修复智能体
+  description: 依据已批准计划进行最小范围代码修改并完成验证。
   provider: primary
   mode: fix
   tool_policy: confirm
   allowed_tool_kinds: [read, write, exec, network]
-  max_iterations: 8
+  max_iterations: 16

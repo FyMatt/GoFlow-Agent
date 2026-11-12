@@ -2,8 +2,8 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: software-quality-gate
-title: Software Quality Gate
-description: Plan, implement, verify, audit, and route through an evidence-backed quality gate before handoff.
+title: 软件质量门禁
+description: 依次完成规划、实现、验证和审计，并通过有证据支持的质量门禁后交付。
 category: software
 tags:
     - coding
@@ -31,6 +31,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Implementation Plan, Target Files, Acceptance Checks, Verification Commands, Risks, and Rollback Notes.
           outputs:
             plan: result.output
@@ -60,6 +62,7 @@ graph:
           agent: fixer
           skill: code-writing
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Change Summary, Files Changed, Verification Attempted, Deviations, and Residual Risk.
             edit_policy: Apply scoped changes, preserve user edits, and leave unrelated files untouched.
           input:
@@ -96,6 +99,8 @@ graph:
           agent: auditor
           skill: code-audit
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Verification Result, Commands Run, Coverage, Failures, Evidence, and Residual Risk.
             verification_command: go test ./...
           input:
@@ -129,6 +134,7 @@ graph:
           agent: auditor
           skill: code-audit
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Audit Decision, Findings, Missed Requirements, Test Gaps, Safety Notes, Recommendation, and Release Readiness.
             severity_order: Lead with concrete bugs, regressions, data loss, security risk, or broken acceptance criteria.
           input:
@@ -169,6 +175,7 @@ graph:
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
+            verification_mode: command
             allow_unknown: "false"
           routes:
             fail: revise
@@ -182,6 +189,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Delivery Status, Delivered Changes, Verification Evidence, Audit Outcome, Remaining Risks, and Next Steps.
             purpose: Produce the final user-facing software delivery report for pass, warning, or revision paths.
           input:
@@ -228,6 +237,7 @@ graph:
           agent: fixer
           skill: code-writing
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Revision Required, Blocking Issues, Missing Evidence, Safe Fix Plan, and Next Steps.
           input:
             audit: stages.audit.outputs.audit

@@ -108,10 +108,16 @@ type apiTestMCP struct {
 	result    schema.ToolResult
 	calls     int
 	toolNames []string
+	tools     []schema.Tool
+	health    map[string]string
 	metrics   map[string]interfaces.MCPServerCallMetrics
+	workspace string
 }
 
 func (m *apiTestMCP) ListTools(context.Context) ([]schema.Tool, error) {
+	if len(m.tools) > 0 {
+		return append([]schema.Tool(nil), m.tools...), nil
+	}
 	return []schema.Tool{{
 		Name:        "write_file",
 		Server:      "stub",
@@ -126,7 +132,18 @@ func (m *apiTestMCP) CallTool(context.Context, string, []byte) (schema.ToolResul
 	m.calls++
 	return m.result, nil
 }
+func (m *apiTestMCP) CallToolInWorkspace(ctx context.Context, name string, arguments []byte, workspaceRoot string) (schema.ToolResult, error) {
+	m.workspace = workspaceRoot
+	return m.CallTool(ctx, name, arguments)
+}
 func (m *apiTestMCP) HealthStatus(context.Context) map[string]string {
+	if len(m.health) > 0 {
+		out := make(map[string]string, len(m.health))
+		for name, status := range m.health {
+			out[name] = status
+		}
+		return out
+	}
 	return map[string]string{"stub": "ready"}
 }
 func (m *apiTestMCP) MCPCallMetrics() map[string]interfaces.MCPServerCallMetrics {
@@ -145,6 +162,13 @@ func (m *apiTestMCP) SetMetrics(metrics map[string]interfaces.MCPServerCallMetri
 func (m *apiTestMCP) ToolNames() []string {
 	if len(m.toolNames) > 0 {
 		return append([]string(nil), m.toolNames...)
+	}
+	if len(m.tools) > 0 {
+		names := make([]string, 0, len(m.tools))
+		for _, tool := range m.tools {
+			names = append(names, strings.Trim(strings.TrimSpace(tool.Server)+"/"+strings.TrimSpace(tool.Name), "/"))
+		}
+		return names
 	}
 	return []string{"write_file"}
 }
@@ -266,6 +290,9 @@ func newAPITestRuntimeWithStateHomeResponsesMCPCostRiskPolicyAndExtraAgents(t *t
 func apiTestDomainAgentProfiles() map[string]config.AgentProfile {
 	return map[string]config.AgentProfile{
 		"software-engineer":             {Name: "Software Engineer", Provider: "primary", Mode: "fix", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+		"quality-engineer":              {Name: "Quality Engineer", Provider: "primary", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite, config.ToolKindExec, config.ToolKindNetwork}, ToolPolicy: config.ToolPolicyConfirm},
+		"research-specialist":           {Name: "Research Specialist", Provider: "primary", Mode: "chat", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite, config.ToolKindNetwork}, ToolPolicy: config.ToolPolicyConfirm},
+		"source-verifier":               {Name: "Source Verifier", Provider: "primary", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite, config.ToolKindNetwork}, ToolPolicy: config.ToolPolicyConfirm},
 		"security-researcher":           {Name: "Security Researcher", Provider: "primary", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindNetwork}, ToolPolicy: config.ToolPolicyConfirm},
 		"web-security-researcher":       {Name: "Web Security Researcher", Provider: "primary", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindNetwork}, ToolPolicy: config.ToolPolicyConfirm},
 		"binary-analyst":                {Name: "Binary Analyst", Provider: "primary", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindUnknown}, ToolPolicy: config.ToolPolicyConfirm},
@@ -279,10 +306,11 @@ func apiTestDomainAgentProfiles() map[string]config.AgentProfile {
 func newAPICancellableWorkflowRuntime(t *testing.T) (*agent.Runtime, *apiBlockingLLM) {
 	t.Helper()
 	cfg := &config.Config{
-		RuntimeHome:  t.TempDir(),
-		Audit:        config.AuditConfig{},
-		Session:      config.SessionConfig{MaxHistory: 8},
-		DefaultAgent: "chat",
+		RuntimeHome:   t.TempDir(),
+		WorkspaceRoot: t.TempDir(),
+		Audit:         config.AuditConfig{},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
 		Providers: map[string]config.LLMConfig{
 			"primary": {Provider: "openai-compatible", BaseURL: "http://localhost:9999/v1", Model: "test-model"},
 		},
@@ -355,7 +383,8 @@ func newAPIWorkflowPendingApprovalRuntime(t *testing.T) *agent.Runtime {
 	mcpClient := &apiTestMCP{result: schema.ToolResult{CallID: "call-1", ToolName: "write_file", Content: "ok"}}
 	clients := map[string]interfaces.LLMClient{
 		"primary": &apiTestLLM{responses: []schema.ChatResponse{
-			{Message: schema.Message{Content: "plan ready"}},
+			{Message: schema.Message{Content: "Goal: write a demo file\nAcceptance Checks: file exists\nRisks: overwrite protection"}},
+			{Message: schema.Message{Content: "Implementation Steps: write the file\nTarget Files: demo.txt\nVerification Commands: read demo.txt"}},
 			{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"demo.txt","content":"hello"}`)}}},
 		}},
 	}
@@ -383,9 +412,48 @@ func newAPIWorkflowRepeatedToolApprovalRuntime(t *testing.T) (*agent.Runtime, *a
 	mcpClient := &apiTestMCP{result: schema.ToolResult{ToolName: "write_file", Content: "ok"}}
 	clients := map[string]interfaces.LLMClient{
 		"primary": &apiTestLLM{responses: []schema.ChatResponse{
-			{Message: schema.Message{Content: "plan ready"}},
+			{Message: schema.Message{Content: "Goal: write two demo files\nAcceptance Checks: both files exist\nRisks: changed arguments require new approval"}},
+			{Message: schema.Message{Content: "Implementation Steps: write both files\nTarget Files: demo.txt, demo_test.txt\nVerification Commands: read both files"}},
 			{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"demo.txt","content":"hello"}`)}}},
 			{ToolCalls: []schema.ToolCall{{ID: "call-2", Name: "write_file", Arguments: json.RawMessage(`{"path":"demo_test.txt","content":"test"}`)}}},
+			{Message: schema.Message{Content: "fix done"}},
+			{Message: schema.Message{Content: "audit done"}},
+		}},
+	}
+	runtimeRef, err := agent.NewRuntime(cfg, clients, apiTestSkillManager{}, mcpClient, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	return runtimeRef, mcpClient
+}
+
+func newAPIRiskPolicyWorkflowBatchApprovalRuntime(t *testing.T) (*agent.Runtime, *apiTestMCP) {
+	t.Helper()
+	cfg := &config.Config{
+		RuntimeHome:  t.TempDir(),
+		Audit:        config.AuditConfig{},
+		Session:      config.SessionConfig{MaxHistory: 8},
+		DefaultAgent: "chat",
+		ToolRiskPolicy: config.ToolRiskPolicyConfig{
+			DisableRememberForUnsandboxedRiskyTools: true,
+		},
+		MCP: []config.MCPServerRef{{Name: "stub", Isolation: "process_group"}},
+		Agents: map[string]config.AgentProfile{
+			"chat":    {Name: "Chat", Provider: "primary", Mode: "chat", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite, config.ToolKindExec}, ToolPolicy: config.ToolPolicyConfirm},
+			"planner": {Name: "Planner", Provider: "primary", Mode: "plan", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"fixer":   {Name: "Fixer", Provider: "primary", Mode: "fix", Model: "test-model", MaxIterations: 3, AllowedToolKinds: []config.ToolKind{config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+			"auditor": {Name: "Auditor", Provider: "primary", Mode: "audit", Model: "test-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+		},
+	}
+	mcpClient := &apiTestMCP{result: schema.ToolResult{ToolName: "write_file", Content: "ok"}}
+	clients := map[string]interfaces.LLMClient{
+		"primary": &apiTestLLM{responses: []schema.ChatResponse{
+			{Message: schema.Message{Content: "Goal: write two demo files\nAcceptance Checks: both files exist\nRisks: approve only the visible batch"}},
+			{Message: schema.Message{Content: "Implementation Steps: write both files\nTarget Files: one.txt, two.txt\nVerification Commands: read both files"}},
+			{ToolCalls: []schema.ToolCall{
+				{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"one.txt","content":"one"}`)},
+				{ID: "call-2", Name: "write_file", Arguments: json.RawMessage(`{"path":"two.txt","content":"two"}`)},
+			}},
 			{Message: schema.Message{Content: "fix done"}},
 			{Message: schema.Message{Content: "audit done"}},
 		}},
@@ -400,15 +468,23 @@ func newAPIWorkflowRepeatedToolApprovalRuntime(t *testing.T) (*agent.Runtime, *a
 func newAPIOrdinaryMultiApprovalRuntime(t *testing.T) (*agent.Runtime, *apiTestMCP) {
 	t.Helper()
 	cfg := &config.Config{
-		RuntimeHome:  t.TempDir(),
-		Audit:        config.AuditConfig{},
-		Session:      config.SessionConfig{MaxHistory: 8},
-		DefaultAgent: "chat",
+		RuntimeHome:   t.TempDir(),
+		WorkspaceRoot: t.TempDir(),
+		Audit:         config.AuditConfig{},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
 		Agents: map[string]config.AgentProfile{
 			"chat": {Name: "Chat", Provider: "primary", Mode: "chat", Model: "test-model", MaxIterations: 3, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
 		},
 	}
-	mcpClient := &apiTestMCP{result: schema.ToolResult{ToolName: "write_file", Content: "created"}}
+	mcpClient := &apiTestMCP{
+		result: schema.ToolResult{ToolName: "write_file", Content: "created"},
+		tools: []schema.Tool{{
+			Name:   "write_file",
+			Server: "host_tools",
+			Kind:   string(config.ToolKindWrite),
+		}},
+	}
 	clients := map[string]interfaces.LLMClient{
 		"primary": &apiTestLLM{responses: []schema.ChatResponse{
 			{ToolCalls: []schema.ToolCall{
@@ -416,6 +492,44 @@ func newAPIOrdinaryMultiApprovalRuntime(t *testing.T) (*agent.Runtime, *apiTestM
 				{ID: "call-2", Name: "write_file", Arguments: json.RawMessage(`{"path":"two.txt","content":"two"}`)},
 			}},
 			{Message: schema.Message{Content: "both files done"}, Usage: schema.TokenUsage{PromptTokens: 7, OutputTokens: 3}},
+		}},
+	}
+	runtimeRef, err := agent.NewRuntime(cfg, clients, apiTestSkillManager{}, mcpClient, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	return runtimeRef, mcpClient
+}
+
+func newAPIOrdinaryTaskScopeMultiApprovalRuntime(t *testing.T) (*agent.Runtime, *apiTestMCP) {
+	t.Helper()
+	writeTool := schema.Tool{
+		Name:        "write_file",
+		Server:      "file_tools",
+		Kind:        string(config.ToolKindWrite),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}
+	cfg := &config.Config{
+		RuntimeHome:   t.TempDir(),
+		WorkspaceRoot: t.TempDir(),
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		MCP:           []config.MCPServerRef{{Name: "file_tools", Isolation: "process_group"}},
+		Agents: map[string]config.AgentProfile{
+			"chat": {Name: "Chat", Provider: "primary", Mode: "fix", Model: "test-model", MaxIterations: 3, AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm},
+		},
+	}
+	mcpClient := &apiTestMCP{
+		result: schema.ToolResult{ToolName: "write_file", Content: "created"},
+		tools:  []schema.Tool{writeTool},
+	}
+	clients := map[string]interfaces.LLMClient{
+		"primary": &apiTestLLM{responses: []schema.ChatResponse{
+			{ToolCalls: []schema.ToolCall{
+				{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"one.txt","content":"one"}`)},
+				{ID: "call-2", Name: "write_file", Arguments: json.RawMessage(`{"path":"two.txt","content":"two"}`)},
+			}},
+			{Message: schema.Message{Content: "both files done"}},
 		}},
 	}
 	runtimeRef, err := agent.NewRuntime(cfg, clients, apiTestSkillManager{}, mcpClient, session.New(8), runtime.NewAuditLogger(false, false))
@@ -536,7 +650,8 @@ func newAPIRiskPolicyWorkflowApprovalRuntime(t *testing.T) *agent.Runtime {
 	mcpClient := &apiTestMCP{result: schema.ToolResult{ToolName: "write_file", Content: "ok"}}
 	clients := map[string]interfaces.LLMClient{
 		"primary": &apiTestLLM{responses: []schema.ChatResponse{
-			{Message: schema.Message{Content: "plan ready"}},
+			{Message: schema.Message{Content: "Goal: write a demo file\nAcceptance Checks: file exists\nRisks: unsandboxed write requires bounded approval"}},
+			{Message: schema.Message{Content: "Implementation Steps: write the file\nTarget Files: demo.txt\nVerification Commands: read demo.txt"}},
 			{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"demo.txt","content":"hello"}`)}}},
 		}},
 	}
@@ -930,7 +1045,7 @@ func TestServerWorkflowExpressionValidationUsesRunSnapshotHints(t *testing.T) {
 
 func TestServerRuntimeStatusExposesCostDiagnostics(t *testing.T) {
 	server := NewServer(newAPITestRuntime(t))
-	runReq := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"hello"}`))
+	runReq := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"hello"}`))
 	runReq.Header.Set("Content-Type", "application/json")
 	runResp := httptest.NewRecorder()
 	server.ServeHTTP(runResp, runReq)
@@ -1012,6 +1127,18 @@ func TestServerRuntimeStatusExposesCostDiagnostics(t *testing.T) {
 	}
 }
 
+func TestServerRejectsRemovedLegacyRunRoutes(t *testing.T) {
+	server := NewServer(newAPITestRuntime(t))
+	for _, path := range []string{"/api/run", "/api/run/stream"} {
+		request := httptest.NewRequest(http.MethodPost, path, strings.NewReader(`{"input":"hello"}`))
+		response := httptest.NewRecorder()
+		server.ServeHTTP(response, request)
+		if response.Code != http.StatusMethodNotAllowed {
+			t.Fatalf("expected removed route %s to be handled only by the console fallback, got %d body=%s", path, response.Code, response.Body.String())
+		}
+	}
+}
+
 func TestBuildCostRecommendationsIncludesMeasuredAuxiliaryCandidates(t *testing.T) {
 	diagnostics := costDiagnostics{
 		Samples:                      4,
@@ -1080,12 +1207,12 @@ func TestServerRuntimeStatusExposesToolRiskPolicy(t *testing.T) {
 		t.Fatalf("expected default tool risk policy disabled, got %#v", response.ToolRiskPolicy)
 	}
 	if !configDiagnosticsStringSliceContains(response.ToolRiskPolicy.AppliesToKinds, "write") ||
-		!strings.Contains(response.ToolRiskPolicy.UnsandboxedDefinition, "isolation: container") ||
-		!strings.Contains(response.ToolRiskPolicy.UnsandboxedDefinition, "isolation: linux_netns") ||
-		!strings.Contains(response.ToolRiskPolicy.UnsandboxedDefinition, "network tools") {
+		!strings.Contains(response.ToolRiskPolicy.UnsandboxedDefinition, "native_strong") ||
+		!strings.Contains(response.ToolRiskPolicy.UnsandboxedDefinition, "capability-specific") ||
+		!strings.Contains(response.ToolRiskPolicy.UnsandboxedDefinition, "native boundary") {
 		t.Fatalf("expected tool risk policy metadata, got %#v", response.ToolRiskPolicy)
 	}
-	if !toolRiskPolicyBoundaryExists(response.ToolRiskPolicy.RecognizedSandboxBoundaries, "container", "broad", "write") ||
+	if !toolRiskPolicyBoundaryExists(response.ToolRiskPolicy.RecognizedSandboxBoundaries, "native_strong", "broad", "write") ||
 		!toolRiskPolicyBoundaryExists(response.ToolRiskPolicy.RecognizedSandboxBoundaries, "linux_netns", "capability_specific", "network") ||
 		toolRiskPolicyBoundaryExists(response.ToolRiskPolicy.RecognizedSandboxBoundaries, "linux_netns", "capability_specific", "write") {
 		t.Fatalf("expected structured tool risk sandbox boundary metadata, got %#v", response.ToolRiskPolicy.RecognizedSandboxBoundaries)
@@ -1112,7 +1239,7 @@ func TestServerRuntimeStatusExposesToolRiskPolicy(t *testing.T) {
 		!strings.Contains(response.ToolRiskPolicy.ApprovalBehavior, "tool_policy is allow") ||
 		!strings.Contains(response.ToolRiskPolicy.RememberBehavior, "approve-and-remember") ||
 		!strings.Contains(response.ToolRiskPolicy.RejectionBehavior, "rejected before execution") ||
-		!strings.Contains(response.ToolRiskPolicy.RejectionBehavior, "linux_netns") {
+		!strings.Contains(response.ToolRiskPolicy.RejectionBehavior, "capability-specific") {
 		t.Fatalf("expected enabled tool risk policy metadata, got %#v", response.ToolRiskPolicy)
 	}
 }
@@ -1624,6 +1751,9 @@ func TestServerExpandAtFileReferencesUsesWorkspaceSafety(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "notes.txt"), []byte("http file context\n"), 0o644); err != nil {
 		t.Fatalf("write notes: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("API_KEY=workspace-secret\n"), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
 	runtimeRef := newAPITestRuntime(t)
 	store := memory.NewStore(root)
 	if _, err := store.RebuildFiles(context.Background()); err != nil {
@@ -1648,6 +1778,9 @@ func TestServerExpandAtFileReferencesUsesWorkspaceSafety(t *testing.T) {
 
 	if _, err := server.expandAtReferences(context.Background(), "summarize @../outside.txt", nil); err == nil || !strings.Contains(err.Error(), "escapes workspace root") {
 		t.Fatalf("expected HTTP @file traversal rejection, got %v", err)
+	}
+	if _, err := server.expandAtReferences(context.Background(), "summarize @.env", nil); err == nil || !strings.Contains(err.Error(), "sensitive files") {
+		t.Fatalf("expected HTTP sensitive @file rejection, got %v", err)
 	}
 }
 
@@ -1721,9 +1854,9 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 	if pageResponse.Code != http.StatusOK {
 		t.Fatalf("expected editor 200, got %d", pageResponse.Code)
 	}
-	if !strings.Contains(pageResponse.Body.String(), "GoFlow Console") || !strings.Contains(pageResponse.Body.String(), "data-app-shell") ||
+	if !strings.Contains(pageResponse.Body.String(), "本地智能体工作流平台") || !strings.Contains(pageResponse.Body.String(), "data-app-shell") ||
 		!strings.Contains(pageResponse.Body.String(), `data-view="workflows"`) || !strings.Contains(pageResponse.Body.String(), "/assets/app.js") {
-		t.Fatalf("expected GoFlow Studio HTML, got %s", pageResponse.Body.String())
+		t.Fatalf("expected localized workflow platform HTML, got %s", pageResponse.Body.String())
 	}
 
 	optionsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-options", nil)
@@ -1859,13 +1992,16 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 		t.Fatalf("expected template list 200, got %d", templateListResponse.Code)
 	}
 	if !strings.Contains(templateListResponse.Body.String(), `"web-research-risk"`) ||
-		!strings.Contains(templateListResponse.Body.String(), `"human-input-security-review"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"software-quality-gate"`) ||
-		!strings.Contains(templateListResponse.Body.String(), `"engineering-parallel-delivery"`) ||
+		!strings.Contains(templateListResponse.Body.String(), `"complex-project-delivery"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"security-audit-evidence-gate"`) ||
+		!strings.Contains(templateListResponse.Body.String(), `"authorized-red-team-validation"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"task-decomposition-plan"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"multi-domain-intake-router"`) {
 		t.Fatalf("expected reusable workflow templates, got %s", templateListResponse.Body.String())
+	}
+	if strings.Contains(templateListResponse.Body.String(), `"human-input-security-review"`) {
+		t.Fatalf("retired workflow template alias must not be visible in the template list: %s", templateListResponse.Body.String())
 	}
 	if !strings.Contains(templateListResponse.Body.String(), `"node_types"`) ||
 		!strings.Contains(templateListResponse.Body.String(), `"team_templates"`) ||
@@ -1885,10 +2021,10 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 	templateResponse := httptest.NewRecorder()
 	server.ServeHTTP(templateResponse, templateRequest)
 	if templateResponse.Code != http.StatusOK {
-		t.Fatalf("expected template 200, got %d", templateResponse.Code)
+		t.Fatalf("expected legacy template alias 200, got %d", templateResponse.Code)
 	}
-	if !strings.Contains(templateResponse.Body.String(), `"graph"`) || !strings.Contains(templateResponse.Body.String(), `"input_gate"`) || !strings.Contains(templateResponse.Body.String(), `"condition"`) {
-		t.Fatalf("expected detailed workflow template graph, got %s", templateResponse.Body.String())
+	if !strings.Contains(templateResponse.Body.String(), `"name":"security-audit-evidence-gate"`) || !strings.Contains(templateResponse.Body.String(), `"graph"`) || !strings.Contains(templateResponse.Body.String(), `file_tools/write_file`) || !strings.Contains(templateResponse.Body.String(), `"quality_gate"`) {
+		t.Fatalf("expected legacy alias to return the evidence-gated security workflow, got %s", templateResponse.Body.String())
 	}
 	qualityTemplateRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-templates/software-quality-gate", nil)
 	qualityTemplateResponse := httptest.NewRecorder()
@@ -1928,28 +2064,37 @@ func TestServerWorkflowEditorPageAndOptions(t *testing.T) {
 		!strings.Contains(multiDomainTemplateResponse.Body.String(), `"has_quality_gate":true`) {
 		t.Fatalf("expected multi-domain starter template detail metadata, got %d body=%s", multiDomainTemplateResponse.Code, multiDomainTemplateResponse.Body.String())
 	}
-	parallelDeliveryTemplateRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-templates/engineering-parallel-delivery", nil)
+	parallelDeliveryTemplateRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-templates/complex-project-delivery", nil)
 	parallelDeliveryTemplateResponse := httptest.NewRecorder()
 	server.ServeHTTP(parallelDeliveryTemplateResponse, parallelDeliveryTemplateRequest)
 	if parallelDeliveryTemplateResponse.Code != http.StatusOK ||
-		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"model":{"provider":"primary"`) ||
-		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"model":{"provider":"backup"`) ||
-		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"node_type":"parallel"`) ||
-		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"node_type":"join"`) ||
+		strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"provider":"backup"`) ||
+		strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"node_type":"parallel"`) ||
+		strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"node_type":"join"`) ||
 		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"node_type":"quality_gate"`) ||
-		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"quality-resolution-plan"`) {
-		t.Fatalf("expected parallel engineering delivery template with model routes, got %d body=%s", parallelDeliveryTemplateResponse.Code, parallelDeliveryTemplateResponse.Body.String())
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"ref":"result.first_line"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"name":"approve-plan"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"name":"implement"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"name":"verify"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"name":"audit"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"name":"quality"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"name":"repair"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"name":"recovery-verify"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"name":"recovery-audit"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"name":"final-report"`) ||
+		!strings.Contains(parallelDeliveryTemplateResponse.Body.String(), `"stages":15`) {
+		t.Fatalf("expected simplified complex engineering delivery template with unified verification, got %d body=%s", parallelDeliveryTemplateResponse.Code, parallelDeliveryTemplateResponse.Body.String())
 	}
 
 	forkTemplateRequest := httptest.NewRequest(http.MethodPost, "/api/resources/workflow-templates/forked-security-review/fork", strings.NewReader(`{
-		"source": "human-input-security-review",
+		"source": "security-audit-evidence-gate",
 		"title": "Forked Security Review",
 		"description": "Editable copy of the built-in security review template."
 	}`))
 	forkTemplateRequest.Header.Set("Content-Type", "application/json")
 	forkTemplateResponse := httptest.NewRecorder()
 	server.ServeHTTP(forkTemplateResponse, forkTemplateRequest)
-	if forkTemplateResponse.Code != http.StatusCreated || !strings.Contains(forkTemplateResponse.Body.String(), `"name":"forked-security-review"`) || !strings.Contains(forkTemplateResponse.Body.String(), `"source":"custom"`) || !strings.Contains(forkTemplateResponse.Body.String(), `"input_gate"`) {
+	if forkTemplateResponse.Code != http.StatusCreated || !strings.Contains(forkTemplateResponse.Body.String(), `"name":"forked-security-review"`) || !strings.Contains(forkTemplateResponse.Body.String(), `"source":"custom"`) || !strings.Contains(forkTemplateResponse.Body.String(), `file_tools/write_file`) {
 		t.Fatalf("expected forked workflow template resource, got %d body=%s", forkTemplateResponse.Code, forkTemplateResponse.Body.String())
 	}
 	forkTemplatePath := filepath.Join(runtimeRef.RuntimeHome(), "templates", "workflows", "forked-security-review.yaml")
@@ -2389,7 +2534,7 @@ func TestServerKitResourceEndpoints(t *testing.T) {
 		"skills": ["execution-plan"],
 		"tools": ["write_file"],
 		"workflows": ["plan-fix-audit"],
-		"workflow_templates": ["human-input-security-review"],
+		"workflow_templates": ["security-audit-evidence-gate"],
 		"team_templates": ["software-task-team"],
 		"policy_rules": ["expression"],
 		"required_env": ["GOFLOW_TEST_REQUIRED_KIT_ENV"],
@@ -2422,7 +2567,7 @@ func TestServerKitResourceEndpoints(t *testing.T) {
 		t.Fatalf("expected kit list with saved kit, got %d body=%s", listResponse.Code, listResponse.Body.String())
 	}
 	if !strings.Contains(listResponse.Body.String(), `"agent_refs":["chat","fixer"]`) ||
-		!strings.Contains(listResponse.Body.String(), `"workflow_template_refs":["human-input-security-review"]`) ||
+		!strings.Contains(listResponse.Body.String(), `"workflow_template_refs":["security-audit-evidence-gate"]`) ||
 		!strings.Contains(listResponse.Body.String(), `"policy_rule_refs":["expression"]`) {
 		t.Fatalf("expected kit list to expose linked resource references, got %s", listResponse.Body.String())
 	}
@@ -2904,9 +3049,17 @@ func TestServerConsolePageAndAssets(t *testing.T) {
 	if pageResponse.Code != http.StatusOK {
 		t.Fatalf("expected console 200, got %d", pageResponse.Code)
 	}
-	if !strings.Contains(pageResponse.Body.String(), "GoFlow Console") || !strings.Contains(pageResponse.Body.String(), "data-app-shell") ||
-		!strings.Contains(pageResponse.Body.String(), `data-view="workflows"`) || !strings.Contains(pageResponse.Body.String(), `data-view="memory"`) {
-		t.Fatalf("expected modern Studio shell, got %s", pageResponse.Body.String())
+	if got := pageResponse.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("expected console page to revalidate embedded assets, got Cache-Control %q", got)
+	}
+	if !strings.Contains(pageResponse.Body.String(), "本地智能体工作流平台") || !strings.Contains(pageResponse.Body.String(), "data-app-shell") ||
+		!strings.Contains(pageResponse.Body.String(), `src="/assets/brand-mark.svg"`) ||
+		!strings.Contains(pageResponse.Body.String(), `data-primary-nav`) ||
+		strings.Count(pageResponse.Body.String(), `data-primary-nav`) != 1 ||
+		strings.Contains(pageResponse.Body.String(), `data-utility-nav`) ||
+		!strings.Contains(pageResponse.Body.String(), `data-view="workflows"`) ||
+		strings.Contains(pageResponse.Body.String(), `data-view="memory"`) || strings.Contains(pageResponse.Body.String(), `data-view="status"`) {
+		t.Fatalf("expected localized platform shell, got %s", pageResponse.Body.String())
 	}
 
 	assetRequest := httptest.NewRequest(http.MethodGet, "/assets/app.js", nil)
@@ -2914,6 +3067,9 @@ func TestServerConsolePageAndAssets(t *testing.T) {
 	server.ServeHTTP(assetResponse, assetRequest)
 	if assetResponse.Code != http.StatusOK {
 		t.Fatalf("expected app asset 200, got %d", assetResponse.Code)
+	}
+	if got := assetResponse.Header().Get("Cache-Control"); got != "no-cache" {
+		t.Fatalf("expected console asset to revalidate, got Cache-Control %q", got)
 	}
 	if !strings.Contains(assetResponse.Body.String(), "renderWorkflows") {
 		t.Fatalf("expected modular app asset, got %s", assetResponse.Body.String())
@@ -2976,8 +3132,8 @@ func TestServerConsolePageAndAssets(t *testing.T) {
 	faviconRequest := httptest.NewRequest(http.MethodGet, "/favicon.ico", nil)
 	faviconResponse := httptest.NewRecorder()
 	server.ServeHTTP(faviconResponse, faviconRequest)
-	if faviconResponse.Code != http.StatusNoContent {
-		t.Fatalf("expected favicon 204, got %d", faviconResponse.Code)
+	if faviconResponse.Code != http.StatusOK || faviconResponse.Header().Get("Content-Type") != "image/svg+xml" || !strings.Contains(faviconResponse.Body.String(), `aria-label="GoFlow"`) {
+		t.Fatalf("expected GoFlow SVG favicon 200, got %d headers=%#v body=%s", faviconResponse.Code, faviconResponse.Header(), faviconResponse.Body.String())
 	}
 }
 
@@ -3000,10 +3156,14 @@ func TestServerRuntimeStatusAndUpdatePolicy(t *testing.T) {
 		t.Fatalf("expected MCP isolation risk profile in runtime status, got %s", statusResponse.Body.String())
 	}
 	if !strings.Contains(statusResponse.Body.String(), `"mcp_isolation_modes"`) ||
-		!strings.Contains(statusResponse.Body.String(), `"name":"container"`) ||
+		strings.Contains(statusResponse.Body.String(), `"name":"container"`) ||
 		strings.Contains(statusResponse.Body.String(), `"name":"windows_appcontainer"`) ||
 		strings.Contains(statusResponse.Body.String(), `"future":true`) {
 		t.Fatalf("expected MCP isolation mode capability catalog in runtime status, got %s", statusResponse.Body.String())
+	}
+	if !strings.Contains(statusResponse.Body.String(), `"native_sandbox"`) ||
+		!strings.Contains(statusResponse.Body.String(), `"strong_ready":`) {
+		t.Fatalf("expected host-derived native sandbox capability report, got %s", statusResponse.Body.String())
 	}
 
 	updateRequest := httptest.NewRequest(http.MethodGet, "/api/update-policy", nil)
@@ -3012,7 +3172,7 @@ func TestServerRuntimeStatusAndUpdatePolicy(t *testing.T) {
 	if updateResponse.Code != http.StatusOK {
 		t.Fatalf("expected update policy 200, got %d", updateResponse.Code)
 	}
-	if !strings.Contains(updateResponse.Body.String(), `"release-archive"`) || !strings.Contains(updateResponse.Body.String(), `"docker"`) {
+	if !strings.Contains(updateResponse.Body.String(), `"release-archive"`) || strings.Contains(updateResponse.Body.String(), `"docker"`) {
 		t.Fatalf("expected update strategies, got %s", updateResponse.Body.String())
 	}
 	if !strings.Contains(updateResponse.Body.String(), `"/api/update-policy/check"`) || !strings.Contains(updateResponse.Body.String(), `"network_opt_in":true`) {
@@ -3109,254 +3269,6 @@ func TestServerRuntimeStatusMarksSensitiveMCPEnvAllowlist(t *testing.T) {
 	}
 }
 
-func TestServerRuntimeStatusReportsContainerIsolationProperties(t *testing.T) {
-	runtimeRef := newAPITestRuntimeWithStateHomeResponsesAndMCP(t, session.New(8), "", nil, []config.MCPServerRef{{
-		Name:            "stub",
-		Command:         "/app/bin/file_tools",
-		Args:            []string{"--stdio"},
-		Enabled:         true,
-		NetworkDisabled: true,
-		Isolation:       "container",
-		IsolationOptions: map[string]string{
-			"image":             "goflow/mcp-tools@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
-			"network":           "disabled",
-			"ipc":               "none",
-			"userns":            "auto",
-			"workspace_mount":   "ro",
-			"memory":            "256m",
-			"memory_swap":       "256m",
-			"cpus":              "0.5",
-			"pids_limit":        "64",
-			"no_new_privileges": "true",
-			"cap_drop":          "all",
-			"user":              "65532:65532",
-		},
-	}})
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/runtime", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected runtime status 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	body := response.Body.String()
-	for _, want := range []string{
-		`"name":"stub"`,
-		`"isolation":"container"`,
-		`"isolation_level":"container_configured"`,
-		`"risk_level":"low"`,
-		`"sandboxed":true`,
-		`"network_enforced":true`,
-		`"filesystem_sandboxed":true`,
-		`"privilege_sandboxed":true`,
-		`"resource_limited":true`,
-		`"sandbox_features":["container_runtime","filesystem_mount_policy","privilege_reduction","network_policy","resource_limits","no_new_privileges","cap_drop_all","ipc_namespace_none","user_namespace","non_root_user"]`,
-		`"can_access_host_outside_workspace":false`,
-	} {
-		if !strings.Contains(body, want) {
-			t.Fatalf("expected runtime status to contain %s, got %s", want, body)
-		}
-	}
-
-	toolsRequest := httptest.NewRequest(http.MethodGet, "/api/resources/tools", nil)
-	toolsResponse := httptest.NewRecorder()
-	server.ServeHTTP(toolsResponse, toolsRequest)
-	if toolsResponse.Code != http.StatusOK {
-		t.Fatalf("expected tool list 200, got %d body=%s", toolsResponse.Code, toolsResponse.Body.String())
-	}
-	if !strings.Contains(toolsResponse.Body.String(), `"sandbox_features":["container_runtime","filesystem_mount_policy","privilege_reduction","network_policy","resource_limits","no_new_privileges","cap_drop_all","ipc_namespace_none","user_namespace","non_root_user"]`) {
-		t.Fatalf("expected tool risk profile to include non_root_user, got %s", toolsResponse.Body.String())
-	}
-}
-
-func TestServerRuntimeStatusRecommendsContainerNonRootUserForReadOnlyMounts(t *testing.T) {
-	runtimeRef := newAPITestRuntimeWithStateHomeResponsesAndMCP(t, session.New(8), "", nil, []config.MCPServerRef{{
-		Name:            "reader_tools",
-		Command:         "python",
-		Args:            []string{"server.py"},
-		Enabled:         true,
-		NetworkDisabled: true,
-		Isolation:       "container",
-		IsolationOptions: map[string]string{
-			"image":           "goflow/mcp-reader:1.0.0",
-			"network":         "disabled",
-			"workspace_mount": "ro",
-			"memory":          "256m",
-			"memory_swap":     "256m",
-			"cpus":            "0.5",
-			"pids_limit":      "64",
-		},
-	}})
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/runtime", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected runtime status 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	body := response.Body.String()
-	if !strings.Contains(body, `"risk_level":"medium"`) {
-		t.Fatalf("expected read-only container without explicit non-root user to remain medium risk, got %s", body)
-	}
-	if !strings.Contains(body, `set isolation_options.user to a non-root UID:GID`) {
-		t.Fatalf("expected runtime status to recommend non-root user for read-only container, got %s", body)
-	}
-	if strings.Contains(body, `"non_root_user"`) {
-		t.Fatalf("expected runtime status not to claim non_root_user when user is absent, got %s", body)
-	}
-}
-
-func TestServerRuntimeStatusRequiresCompleteContainerResourceLimits(t *testing.T) {
-	runtimeRef := newAPITestRuntimeWithStateHomeResponsesAndMCP(t, session.New(8), "", nil, []config.MCPServerRef{{
-		Name:            "partial_limit_tools",
-		Command:         "python",
-		Args:            []string{"server.py"},
-		Enabled:         true,
-		NetworkDisabled: true,
-		Isolation:       "container",
-		IsolationOptions: map[string]string{
-			"image":           "goflow/mcp-partial:1.0.0",
-			"network":         "disabled",
-			"workspace_mount": "ro",
-			"memory":          "256m",
-			"user":            "65532:65532",
-		},
-	}})
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/runtime", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected runtime status 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	var decoded runtimeStatusResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
-		t.Fatalf("decode runtime status: %v", err)
-	}
-	summary := mcpServerSummaryByName(decoded.MCPServers, "partial_limit_tools")
-	if summary == nil {
-		t.Fatalf("expected partial_limit_tools summary, got %#v", decoded.MCPServers)
-	}
-	for _, want := range []string{
-		`container CPU, memory, and process-count resource limits are incomplete`,
-	} {
-		if !configDiagnosticsStringSliceContains(summary.Warnings, want) {
-			t.Fatalf("expected runtime status warning %s, got %#v", want, summary.Warnings)
-		}
-	}
-	if summary.RiskLevel != "medium" || summary.ResourceLimited || !configDiagnosticsStringSliceContains(summary.MissingSandboxFeatures, "resource_limits") ||
-		configDiagnosticsStringSliceContains(summary.SandboxFeatures, "resource_limits") {
-		t.Fatalf("expected partial resource limits not to claim low risk or resource_limits feature, got %#v", summary)
-	}
-}
-
-func TestServerRuntimeStatusExposesContainerImageProvenance(t *testing.T) {
-	runtimeRef := newAPITestRuntimeWithStateHomeResponsesAndMCP(t, session.New(8), "", nil, []config.MCPServerRef{{
-		Name:             "prod_tools",
-		Command:          "python",
-		Args:             []string{"server.py"},
-		Enabled:          true,
-		NetworkDisabled:  true,
-		Isolation:        "container",
-		IsolationProfile: "production",
-		IsolationOptions: map[string]string{
-			"image":             "goflow/mcp-prod:1.2.3",
-			"network":           "disabled",
-			"workspace_mount":   "ro",
-			"memory":            "256m",
-			"memory_swap":       "256m",
-			"cpus":              "0.5",
-			"pids_limit":        "64",
-			"pull_policy":       "missing",
-			"no_new_privileges": "true",
-			"cap_drop":          "all",
-			"readonly_rootfs":   "true",
-			"user":              "65532:65532",
-			"tmpfs":             "/tmp:rw,noexec,nosuid,size=64m",
-			"init":              "true",
-			"ipc":               "none",
-			"userns":            "auto",
-		},
-	}})
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/runtime", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected runtime status 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	var decoded runtimeStatusResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &decoded); err != nil {
-		t.Fatalf("decode runtime status: %v", err)
-	}
-	summary := mcpServerSummaryByName(decoded.MCPServers, "prod_tools")
-	if summary == nil {
-		t.Fatalf("expected prod_tools summary, got %#v", decoded.MCPServers)
-	}
-	if summary.ContainerImage != "goflow/mcp-prod:1.2.3" ||
-		summary.ContainerImageReferenceType != "version_tag" ||
-		summary.ContainerPullPolicy != "missing" ||
-		summary.ContainerImageDigestPinned == nil ||
-		*summary.ContainerImageDigestPinned ||
-		summary.ContainerImageProductionReady == nil ||
-		*summary.ContainerImageProductionReady {
-		t.Fatalf("expected structured container image provenance, got %#v", summary)
-	}
-	if !configDiagnosticsStringSliceContains(summary.Warnings, "production container profile requires an immutable image@sha256:... reference") ||
-		!configDiagnosticsStringSliceContains(summary.Warnings, "production container profile should use pull_policy=never with pre-pulled trusted images") {
-		t.Fatalf("expected production image provenance warnings, got %#v", summary.Warnings)
-	}
-}
-
-func TestServerRuntimeStatusWarnsContainerRootUser(t *testing.T) {
-	runtimeRef := newAPITestRuntimeWithStateHomeResponsesAndMCP(t, session.New(8), "", nil, []config.MCPServerRef{{
-		Name:            "root_tools",
-		Command:         "python",
-		Args:            []string{"server.py"},
-		Enabled:         true,
-		NetworkDisabled: true,
-		Isolation:       "container",
-		IsolationOptions: map[string]string{
-			"image":           "goflow/mcp-root:1.0.0",
-			"network":         "disabled",
-			"workspace_mount": "ro",
-			"memory":          "256m",
-			"memory_swap":     "256m",
-			"cpus":            "0.5",
-			"pids_limit":      "64",
-			"user":            "root:1000",
-		},
-	}})
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/runtime", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected runtime status 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	body := response.Body.String()
-	if !strings.Contains(body, `"risk_level":"medium"`) {
-		t.Fatalf("expected root user container to remain medium risk, got %s", body)
-	}
-	if !strings.Contains(body, `container explicitly runs as root`) ||
-		!strings.Contains(body, `set isolation_options.user to a non-root UID:GID`) {
-		t.Fatalf("expected runtime status to warn and recommend non-root user, got %s", body)
-	}
-	if strings.Contains(body, `"non_root_user"`) {
-		t.Fatalf("expected runtime status not to claim non_root_user for root user, got %s", body)
-	}
-}
-
 func TestServerRuntimeStatusExposesMCPCallMetrics(t *testing.T) {
 	runtimeRef := newAPITestRuntimeWithStateHomeResponsesAndMCP(t, session.New(8), "", nil, []config.MCPServerRef{{
 		Name:               "file_tools",
@@ -3398,7 +3310,7 @@ func TestServerRuntimeStatusExposesMCPCallMetrics(t *testing.T) {
 	}
 }
 
-func TestServerRuntimeStatusRequiresExactCapDropAll(t *testing.T) {
+func TestServerRuntimeStatusReportsRemovedContainerIsolation(t *testing.T) {
 	runtimeRef := newAPITestRuntimeWithStateHomeResponsesAndMCP(t, session.New(8), "", nil, []config.MCPServerRef{{
 		Name:            "cap_tools",
 		Command:         "python",
@@ -3432,8 +3344,8 @@ func TestServerRuntimeStatusRequiresExactCapDropAll(t *testing.T) {
 	if strings.Contains(body, `"cap_drop_all"`) {
 		t.Fatalf("expected cap_drop=small not to claim cap_drop_all, got %s", body)
 	}
-	if !strings.Contains(body, `set isolation_options.cap_drop=all`) {
-		t.Fatalf("expected runtime status to recommend cap_drop=all, got %s", body)
+	if !strings.Contains(body, `replace isolation: container with isolation: auto or native_strong`) {
+		t.Fatalf("expected runtime status to report the removed isolation mode, got %s", body)
 	}
 }
 
@@ -3625,8 +3537,6 @@ func TestServerHelpEndpointExposesHTTPParityMap(t *testing.T) {
 		`"config_load_failure_field_targets":true`,
 		`"mcp_isolation_mode_catalog":true`,
 		`"mcp_isolation_modes"`,
-		`"name":"container"`,
-		`"requires_options":["image"]`,
 		`"resource_capability_metadata":true`,
 		`"client_contract_metadata":true`,
 		`"client_contracts"`,
@@ -3679,7 +3589,7 @@ func TestServerHelpEndpointExposesHTTPParityMap(t *testing.T) {
 		`workspace_capabilities and workspace_actions`,
 		`switch_blocker_details`,
 		`capabilities.guidance`,
-		`"capability":"Unified Agent and workflow run history"`,
+		`"capability":"Unified durable Agent and workflow tasks"`,
 		`"/api/workflow-runs/{id}/events/stream?since=0"`,
 	} {
 		if !strings.Contains(body, want) {
@@ -3698,47 +3608,11 @@ func TestServerHelpEndpointExposesHTTPParityMap(t *testing.T) {
 	if decoded.Capabilities["tool_risk_policy_sandbox_boundaries"] != true {
 		t.Fatalf("expected tool risk policy sandbox boundary capability flag, got %#v", decoded.Capabilities)
 	}
-	if decoded.Capabilities["container_tool_scaffold_hardened_defaults"] != true {
-		t.Fatalf("expected container tool scaffold hardened defaults capability flag, got %#v", decoded.Capabilities)
-	}
-	if decoded.Capabilities["container_isolation_profiles"] != true {
-		t.Fatalf("expected container isolation profiles capability flag, got %#v", decoded.Capabilities)
-	}
-	if decoded.Capabilities["container_tool_scaffold_versioned_image_default"] != true {
-		t.Fatalf("expected container tool scaffold versioned image default capability flag, got %#v", decoded.Capabilities)
-	}
 	if decoded.Capabilities["tool_scaffold_default_option_metadata"] != true {
 		t.Fatalf("expected tool scaffold default option metadata capability flag, got %#v", decoded.Capabilities)
 	}
-	containerMode := helpMCPIsolationModeByName(decoded.MCPIsolationModes, "container")
-	if containerMode == nil ||
-		!containerMode.ConfigSupported ||
-		!containerMode.Implemented ||
-		!containerMode.Recommended ||
-		!containerMode.Sandboxed ||
-		!containerMode.FilesystemSandboxed ||
-		!configDiagnosticsStringSliceContains(containerMode.RecommendedFor, "third_party_tools") ||
-		!configDiagnosticsStringSliceContains(containerMode.RecommendedFor, "exec_tools") ||
-		!configDiagnosticsStringSliceContains(containerMode.RequiresOptions, "image") ||
-		!mcpIsolationModeOptionExists(containerMode.Options, "image", "string", true) ||
-		!mcpIsolationModeOptionExists(containerMode.Options, "workspace_mount", "enum", false) ||
-		!mcpIsolationModeOptionExists(containerMode.Options, "ipc", "enum", false) ||
-		!mcpIsolationModeOptionExists(containerMode.Options, "userns", "enum", false) ||
-		!mcpIsolationModeOptionExists(containerMode.Options, "readonly_rootfs", "boolean_string", false) ||
-		!mcpIsolationModeOptionExists(containerMode.Options, "tool_mount", "enum", false) {
-		t.Fatalf("expected container MCP isolation mode metadata, got %#v", containerMode)
-	}
-	if readonlyProfile := mcpIsolationProfileByName(containerMode.Profiles, "readonly"); readonlyProfile == nil ||
-		readonlyProfile.DefaultOptions["workspace_mount"] != "ro" ||
-		readonlyProfile.DefaultOptions["network"] != "disabled" ||
-		readonlyProfile.DefaultOptions["user"] != "65532:65532" ||
-		!configDiagnosticsStringSliceContains(readonlyProfile.RecommendedFor, "untrusted_helpers") {
-		t.Fatalf("expected readonly container profile metadata, got %#v", containerMode.Profiles)
-	}
-	if productionProfile := mcpIsolationProfileByName(containerMode.Profiles, "production"); productionProfile == nil ||
-		!productionProfile.RequiresDigest ||
-		productionProfile.DefaultOptions["pull_policy"] != "never" {
-		t.Fatalf("expected production container profile metadata, got %#v", containerMode.Profiles)
+	if helpMCPIsolationModeByName(decoded.MCPIsolationModes, "container") != nil {
+		t.Fatalf("container isolation must not be exposed in the public capability catalog")
 	}
 	linuxCgroupMode := helpMCPIsolationModeByName(decoded.MCPIsolationModes, "linux_cgroup")
 	if linuxCgroupMode == nil ||
@@ -3759,7 +3633,7 @@ func TestServerHelpEndpointExposesHTTPParityMap(t *testing.T) {
 	}
 	agentRunContract := helpClientContractByArea(decoded.ClientContracts, "ordinary_agent_runs")
 	if agentRunContract == nil ||
-		!configDiagnosticsStringSliceContains(agentRunContract.PrimaryEndpoints, "POST /api/run") ||
+		!configDiagnosticsStringSliceContains(agentRunContract.PrimaryEndpoints, "POST /api/runs") ||
 		!configDiagnosticsStringSliceContains(agentRunContract.StreamEndpoints, "GET /api/agent-runs/{id}/events/stream?since=<seq>") ||
 		!strings.Contains(agentRunContract.ReconnectStrategy, "since=<last_seq>") ||
 		!strings.Contains(agentRunContract.ReconnectStrategy, "retry directives") ||
@@ -3798,22 +3672,22 @@ func TestServerHelpEndpointExposesHTTPParityMap(t *testing.T) {
 	if agentCapability == nil ||
 		!agentCapability.CanCreate ||
 		!agentCapability.CanValidate ||
-		!agentCapability.RestartRequiredOnSave ||
-		agentCapability.ApplyStateOnSave != "restart_required" ||
+		!agentCapability.HotReloadSupported ||
+		agentCapability.RestartRequiredOnSave ||
+		agentCapability.ApplyStateOnSave != "hot_reload_when_supported" ||
 		agentCapability.DiagnosticsPath != "/api/config/diagnostics" ||
 		agentCapability.StorageRoot != "configs/agents" {
-		t.Fatalf("expected restart-required agent resource capability, got %#v", agentCapability)
+		t.Fatalf("expected hot-reloadable agent resource capability, got %#v", agentCapability)
 	}
 	toolCapability := helpResourceCapabilityByKind(decoded.ResourceCapabilities, "tool")
 	if toolCapability == nil ||
 		!toolCapability.CanScaffold ||
-		!toolCapability.RestartRequiredOnSave ||
+		!toolCapability.HotReloadSupported ||
+		toolCapability.RestartRequiredOnSave ||
 		toolCapability.ScaffoldPath != "/api/resources/tools/scaffolds" ||
-		!configDiagnosticsStringSliceContains(toolCapability.RelatedCapabilities, "container_tool_scaffold_hardened_defaults") ||
-		!configDiagnosticsStringSliceContains(toolCapability.RelatedCapabilities, "container_tool_scaffold_versioned_image_default") ||
 		!configDiagnosticsStringSliceContains(toolCapability.RelatedCapabilities, "tool_scaffold_default_option_metadata") ||
 		!configDiagnosticsStringSliceContains(toolCapability.RelatedCapabilities, "config_diagnostics_mcp_hardening") {
-		t.Fatalf("expected scaffoldable restart-required tool resource capability, got %#v", toolCapability)
+		t.Fatalf("expected scaffoldable hot-reloadable tool resource capability, got %#v", toolCapability)
 	}
 	skillCapability := helpResourceCapabilityByKind(decoded.ResourceCapabilities, "skill")
 	if skillCapability == nil ||
@@ -3846,7 +3720,7 @@ func TestServerHelpEndpointExposesHTTPParityMap(t *testing.T) {
 		!helpResourceActionExists(kitCapability.Actions, "validate_saved", "/api/resources/kits/{name}/validate") {
 		t.Fatalf("expected kit bundle resource actions, got %#v", kitCapability)
 	}
-	if !helpParityContains(decoded.Parity, "history", "Unified Agent and workflow run history", "/api/runs") {
+	if !helpParityContains(decoded.Parity, "history", "Unified durable Agent and workflow tasks", "/api/runs") {
 		t.Fatalf("expected unified run history parity entry, got %#v", decoded.Parity)
 	}
 	if !helpParityContains(decoded.Parity, "workspace", "Workspace selection, confirmation, and @file references", "/api/workspace-files") {
@@ -3920,23 +3794,14 @@ func TestServerCapabilitiesEndpointExposesCompactClientMetadata(t *testing.T) {
 		decoded.Capabilities["workspace_switch_guidance"] != true ||
 		decoded.Capabilities["cost_control_feature_catalog"] != true ||
 		decoded.Capabilities["runtime_tool_risk_policy_status"] != true ||
-		decoded.Capabilities["container_tool_scaffold_hardened_defaults"] != true ||
-		decoded.Capabilities["container_tool_scaffold_versioned_image_default"] != true ||
 		decoded.Capabilities["tool_scaffold_default_option_metadata"] != true ||
 		decoded.Capabilities["mcp_isolation_mode_catalog"] != true ||
 		decoded.Capabilities["mcp_isolation_mode_recommendations"] != true {
 		t.Fatalf("expected compact capability flags, got %#v", decoded.Capabilities)
 	}
-	if helpMCPIsolationModeByName(decoded.MCPIsolationModes, "container") == nil ||
+	if helpMCPIsolationModeByName(decoded.MCPIsolationModes, "container") != nil ||
 		helpMCPIsolationModeByName(decoded.MCPIsolationModes, "windows_appcontainer") != nil {
-		t.Fatalf("expected compact MCP isolation mode catalog, got %#v", decoded.MCPIsolationModes)
-	}
-	containerMode := helpMCPIsolationModeByName(decoded.MCPIsolationModes, "container")
-	if containerMode == nil ||
-		!containerMode.Recommended ||
-		!configDiagnosticsStringSliceContains(containerMode.RecommendedFor, "generated_tools") ||
-		!mcpIsolationModeOptionExists(containerMode.Options, "image", "string", true) {
-		t.Fatalf("expected compact container isolation option metadata, got %#v", containerMode)
+		t.Fatalf("container isolation must not be exposed in the compact MCP catalog, got %#v", decoded.MCPIsolationModes)
 	}
 	if helpClientContractByArea(decoded.ClientContracts, "workflow_runs") == nil ||
 		helpClientContractByArea(decoded.ClientContracts, "cost_control") == nil ||
@@ -3998,19 +3863,16 @@ func TestServerResourceCatalogEndpointSummarizesFamilies(t *testing.T) {
 	}
 	if decoded.Counts.Families == 0 ||
 		decoded.Counts.TotalResources == 0 ||
-		decoded.Counts.RestartRequired == 0 ||
-		decoded.Counts.WithValidation == 0 ||
-		decoded.Counts.Scaffoldable == 0 ||
-		!decoded.Summary.RestartRequired ||
-		!configDiagnosticsStringSliceContains(decoded.Summary.ApplyStates, "restart_required") {
+		decoded.Counts.WithValidation == 0 {
 		t.Fatalf("expected populated resource catalog counts, got counts=%#v summary=%#v", decoded.Counts, decoded.Summary)
 	}
 	agentFamily := resourceFamilySummaryByKind(decoded.Families, "agent")
 	if agentFamily == nil ||
 		agentFamily.Count == 0 ||
 		agentFamily.CollectionPath != "/api/resources/agents" ||
-		agentFamily.ApplyStateOnSave != "restart_required" ||
-		!agentFamily.RestartRequiredOnSave ||
+		agentFamily.ApplyStateOnSave != "hot_reload_when_supported" ||
+		!agentFamily.HotReloadSupported ||
+		agentFamily.RestartRequiredOnSave ||
 		agentFamily.DiagnosticsPath != "/api/config/diagnostics" {
 		t.Fatalf("expected agent resource family summary, got %#v", agentFamily)
 	}
@@ -4021,11 +3883,76 @@ func TestServerResourceCatalogEndpointSummarizesFamilies(t *testing.T) {
 		skillFamily.ApplyStateOnSave != "hot_reload_when_supported" {
 		t.Fatalf("expected hot-reload skill family summary, got %#v", skillFamily)
 	}
-	kitFamily := resourceFamilySummaryByKind(decoded.Families, "kit")
-	if kitFamily == nil ||
-		!kitFamily.CanScaffold ||
-		!helpResourceActionExists(kitFamily.Actions, "export_bundle", "/api/resources/kits/{name}/export?format=json|yaml") {
-		t.Fatalf("expected kit family actions, got %#v", kitFamily)
+	for _, visibleKind := range []string{"agent", "subagent", "workflow", "skill", "tool", "mcp"} {
+		if resourceFamilySummaryByKind(decoded.Families, visibleKind) == nil {
+			t.Fatalf("expected default resource catalog to expose %q, got %#v", visibleKind, decoded.Families)
+		}
+	}
+	for _, hiddenKind := range []string{"provider", "workflow_template", "workflow_schema", "policy_rule", "team_template", "kit", "workflow_node_metadata", "expression_helper_metadata"} {
+		if resourceFamilySummaryByKind(decoded.Families, hiddenKind) != nil {
+			t.Fatalf("expected default resource catalog to hide legacy %q, got %#v", hiddenKind, decoded.Families)
+		}
+	}
+	if len(decoded.Items) == 0 {
+		t.Fatal("expected default resource catalog items")
+	}
+	for _, item := range decoded.Items {
+		if _, ok := defaultResourceCatalogKinds[item.Kind]; !ok {
+			t.Fatalf("expected item catalog to expose only the six task resource kinds, got %#v", item)
+		}
+		if !strings.HasPrefix(item.Version, "sha256:") || item.VersionSource != "content_sha256" {
+			t.Fatalf("expected stable exact resource version, got %#v", item)
+		}
+		expectedRoute := "#playground"
+		if item.Kind == "tool" {
+			expectedRoute = "#workflows"
+		}
+		if item.UseInTask.Route != expectedRoute || item.UseInTask.Kind != item.Kind || item.UseInTask.Name != item.Name || item.UseInTask.Version != item.Version {
+			t.Fatalf("expected exact task target metadata, got item=%#v target=%#v", item, item.UseInTask)
+		}
+	}
+	researcherItem := resourceCatalogItemByKindAndName(decoded.Items, "agent", "researcher")
+	if researcherItem == nil ||
+		researcherItem.Health != "healthy" ||
+		researcherItem.ValidationStatus != "valid" ||
+		!resourceCatalogStringSliceContains(researcherItem.Capabilities, "network") {
+		t.Fatalf("expected validated researcher catalog item, got %#v", researcherItem)
+	}
+
+	itemFilterRequest := httptest.NewRequest(http.MethodGet, "/api/resources?kind=agent&q=researcher&capability=network&health=healthy&validation=valid", nil)
+	itemFilterResponse := httptest.NewRecorder()
+	server.ServeHTTP(itemFilterResponse, itemFilterRequest)
+	if itemFilterResponse.Code != http.StatusOK {
+		t.Fatalf("expected item-filtered resources catalog 200, got %d body=%s", itemFilterResponse.Code, itemFilterResponse.Body.String())
+	}
+	var itemFiltered resourceCatalogResponse
+	if err := json.NewDecoder(strings.NewReader(itemFilterResponse.Body.String())).Decode(&itemFiltered); err != nil {
+		t.Fatalf("decode item-filtered resources catalog: %v", err)
+	}
+	if len(itemFiltered.Items) != 1 || itemFiltered.Items[0].Name != "researcher" || itemFiltered.Items[0].Version != researcherItem.Version {
+		t.Fatalf("expected exact researcher item filter result, got %#v", itemFiltered.Items)
+	}
+
+	missingFilterRequest := httptest.NewRequest(http.MethodGet, "/api/resources?health=error&validation=valid&q=researcher", nil)
+	missingFilterResponse := httptest.NewRecorder()
+	server.ServeHTTP(missingFilterResponse, missingFilterRequest)
+	var missingFiltered resourceCatalogResponse
+	if err := json.NewDecoder(strings.NewReader(missingFilterResponse.Body.String())).Decode(&missingFiltered); err != nil {
+		t.Fatalf("decode empty item-filtered resources catalog: %v", err)
+	}
+	if len(missingFiltered.Items) != 0 {
+		t.Fatalf("expected combined item filters to return no resources, got %#v", missingFiltered.Items)
+	}
+
+	invalidWorkflow := server.workflowCatalogItem(agent.WorkflowGraphSummary{Name: "broken-workflow", Valid: false, Error: "invalid graph"})
+	if invalidWorkflow.Valid || invalidWorkflow.ValidationStatus != "invalid" || invalidWorkflow.Health != "error" || len(invalidWorkflow.Issues) == 0 {
+		t.Fatalf("expected invalid workflow catalog status, got %#v", invalidWorkflow)
+	}
+	if got := normalizeResourceCatalogMCPHealth(true, "degraded: optional server unavailable"); got != "degraded" {
+		t.Fatalf("expected degraded MCP health, got %q", got)
+	}
+	if got := normalizeResourceCatalogMCPHealth(true, "idle (restarts=0)"); got != "healthy" {
+		t.Fatalf("expected lazy MCP idle state to remain healthy, got %q", got)
 	}
 
 	filterRequest := httptest.NewRequest(http.MethodGet, "/api/resources?kind=agent,provider", nil)
@@ -4043,6 +3970,20 @@ func TestServerResourceCatalogEndpointSummarizesFamilies(t *testing.T) {
 		resourceFamilySummaryByKind(filtered.Families, "provider") == nil ||
 		resourceFamilySummaryByKind(filtered.Families, "skill") != nil {
 		t.Fatalf("expected filtered resource families, got counts=%#v families=%#v", filtered.Counts, filtered.Families)
+	}
+
+	legacyRequest := httptest.NewRequest(http.MethodGet, "/api/resources?kind=kit", nil)
+	legacyResponse := httptest.NewRecorder()
+	server.ServeHTTP(legacyResponse, legacyRequest)
+	if legacyResponse.Code != http.StatusOK {
+		t.Fatalf("expected explicit legacy resource catalog 200, got %d body=%s", legacyResponse.Code, legacyResponse.Body.String())
+	}
+	var legacy resourceCatalogResponse
+	if err := json.NewDecoder(strings.NewReader(legacyResponse.Body.String())).Decode(&legacy); err != nil {
+		t.Fatalf("decode explicit legacy resource catalog: %v", err)
+	}
+	if legacy.Counts.Families != 1 || resourceFamilySummaryByKind(legacy.Families, "kit") == nil {
+		t.Fatalf("expected explicit legacy kind filter to remain compatible, got %#v", legacy.Families)
 	}
 
 	searchRequest := httptest.NewRequest(http.MethodGet, "/api/resources?q=workflow", nil)
@@ -4107,15 +4048,6 @@ func mcpServerSummaryByName(items []mcpServerSummary, name string) *mcpServerSum
 	return nil
 }
 
-func mcpIsolationProfileByName(items []mcpIsolationProfile, name string) *mcpIsolationProfile {
-	for i := range items {
-		if items[i].Name == name {
-			return &items[i]
-		}
-	}
-	return nil
-}
-
 func mcpIsolationModeOptionExists(items []mcpIsolationModeOption, name, typ string, required bool) bool {
 	for _, item := range items {
 		if item.Name == name && item.Type == typ && item.Required == required && item.Description != "" {
@@ -4128,6 +4060,15 @@ func mcpIsolationModeOptionExists(items []mcpIsolationModeOption, name, typ stri
 func resourceFamilySummaryByKind(items []resourceFamilySummary, kind string) *resourceFamilySummary {
 	for i := range items {
 		if items[i].Kind == kind {
+			return &items[i]
+		}
+	}
+	return nil
+}
+
+func resourceCatalogItemByKindAndName(items []resourceCatalogItem, kind, name string) *resourceCatalogItem {
+	for i := range items {
+		if items[i].Kind == kind && items[i].Name == name {
 			return &items[i]
 		}
 	}
@@ -4348,7 +4289,7 @@ func TestServerSkillResourcePreservesDeclaredScripts(t *testing.T) {
 				"runtime": "python",
 				"output": "json",
 				"timeout": "30s",
-				"isolation": "container",
+				"isolation": "native_strong",
 				"workspace_mount": "ro",
 				"network": "disabled",
 				"approval": "required",
@@ -4397,7 +4338,7 @@ func TestServerSkillResourcePreservesDeclaredScripts(t *testing.T) {
 				"runtime": "python",
 				"output": "json",
 				"timeout": "30s",
-				"isolation": "container",
+				"isolation": "native_strong",
 				"workspace_mount": "ro",
 				"network": "disabled",
 				"approval": "required",
@@ -4563,7 +4504,7 @@ func TestServerAgentResourceSaveWritesConfigSnippet(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected agent snippet written: %v", err)
 	}
-	if !strings.Contains(string(data), "researcher:") || !strings.Contains(string(data), "allowed_tools:") || !strings.Contains(response.Body.String(), `"path"`) || !strings.Contains(response.Body.String(), `"restart_required":true`) || !strings.Contains(response.Body.String(), `"apply_state":"restart_required"`) {
+	if !strings.Contains(string(data), "researcher:") || !strings.Contains(string(data), "allowed_tools:") || !strings.Contains(response.Body.String(), `"path"`) || !strings.Contains(response.Body.String(), `"apply_state":"active"`) {
 		t.Fatalf("unexpected agent config response=%s file=\n%s", response.Body.String(), string(data))
 	}
 	if strings.Contains(string(data), "restart_required") || strings.Contains(string(data), "apply_state") {
@@ -4573,14 +4514,14 @@ func TestServerAgentResourceSaveWritesConfigSnippet(t *testing.T) {
 	detailRequest := httptest.NewRequest(http.MethodGet, "/api/resources/agents/researcher", nil)
 	detailResponse := httptest.NewRecorder()
 	server.ServeHTTP(detailResponse, detailRequest)
-	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"restart_required":true`) || !strings.Contains(detailResponse.Body.String(), `"apply_state":"restart_required"`) {
-		t.Fatalf("expected saved agent detail to keep restart hint, got %d body=%s", detailResponse.Code, detailResponse.Body.String())
+	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"apply_state":"active"`) {
+		t.Fatalf("expected saved agent detail to be live after hot-plug, got %d body=%s", detailResponse.Code, detailResponse.Body.String())
 	}
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/resources/agents", nil)
 	listResponse := httptest.NewRecorder()
 	server.ServeHTTP(listResponse, listRequest)
-	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"id":"researcher"`) || !strings.Contains(listResponse.Body.String(), `"restart_required":true`) {
-		t.Fatalf("expected saved agent list item to keep restart hint, got %d body=%s", listResponse.Code, listResponse.Body.String())
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"id":"researcher"`) || !strings.Contains(listResponse.Body.String(), `"apply_state":"active"`) {
+		t.Fatalf("expected saved agent list item to be live after hot-plug, got %d body=%s", listResponse.Code, listResponse.Body.String())
 	}
 }
 
@@ -4704,9 +4645,9 @@ func TestServerAgentProviderToolResourceValidateEndpoints(t *testing.T) {
 	if appContainerToolResponse.Code != http.StatusOK ||
 		!strings.Contains(appContainerToolResponse.Body.String(), `"valid":false`) ||
 		!strings.Contains(appContainerToolResponse.Body.String(), `"field":"isolation"`) ||
-		!strings.Contains(appContainerToolResponse.Body.String(), `"code":"mcp_windows_appcontainer_unimplemented"`) ||
-		!strings.Contains(appContainerToolResponse.Body.String(), "use isolation: container") {
-		t.Fatalf("expected tool dry-run to reject unimplemented AppContainer isolation, got %d body=%s", appContainerToolResponse.Code, appContainerToolResponse.Body.String())
+		!strings.Contains(appContainerToolResponse.Body.String(), `"code":"mcp_native_isolation_internal"`) ||
+		!strings.Contains(appContainerToolResponse.Body.String(), "use isolation: auto or native_strong") {
+		t.Fatalf("expected tool dry-run to reject direct use of internally managed AppContainer isolation, got %d body=%s", appContainerToolResponse.Code, appContainerToolResponse.Body.String())
 	}
 	if _, err := os.Stat(filepath.Join(runtimeRef.RuntimeHome(), "mcp_servers", "appcontainer-helper.py")); !os.IsNotExist(err) {
 		t.Fatalf("expected invalid tool validate not to write code, stat err=%v", err)
@@ -4735,6 +4676,7 @@ func TestServerAgentProviderToolResourceValidateEndpoints(t *testing.T) {
 
 func TestServerProviderResourceTestEndpoint(t *testing.T) {
 	var captured map[string]any
+	var toolProbeCaptured map[string]any
 	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path != "/chat/completions" {
 			t.Fatalf("unexpected provider path: %s", r.URL.Path)
@@ -4742,10 +4684,49 @@ func TestServerProviderResourceTestEndpoint(t *testing.T) {
 		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
 			t.Fatalf("unexpected authorization header: %q", got)
 		}
+		captured = nil
 		if err := json.NewDecoder(r.Body).Decode(&captured); err != nil {
 			t.Fatalf("decode provider request: %v", err)
 		}
+		if stream, _ := captured["stream"].(bool); stream {
+			w.Header().Set("Content-Type", "text/event-stream")
+			_, _ = w.Write([]byte("data: {\"choices\":[{\"delta\":{\"role\":\"assistant\",\"content\":\"GOFLOW_STREAM_OK\"},\"finish_reason\":\"stop\"}]}\n\n"))
+			_, _ = w.Write([]byte("data: [DONE]\n\n"))
+			return
+		}
 		w.Header().Set("Content-Type", "application/json")
+		if _, ok := captured["tools"]; ok {
+			toolProbeCaptured = captured
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"finish_reason": "tool_calls",
+					"message": map[string]any{
+						"role": "assistant",
+						"tool_calls": []map[string]any{{
+							"id":   "probe-call",
+							"type": "function",
+							"function": map[string]any{
+								"name":      "goflow_plan_change",
+								"arguments": `{"path":"docs/operations.md","action":"add_rollback_section","risk":"low"}`,
+							},
+						}},
+					},
+				}},
+			})
+			return
+		}
+		if _, ok := captured["response_format"]; ok {
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"choices": []map[string]any{{
+					"finish_reason": "stop",
+					"message":       map[string]any{"role": "assistant", "content": `{"ok":true}`},
+				}},
+			})
+			return
+		}
+		if maxTokens, _ := captured["max_tokens"].(float64); maxTokens < 64 {
+			t.Fatalf("expected chat connection probe to allow a usable response budget, got %#v", captured["max_tokens"])
+		}
 		_ = json.NewEncoder(w).Encode(map[string]any{
 			"choices": []map[string]any{{
 				"finish_reason": "stop",
@@ -4765,6 +4746,7 @@ func TestServerProviderResourceTestEndpoint(t *testing.T) {
 		"base_url":%q,
 		"api_key":"test-key",
 		"model":"test-model",
+		"vision":true,
 		"timeout":"5s"
 	}`, modelServer.URL)
 	request := httptest.NewRequest(http.MethodPost, "/api/resources/providers/mock/test", strings.NewReader(body))
@@ -4781,8 +4763,31 @@ func TestServerProviderResourceTestEndpoint(t *testing.T) {
 	if !result.Valid || result.Status != "ok" || result.Name != "mock" || result.LatencyMS < 0 {
 		t.Fatalf("unexpected test result: %#v", result)
 	}
+	if len(result.Capabilities) != 5 {
+		t.Fatalf("expected five capability probes, got %#v", result.Capabilities)
+	}
+	for _, capability := range result.Capabilities {
+		if !capability.Supported || capability.Status != "supported" {
+			t.Fatalf("expected supported capability, got %#v", capability)
+		}
+	}
 	if captured["model"] != "test-model" {
 		t.Fatalf("expected model test-model, got %#v", captured["model"])
+	}
+	if toolProbeCaptured == nil {
+		t.Fatal("expected a tool-calling capability request")
+	}
+	if _, forced := toolProbeCaptured["tool_choice"]; forced {
+		t.Fatalf("tool probe must remain compatible with thinking models that reject forced tool_choice, got %#v", toolProbeCaptured)
+	}
+	messages, _ := toolProbeCaptured["messages"].([]any)
+	if len(messages) != 1 {
+		t.Fatalf("expected one realistic tool probe message, got %#v", toolProbeCaptured["messages"])
+	}
+	message, _ := messages[0].(map[string]any)
+	content, _ := message["content"].(string)
+	if len(content) < 240 || !strings.Contains(content, "docs/operations.md") {
+		t.Fatalf("tool probe must be a substantive workflow request, got %q", content)
 	}
 	if _, err := os.Stat(filepath.Join(runtimeRef.RuntimeHome(), "configs", "providers", "mock.yaml")); !os.IsNotExist(err) {
 		t.Fatalf("expected provider test not to write module, stat err=%v", err)
@@ -4805,6 +4810,156 @@ func TestServerProviderResourceTestEndpoint(t *testing.T) {
 	}
 	if invalid.Valid || invalid.Status != "error" || len(invalid.Issues) == 0 || invalid.Issues[0].Field != "api_key" {
 		t.Fatalf("expected structured api_key failure, got %#v", invalid)
+	}
+}
+
+func TestServerProviderResourceModelsEndpoint(t *testing.T) {
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/models" {
+			t.Fatalf("unexpected provider request %s %s", r.Method, r.URL.Path)
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer test-key" {
+			t.Fatalf("unexpected authorization header: %q", got)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_ = json.NewEncoder(w).Encode(map[string]any{
+			"data": []map[string]any{
+				{"id": "gpt-4.1-mini", "owned_by": "openai"},
+				{"id": "gpt-5.4-mini"},
+			},
+		})
+	}))
+	defer modelServer.Close()
+
+	runtimeRef := newAPITestRuntime(t)
+	server := NewServer(runtimeRef)
+	body := fmt.Sprintf(`{
+		"provider":"openai-compatible",
+		"base_url":%q,
+		"api_key":"test-key"
+	}`, modelServer.URL)
+	request := httptest.NewRequest(http.MethodPost, "/api/resources/providers/primary/models", strings.NewReader(body))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var result providerModelListResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if !result.Valid || result.Status != "ok" || result.Name != "primary" || len(result.Models) != 2 {
+		t.Fatalf("unexpected model list result: %#v", result)
+	}
+	if result.Models[0].ID != "gpt-4.1-mini" || result.Models[1].ID != "gpt-5.4-mini" {
+		t.Fatalf("unexpected models %#v", result.Models)
+	}
+
+	missingKeyRequest := httptest.NewRequest(http.MethodPost, "/api/resources/providers/primary/models", strings.NewReader(`{
+		"provider":"openai-compatible",
+		"base_url":"https://api.example.com/v1"
+	}`))
+	missingKeyRequest.Header.Set("Content-Type", "application/json")
+	missingKeyResponse := httptest.NewRecorder()
+	server.ServeHTTP(missingKeyResponse, missingKeyRequest)
+	if missingKeyResponse.Code != http.StatusOK {
+		t.Fatalf("expected missing key status 200, got %d body=%s", missingKeyResponse.Code, missingKeyResponse.Body.String())
+	}
+	var missing providerModelListResult
+	if err := json.NewDecoder(missingKeyResponse.Body).Decode(&missing); err != nil {
+		t.Fatalf("decode missing key response: %v", err)
+	}
+	if missing.Valid || missing.Status != "error" || len(missing.Issues) == 0 || missing.Issues[0].Field != "api_key" {
+		t.Fatalf("expected structured api_key failure, got %#v", missing)
+	}
+}
+
+func TestServerProviderResourceTestRejectsRemoteInLocalOnlyWorkspace(t *testing.T) {
+	workspaceRoot := t.TempDir()
+	cfg := &config.Config{
+		RuntimeHome:   t.TempDir(),
+		WorkspaceRoot: workspaceRoot,
+		ConfigPath:    filepath.Join(workspaceRoot, "configs", "goflow.yaml"),
+		Workspace:     config.WorkspaceConfig{LocalOnly: true},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Providers: map[string]config.LLMConfig{
+			"primary": {Provider: "openai-compatible", BaseURL: "http://localhost:9999/v1", Model: "test-model"},
+		},
+		Agents: map[string]config.AgentProfile{
+			"chat": {Name: "Chat", Provider: "primary", Mode: "chat", Model: "test-model", MaxIterations: 1, ToolPolicy: config.ToolPolicyConfirm},
+		},
+	}
+	runtimeRef, err := agent.NewRuntime(cfg, map[string]interfaces.LLMClient{
+		"primary": &apiTestLLM{responses: []schema.ChatResponse{{Message: schema.Message{Content: "ok"}}}},
+	}, apiTestSkillManager{}, &apiTestMCP{}, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	server := NewServer(runtimeRef)
+	request := httptest.NewRequest(http.MethodPost, "/api/resources/providers/remote/test", strings.NewReader(`{
+		"provider":"openai-compatible",
+		"base_url":"https://api.example.com/v1",
+		"api_key":"test-key",
+		"model":"test-model"
+	}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected status 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var result providerTestResult
+	if err := json.NewDecoder(response.Body).Decode(&result); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if result.Valid || result.Status != "error" || len(result.Issues) != 1 || result.Issues[0].Field != "base_url" {
+		t.Fatalf("expected local-only base_url rejection, got %#v", result)
+	}
+	if !strings.Contains(result.Issues[0].Message, "local-only workspace") {
+		t.Fatalf("expected local-only error message, got %#v", result.Issues[0])
+	}
+}
+
+func TestProviderResourceTestReportsLimitedAdapterCapabilities(t *testing.T) {
+	modelServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path != "/messages" {
+			t.Fatalf("unexpected provider path: %s", r.URL.Path)
+		}
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"content":[{"type":"text","text":"GOFLOW_OK"}],"stop_reason":"end_turn"}`))
+	}))
+	defer modelServer.Close()
+
+	result := testProviderResourceConnection(context.Background(), providerResourceDocument{
+		ID:       "anthropic-test",
+		Provider: "anthropic",
+		BaseURL:  modelServer.URL,
+		APIKey:   "test-key",
+		Model:    "test-model",
+		Timeout:  "5s",
+	})
+	if !result.Valid || result.Status != "limited" || len(result.Capabilities) != 5 {
+		t.Fatalf("expected a connected provider with limited capabilities, got %#v", result)
+	}
+	if !result.Capabilities[0].Supported {
+		t.Fatalf("expected chat probe to pass, got %#v", result.Capabilities[0])
+	}
+	expected := map[string]string{
+		"streaming":         "unsupported",
+		"tool_calling":      "failed",
+		"structured_output": "unsupported",
+		"vision":            "supported",
+	}
+	for _, capability := range result.Capabilities[1:] {
+		if capability.Status != expected[capability.Name] {
+			t.Fatalf("unexpected Anthropic capability probe result, got %#v", capability)
+		}
+		if capability.Supported != (capability.Status == "supported") {
+			t.Fatalf("capability support flag disagrees with status: %#v", capability)
+		}
 	}
 }
 
@@ -4975,6 +5130,67 @@ func TestServerProviderResourceSaveWritesConfigModule(t *testing.T) {
 	}
 }
 
+func TestServerProviderResourceExternalizesPlainAPIKey(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	server := NewServer(runtimeRef)
+	body := strings.NewReader(`{
+		"id":"local-secret-provider",
+		"provider":"openai-compatible",
+		"base_url":"http://127.0.0.1:9999/v1",
+		"api_key":"plain-secret-value",
+		"model":"test-model",
+		"fallback_provider":"primary"
+	}`)
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, httptest.NewRequest(http.MethodPut, "/api/resources/providers/local-secret-provider", body))
+	if response.Code != http.StatusOK {
+		t.Fatalf("save provider: status=%d body=%s", response.Code, response.Body.String())
+	}
+	modulePath := filepath.Join(runtimeRef.RuntimeHome(), "configs", "providers", "local-secret-provider.yaml")
+	module, err := os.ReadFile(modulePath)
+	if err != nil {
+		t.Fatalf("read provider module: %v", err)
+	}
+	if strings.Contains(string(module), "plain-secret-value") || !strings.Contains(string(module), "secret://providers/local-secret-provider/api_key") {
+		t.Fatalf("provider module did not externalize secret:\n%s", module)
+	}
+	if strings.Contains(response.Body.String(), "plain-secret-value") {
+		t.Fatalf("provider response exposed API key: %s", response.Body.String())
+	}
+	secretPath, err := config.SecretReferencePath(runtimeRef.DataRoot(), "secret://providers/local-secret-provider/api_key")
+	if err != nil {
+		t.Fatalf("secret path: %v", err)
+	}
+	secret, err := os.ReadFile(secretPath)
+	if err != nil || strings.TrimSpace(string(secret)) != "plain-secret-value" {
+		t.Fatalf("stored secret mismatch: value=%q err=%v", secret, err)
+	}
+}
+
+func TestServerCreatesListsAndDownloadsDataBackup(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	server := NewServer(runtimeRef)
+	create := httptest.NewRecorder()
+	server.ServeHTTP(create, httptest.NewRequest(http.MethodPost, "/api/data/backups", nil))
+	if create.Code != http.StatusCreated {
+		t.Fatalf("create backup: status=%d body=%s", create.Code, create.Body.String())
+	}
+	var item dataBackupSummary
+	if err := json.Unmarshal(create.Body.Bytes(), &item); err != nil || item.Name == "" || item.Size == 0 {
+		t.Fatalf("unexpected backup response %#v err=%v", item, err)
+	}
+	list := httptest.NewRecorder()
+	server.ServeHTTP(list, httptest.NewRequest(http.MethodGet, "/api/data/backups", nil))
+	if list.Code != http.StatusOK || !strings.Contains(list.Body.String(), item.Name) {
+		t.Fatalf("list backup: status=%d body=%s", list.Code, list.Body.String())
+	}
+	download := httptest.NewRecorder()
+	server.ServeHTTP(download, httptest.NewRequest(http.MethodGet, item.Download, nil))
+	if download.Code != http.StatusOK || download.Body.Len() == 0 {
+		t.Fatalf("download backup: status=%d bytes=%d", download.Code, download.Body.Len())
+	}
+}
+
 func TestServerProviderResourceDeleteRemovesConfigModule(t *testing.T) {
 	runtimeRef := newAPITestRuntime(t)
 	server := NewServer(runtimeRef)
@@ -5098,8 +5314,8 @@ func TestServerToolResourceSaveWritesCodeAndConfigSnippet(t *testing.T) {
 	if !strings.Contains(string(code), "print('ok')") || !strings.Contains(string(config), "mcp_servers:") || !strings.Contains(string(config), "notes-helper") {
 		t.Fatalf("unexpected tool files response=%s code=\n%s config=\n%s", response.Body.String(), string(code), string(config))
 	}
-	if !strings.Contains(response.Body.String(), `"restart_required":true`) || !strings.Contains(response.Body.String(), `"apply_state":"restart_required"`) {
-		t.Fatalf("expected tool save restart hint, got %s", response.Body.String())
+	if !strings.Contains(response.Body.String(), `"apply_state":"active"`) {
+		t.Fatalf("expected tool save to hot-plug, got %s", response.Body.String())
 	}
 	if strings.Contains(string(config), "restart_required") || strings.Contains(string(config), "apply_state") {
 		t.Fatalf("expected restart hints to stay out of tool yaml, got\n%s", string(config))
@@ -5111,14 +5327,14 @@ func TestServerToolResourceSaveWritesCodeAndConfigSnippet(t *testing.T) {
 	detailRequest := httptest.NewRequest(http.MethodGet, "/api/resources/tools/notes-helper", nil)
 	detailResponse := httptest.NewRecorder()
 	server.ServeHTTP(detailResponse, detailRequest)
-	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"restart_required":true`) || !strings.Contains(detailResponse.Body.String(), `"apply_state":"restart_required"`) {
-		t.Fatalf("expected saved tool detail to keep restart hint, got %d body=%s", detailResponse.Code, detailResponse.Body.String())
+	if detailResponse.Code != http.StatusOK || !strings.Contains(detailResponse.Body.String(), `"apply_state":"active"`) {
+		t.Fatalf("expected saved tool detail to be live after hot-plug, got %d body=%s", detailResponse.Code, detailResponse.Body.String())
 	}
 	listRequest := httptest.NewRequest(http.MethodGet, "/api/resources/tools", nil)
 	listResponse := httptest.NewRecorder()
 	server.ServeHTTP(listResponse, listRequest)
-	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"name":"notes-helper"`) || !strings.Contains(listResponse.Body.String(), `"restart_required":true`) {
-		t.Fatalf("expected saved tool list item to keep restart hint, got %d body=%s", listResponse.Code, listResponse.Body.String())
+	if listResponse.Code != http.StatusOK || !strings.Contains(listResponse.Body.String(), `"name":"notes-helper"`) || !strings.Contains(listResponse.Body.String(), `"apply_state":"active"`) {
+		t.Fatalf("expected saved tool list item to be live after hot-plug, got %d body=%s", listResponse.Code, listResponse.Body.String())
 	}
 }
 
@@ -5149,8 +5365,8 @@ func TestServerToolResourceSaveRejectsInvalidMCPConfig(t *testing.T) {
 	if !strings.Contains(response.Body.String(), `"valid":false`) ||
 		!strings.Contains(response.Body.String(), `"resource":"tool"`) ||
 		!strings.Contains(response.Body.String(), `"field":"isolation"`) ||
-		!strings.Contains(response.Body.String(), `"code":"mcp_windows_appcontainer_unimplemented"`) ||
-		!strings.Contains(response.Body.String(), "use isolation: container") {
+		!strings.Contains(response.Body.String(), `"code":"mcp_native_isolation_internal"`) ||
+		!strings.Contains(response.Body.String(), "use isolation: auto or native_strong") {
 		t.Fatalf("expected structured AppContainer validation error, got %s", response.Body.String())
 	}
 	for _, path := range []string{
@@ -5160,224 +5376,6 @@ func TestServerToolResourceSaveRejectsInvalidMCPConfig(t *testing.T) {
 		if _, err := os.Stat(path); !os.IsNotExist(err) {
 			t.Fatalf("expected invalid tool save not to write %s, got %v", path, err)
 		}
-	}
-}
-
-func TestServerToolResourceValidateReportsSpecificMCPIsolationFields(t *testing.T) {
-	runtimeRef := newAPITestRuntime(t)
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodPost, "/api/resources/tools/bad-isolation/validate", strings.NewReader(`{
-		"language":"python",
-		"command":"python",
-		"args":["./mcp_servers/bad-isolation.py"],
-		"enabled":true,
-		"timeout":"30s",
-		"workdir":".",
-		"allowed_commands":["python"],
-		"network_disabled":true,
-		"isolation":"container",
-		"isolation_options":{"network":"host","image":"ghcr.io/example/tool:1.0"},
-		"code":"#!/usr/bin/env python3\nprint('ok')\n"
-	}`))
-	request.Header.Set("Content-Type", "application/json")
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK ||
-		!strings.Contains(response.Body.String(), `"valid":false`) ||
-		!strings.Contains(response.Body.String(), `"field":"isolation_options.network"`) ||
-		!strings.Contains(response.Body.String(), `"code":"mcp_container_network_conflict"`) {
-		t.Fatalf("expected specific container network validation error, got %d body=%s", response.Code, response.Body.String())
-	}
-}
-
-func TestServerToolScaffoldPresetsCreateContainerTool(t *testing.T) {
-	runtimeRef := newAPITestRuntime(t)
-	server := NewServer(runtimeRef)
-
-	listRequest := httptest.NewRequest(http.MethodGet, "/api/resources/tools/scaffolds", nil)
-	listResponse := httptest.NewRecorder()
-	server.ServeHTTP(listResponse, listRequest)
-	if listResponse.Code != http.StatusOK {
-		t.Fatalf("expected tool scaffold list 200, got %d body=%s", listResponse.Code, listResponse.Body.String())
-	}
-	var scaffoldList []toolScaffoldPreset
-	if err := json.Unmarshal(listResponse.Body.Bytes(), &scaffoldList); err != nil {
-		t.Fatalf("decode scaffold list: %v", err)
-	}
-	readonlyPreset := toolScaffoldPresetByName(scaffoldList, "python-container-readonly")
-	if readonlyPreset == nil {
-		t.Fatalf("expected readonly scaffold preset, got %#v", scaffoldList)
-	}
-	if readonlyPreset.IsolationProfile != "readonly" ||
-		readonlyPreset.DefaultOptions["workspace_mount"] != "ro" ||
-		readonlyPreset.DefaultOptions["network"] != "disabled" ||
-		readonlyPreset.DefaultOptions["user"] != "65532:65532" {
-		t.Fatalf("expected readonly scaffold profile defaults, got %#v", readonlyPreset)
-	}
-	productionPreset := toolScaffoldPresetByName(scaffoldList, "python-container-production")
-	if productionPreset == nil {
-		t.Fatalf("expected production scaffold preset, got %#v", scaffoldList)
-	}
-	if productionPreset.IsolationProfile != "production" ||
-		productionPreset.DefaultOptions["workspace_mount"] != "ro" ||
-		productionPreset.DefaultOptions["network"] != "disabled" ||
-		productionPreset.DefaultOptions["pull_policy"] != "never" ||
-		!configDiagnosticsStringSliceContains(productionPreset.Recommendations, "replace the default image tag with an immutable digest before deployment") {
-		t.Fatalf("expected production scaffold profile defaults and provenance guidance, got %#v", productionPreset)
-	}
-	if !strings.Contains(listResponse.Body.String(), "python-container-readonly") {
-		t.Fatalf("expected container tool scaffold in list, got %s", listResponse.Body.String())
-	}
-	if !strings.Contains(listResponse.Body.String(), `"safety_guards"`) ||
-		!strings.Contains(listResponse.Body.String(), `"capabilities"`) ||
-		!strings.Contains(listResponse.Body.String(), `"generated_paths"`) ||
-		!strings.Contains(listResponse.Body.String(), `"activation_steps"`) ||
-		!strings.Contains(listResponse.Body.String(), "symlink escape rejection") {
-		t.Fatalf("expected tool scaffold list to include Studio-facing guidance fields, got %s", listResponse.Body.String())
-	}
-	if !strings.Contains(listResponse.Body.String(), `"default_image":"ghcr.io/fymatt/goflow-agent-mcp-python:latest"`) ||
-		!strings.Contains(listResponse.Body.String(), `"default_isolation_options"`) ||
-		!strings.Contains(listResponse.Body.String(), `"ipc":"none"`) ||
-		!strings.Contains(listResponse.Body.String(), `"userns":"auto"`) ||
-		!strings.Contains(listResponse.Body.String(), `"isolation_profile":"readonly"`) ||
-		!strings.Contains(listResponse.Body.String(), `"memory_swap":"256m"`) ||
-		!strings.Contains(listResponse.Body.String(), `"pull_policy":"missing"`) ||
-		!strings.Contains(listResponse.Body.String(), `"tool_mount":"ro"`) {
-		t.Fatalf("expected container scaffold list to expose default image and isolation options, got %s", listResponse.Body.String())
-	}
-
-	detailRequest := httptest.NewRequest(http.MethodGet, "/api/resources/tools/scaffolds/python-container-readonly?name=sandboxed-reader-test", nil)
-	detailResponse := httptest.NewRecorder()
-	server.ServeHTTP(detailResponse, detailRequest)
-	if detailResponse.Code != http.StatusOK {
-		t.Fatalf("expected tool scaffold detail 200, got %d body=%s", detailResponse.Code, detailResponse.Body.String())
-	}
-	var detailPreset toolScaffoldPreset
-	if err := json.Unmarshal(detailResponse.Body.Bytes(), &detailPreset); err != nil {
-		t.Fatalf("decode scaffold detail: %v", err)
-	}
-	if detailPreset.IsolationProfile != "readonly" ||
-		detailPreset.Document == nil ||
-		detailPreset.Document.IsolationProfile != "readonly" ||
-		detailPreset.Document.IsolationOptions["workspace_mount"] != "ro" ||
-		detailPreset.Document.IsolationOptions["user"] != "65532:65532" {
-		t.Fatalf("expected scaffold detail to expose readonly profile document, got %#v", detailPreset)
-	}
-	if !strings.Contains(detailResponse.Body.String(), `"isolation":"container"`) ||
-		!strings.Contains(detailResponse.Body.String(), `"runtime":"docker"`) ||
-		!strings.Contains(detailResponse.Body.String(), "read-only workspace mount") {
-		t.Fatalf("expected container scaffold document detail, got %s", detailResponse.Body.String())
-	}
-
-	productionDetailRequest := httptest.NewRequest(http.MethodGet, "/api/resources/tools/scaffolds/python-container-production?name=production-reader-test", nil)
-	productionDetailResponse := httptest.NewRecorder()
-	server.ServeHTTP(productionDetailResponse, productionDetailRequest)
-	if productionDetailResponse.Code != http.StatusOK {
-		t.Fatalf("expected production scaffold detail 200, got %d body=%s", productionDetailResponse.Code, productionDetailResponse.Body.String())
-	}
-	var productionDetail toolScaffoldPreset
-	if err := json.Unmarshal(productionDetailResponse.Body.Bytes(), &productionDetail); err != nil {
-		t.Fatalf("decode production scaffold detail: %v", err)
-	}
-	if productionDetail.Document == nil ||
-		productionDetail.Document.IsolationProfile != "production" ||
-		productionDetail.Document.IsolationOptions["pull_policy"] != "never" ||
-		productionDetail.Document.IsolationOptions["workspace_mount"] != "ro" ||
-		productionDetail.Document.IsolationOptions["network"] != "disabled" {
-		t.Fatalf("expected production scaffold document to use production profile defaults, got %#v", productionDetail)
-	}
-
-	createRequest := httptest.NewRequest(http.MethodPost, "/api/resources/tools/scaffolds/python-container-readonly", strings.NewReader(`{
-		"name":"sandboxed-reader-test",
-		"image":"python:3.13-slim",
-		"runtime":"docker"
-	}`))
-	createResponse := httptest.NewRecorder()
-	server.ServeHTTP(createResponse, createRequest)
-	if createResponse.Code != http.StatusCreated {
-		t.Fatalf("expected tool scaffold create 201, got %d body=%s", createResponse.Code, createResponse.Body.String())
-	}
-	var created toolScaffoldResponse
-	if err := json.Unmarshal(createResponse.Body.Bytes(), &created); err != nil {
-		t.Fatalf("decode scaffold response: %v", err)
-	}
-	if !created.Created || created.Tool.Name != "sandboxed-reader-test" || created.Tool.Isolation != "container" {
-		t.Fatalf("expected created container tool, got %#v", created)
-	}
-	if created.Tool.IsolationProfile != "readonly" ||
-		created.Tool.IsolationOptions["image"] != "python:3.13-slim" ||
-		created.Tool.IsolationOptions["runtime"] != "docker" ||
-		created.Tool.IsolationOptions["tool_target"] != "/goflow-tools/sandboxed-reader-test.py" {
-		t.Fatalf("expected created container tool to use readonly profile with explicit image/runtime/tool mount, got %#v", created.Tool)
-	}
-	codePath := filepath.Join(runtimeRef.RuntimeHome(), "mcp_servers", "sandboxed-reader-test.py")
-	configPath := filepath.Join(runtimeRef.RuntimeHome(), "configs", "mcp_servers", "sandboxed-reader-test.yaml")
-	if _, err := os.Stat(codePath); err != nil {
-		t.Fatalf("expected scaffold code file: %v", err)
-	}
-	codeData, err := os.ReadFile(codePath)
-	if err != nil {
-		t.Fatalf("expected scaffold code readable: %v", err)
-	}
-	codeText := string(codeData)
-	for _, want := range []string{
-		"GOFLOW_WORKSPACE_ROOT",
-		"resolve_path",
-		"relative_path",
-		"is_error",
-		"escapes workspace root",
-		"resolves outside workspace root",
-		"additionalProperties",
-	} {
-		if !strings.Contains(codeText, want) {
-			t.Fatalf("expected scaffold code to contain %q, got\n%s", want, codeText)
-		}
-	}
-	configData, err := os.ReadFile(configPath)
-	if err != nil {
-		t.Fatalf("expected scaffold config file: %v", err)
-	}
-	configText := string(configData)
-	for _, want := range []string{
-		"isolation: container",
-		"isolation_profile: readonly",
-		"image: python:3.13-slim",
-		"runtime: docker",
-		"tool_source: " + codePath,
-		"tool_target: /goflow-tools/sandboxed-reader-test.py",
-	} {
-		if !strings.Contains(configText, want) {
-			t.Fatalf("expected scaffold config to contain %q, got\n%s", want, configText)
-		}
-	}
-
-	conflictRequest := httptest.NewRequest(http.MethodPost, "/api/resources/tools/scaffolds/python-container-readonly", strings.NewReader(`{"name":"sandboxed-reader-test"}`))
-	conflictResponse := httptest.NewRecorder()
-	server.ServeHTTP(conflictResponse, conflictRequest)
-	if conflictResponse.Code != http.StatusConflict {
-		t.Fatalf("expected scaffold conflict 409, got %d body=%s", conflictResponse.Code, conflictResponse.Body.String())
-	}
-}
-
-func TestServerToolScaffoldContainerImageDefaultsToReleaseVersion(t *testing.T) {
-	previous := version.Version
-	version.Version = "v9.8.7"
-	t.Cleanup(func() { version.Version = previous })
-
-	runtimeRef := newAPITestRuntime(t)
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/resources/tools/scaffolds/python-container-readonly?name=release-reader", nil)
-	response := httptest.NewRecorder()
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected tool scaffold detail 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	if !strings.Contains(response.Body.String(), `"image":"ghcr.io/fymatt/goflow-agent-mcp-python:v9.8.7"`) ||
-		strings.Contains(response.Body.String(), `"image":"ghcr.io/fymatt/goflow-agent-mcp-python:latest"`) {
-		t.Fatalf("expected release-versioned default MCP Python image, got %s", response.Body.String())
 	}
 }
 
@@ -5416,6 +5414,14 @@ capabilities: [stdio-json-rpc]
 	custom := toolScaffoldPresetByName(presets, "python-notes-local")
 	if custom == nil || custom.Title != "Python Notes Helper" || custom.Language != "python" {
 		t.Fatalf("expected runtime-defined tool preset, got %#v", presets)
+	}
+	local := toolScaffoldPresetByName(presets, "python-local")
+	if local == nil || local.Isolation != "auto" {
+		t.Fatalf("expected built-in Python scaffold to use native automatic isolation, got %#v", local)
+	}
+	doc, err := server.toolDocumentFromScaffold(*local, toolScaffoldRequest{Name: "native-helper"})
+	if err != nil || doc.Isolation != "auto" {
+		t.Fatalf("expected generated tool document to preserve native automatic isolation, doc=%#v err=%v", doc, err)
 	}
 }
 
@@ -5620,7 +5626,7 @@ func TestServerRunStreamApprovalEventsIncludeRiskProfile(t *testing.T) {
 	}})
 	server := NewServer(runtimeRef)
 
-	request := httptest.NewRequest(http.MethodPost, "/api/run/stream", strings.NewReader(`{"input":"write a note"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/runs/stream", strings.NewReader(`{"input":"write a note"}`))
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
 	body := response.Body.String()
@@ -6002,7 +6008,7 @@ defaults:
 	assertOptionalModuleDirDiagnostic(t, diagnostics.Items, "workflow_schemas")
 	assertOptionalModuleDirDiagnostic(t, diagnostics.Items, "workflow_node_metadata")
 	if !configDiagnosticRecommendationContains(diagnostics.Items, "mcp_env_allowlist_sensitive", "remove API keys") ||
-		!configDiagnosticRecommendationContains(diagnostics.Items, "mcp_network_disabled_advisory", "isolation: container") ||
+		!configDiagnosticRecommendationContains(diagnostics.Items, "mcp_network_disabled_advisory", "native_strong") ||
 		!configDiagnosticRecommendationContains(diagnostics.Items, "default_agent_broad_permissions", "specialist fixer agent") ||
 		!configDiagnosticRecommendationContains(diagnostics.Items, "provider_api_key_missing", "environment variable") {
 		t.Fatalf("expected actionable config diagnostic recommendations, got %#v", diagnostics.Items)
@@ -6277,17 +6283,7 @@ mcp_servers:
     enabled: true
     allowed_commands: [python]
     isolation: process_group
-`+networkServerConfig+`
-  - name: container-helper
-    command: python
-    args: [./mcp_servers/container.py]
-    enabled: true
-    allowed_commands: [python]
-    isolation: container
-    network_disabled: true
-    isolation_options:
-      image: python:3.13-slim
-`), 0o644); err != nil {
+`+networkServerConfig), 0o644); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	server := NewServer(runtimeRef)
@@ -6303,11 +6299,18 @@ mcp_servers:
 	if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
 		t.Fatalf("decode diagnostics response: %v", err)
 	}
-	assertConfigDiagnosticTarget(t, diagnostics.Items, "tool_risk_policy_mcp_unsandboxed", "mcp_server", "host-helper", "isolation", "reject_unsandboxed_risky_tools")
+	assertConfigDiagnosticTarget(t, diagnostics.Items, "tool_risk_policy_mcp_unsandboxed", "mcp_server", "host-helper", "isolation", "native_strong")
 	if goruntime.GOOS == "linux" {
 		assertConfigDiagnosticTarget(t, diagnostics.Items, "tool_risk_policy_mcp_network_sandbox", "mcp_server", "network-helper", "isolation", "network-kind tools only")
 	}
-	assertConfigDiagnosticTarget(t, diagnostics.Items, "tool_risk_policy_mcp_broad_sandbox", "mcp_server", "container-helper", "isolation", "container boundary")
+	var nativeDiagnostics configDiagnosticsResponse
+	nativeDiagnostics.checkToolRiskPolicyDiagnostics(&config.Config{
+		ToolRiskPolicy: config.ToolRiskPolicyConfig{RejectUnsandboxedRiskyTools: true},
+		MCP: []config.MCPServerRef{{
+			Name: "native-helper", Enabled: true, Isolation: "native_strong",
+		}},
+	})
+	assertConfigDiagnosticTarget(t, nativeDiagnostics.Items, "tool_risk_policy_mcp_broad_sandbox", "mcp_server", "native-helper", "isolation", "malicious-fixture checks")
 }
 
 func TestServerConfigDiagnosticsReportsProviderAgentQualityIssues(t *testing.T) {
@@ -6418,57 +6421,6 @@ skill:
 		t.Fatalf("expected error diagnostics, got %#v", diagnostics)
 	}
 	assertConfigDiagnosticTarget(t, diagnostics.Items, "default_agent_missing", "agent", "missing-chat", "default_agent", "referenced agent")
-}
-
-func TestServerConfigDiagnosticsTargetsMCPContainerLoadFailures(t *testing.T) {
-	runtimeRef := newAPITestRuntime(t)
-	configDir := filepath.Join(runtimeRef.RuntimeHome(), "configs")
-	if err := os.MkdirAll(configDir, 0o755); err != nil {
-		t.Fatalf("mkdir config dir: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "goflow.yaml"), []byte(`agent:
-  name: GoFlow Agent
-  max_iterations: 8
-default_agent: chat
-providers:
-  primary:
-    provider: openai-compatible
-    base_url: http://localhost:9999/v1
-    model: test-model
-agents:
-  chat:
-    name: Chat
-    provider: primary
-    mode: chat
-    max_iterations: 2
-    allowed_tool_kinds: [read]
-    tool_policy: confirm
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: broken-container
-    command: python
-    args: [./mcp_servers/broken.py]
-    enabled: true
-    allowed_commands: [python]
-    isolation: container
-`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/config/diagnostics", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected diagnostics 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	var diagnostics configDiagnosticsResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
-		t.Fatalf("decode diagnostics response: %v", err)
-	}
-	assertConfigDiagnosticTarget(t, diagnostics.Items, "mcp_container_image_missing", "mcp_server", "broken-container", "isolation_options.image", "trusted")
 }
 
 func TestServerConfigDiagnosticsTargetsAdditionalConfigLoadFailures(t *testing.T) {
@@ -6699,7 +6651,7 @@ mcp_servers:
 			recommendation: "exact command",
 		},
 		{
-			name: "mcp container network conflict",
+			name: "removed mcp container isolation",
 			config: `agent:
   name: GoFlow Agent
   max_iterations: 8
@@ -6720,174 +6672,18 @@ agents:
 skill:
   directory: ./skills
 mcp_servers:
-  - name: networked-container
-    command: python
-    args: [./mcp_servers/tool.py]
-    enabled: true
-    allowed_commands: [python]
-    network_disabled: true
-    isolation: container
-    isolation_options:
-      image: python:3.13-slim
-      network: host
-`,
-			code:           "mcp_container_network_conflict",
-			targetKind:     "mcp_server",
-			targetName:     "networked-container",
-			field:          "isolation_options.network",
-			recommendation: "disabled/none",
-		},
-		{
-			name: "mcp container option invalid",
-			config: `agent:
-  name: GoFlow Agent
-  max_iterations: 8
-default_agent: chat
-providers:
-  primary:
-    provider: openai-compatible
-    base_url: http://localhost:9999/v1
-    model: test-model
-agents:
-  chat:
-    name: Chat
-    provider: primary
-    mode: chat
-    max_iterations: 2
-    allowed_tool_kinds: [read]
-    tool_policy: confirm
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: bad-container
+  - name: old-isolation
     command: python
     args: [./mcp_servers/tool.py]
     enabled: true
     allowed_commands: [python]
     isolation: container
-    isolation_options:
-      image: python:3.13-slim
-      workspace_mount: maybe
 `,
-			code:           "mcp_container_option_invalid",
+			code:           "mcp_container_isolation_removed",
 			targetKind:     "mcp_server",
-			targetName:     "bad-container",
-			field:          "isolation_options.workspace_mount",
-			recommendation: "isolation_options",
-		},
-		{
-			name: "mcp container memory invalid",
-			config: `agent:
-  name: GoFlow Agent
-  max_iterations: 8
-default_agent: chat
-providers:
-  primary:
-    provider: openai-compatible
-    base_url: http://localhost:9999/v1
-    model: test-model
-agents:
-  chat:
-    name: Chat
-    provider: primary
-    mode: chat
-    max_iterations: 2
-    allowed_tool_kinds: [read]
-    tool_policy: confirm
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: bad-container
-    command: python
-    args: [./mcp_servers/tool.py]
-    enabled: true
-    allowed_commands: [python]
-    isolation: container
-    isolation_options:
-      image: python:3.13-slim
-      memory: many
-`,
-			code:           "mcp_container_option_invalid",
-			targetKind:     "mcp_server",
-			targetName:     "bad-container",
-			field:          "isolation_options.memory",
-			recommendation: "isolation_options",
-		},
-		{
-			name: "mcp container user invalid",
-			config: `agent:
-  name: GoFlow Agent
-  max_iterations: 8
-default_agent: chat
-providers:
-  primary:
-    provider: openai-compatible
-    base_url: http://localhost:9999/v1
-    model: test-model
-agents:
-  chat:
-    name: Chat
-    provider: primary
-    mode: chat
-    max_iterations: 2
-    allowed_tool_kinds: [read]
-    tool_policy: confirm
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: bad-container
-    command: python
-    args: [./mcp_servers/tool.py]
-    enabled: true
-    allowed_commands: [python]
-    isolation: container
-    isolation_options:
-      image: python:3.13-slim
-      user: "app user"
-`,
-			code:           "mcp_container_option_invalid",
-			targetKind:     "mcp_server",
-			targetName:     "bad-container",
-			field:          "isolation_options.user",
-			recommendation: "isolation_options",
-		},
-		{
-			name: "mcp container cap drop invalid",
-			config: `agent:
-  name: GoFlow Agent
-  max_iterations: 8
-default_agent: chat
-providers:
-  primary:
-    provider: openai-compatible
-    base_url: http://localhost:9999/v1
-    model: test-model
-agents:
-  chat:
-    name: Chat
-    provider: primary
-    mode: chat
-    max_iterations: 2
-    allowed_tool_kinds: [read]
-    tool_policy: confirm
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: bad-container
-    command: python
-    args: [./mcp_servers/tool.py]
-    enabled: true
-    allowed_commands: [python]
-    isolation: container
-    isolation_options:
-      image: python:3.13-slim
-      cap_drop: NET/ADMIN
-`,
-			code:           "mcp_container_option_invalid",
-			targetKind:     "mcp_server",
-			targetName:     "bad-container",
-			field:          "isolation_options.cap_drop",
-			recommendation: "isolation_options",
+			targetName:     "old-isolation",
+			field:          "isolation",
+			recommendation: "available native boundary",
 		},
 		{
 			name: "mcp isolation invalid",
@@ -6922,10 +6718,10 @@ mcp_servers:
 			targetKind:     "mcp_server",
 			targetName:     "odd-isolation",
 			field:          "isolation",
-			recommendation: "container",
+			recommendation: "trusted built-in boundary",
 		},
 		{
-			name: "mcp windows appcontainer unimplemented",
+			name: "mcp appcontainer aliases are internal",
 			config: `agent:
   name: GoFlow Agent
   max_iterations: 8
@@ -6953,11 +6749,11 @@ mcp_servers:
     allowed_commands: [python]
     isolation: windows_appcontainer
 `,
-			code:           "mcp_windows_appcontainer_unimplemented",
+			code:           "mcp_native_isolation_internal",
 			targetKind:     "mcp_server",
 			targetName:     "future-win-sandbox",
 			field:          "isolation",
-			recommendation: "AppContainer-like values are intentionally rejected",
+			recommendation: "use native_strong only when the host capability probe succeeds",
 		},
 	}
 	for _, tc := range cases {
@@ -7237,411 +7033,9 @@ func TestConfigDiagnosticsReportsWindowsJobLifecycleOnly(t *testing.T) {
 	}}})
 	diagnostics.finalize()
 
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_isolation_lifecycle_only", "win-tools", "isolation", "container")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_windows_job_lifecycle_only", "win-tools", "isolation", "container")
+	assertConfigDiagnostic(t, diagnostics.Items, "mcp_isolation_lifecycle_only", "win-tools", "isolation", "native_strong")
+	assertConfigDiagnostic(t, diagnostics.Items, "mcp_windows_job_lifecycle_only", "win-tools", "isolation", "native_strong")
 	assertConfigDiagnostic(t, diagnostics.Items, "mcp_network_disabled_advisory", "win-tools", "network_disabled", "linux_netns")
-}
-
-func TestConfigDiagnosticsReportsContainerRootUser(t *testing.T) {
-	var diagnostics configDiagnosticsResponse
-	diagnostics.checkMCPDiagnostics(&config.Config{MCP: []config.MCPServerRef{{
-		Name:      "root-container",
-		Command:   "python",
-		Args:      []string{"server.py"},
-		Enabled:   true,
-		Isolation: "container",
-		IsolationOptions: map[string]string{
-			"image":           "python:3.13-slim",
-			"workspace_mount": "ro",
-			"network":         "disabled",
-			"memory":          "256m",
-			"memory_swap":     "256m",
-			"cpus":            "0.5",
-			"pids_limit":      "64",
-			"user":            "root:root",
-		},
-		AllowedCommands: []string{"python"},
-	}}})
-	diagnostics.finalize()
-
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_user_root", "root-container", "isolation_options.user", "non-root")
-	if configDiagnosticCodeForTargetExists(diagnostics.Items, "mcp_container_user_missing", "root-container") {
-		t.Fatalf("expected explicit root user to report root-user diagnostic, not missing-user diagnostic: %#v", diagnostics.Items)
-	}
-}
-
-func TestContainerUserLooksNonRoot(t *testing.T) {
-	tests := []struct {
-		name string
-		user string
-		want bool
-	}{
-		{name: "empty", user: "", want: false},
-		{name: "root name", user: "root", want: false},
-		{name: "root name with group", user: "root:root", want: false},
-		{name: "root name with numeric group", user: "root:1000", want: false},
-		{name: "zero uid", user: "0", want: false},
-		{name: "zero uid group", user: "0:0", want: false},
-		{name: "padded zero uid", user: "00:1000", want: false},
-		{name: "numeric nonroot uid", user: "65532:65532", want: true},
-		{name: "named nonroot user", user: "nobody", want: true},
-		{name: "nonroot uid with root group", user: "1000:0", want: true},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := containerUserLooksNonRoot(tt.user); got != tt.want {
-				t.Fatalf("containerUserLooksNonRoot(%q) = %v, want %v", tt.user, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestContainerResourceLimitsComplete(t *testing.T) {
-	tests := []struct {
-		name    string
-		options map[string]string
-		want    bool
-	}{
-		{name: "none", options: nil, want: false},
-		{name: "memory only", options: map[string]string{"memory": "256m"}, want: false},
-		{name: "memory and cpus", options: map[string]string{"memory": "256m", "memory_swap": "256m", "cpus": "0.5"}, want: false},
-		{name: "complete", options: map[string]string{"memory": "256m", "memory_swap": "256m", "cpus": "0.5", "pids_limit": "64"}, want: true},
-		{name: "blank value", options: map[string]string{"memory": "256m", "memory_swap": "256m", "cpus": " ", "pids_limit": "64"}, want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := containerResourceLimitsComplete(tt.options); got != tt.want {
-				t.Fatalf("containerResourceLimitsComplete(%#v) = %v, want %v", tt.options, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestContainerCapDropIncludesAll(t *testing.T) {
-	tests := []struct {
-		name  string
-		value string
-		want  bool
-	}{
-		{name: "empty", value: "", want: false},
-		{name: "all lowercase", value: "all", want: true},
-		{name: "all uppercase", value: "ALL", want: true},
-		{name: "csv contains all", value: "NET_ADMIN,all", want: true},
-		{name: "semicolon contains all", value: "NET_ADMIN;ALL", want: true},
-		{name: "substring small", value: "small", want: false},
-		{name: "substring allow", value: "allow", want: false},
-		{name: "cap name", value: "NET_ADMIN", want: false},
-	}
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			if got := containerCapDropIncludesAll(tt.value); got != tt.want {
-				t.Fatalf("containerCapDropIncludesAll(%q) = %v, want %v", tt.value, got, tt.want)
-			}
-		})
-	}
-}
-
-func TestServerConfigDiagnosticsReportsContainerHardeningGaps(t *testing.T) {
-	runtimeRef := newAPITestRuntime(t)
-	configDir := filepath.Join(runtimeRef.RuntimeHome(), "configs")
-	if err := os.MkdirAll(filepath.Join(configDir, "mcp_servers"), 0o755); err != nil {
-		t.Fatalf("mkdir config modules: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "goflow.yaml"), []byte(`agent:
-  name: GoFlow Agent
-  max_iterations: 8
-default_agent: chat
-providers:
-  primary:
-    provider: openai-compatible
-    base_url: http://localhost:9999/v1
-    model: test-model
-agents:
-  chat:
-    name: Chat
-    provider: primary
-    mode: chat
-    max_iterations: 2
-    allowed_tool_kinds: [read]
-    tool_policy: allow
-skill:
-  directory: ./skills
-`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	toolSource := filepath.ToSlash(filepath.Join(runtimeRef.RuntimeHome(), "mcp_servers", "loose.py"))
-	if err := os.WriteFile(filepath.Join(configDir, "mcp_servers", "loose-container.yaml"), []byte(fmt.Sprintf(`mcp_servers:
-  - name: loose-container
-    command: bash
-    args: ["-lc", "python ./mcp_servers/loose.py"]
-    enabled: true
-    allowed_commands: [bash]
-    isolation: container
-    isolation_options:
-      image: python:latest
-      network: host
-      workspace_mount: rw
-      tool_source: "%s"
-      tool_mount: rw
-`, toolSource)), 0o644); err != nil {
-		t.Fatalf("write mcp module: %v", err)
-	}
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/config/diagnostics", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected diagnostics 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	var diagnostics configDiagnosticsResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
-		t.Fatalf("decode diagnostics response: %v", err)
-	}
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_allowed_command_shell", "loose-container", "allowed_commands", "dedicated executable")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_isolation_container_network_open", "loose-container", "isolation_options.network", "network")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_image_floating_tag", "loose-container", "isolation_options.image", "versioned tag")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_host_network", "loose-container", "isolation_options.network", "network: host")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_workspace_rw", "loose-container", "isolation_options.workspace_mount", "workspace_mount: ro")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_resource_limits_missing", "loose-container", "isolation_options", "memory")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_pull_policy_missing", "loose-container", "isolation_options.pull_policy", "pull_policy")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_no_new_privileges_missing", "loose-container", "isolation_options.no_new_privileges", "no_new_privileges")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_cap_drop_missing", "loose-container", "isolation_options.cap_drop", "cap_drop")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_readonly_rootfs_missing", "loose-container", "isolation_options.readonly_rootfs", "readonly_rootfs")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_ipc_not_isolated", "loose-container", "isolation_options.ipc", "ipc: none")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_userns_missing", "loose-container", "isolation_options.userns", "userns")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_tool_mount_incomplete", "loose-container", "isolation_options.tool_source", "tool_target")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_tool_mount_rw", "loose-container", "isolation_options.tool_mount", "tool_mount: ro")
-}
-
-func TestServerConfigDiagnosticsWarnsOnContainerImageWithoutDigestPin(t *testing.T) {
-	runtimeRef := newAPITestRuntime(t)
-	configDir := filepath.Join(runtimeRef.RuntimeHome(), "configs")
-	if err := os.MkdirAll(filepath.Join(configDir, "mcp_servers"), 0o755); err != nil {
-		t.Fatalf("mkdir config modules: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "goflow.yaml"), []byte(`agent:
-  name: GoFlow Agent
-  max_iterations: 8
-default_agent: chat
-providers:
-  primary:
-    provider: openai-compatible
-    base_url: http://localhost:9999/v1
-    model: test-model
-agents:
-  chat:
-    name: Chat
-    provider: primary
-    mode: chat
-    max_iterations: 2
-    allowed_tool_kinds: [read]
-    tool_policy: allow
-skill:
-  directory: ./skills
-`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "mcp_servers", "versioned-container.yaml"), []byte(`mcp_servers:
-  - name: versioned-container
-    command: python
-    args: [./mcp_servers/versioned.py]
-    enabled: true
-    allowed_commands: [python]
-    isolation: container
-    isolation_options:
-      image: python:3.13-slim
-      workspace_mount: ro
-      network: disabled
-      ipc: none
-      userns: auto
-      memory: 256m
-      memory_swap: 256m
-      cpus: "0.5"
-      pids_limit: "64"
-`), 0o644); err != nil {
-		t.Fatalf("write mcp module: %v", err)
-	}
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/config/diagnostics", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected diagnostics 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	var diagnostics configDiagnosticsResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
-		t.Fatalf("decode diagnostics response: %v", err)
-	}
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_image_not_digest_pinned", "versioned-container", "isolation_options.image", "immutable digest")
-	if configDiagnosticCodeForTargetExists(diagnostics.Items, "mcp_container_image_floating_tag", "versioned-container") {
-		t.Fatalf("expected versioned container to avoid floating-tag warning, got %#v", diagnostics.Items)
-	}
-}
-
-func TestServerConfigDiagnosticsReportsProductionContainerImageProvenance(t *testing.T) {
-	runtimeRef := newAPITestRuntime(t)
-	configDir := filepath.Join(runtimeRef.RuntimeHome(), "configs")
-	if err := os.MkdirAll(filepath.Join(configDir, "mcp_servers"), 0o755); err != nil {
-		t.Fatalf("mkdir config modules: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "goflow.yaml"), []byte(`agent:
-  name: GoFlow Agent
-  max_iterations: 8
-default_agent: chat
-providers:
-  primary:
-    provider: openai-compatible
-    base_url: http://localhost:9999/v1
-    model: test-model
-agents:
-  chat:
-    name: Chat
-    provider: primary
-    mode: chat
-    max_iterations: 2
-    allowed_tool_kinds: [read]
-    tool_policy: allow
-skill:
-  directory: ./skills
-`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "mcp_servers", "prod-container.yaml"), []byte(`mcp_servers:
-  - name: prod-container
-    command: python
-    args: [./mcp_servers/prod.py]
-    enabled: true
-    allowed_commands: [python]
-    isolation: container
-    isolation_profile: production
-    isolation_options:
-      image: goflow/mcp-prod:1.2.3
-      pull_policy: missing
-`), 0o644); err != nil {
-		t.Fatalf("write mcp module: %v", err)
-	}
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/config/diagnostics", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected diagnostics 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	var diagnostics configDiagnosticsResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
-		t.Fatalf("decode diagnostics response: %v", err)
-	}
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_image_not_digest_pinned", "prod-container", "isolation_options.image", "immutable digest")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_production_image_not_digest_pinned", "prod-container", "isolation_options.image", "production-profile")
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_container_production_pull_policy_not_never", "prod-container", "isolation_options.pull_policy", "pull_policy: never")
-	item := configDiagnosticByCodeAndTarget(diagnostics.Items, "mcp_container_production_image_not_digest_pinned", "prod-container")
-	if item == nil ||
-		item.Details["image_reference_type"] != "version_tag" ||
-		item.Details["digest_pinned"] != "false" ||
-		item.Details["image"] != "goflow/mcp-prod:1.2.3" {
-		t.Fatalf("expected production image provenance details, got %#v", item)
-	}
-}
-
-func TestServerConfigDiagnosticsAcceptsHardenedContainerMCP(t *testing.T) {
-	runtimeRef := newAPITestRuntime(t)
-	configDir := filepath.Join(runtimeRef.RuntimeHome(), "configs")
-	if err := os.MkdirAll(filepath.Join(configDir, "mcp_servers"), 0o755); err != nil {
-		t.Fatalf("mkdir config modules: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "goflow.yaml"), []byte(`agent:
-  name: GoFlow Agent
-  max_iterations: 8
-default_agent: chat
-providers:
-  primary:
-    provider: openai-compatible
-    base_url: http://localhost:9999/v1
-    model: test-model
-agents:
-  chat:
-    name: Chat
-    provider: primary
-    mode: chat
-    max_iterations: 2
-    allowed_tool_kinds: [read]
-    tool_policy: allow
-skill:
-  directory: ./skills
-`), 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-	if err := os.WriteFile(filepath.Join(configDir, "mcp_servers", "hardened-container.yaml"), []byte(`mcp_servers:
-  - name: hardened-container
-    command: python
-    args: [./mcp_servers/hardened.py]
-    enabled: true
-    allowed_commands: [python]
-    network_disabled: true
-    isolation: container
-    isolation_options:
-      image: python@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
-      workspace_mount: ro
-      network: disabled
-      ipc: none
-      userns: auto
-      memory: 256m
-      memory_swap: 256m
-      cpus: "0.5"
-      pids_limit: "64"
-      pull_policy: missing
-      no_new_privileges: "true"
-      cap_drop: all
-      readonly_rootfs: "true"
-      user: "65532:65532"
-      tmpfs: /tmp:rw,noexec,nosuid,size=64m
-      security_opt: seccomp=/etc/goflow/seccomp.json;apparmor=goflow-mcp
-      init: "true"
-`), 0o644); err != nil {
-		t.Fatalf("write mcp module: %v", err)
-	}
-	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodGet, "/api/config/diagnostics", nil)
-	response := httptest.NewRecorder()
-
-	server.ServeHTTP(response, request)
-
-	if response.Code != http.StatusOK {
-		t.Fatalf("expected diagnostics 200, got %d body=%s", response.Code, response.Body.String())
-	}
-	var diagnostics configDiagnosticsResponse
-	if err := json.Unmarshal(response.Body.Bytes(), &diagnostics); err != nil {
-		t.Fatalf("decode diagnostics response: %v", err)
-	}
-	for _, code := range []string{
-		"mcp_isolation_container_network_open",
-		"mcp_container_workspace_rw",
-		"mcp_container_resource_limits_missing",
-		"mcp_container_no_new_privileges_missing",
-		"mcp_container_cap_drop_missing",
-		"mcp_container_readonly_rootfs_missing",
-		"mcp_container_image_floating_tag",
-		"mcp_container_image_not_digest_pinned",
-		"mcp_container_host_network",
-		"mcp_container_tool_mount_incomplete",
-		"mcp_container_tool_mount_rw",
-		"mcp_container_tmpfs_missing",
-		"mcp_container_init_missing",
-		"mcp_container_ipc_not_isolated",
-		"mcp_container_userns_missing",
-		"mcp_container_pull_policy_missing",
-	} {
-		if configDiagnosticCodeForTargetExists(diagnostics.Items, code, "hardened-container") {
-			t.Fatalf("expected hardened container to avoid %s, got %#v", code, diagnostics.Items)
-		}
-	}
-	assertConfigDiagnostic(t, diagnostics.Items, "mcp_isolation_container", "hardened-container", "isolation", "image provenance")
 }
 
 func assertConfigDiagnostic(t *testing.T, items []configDiagnosticItem, code, targetName, field, recommendation string) {
@@ -7897,24 +7291,18 @@ skill:
 		t.Fatalf("expected diagnostics 200, got %d body=%s", diagnosticsResponse.Code, diagnosticsResponse.Body.String())
 	}
 	diagnosticsBody := diagnosticsResponse.Body.String()
-	if !strings.Contains(diagnosticsBody, `"restart_required":true`) ||
-		!strings.Contains(diagnosticsBody, `"code":"restart_required"`) ||
-		!strings.Contains(diagnosticsBody, `researcher.yaml`) {
-		t.Fatalf("expected restart-required diagnostics for saved agent module, got %s", diagnosticsBody)
+	if strings.Contains(diagnosticsBody, `"code":"restart_required"`) {
+		t.Fatalf("expected hot-plugged agent to avoid restart_required, got %s", diagnosticsBody)
 	}
 	var diagnostics configDiagnosticsResponse
 	if err := json.Unmarshal(diagnosticsResponse.Body.Bytes(), &diagnostics); err != nil {
 		t.Fatalf("decode diagnostics response: %v", err)
 	}
-	if diagnostics.Apply.State != "restart_required" ||
-		!diagnostics.Apply.RestartRequired ||
-		diagnostics.Apply.RuntimeRebootstrapSupported ||
-		diagnostics.Apply.HotReloadSupported ||
-		!configDiagnosticsStringSliceContains(diagnostics.Apply.AffectedKinds, "agent") ||
-		!configDiagnosticsStringSliceContains(diagnostics.Apply.RebootstrapBlockers, "agents_bound_to_runtime_profiles") ||
-		!configDiagnosticsStringSliceContains(diagnostics.Apply.RebootstrapBlockers, "session_approvals_and_tool_policy_depend_on_runtime_catalog") ||
-		!configDiagnosticsStringSliceContains(diagnostics.Apply.RestartCommandHint, "--config") {
-		t.Fatalf("expected structured restart-required apply summary for saved agent module, got %#v", diagnostics.Apply)
+	if diagnostics.Apply.State != "active" || diagnostics.Apply.RestartRequired {
+		t.Fatalf("expected active apply summary after hot-plugging agent module, got %#v", diagnostics.Apply)
+	}
+	if _, ok := runtimeRef.Profile("researcher"); !ok {
+		t.Fatal("expected researcher agent to be live after save")
 	}
 }
 
@@ -8022,13 +7410,18 @@ skill:
 	}
 	if diagnostics.Apply.State != "restart_required" ||
 		!diagnostics.Apply.RestartRequired ||
-		diagnostics.Apply.RuntimeRebootstrapSupported ||
-		diagnostics.Apply.HotReloadSupported ||
-		!configDiagnosticsStringSliceContains(diagnostics.Apply.AffectedKinds, "mcp_server") ||
-		!configDiagnosticsStringSliceContains(diagnostics.Apply.RebootstrapBlockers, "mcp_servers_bound_to_child_processes") ||
-		!configDiagnosticsStringSliceContains(diagnostics.Apply.RebootstrapBlockers, "session_approvals_and_tool_policy_depend_on_runtime_catalog") ||
-		!configDiagnosticsStringSliceContains(diagnostics.Apply.RestartCommandHint, "--config") {
+		!configDiagnosticsStringSliceContains(diagnostics.Apply.AffectedKinds, "mcp_server") {
 		t.Fatalf("expected structured restart-required apply summary for saved tool module, got %#v", diagnostics.Apply)
+	}
+	found := false
+	for _, ref := range runtimeRef.MCPServerRefs() {
+		if strings.TrimSpace(ref.Name) == "notes-helper" {
+			found = true
+			break
+		}
+	}
+	if !found {
+		t.Fatalf("expected notes-helper MCP server to be live after save, got %#v", runtimeRef.MCPServerRefs())
 	}
 }
 
@@ -8041,6 +7434,15 @@ func TestServerWorkspaceFilesListsConfirmedWorkspaceFiles(t *testing.T) {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(filepath.Join(root, "app", "models", "user.py"), []byte("class User: pass"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("API_KEY=workspace-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, ".ssh"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".ssh", "id_ed25519"), []byte("private-key-material\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.Mkdir(filepath.Join(root, ".goflow"), 0o755); err != nil {
@@ -8093,7 +7495,8 @@ func TestServerWorkspaceFilesListsConfirmedWorkspaceFiles(t *testing.T) {
 	}
 	if !configDiagnosticsStringSliceContains(body.IgnoredDirs, ".goflow/") ||
 		!configDiagnosticsStringSliceContains(body.IgnoredDirs, ".venv/") ||
-		!configDiagnosticsStringSliceContains(body.IgnoredDirs, "node_modules/") {
+		!configDiagnosticsStringSliceContains(body.IgnoredDirs, "node_modules/") ||
+		!configDiagnosticsStringSliceContains(body.IgnoredDirs, ".ssh/") {
 		t.Fatalf("expected ignored directory metadata for hidden directories, got %#v", body.IgnoredDirs)
 	}
 	if workspaceFilesEntryPathContains(body.Entries, ".goflow") ||
@@ -8104,6 +7507,16 @@ func TestServerWorkspaceFilesListsConfirmedWorkspaceFiles(t *testing.T) {
 	if workspaceFilesEntryPathContains(body.Entries, "outside-link") ||
 		workspaceFilesEntryPathContains(body.Entries, "secret.py") {
 		t.Fatalf("expected symlink escape paths to be hidden from entries, got %#v", body.Entries)
+	}
+	secretRequest := httptest.NewRequest(http.MethodGet, "/api/workspace-files?query=.env", nil)
+	secretResponse := httptest.NewRecorder()
+	server.ServeHTTP(secretResponse, secretRequest)
+	var secretBody workspaceFilesResponse
+	if err := json.Unmarshal(secretResponse.Body.Bytes(), &secretBody); err != nil {
+		t.Fatalf("decode sensitive workspace files response: %v", err)
+	}
+	if secretResponse.Code != http.StatusOK || len(secretBody.Entries) != 0 {
+		t.Fatalf("expected sensitive files to stay out of workspace suggestions, got %d body=%s", secretResponse.Code, secretResponse.Body.String())
 	}
 
 	containsRequest := httptest.NewRequest(http.MethodGet, "/api/workspace-files?prefix=user.py&limit=20", nil)
@@ -8186,7 +7599,7 @@ func workspaceFilesEntryPathContains(entries []workspaceFileEntry, want string) 
 func TestServerRunEndpointReturnsAgentResult(t *testing.T) {
 	server := NewServer(newAPITestRuntime(t))
 	body := strings.NewReader(`{"input":"summarize the workspace"}`)
-	request := httptest.NewRequest(http.MethodPost, "/api/run", body)
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", body)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
@@ -8201,6 +7614,7 @@ func TestServerRunEndpointReturnsAgentResult(t *testing.T) {
 }
 
 func TestWorkspaceAPIConfirmClearAndSelect(t *testing.T) {
+	t.Setenv("GOFLOW_ENABLE_HOST_FOLDER_PICKER", "false")
 	runtimeRef := newAPITestRuntime(t)
 	demoRoot := filepath.Join(t.TempDir(), "demo")
 	otherRoot := filepath.Join(t.TempDir(), "other")
@@ -8294,7 +7708,7 @@ func TestWorkspaceAPIConfirmClearAndSelect(t *testing.T) {
 	if pickResponse.Code != http.StatusConflict {
 		t.Fatalf("expected disabled host folder picker conflict, got %d body=%s", pickResponse.Code, pickResponse.Body.String())
 	}
-	if !strings.Contains(pickResponse.Body.String(), `"requires_explicit_opt_in":true`) ||
+	if !strings.Contains(pickResponse.Body.String(), `"requires_explicit_opt_in":false`) ||
 		!strings.Contains(pickResponse.Body.String(), `"opt_in_env":"GOFLOW_ENABLE_HOST_FOLDER_PICKER"`) ||
 		!strings.Contains(pickResponse.Body.String(), `"folder_picker_mode":"client_or_text"`) {
 		t.Fatalf("expected folder picker opt-in guidance, got %s", pickResponse.Body.String())
@@ -8553,7 +7967,7 @@ func TestServerRunEndpointRequiresWorkspaceConfirmationForWorkspaceTasks(t *test
 	runtimeRef.SetWorkspaceConfirmed(workspaceState.Confirmed())
 	server := NewServerWithWorkspace(runtimeRef, workspaceState)
 
-	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"帮我写个 Python 计算器项目"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"帮我写个 Python 计算器项目"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -9136,7 +8550,7 @@ func blackboardEntriesContain(entries []session.BlackboardEntrySnapshot, id stri
 
 func TestServerRunStreamEndpointEmitsStreamEvents(t *testing.T) {
 	server := NewServer(newAPITestRuntime(t))
-	request := httptest.NewRequest(http.MethodPost, "/api/run/stream", strings.NewReader(`{"input":"hello"}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/runs/stream", strings.NewReader(`{"input":"hello"}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
@@ -9174,7 +8588,7 @@ func TestServerWorkflowStreamEndpointEmitsWorkflowResult(t *testing.T) {
 	if !strings.Contains(body, "event: task_stage") || !strings.Contains(body, "event: token_usage") {
 		t.Fatalf("expected workflow stream to forward agent task/token events, got %q", body)
 	}
-	if !strings.Contains(body, "event: workflow_result") || !strings.Contains(body, `"workflow_status":"completed"`) || !strings.Contains(body, `"name":"plan-fix-audit"`) {
+	if !strings.Contains(body, "event: workflow_result") || !strings.Contains(body, `"name":"plan-fix-audit"`) {
 		t.Fatalf("expected workflow_result SSE event, got %q", body)
 	}
 	if !strings.Contains(body, `"run_id"`) {
@@ -9184,6 +8598,14 @@ func TestServerWorkflowStreamEndpointEmitsWorkflowResult(t *testing.T) {
 	for _, event := range events {
 		if event.Name != string(event.Payload.Type) {
 			t.Fatalf("expected SSE event name to match payload type, got name=%q payload=%#v", event.Name, event.Payload)
+		}
+		if event.Payload.Reason == "quality_gate_failed" && event.Payload.WorkflowStatus != "running" {
+			t.Fatalf("continuing quality failure announced a terminal state: %#v", event.Payload)
+		}
+		// This fixture has no executed verification evidence, so its final state
+		// must remain blocked rather than relying on a stray completed event.
+		if event.Payload.Type == schema.StreamEventWorkflowResult && event.Payload.WorkflowStatus != "blocked" {
+			t.Fatalf("expected the actual workflow result to remain blocked: %#v", event.Payload)
 		}
 	}
 	if !sseEventsContain(events, schema.StreamEventWorkflowResult) {
@@ -9197,7 +8619,7 @@ func TestServerStreamEndpointsEmitWorkspaceRequiredActionEvent(t *testing.T) {
 	runtimeRef.SetWorkspaceConfirmed(workspaceState.Confirmed())
 	server := NewServerWithWorkspace(runtimeRef, workspaceState)
 
-	runRequest := httptest.NewRequest(http.MethodPost, "/api/run/stream", strings.NewReader(`{"input":"write code for a calculator"}`))
+	runRequest := httptest.NewRequest(http.MethodPost, "/api/runs/stream", strings.NewReader(`{"input":"write code for a calculator"}`))
 	runRequest.Header.Set("Content-Type", "application/json")
 	runResponse := httptest.NewRecorder()
 	server.ServeHTTP(runResponse, runRequest)
@@ -9258,7 +8680,19 @@ stages:
 	if paused.Status != "awaiting_approval" || paused.NextStage != "checkpoint" || paused.RunID == "" {
 		t.Fatalf("expected checkpoint pause, got %#v", paused)
 	}
-	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+paused.RunID+"/actions", nil)
+	tasksRequest := httptest.NewRequest(http.MethodGet, "/api/runs?needs_action=1", nil)
+	tasksResponse := httptest.NewRecorder()
+	server.ServeHTTP(tasksResponse, tasksRequest)
+	var tasks runCollectionResponse
+	if tasksResponse.Code != http.StatusOK || json.NewDecoder(tasksResponse.Body).Decode(&tasks) != nil {
+		t.Fatalf("expected unified tasks, got %d body=%s", tasksResponse.Code, tasksResponse.Body.String())
+	}
+	task := runCollectionItemByID(tasks.Runs, paused.RunID)
+	if task == nil || !task.NeedsAction || !task.Resumable || task.Recommended != "approve_stage" {
+		t.Fatalf("expected resumable workflow task, got %#v", task)
+	}
+
+	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+paused.RunID+"/actions", nil)
 	actionsResponse := httptest.NewRecorder()
 	server.ServeHTTP(actionsResponse, actionsRequest)
 	if actionsResponse.Code != http.StatusOK {
@@ -9293,7 +8727,8 @@ stages:
 func TestServerWorkflowRunApprovalResumesBuiltInWorkflowAfterSessionLoad(t *testing.T) {
 	firstState := session.New(8)
 	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, []schema.ChatResponse{
-		{Message: schema.Message{Content: "durable plan ready"}, Usage: schema.TokenUsage{PromptTokens: 5, OutputTokens: 2}},
+		{Message: schema.Message{Content: "Goal: ship the change\nAcceptance Checks: verify the result\nRisks: preserve existing work"}, Usage: schema.TokenUsage{PromptTokens: 5, OutputTokens: 2}},
+		{Message: schema.Message{Content: "Implementation Steps: apply the focused change\nTarget Files: selected by the implementer\nVerification Commands: run the relevant tests"}, Usage: schema.TokenUsage{PromptTokens: 6, OutputTokens: 3}},
 	})
 	firstServer := NewServer(firstRuntime)
 	startRequest := httptest.NewRequest(http.MethodPost, "/api/workflows/plan-fix-audit", strings.NewReader(`{"input":"ship it","approve":false}`))
@@ -9307,8 +8742,8 @@ func TestServerWorkflowRunApprovalResumesBuiltInWorkflowAfterSessionLoad(t *test
 	if err := json.NewDecoder(startResponse.Body).Decode(&paused); err != nil {
 		t.Fatalf("decode paused workflow: %v", err)
 	}
-	if paused.Status != "awaiting_approval" || paused.NextStage != "fix" || paused.RunID == "" || len(paused.CompletedStages) != 1 {
-		t.Fatalf("expected built-in workflow awaiting fix approval, got %#v", paused)
+	if paused.Status != "awaiting_approval" || paused.NextStage != "implement" || paused.RunID == "" || len(paused.CompletedStages) != 2 {
+		t.Fatalf("expected built-in workflow awaiting implementation approval, got %#v", paused)
 	}
 
 	sessionPath := filepath.Join(t.TempDir(), "session.json")
@@ -9320,8 +8755,11 @@ func TestServerWorkflowRunApprovalResumesBuiltInWorkflowAfterSessionLoad(t *test
 		t.Fatalf("load session: %v", err)
 	}
 	secondRuntime := newAPITestRuntimeWithStateAndResponses(t, loadedState, []schema.ChatResponse{
-		{Message: schema.Message{Content: "fix after restart"}, Usage: schema.TokenUsage{PromptTokens: 7, OutputTokens: 3}},
-		{Message: schema.Message{Content: "audit after restart"}, Usage: schema.TokenUsage{PromptTokens: 9, OutputTokens: 4}},
+		{Message: schema.Message{Content: "Change Summary: applied after restart\nFiles Changed: example.go"}, Usage: schema.TokenUsage{PromptTokens: 7, OutputTokens: 3}},
+		{Message: schema.Message{Content: "Verification Result: not run in persistence test\nCommands Run: none"}, Usage: schema.TokenUsage{PromptTokens: 8, OutputTokens: 3}},
+		{Message: schema.Message{Content: "Findings: no persistence defect\nRecommendation: keep the restored run"}, Usage: schema.TokenUsage{PromptTokens: 9, OutputTokens: 4}},
+		{Message: schema.Message{Content: "Revision Plan: attach tool evidence\nBlocking Issues: quality evidence omitted by this persistence test\nRequired Evidence: real command result\nNext Action: rerun with tools"}},
+		{Message: schema.Message{Content: "Final Status: needs evidence\nVerification Evidence: intentionally absent in persistence test\nNext Steps: run the real verification workflow"}},
 	})
 	secondServer := NewServer(secondRuntime)
 
@@ -9349,17 +8787,22 @@ func TestServerWorkflowRunApprovalResumesBuiltInWorkflowAfterSessionLoad(t *test
 	if err := json.NewDecoder(approveResponse.Body).Decode(&resumed); err != nil {
 		t.Fatalf("decode resumed workflow: %v", err)
 	}
-	if resumed.Status != "completed" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) != 3 {
-		t.Fatalf("expected built-in workflow to complete after reload, got %#v", resumed)
+	if resumed.Status != "blocked" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) < 7 {
+		t.Fatalf("expected built-in workflow to finish after reload but retain its failed quality gate, got %#v", resumed)
 	}
-	if resumed.CompletedStages[0].Result.Output != "durable plan ready" ||
-		resumed.CompletedStages[1].Result.Output != "fix after restart" ||
-		resumed.CompletedStages[2].Result.Output != "audit after restart" {
-		t.Fatalf("expected resumed stages to preserve plan and run fix/audit, got %#v", resumed.CompletedStages)
+	stageOutputs := make(map[string]string, len(resumed.CompletedStages))
+	for _, stage := range resumed.CompletedStages {
+		stageOutputs[string(stage.Stage)] = stage.Result.Output
+	}
+	if !strings.Contains(stageOutputs["intake"], "Goal: ship the change") ||
+		!strings.Contains(stageOutputs["plan"], "Implementation Steps:") ||
+		!strings.Contains(stageOutputs["implement"], "applied after restart") ||
+		!strings.Contains(stageOutputs["audit"], "no persistence defect") {
+		t.Fatalf("expected restored workflow to preserve planning and resume implementation, got %#v", stageOutputs)
 	}
 	reloadedRun := workflowRunSnapshotByID(t, secondRuntime, paused.RunID)
-	if reloadedRun.Status != "completed" || len(reloadedRun.CompletedStages) != 3 {
-		t.Fatalf("expected completed persisted run after reload resume, got %#v", reloadedRun)
+	if reloadedRun.Status != "blocked" || len(reloadedRun.CompletedStages) != len(resumed.CompletedStages) {
+		t.Fatalf("expected persisted quality-blocked run after reload resume, got %#v", reloadedRun)
 	}
 }
 
@@ -9792,7 +9235,19 @@ stages:
 	})
 	secondServer := NewServer(secondRuntime)
 
-	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+paused.RunID+"/actions", nil)
+	tasksRequest := httptest.NewRequest(http.MethodGet, "/api/runs?needs_action=1", nil)
+	tasksResponse := httptest.NewRecorder()
+	secondServer.ServeHTTP(tasksResponse, tasksRequest)
+	var tasks runCollectionResponse
+	if tasksResponse.Code != http.StatusOK || json.NewDecoder(tasksResponse.Body).Decode(&tasks) != nil {
+		t.Fatalf("expected unified tasks after reload, got %d body=%s", tasksResponse.Code, tasksResponse.Body.String())
+	}
+	task := runCollectionItemByID(tasks.Runs, paused.RunID)
+	if task == nil || !task.NeedsAction || !task.Resumable || task.Recommended != "submit_input" {
+		t.Fatalf("expected resumable workflow task after reload, got %#v", task)
+	}
+
+	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+paused.RunID+"/actions", nil)
 	actionsResponse := httptest.NewRecorder()
 	secondServer.ServeHTTP(actionsResponse, actionsRequest)
 	if actionsResponse.Code != http.StatusOK {
@@ -9805,8 +9260,11 @@ stages:
 	if !workflowActionAvailable(actions, "submit_input", true) || !workflowActionAvailable(actions, "cancel", true) {
 		t.Fatalf("expected durable input actions after reload, got %#v", actions)
 	}
+	if !workflowRunActionPathExists(actions, "submit_input", "/api/runs/"+paused.RunID+"/actions/submit_input") {
+		t.Fatalf("expected unified input action path after reload, got %#v", actions)
+	}
 
-	inputRequest := httptest.NewRequest(http.MethodPost, "/api/workflow-runs/"+paused.RunID+"/input", strings.NewReader(`{"inputs":{"target":"auth","depth":3}}`))
+	inputRequest := httptest.NewRequest(http.MethodPost, "/api/runs/"+paused.RunID+"/actions/submit_input", strings.NewReader(`{"inputs":{"target":"auth","depth":3}}`))
 	inputRequest.Header.Set("Content-Type", "application/json")
 	inputResponse := httptest.NewRecorder()
 	secondServer.ServeHTTP(inputResponse, inputRequest)
@@ -10492,24 +9950,30 @@ func TestServerWorkflowRunHistoryEndpointsRecordStreamedRun(t *testing.T) {
 		t.Fatalf("expected one workflow run, got %#v", runs)
 	}
 	run := runs[0]
-	if run.ID == "" || run.Name != "plan-fix-audit" || run.Status != "completed" {
-		t.Fatalf("expected completed run with id, got %#v", run)
+	if run.ID == "" || run.Name != "plan-fix-audit" || run.Status != "blocked" {
+		t.Fatalf("expected quality-blocked run with id and retained final report, got %#v", run)
 	}
-	if len(run.CompletedStages) != 3 {
-		t.Fatalf("expected persisted completed stages, got %#v", run.CompletedStages)
+	completedStageNames := make(map[string]bool, len(run.CompletedStages))
+	for _, stage := range run.CompletedStages {
+		completedStageNames[stage.Stage] = true
+	}
+	for _, name := range []string{"intake", "plan", "implement", "verify", "audit", "quality", "final-handoff"} {
+		if !completedStageNames[name] {
+			t.Fatalf("expected persisted %s stage, got %#v", name, completedStageNames)
+		}
 	}
 	if len(run.Artifacts) == 0 || len(run.CompletedStages[0].Artifacts) == 0 {
 		t.Fatalf("expected run and stage artifacts, got run=%#v stage=%#v", run.Artifacts, run.CompletedStages[0].Artifacts)
 	}
 	foundPlanArtifact := false
 	for _, artifact := range run.CompletedStages[0].Artifacts {
-		if artifact.Kind == "output" && strings.Contains(artifact.Content, "plan ready") {
+		if artifact.Kind == "report" && artifact.Metadata["declared"] == "true" && strings.Contains(artifact.Content, "plan ready") {
 			foundPlanArtifact = true
 			break
 		}
 	}
 	if !foundPlanArtifact {
-		t.Fatalf("expected plan output artifact, got %#v", run.CompletedStages[0].Artifacts)
+		t.Fatalf("expected declared plan report artifact, got %#v", run.CompletedStages[0].Artifacts)
 	}
 	var hasTaskStage, hasTokenUsage, hasWorkflowResult bool
 	for _, event := range run.Events {
@@ -10651,7 +10115,7 @@ func TestServerWorkflowRunHistoryEndpointsRecordStreamedRun(t *testing.T) {
 		}
 	}
 
-	filteredArtifactsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+run.ID+"/artifacts?stage=plan&kind=output", nil)
+	filteredArtifactsRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+run.ID+"/artifacts?stage=plan&kind=report", nil)
 	filteredArtifactsResponse := httptest.NewRecorder()
 	server.ServeHTTP(filteredArtifactsResponse, filteredArtifactsRequest)
 	if filteredArtifactsResponse.Code != http.StatusOK {
@@ -10662,11 +10126,11 @@ func TestServerWorkflowRunHistoryEndpointsRecordStreamedRun(t *testing.T) {
 		t.Fatalf("decode filtered artifacts: %v", err)
 	}
 	if len(filteredArtifacts) == 0 {
-		t.Fatalf("expected plan output artifacts")
+		t.Fatalf("expected declared plan report artifacts")
 	}
 	for _, artifact := range filteredArtifacts {
-		if artifact.Stage != "plan" || artifact.Kind != "output" {
-			t.Fatalf("expected plan output artifact from shorthand kind filter, got %#v", artifact)
+		if artifact.Stage != "plan" || artifact.Kind != "report" {
+			t.Fatalf("expected declared plan report from shorthand kind filter, got %#v", artifact)
 		}
 	}
 
@@ -10686,7 +10150,7 @@ func TestServerWorkflowRunHistoryEndpointsRecordStreamedRun(t *testing.T) {
 		t.Fatalf("expected replay bundle with run data and collaboration state, got %s", replayBody)
 	}
 
-	filteredReplayRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+run.ID+"/replay?stage=plan&kind=artifact&artifact_kind=output&limit=2", nil)
+	filteredReplayRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+run.ID+"/replay?stage=plan&kind=artifact&artifact_kind=report&limit=2", nil)
 	filteredReplayResponse := httptest.NewRecorder()
 	server.ServeHTTP(filteredReplayResponse, filteredReplayRequest)
 	if filteredReplayResponse.Code != http.StatusOK {
@@ -10696,19 +10160,19 @@ func TestServerWorkflowRunHistoryEndpointsRecordStreamedRun(t *testing.T) {
 	if err := json.NewDecoder(filteredReplayResponse.Body).Decode(&filteredReplay); err != nil {
 		t.Fatalf("decode filtered replay: %v", err)
 	}
-	if filteredReplay.Filters.Stage != "plan" || filteredReplay.Filters.ItemKind != "artifact" || filteredReplay.Filters.ArtifactKind != "output" {
+	if filteredReplay.Filters.Stage != "plan" || filteredReplay.Filters.ItemKind != "artifact" || filteredReplay.Filters.ArtifactKind != "report" {
 		t.Fatalf("expected replay filters to echo request, got %#v", filteredReplay.Filters)
 	}
 	if len(filteredReplay.Stages) != 0 || len(filteredReplay.Events) != 0 || len(filteredReplay.Artifacts) == 0 || len(filteredReplay.Artifacts) > 2 {
 		t.Fatalf("expected artifact-only filtered replay, got stages=%#v events=%#v artifacts=%#v", filteredReplay.Stages, filteredReplay.Events, filteredReplay.Artifacts)
 	}
 	for _, artifact := range filteredReplay.Artifacts {
-		if artifact.Stage != "plan" || artifact.Kind != "output" {
-			t.Fatalf("expected plan output artifact, got %#v", artifact)
+		if artifact.Stage != "plan" || artifact.Kind != "report" {
+			t.Fatalf("expected declared plan report, got %#v", artifact)
 		}
 	}
 
-	exportJSONRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+run.ID+"/export?format=json&stage=plan&kind=artifact&artifact_kind=output", nil)
+	exportJSONRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+run.ID+"/export?format=json&stage=plan&kind=artifact&artifact_kind=report", nil)
 	exportJSONResponse := httptest.NewRecorder()
 	server.ServeHTTP(exportJSONResponse, exportJSONRequest)
 	if exportJSONResponse.Code != http.StatusOK || !strings.Contains(exportJSONResponse.Header().Get("Content-Type"), "application/json") || !strings.Contains(exportJSONResponse.Header().Get("Content-Disposition"), ".json") {
@@ -10722,8 +10186,8 @@ func TestServerWorkflowRunHistoryEndpointsRecordStreamedRun(t *testing.T) {
 		t.Fatalf("expected filtered json export with artifact-only replay, got %#v", exportedReplay)
 	}
 	for _, artifact := range exportedReplay.Artifacts {
-		if artifact.Stage != "plan" || artifact.Kind != "output" {
-			t.Fatalf("expected plan output artifact in json export, got %#v", artifact)
+		if artifact.Stage != "plan" || artifact.Kind != "report" {
+			t.Fatalf("expected declared plan report in json export, got %#v", artifact)
 		}
 	}
 
@@ -10850,8 +10314,8 @@ func TestServerWorkflowRunReplayAndRunsIncludeQualitySummary(t *testing.T) {
 	if replay.Quality.Status != "failed" || replay.Quality.AcceptanceTotal != 2 || replay.Quality.AcceptanceFailed != 1 || replay.Quality.VerificationTotal != 2 || replay.Quality.VerificationFailed != 1 {
 		t.Fatalf("expected failed quality summary with one failed acceptance and validation, got %#v", replay.Quality)
 	}
-	if replay.Quality.Score >= 100 || len(replay.Quality.UnmetCriteria) != 1 || len(replay.Quality.FailedValidations) != 1 || replay.Quality.EvidenceArtifacts == 0 {
-		t.Fatalf("expected quality evidence and issue details, got %#v", replay.Quality)
+	if replay.Quality.Score > 70 || len(replay.Quality.UnmetCriteria) != 1 || len(replay.Quality.FailedValidations) != 1 || replay.Quality.EvidenceArtifacts != 0 {
+		t.Fatalf("expected failed checks without treating model text as strong evidence, got %#v", replay.Quality)
 	}
 
 	evidenceRequest := httptest.NewRequest(http.MethodGet, "/api/workflow-runs/"+runID+"/evidence", nil)
@@ -10895,7 +10359,7 @@ func TestServerWorkflowRunReplayAndRunsIncludeQualitySummary(t *testing.T) {
 	if err := json.NewDecoder(runsResponse.Body).Decode(&runs); err != nil {
 		t.Fatalf("decode unified runs: %v", err)
 	}
-	if len(runs.Runs) != 1 || runs.Runs[0].Quality == nil || runs.Runs[0].Quality.AcceptanceFailed != 1 || runs.Runs[0].EvidencePath != "/api/workflow-runs/"+runID+"/evidence" {
+	if len(runs.Runs) != 1 || runs.Runs[0].Quality == nil || runs.Runs[0].Quality.AcceptanceFailed != 1 || runs.Runs[0].EvidencePath != "/api/runs/"+runID+"/evidence" {
 		t.Fatalf("expected workflow run item quality summary, got %#v", runs.Runs)
 	}
 
@@ -10908,6 +10372,36 @@ func TestServerWorkflowRunReplayAndRunsIncludeQualitySummary(t *testing.T) {
 	markdown := exportResponse.Body.String()
 	if !strings.Contains(markdown, "## Quality") || !strings.Contains(markdown, "### Unmet Criteria") || !strings.Contains(markdown, "risk evidence") {
 		t.Fatalf("expected markdown quality section, got %s", markdown)
+	}
+}
+
+func TestWorkflowRunQualityStatusKeepsActiveContinuationNonTerminal(t *testing.T) {
+	quality := workflowRunQualitySummary{VerificationFailed: 1, ErrorCount: 1, NeedsActionCount: 1}
+	if got := workflowRunQualityStatusFor(session.WorkflowRunSnapshot{Status: "running"}, quality); got != "running" {
+		t.Fatalf("active continuation must stay running despite retained partial-stage diagnostics, got %q", got)
+	}
+	if got := workflowRunQualityStatusFor(session.WorkflowRunSnapshot{Status: "paused_need_more_budget"}, quality); got != "needs_action" {
+		t.Fatalf("iteration-budget pause must remain resumable instead of failed, got %q", got)
+	}
+	if got := workflowRunQualityStatusFor(session.WorkflowRunSnapshot{Status: "failed"}, quality); got != "failed" {
+		t.Fatalf("terminal execution failure must still fail quality, got %q", got)
+	}
+}
+
+func TestWorkflowRunQualityIgnoresBoundedToolPolicyInterventions(t *testing.T) {
+	run := session.WorkflowRunSnapshot{
+		Status: "completed",
+		CompletedStages: []session.WorkflowRunStageSnapshot{{
+			Stage: "plan",
+			Result: schema.AgentResult{Verification: []schema.Verification{
+				{Kind: "tool", Status: "failed", Detail: "read_file: workflow stage read limit reached (8); use the supplied stage evidence and produce the stage report"},
+				{Kind: "plan", Status: "passed", Detail: "concrete target files selected"},
+			}},
+		}},
+	}
+	quality := workflowRunQualitySummaryFor(run)
+	if quality.VerificationTotal != 1 || quality.VerificationPassed != 1 || quality.VerificationFailed != 0 {
+		t.Fatalf("bounded control intervention must not count as a failed product verification: %#v", quality)
 	}
 }
 
@@ -10939,9 +10433,9 @@ func TestServerWorkflowBackgroundRunReturnsRunIDAndSurvivesRequestCancel(t *test
 	cancelRequest()
 	close(gateLLM.release)
 
-	run := waitWorkflowRunStatus(t, runtimeRef, accepted.RunID, "completed")
-	if run.CompletedAt == "" || len(run.CompletedStages) != 3 {
-		t.Fatalf("expected background workflow to complete after request cancel, got %#v", run)
+	run := waitWorkflowRunStatus(t, runtimeRef, accepted.RunID, "blocked")
+	if run.Status != "blocked" || run.CompletedAt == "" {
+		t.Fatalf("expected background workflow to finish independently and retain quality blocking after request cancel, got %#v", run)
 	}
 }
 
@@ -10949,7 +10443,7 @@ func TestServerAgentBackgroundRunReturnsRunIDAndSurvivesRequestCancel(t *testing
 	runtimeRef, gateLLM := newAPIBackgroundWorkflowRuntime(t)
 	server := NewServer(runtimeRef)
 	ctx, cancelRequest := context.WithCancel(context.Background())
-	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"hello","background":true}`)).WithContext(ctx)
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"hello","background":true}`)).WithContext(ctx)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
@@ -10990,7 +10484,7 @@ func TestServerRunStreamBackgroundReturnsDurableRunIDAndSurvivesRequestCancel(t 
 	runtimeRef, gateLLM := newAPIBackgroundWorkflowRuntime(t)
 	server := NewServer(runtimeRef)
 	ctx, cancelRequest := context.WithCancel(context.Background())
-	request := httptest.NewRequest(http.MethodPost, "/api/run/stream", strings.NewReader(`{"input":"hello","background":true}`)).WithContext(ctx)
+	request := httptest.NewRequest(http.MethodPost, "/api/runs/stream", strings.NewReader(`{"input":"hello","background":true}`)).WithContext(ctx)
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 
@@ -11138,7 +10632,20 @@ func TestServerUnifiedRunCollectionSupportsMixedHistoryFilters(t *testing.T) {
 		Name:     "target",
 		Label:    "Target",
 		Required: true,
-	}}, nil)
+	}}, []session.WorkflowRunStageSnapshot{{
+		Stage:  "collect",
+		Status: "completed",
+		ChangeSlices: []session.WorkflowChangeSliceSnapshot{{
+			ID:                   "collect-target",
+			Title:                "读取并确认目标",
+			ExecutionMode:        "read",
+			Status:               "blocked",
+			BlockedReason:        "等待目标输入",
+			TargetFiles:          []string{"targets.json"},
+			VerificationCommands: []string{"目标清单校验"},
+			EvidenceStages:       []string{"collect"},
+		}},
+	}})
 	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
 	agentCompletedID := runtimeRef.StartAgentRun("write docs")
 	runtimeRef.AppendAgentRunEvent(agentCompletedID, session.AgentRunEventSnapshot{
@@ -11192,7 +10699,8 @@ func TestServerUnifiedRunCollectionSupportsMixedHistoryFilters(t *testing.T) {
 		t.Fatalf("expected four unified runs, got %#v", all.Runs)
 	}
 	for _, run := range all.Runs {
-		if run.EventsURL == "" || run.ReplayPath == "" || run.ContextPath == "" || run.ActionsPath == "" || run.DiffsPath == "" {
+		base := "/api/runs/" + run.ID
+		if run.Kind != run.Type || run.Title == "" || run.DetailPath != base || run.EventsURL != base+"/events/stream" || run.EventsPath != run.EventsURL || run.TimelinePath != base+"/timeline" || run.ReplayPath != base+"/replay" || run.ContextPath != base+"/context" || run.ActionsPath != base+"/actions" || run.DiffsPath != base+"/diffs" || run.ExportPath != base+"/export" {
 			t.Fatalf("expected run paths for %#v", run)
 		}
 	}
@@ -11201,14 +10709,16 @@ func TestServerUnifiedRunCollectionSupportsMixedHistoryFilters(t *testing.T) {
 		pendingItem.Actions.Recommended != "submit_input" ||
 		pendingItem.Actions.NeedsBody != 1 ||
 		!workflowStringSliceContains(pendingItem.Actions.AvailableNames, "submit_input") ||
-		!runCollectionAvailableActionExists(pendingItem.Actions.AvailableItems, "submit_input", "/api/workflow-runs/"+workflowPendingID+"/input", true) {
+		!pendingItem.Resumable || pendingItem.Recommended != "submit_input" ||
+		!runCollectionAvailableActionExists(pendingItem.Actions.AvailableItems, "submit_input", "/api/runs/"+workflowPendingID+"/actions/submit_input", true) {
 		t.Fatalf("expected pending workflow action summary, got %#v", pendingItem)
 	}
 	if failedItem := runCollectionItemByID(all.Runs, agentFailedID); failedItem == nil ||
 		failedItem.Actions == nil ||
 		failedItem.Actions.Recommended != "retry" ||
 		!workflowStringSliceContains(failedItem.Actions.AvailableNames, "retry") ||
-		!runCollectionAvailableActionExists(failedItem.Actions.AvailableItems, "retry", "/api/agent-runs/"+agentFailedID+"/retry", false) {
+		failedItem.Resumable ||
+		!runCollectionAvailableActionExists(failedItem.Actions.AvailableItems, "retry", "/api/runs/"+agentFailedID+"/actions/retry", false) {
 		t.Fatalf("expected failed agent retry action summary, got %#v", failedItem)
 	}
 
@@ -11316,12 +10826,87 @@ func TestServerUnifiedRunCollectionSupportsMixedHistoryFilters(t *testing.T) {
 	if limited.Counts.Matched != 3 || limited.Counts.Returned != 1 || len(limited.Runs) != 1 {
 		t.Fatalf("expected terminal filter to match three and return one, got counts=%#v runs=%#v", limited.Counts, limited.Runs)
 	}
+
+	workflowDetailRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+workflowPendingID+"?summary=1", nil)
+	workflowDetailResponse := httptest.NewRecorder()
+	server.ServeHTTP(workflowDetailResponse, workflowDetailRequest)
+	if workflowDetailResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified workflow detail 200, got %d body=%s", workflowDetailResponse.Code, workflowDetailResponse.Body.String())
+	}
+	var workflowDetail session.WorkflowRunSnapshot
+	if err := json.NewDecoder(workflowDetailResponse.Body).Decode(&workflowDetail); err != nil || workflowDetail.ID != workflowPendingID || workflowDetail.Status != "awaiting_input" {
+		t.Fatalf("expected unified workflow detail, err=%v detail=%#v", err, workflowDetail)
+	}
+
+	workbenchRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+workflowPendingID+"?view=workbench", nil)
+	workbenchResponse := httptest.NewRecorder()
+	server.ServeHTTP(workbenchResponse, workbenchRequest)
+	if workbenchResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified workbench snapshot 200, got %d body=%s", workbenchResponse.Code, workbenchResponse.Body.String())
+	}
+	var workbench struct {
+		Task      TaskRecord                  `json:"task"`
+		Run       session.WorkflowRunSnapshot `json:"run"`
+		Actions   []workflowRunAction         `json:"actions"`
+		Timeline  []TaskTimelineItem          `json:"timeline"`
+		Execution *runWorkbenchExecution      `json:"execution"`
+	}
+	if err := json.NewDecoder(workbenchResponse.Body).Decode(&workbench); err != nil {
+		t.Fatalf("decode unified workbench snapshot: %v", err)
+	}
+	if workbench.Task.ID != workflowPendingID || workbench.Task.Type != "workflow" || workbench.Run.ID != workflowPendingID || workbench.Run.Status != "awaiting_input" {
+		t.Fatalf("expected bounded workflow task and run summary, got %#v", workbench)
+	}
+	if !workflowRunActionPathExists(workbench.Actions, "submit_input", "/api/runs/"+workflowPendingID+"/actions/submit_input") {
+		t.Fatalf("expected workbench snapshot to include unified actions, got %#v", workbench.Actions)
+	}
+	if workbench.Run.Events != nil || workbench.Run.CompletedStages != nil || workbench.Run.Artifacts != nil {
+		t.Fatalf("expected workbench run payload to omit heavy replay collections, got %#v", workbench.Run)
+	}
+	if workbench.Execution == nil || workbench.Execution.Contract.Status != "awaiting_input" || workbench.Execution.Contract.Workflow == "" {
+		t.Fatalf("expected bounded workflow execution summary, got %#v", workbench.Execution)
+	}
+	if len(workbench.Execution.ChangeSlices) != 1 || workbench.Execution.CurrentSlice == nil || workbench.Execution.CurrentSlice.ID != "collect-target" || len(workbench.Execution.Blockers) != 2 {
+		t.Fatalf("expected real workflow change slice and blockers in execution summary, got %#v", workbench.Execution)
+	}
+
+	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+workflowPendingID+"/actions?envelope=1", nil)
+	actionsResponse := httptest.NewRecorder()
+	server.ServeHTTP(actionsResponse, actionsRequest)
+	if actionsResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified workflow actions 200, got %d body=%s", actionsResponse.Code, actionsResponse.Body.String())
+	}
+	var actions workflowRunActionDiscovery
+	if err := json.NewDecoder(actionsResponse.Body).Decode(&actions); err != nil {
+		t.Fatalf("decode unified workflow actions: %v", err)
+	}
+	if actions.ActionsPath != "/api/runs/"+workflowPendingID+"/actions" || actions.EventsPath != "/api/runs/"+workflowPendingID+"/events/stream" || actions.Recommended != "submit_input" || !workflowRunActionPathExists(actions.Actions, "submit_input", "/api/runs/"+workflowPendingID+"/actions/submit_input") {
+		t.Fatalf("expected unified workflow action discovery, got %#v", actions)
+	}
+
+	agentTimelineRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+agentCompletedID+"/timeline", nil)
+	agentTimelineResponse := httptest.NewRecorder()
+	server.ServeHTTP(agentTimelineResponse, agentTimelineRequest)
+	if agentTimelineResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified agent timeline 200, got %d body=%s", agentTimelineResponse.Code, agentTimelineResponse.Body.String())
+	}
+
+	cancelRequest := httptest.NewRequest(http.MethodPost, "/api/runs/"+workflowPendingID+"/actions/cancel", nil)
+	cancelResponse := httptest.NewRecorder()
+	server.ServeHTTP(cancelResponse, cancelRequest)
+	if cancelResponse.Code != http.StatusOK {
+		t.Fatalf("expected unified workflow cancel 200, got %d body=%s", cancelResponse.Code, cancelResponse.Body.String())
+	}
+	var cancelled session.WorkflowRunSnapshot
+	if err := json.NewDecoder(cancelResponse.Body).Decode(&cancelled); err != nil || cancelled.Status != "cancelled" {
+		t.Fatalf("expected unified action proxy to cancel workflow, err=%v run=%#v", err, cancelled)
+	}
 }
 
 func TestServerAgentRunEventsEndpointSupportsSinceAndStreamReplay(t *testing.T) {
 	runtimeRef := newAPITestRuntime(t)
 	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"hello","background":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"hello","background":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -11804,6 +11389,19 @@ func TestServerAgentRunSummaryEndpointOmitsReplayContent(t *testing.T) {
 	if len(summary.Request) > sessionSummaryTextBytes+8 || len(summary.Output) > sessionSummaryTextBytes+8 {
 		t.Fatalf("expected agent summary text to be compact, request=%d output=%d", len(summary.Request), len(summary.Output))
 	}
+	workbenchRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+runID+"?view=workbench", nil)
+	workbenchResponse := httptest.NewRecorder()
+	server.ServeHTTP(workbenchResponse, workbenchRequest)
+	if workbenchResponse.Code != http.StatusOK {
+		t.Fatalf("expected workbench snapshot 200, got %d body=%s", workbenchResponse.Code, workbenchResponse.Body.String())
+	}
+	var workbench runWorkbenchResponse
+	if err := json.NewDecoder(workbenchResponse.Body).Decode(&workbench); err != nil {
+		t.Fatalf("decode workbench snapshot: %v", err)
+	}
+	if len(workbench.FinalOutput) <= len(summary.Output) || !strings.Contains(workbench.FinalOutput, "large final output") {
+		t.Fatalf("workbench must retain the complete final output, summary=%d final=%d", len(summary.Output), len(workbench.FinalOutput))
+	}
 
 	diffSummaryRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+runID+"/diffs", nil)
 	diffSummaryResponse := httptest.NewRecorder()
@@ -11856,7 +11454,7 @@ func TestServerAgentRunArtifactsEndpointIsSummaryFirst(t *testing.T) {
 		Mode:    "fix",
 		ToolResults: []schema.ToolResult{{
 			CallID:   "call-artifact",
-			ToolName: "read_file",
+			ToolName: "run_command",
 			Content:  largeToolResult,
 		}},
 		Findings: []schema.Finding{{
@@ -11937,7 +11535,7 @@ func TestServerAgentRunArtifactsHydrateExternalizedContent(t *testing.T) {
 		Mode:    "fix",
 		ToolResults: []schema.ToolResult{{
 			CallID:   "call-external",
-			ToolName: "read_file",
+			ToolName: "run_command",
 			Content:  largeToolResult,
 		}},
 	})
@@ -12062,7 +11660,7 @@ func TestServerAgentRunRetryWorksAfterSessionLoad(t *testing.T) {
 		{Message: schema.Message{Content: "first durable answer"}},
 	})
 	firstServer := NewServer(firstRuntime)
-	startRequest := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"hello durable agent","background":true}`))
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"hello durable agent","background":true}`))
 	startRequest.Header.Set("Content-Type", "application/json")
 	startResponse := httptest.NewRecorder()
 	firstServer.ServeHTTP(startResponse, startRequest)
@@ -12091,7 +11689,19 @@ func TestServerAgentRunRetryWorksAfterSessionLoad(t *testing.T) {
 	})
 	secondServer := NewServer(secondRuntime)
 
-	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+accepted.RunID+"/actions", nil)
+	tasksRequest := httptest.NewRequest(http.MethodGet, "/api/runs?action=retry", nil)
+	tasksResponse := httptest.NewRecorder()
+	secondServer.ServeHTTP(tasksResponse, tasksRequest)
+	var tasks runCollectionResponse
+	if tasksResponse.Code != http.StatusOK || json.NewDecoder(tasksResponse.Body).Decode(&tasks) != nil {
+		t.Fatalf("expected unified tasks after reload, got %d body=%s", tasksResponse.Code, tasksResponse.Body.String())
+	}
+	task := runCollectionItemByID(tasks.Runs, accepted.RunID)
+	if task == nil || task.NeedsAction || task.Resumable || task.Recommended != "retry" {
+		t.Fatalf("expected retryable agent task after reload, got %#v", task)
+	}
+
+	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+accepted.RunID+"/actions", nil)
 	actionsResponse := httptest.NewRecorder()
 	secondServer.ServeHTTP(actionsResponse, actionsRequest)
 	if actionsResponse.Code != http.StatusOK {
@@ -12104,8 +11714,11 @@ func TestServerAgentRunRetryWorksAfterSessionLoad(t *testing.T) {
 	if !agentRunActionAvailable(actions, "retry", true) {
 		t.Fatalf("expected durable retry action after reload, got %#v", actions)
 	}
+	if action := agentRunActionByName(actions, "retry"); action == nil || action.Path != "/api/runs/"+accepted.RunID+"/actions/retry" {
+		t.Fatalf("expected unified retry action after reload, got %#v", actions)
+	}
 
-	retryRequest := httptest.NewRequest(http.MethodPost, "/api/agent-runs/"+accepted.RunID+"/retry", nil)
+	retryRequest := httptest.NewRequest(http.MethodPost, "/api/runs/"+accepted.RunID+"/actions/retry", nil)
 	retryResponse := httptest.NewRecorder()
 	secondServer.ServeHTTP(retryResponse, retryRequest)
 	if retryResponse.Code != http.StatusAccepted {
@@ -12810,7 +12423,7 @@ func TestServerWorkflowRunReplayIncludesNavigationAndCounts(t *testing.T) {
 func TestServerAgentRunCancelStopsActiveBackgroundRun(t *testing.T) {
 	runtimeRef, blockingLLM := newAPICancellableWorkflowRuntime(t)
 	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"hello","background":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"hello","background":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -12855,7 +12468,7 @@ func TestServerAgentRunCancelStopsActiveBackgroundRun(t *testing.T) {
 func TestServerAgentRunTracksAndApprovesMultiplePendingTools(t *testing.T) {
 	runtimeRef, mcpClient := newAPIOrdinaryMultiApprovalRuntime(t)
 	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"write two files","background":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"write two files","background":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -12930,10 +12543,43 @@ func TestServerAgentRunTracksAndApprovesMultiplePendingTools(t *testing.T) {
 	}
 }
 
+func TestServerAgentTaskScopeApprovesCurrentMultiToolBatch(t *testing.T) {
+	runtimeRef, mcpClient := newAPIOrdinaryTaskScopeMultiApprovalRuntime(t)
+	server := NewServer(runtimeRef)
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"write two files","background":true}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusAccepted {
+		t.Fatalf("expected background agent 202, got %d body=%s", response.Code, response.Body.String())
+	}
+	var accepted agentRunBackgroundResponse
+	if err := json.NewDecoder(response.Body).Decode(&accepted); err != nil {
+		t.Fatalf("decode accepted agent run: %v", err)
+	}
+	run := waitAgentRunActionAvailable(t, server, runtimeRef, accepted.RunID, "approve_task_scope", true)
+	if len(run.PendingApprovals) != 2 {
+		t.Fatalf("expected two pending calls in one task-scoped batch, got %#v", run.PendingApprovals)
+	}
+	approveRequest := httptest.NewRequest(http.MethodPost, "/api/agent-runs/"+accepted.RunID+"/approve-task", nil)
+	approveResponse := httptest.NewRecorder()
+	server.ServeHTTP(approveResponse, approveRequest)
+	if approveResponse.Code != http.StatusOK {
+		t.Fatalf("expected task-scope batch approval 200, got %d body=%s", approveResponse.Code, approveResponse.Body.String())
+	}
+	completed := waitAgentRunStatus(t, runtimeRef, accepted.RunID, "completed")
+	if completed.TaskApproval == nil || len(completed.PendingApprovals) != 0 || len(runtimeRef.PendingApprovals()) != 0 {
+		t.Fatalf("expected completed task-scoped batch with no pending approvals, got run=%#v pending=%#v", completed, runtimeRef.PendingApprovals())
+	}
+	if mcpClient.calls != 2 {
+		t.Fatalf("expected both pending writes to execute before resume, got %d calls", mcpClient.calls)
+	}
+}
+
 func TestServerAgentRunActionsDisableRememberForUnsandboxedRiskyTool(t *testing.T) {
 	runtimeRef := newAPIRiskPolicyOrdinaryApprovalRuntime(t)
 	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"write one file","background":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"write one file","background":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -12964,7 +12610,7 @@ func TestServerAgentRunActionsDisableRememberForUnsandboxedRiskyTool(t *testing.
 func TestServerAgentRunActionsDisableRememberAllForUnsandboxedRiskyTools(t *testing.T) {
 	runtimeRef := newAPIRiskPolicyOrdinaryMultiApprovalRuntime(t)
 	server := NewServer(runtimeRef)
-	request := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"write two files","background":true}`))
+	request := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"write two files","background":true}`))
 	request.Header.Set("Content-Type", "application/json")
 	response := httptest.NewRecorder()
 	server.ServeHTTP(response, request)
@@ -13022,13 +12668,93 @@ func TestServerAgentRunRejectsUnsandboxedRiskyToolBeforeApproval(t *testing.T) {
 	}
 }
 
+func TestServerAgentRunHidesRetryUntilPausedWorkerSettles(t *testing.T) {
+	runtimeRef := newAPITestRuntime(t)
+	runID := runtimeRef.StartAgentRun("finish a document")
+	runtimeRef.CompleteAgentRun(runID, "paused_need_more_budget", schema.AgentResult{
+		Output:           "document created; summary incomplete",
+		AgentID:          "documentation-specialist",
+		Mode:             "fix",
+		Incomplete:       true,
+		IncompleteReason: "iteration budget reached",
+	})
+	server := NewServer(runtimeRef)
+	_, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	token := server.registerActiveAgentRun(runID, cancel)
+	run, ok := runtimeRef.AgentRun(runID)
+	if !ok {
+		t.Fatal("expected paused agent run")
+	}
+	if retry := agentRunActionByName(server.agentRunActions(run), "retry"); retry != nil {
+		t.Fatalf("retry must stay hidden while the worker is still settling, got %#v", retry)
+	}
+	server.unregisterActiveAgentRun(runID, token)
+	if !agentRunActionAvailable(server.agentRunActions(run), "retry", true) {
+		t.Fatalf("retry should become available after the paused worker settles, got %#v", server.agentRunActions(run))
+	}
+}
+
+func TestServerAgentRunOffersContinuationBeforeRetry(t *testing.T) {
+	state := session.New(8)
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	runID := runtimeRef.StartAgentRun("finish a document")
+	if _, ok := state.SetAgentRunResumeContext(runID, session.AgentRunResumeContextSnapshot{
+		AgentID: "documentation-specialist",
+		Mode:    "fix",
+		Messages: []schema.Message{
+			{Role: "user", Content: "finish a document"},
+			{Role: "tool", Name: "read_file", ToolCallID: "call-read", Content: "saved source"},
+		},
+		CollectedResults: []schema.ToolResult{{CallID: "call-read", ToolName: "read_file", Content: "saved source"}},
+	}); !ok {
+		t.Fatal("expected continuation context to persist")
+	}
+	runtimeRef.CompleteAgentRun(runID, "paused_need_more_budget", schema.AgentResult{
+		Output: "source read; final response interrupted", AgentID: "documentation-specialist", Mode: "fix", Incomplete: true, IncompleteReason: "provider response was interrupted",
+	})
+	server := NewServer(runtimeRef)
+	run, _ := runtimeRef.AgentRun(runID)
+	actions := server.agentRunActions(run)
+	if !agentRunActionAvailable(actions, "continue_output", true) {
+		t.Fatalf("paused run must offer durable continuation: %#v", actions)
+	}
+	if recommended := recommendedAgentRunAction(actions); recommended != "continue_output" {
+		t.Fatalf("continuation must be preferred over retry, got %q actions=%#v", recommended, actions)
+	}
+}
+
+func TestServerAgentRunRebuildsLegacyIterationBudgetContinuation(t *testing.T) {
+	state := session.New(8)
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, state, nil)
+	runID := runtimeRef.StartAgentRun("finish staged implementation")
+	runtimeRef.CompleteAgentRun(runID, "paused_need_more_budget", schema.AgentResult{
+		Output:           "implementation incomplete; tests missing",
+		AgentID:          "chat",
+		Mode:             "chat",
+		Incomplete:       true,
+		IncompleteReason: "tool iteration budget reached",
+		ToolResults:      []schema.ToolResult{{CallID: "call-write", ToolName: "write_file", Content: "staged file changed"}},
+	})
+	server := NewServer(runtimeRef)
+	run, _ := runtimeRef.AgentRun(runID)
+	actions := server.agentRunActions(run)
+	if !agentRunActionAvailable(actions, "continue_output", true) {
+		t.Fatalf("legacy iteration-budget run must regain continuation: %#v", actions)
+	}
+	rebuilt, ok := runtimeRef.AgentRun(runID)
+	if !ok || rebuilt.ResumeContext == nil || len(rebuilt.ResumeContext.Messages) != 2 || len(rebuilt.ResumeContext.CollectedResults) != 1 {
+		t.Fatalf("expected rebuilt continuation context, got %#v", rebuilt)
+	}
+}
+
 func TestServerAgentRunToolApprovalResumesAfterSessionLoad(t *testing.T) {
 	firstState := session.New(8)
 	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, []schema.ChatResponse{
 		{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"note.txt","content":"hello"}`)}}},
 	})
 	firstServer := NewServer(firstRuntime)
-	startRequest := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"write a note file","background":true}`))
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"write a note file","background":true}`))
 	startRequest.Header.Set("Content-Type", "application/json")
 	startResponse := httptest.NewRecorder()
 	firstServer.ServeHTTP(startResponse, startRequest)
@@ -13056,7 +12782,19 @@ func TestServerAgentRunToolApprovalResumesAfterSessionLoad(t *testing.T) {
 		{Message: schema.Message{Content: "done after durable ordinary approval"}, Usage: schema.TokenUsage{PromptTokens: 5, OutputTokens: 4}},
 	})
 	secondServer := NewServer(secondRuntime)
-	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/agent-runs/"+accepted.RunID+"/actions", nil)
+	tasksRequest := httptest.NewRequest(http.MethodGet, "/api/runs?needs_action=1", nil)
+	tasksResponse := httptest.NewRecorder()
+	secondServer.ServeHTTP(tasksResponse, tasksRequest)
+	var tasks runCollectionResponse
+	if tasksResponse.Code != http.StatusOK || json.NewDecoder(tasksResponse.Body).Decode(&tasks) != nil {
+		t.Fatalf("expected unified tasks after reload, got %d body=%s", tasksResponse.Code, tasksResponse.Body.String())
+	}
+	task := runCollectionItemByID(tasks.Runs, accepted.RunID)
+	if task == nil || !task.NeedsAction || !task.Resumable || task.Recommended != "approve_tool" {
+		t.Fatalf("expected resumable agent task after reload, got %#v", task)
+	}
+
+	actionsRequest := httptest.NewRequest(http.MethodGet, "/api/runs/"+accepted.RunID+"/actions", nil)
 	actionsResponse := httptest.NewRecorder()
 	secondServer.ServeHTTP(actionsResponse, actionsRequest)
 	if actionsResponse.Code != http.StatusOK {
@@ -13069,8 +12807,11 @@ func TestServerAgentRunToolApprovalResumesAfterSessionLoad(t *testing.T) {
 	if !agentRunActionAvailable(actions, "approve_tool", true) || !agentRunActionAvailable(actions, "deny_tool", true) {
 		t.Fatalf("expected durable ordinary approval actions after reload, got %#v", actions)
 	}
+	if action := agentRunActionByName(actions, "approve_tool"); action == nil || action.Path != "/api/runs/"+accepted.RunID+"/actions/approve_tool" {
+		t.Fatalf("expected unified ordinary approval action path after reload, got %#v", actions)
+	}
 
-	approveRequest := httptest.NewRequest(http.MethodPost, "/api/agent-runs/"+accepted.RunID+"/approve_tool", nil)
+	approveRequest := httptest.NewRequest(http.MethodPost, "/api/runs/"+accepted.RunID+"/actions/approve_tool", nil)
 	approveResponse := httptest.NewRecorder()
 	secondServer.ServeHTTP(approveResponse, approveRequest)
 	if approveResponse.Code != http.StatusOK {
@@ -13093,6 +12834,94 @@ func TestServerAgentRunToolApprovalResumesAfterSessionLoad(t *testing.T) {
 	}
 }
 
+func TestServerAgentRunToolApprovalRestoresStaleSnapshotFromSuspendedCalls(t *testing.T) {
+	firstState := session.New(8)
+	runID := firstState.StartAgentRunWithOptions("write a note file", session.AgentRunStartOptions{AgentID: "chat"})
+	if _, ok := firstState.SetAgentRunResumeContext(runID, session.AgentRunResumeContextSnapshot{
+		AgentID:      "chat",
+		Mode:         "chat",
+		SystemPrompt: "Complete the requested file update.",
+		Messages: []schema.Message{
+			{Role: "user", Content: "write a note file"},
+			{Role: "assistant", ToolCalls: []schema.ToolCall{{ID: "call-stale", Name: "write_file", Arguments: json.RawMessage(`{"path":"note.txt","content":"hello"}`)}}},
+		},
+		SuspendedCalls: []schema.ToolCall{{ID: "call-stale", Name: "write_file", Arguments: json.RawMessage(`{"path":"note.txt","content":"hello"}`)}},
+	}); !ok {
+		t.Fatal("expected stale agent resume context to be stored")
+	}
+	if snapshot := firstState.Snapshot(); len(snapshot.AgentRuns) != 1 || snapshot.AgentRuns[0].PendingCallID != "" || len(snapshot.AgentRuns[0].PendingApprovals) != 0 {
+		t.Fatalf("expected fixture to model missing top-level approval metadata, got %#v", snapshot.AgentRuns)
+	}
+
+	sessionPath := filepath.Join(t.TempDir(), "session.json")
+	if err := firstState.Save(sessionPath); err != nil {
+		t.Fatalf("save stale session: %v", err)
+	}
+	loadedState := session.New(8)
+	if err := loadedState.Load(sessionPath); err != nil {
+		t.Fatalf("load stale session: %v", err)
+	}
+	secondRuntime := newAPITestRuntimeWithStateAndResponses(t, loadedState, []schema.ChatResponse{
+		{Message: schema.Message{Content: "done after stale snapshot recovery"}},
+	})
+	secondServer := NewServer(secondRuntime)
+
+	run, ok := secondRuntime.AgentRun(runID)
+	if !ok || run.Status != "awaiting_tool_approval" || run.PendingCallID != "call-stale" || len(run.PendingApprovals) != 1 {
+		t.Fatalf("expected stale snapshot to normalize as resumable approval, got %#v ok=%t", run, ok)
+	}
+	actions := secondServer.agentRunActions(run)
+	if !agentRunActionAvailable(actions, "approve_tool", true) || !agentRunActionAvailable(actions, "deny_tool", true) {
+		t.Fatalf("expected restored approval actions, got %#v", actions)
+	}
+	if agentRunActionByName(actions, "retry") != nil {
+		t.Fatalf("expected resumable suspended calls to suppress retry, got %#v", actions)
+	}
+
+	approveRequest := httptest.NewRequest(http.MethodPost, "/api/agent-runs/"+runID+"/approve-tool", nil)
+	approveResponse := httptest.NewRecorder()
+	secondServer.ServeHTTP(approveResponse, approveRequest)
+	if approveResponse.Code != http.StatusOK {
+		t.Fatalf("expected stale snapshot approval resume 200, got %d body=%s", approveResponse.Code, approveResponse.Body.String())
+	}
+	completed := waitAgentRunStatus(t, secondRuntime, runID, "completed")
+	if !strings.Contains(completed.Output, "stale snapshot recovery") {
+		t.Fatalf("expected recovered run completion, got %#v", completed)
+	}
+}
+
+func TestServerAgentRunActionsRefreshesStaleSnapshotAfterRestore(t *testing.T) {
+	state := session.New(8)
+	runID := state.StartAgentRunWithOptions("write a note file", session.AgentRunStartOptions{AgentID: "chat"})
+	state.CompleteAgentRun(runID, "awaiting_tool_approval", schema.AgentResult{AgentID: "chat", Mode: "chat"})
+	if _, ok := state.SetAgentRunResumeContext(runID, session.AgentRunResumeContextSnapshot{
+		AgentID:      "chat",
+		Mode:         "chat",
+		SystemPrompt: "Complete the requested file update.",
+		Messages: []schema.Message{
+			{Role: "user", Content: "write a note file"},
+			{Role: "assistant", ToolCalls: []schema.ToolCall{{ID: "call-stale-actions", Name: "write_file", Arguments: json.RawMessage(`{"path":"note.txt","content":"hello"}`)}}},
+		},
+		SuspendedCalls: []schema.ToolCall{{ID: "call-stale-actions", Name: "write_file", Arguments: json.RawMessage(`{"path":"note.txt","content":"hello"}`)}},
+	}); !ok {
+		t.Fatal("expected stale agent resume context to be stored")
+	}
+	stale := state.Snapshot().AgentRuns[0]
+	if stale.PendingCallID != "" || len(stale.PendingApprovals) != 0 {
+		t.Fatalf("expected stale fixture without top-level approval metadata, got %#v", stale)
+	}
+
+	runtime := newAPITestRuntimeWithStateAndResponses(t, state, []schema.ChatResponse{{Message: schema.Message{Content: "done"}}})
+	server := NewServer(runtime)
+	actions := server.agentRunActions(stale)
+	if !agentRunActionAvailable(actions, "approve_tool", true) || !agentRunActionAvailable(actions, "deny_tool", true) {
+		t.Fatalf("expected action calculation to refresh stale snapshot, got %#v", actions)
+	}
+	if agentRunActionByName(actions, "retry") != nil {
+		t.Fatalf("expected restored approval to suppress retry, got %#v", actions)
+	}
+}
+
 func TestServerAgentRunToolApprovalResumesAfterSessionLoadWithExternalizedLargeArguments(t *testing.T) {
 	root := t.TempDir()
 	store := session.NewArtifactObjectStore(root)
@@ -13108,7 +12937,7 @@ func TestServerAgentRunToolApprovalResumesAfterSessionLoadWithExternalizedLargeA
 		{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(args)}}},
 	})
 	firstServer := NewServer(firstRuntime)
-	startRequest := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"write a large note file","background":true}`))
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"write a large note file","background":true}`))
 	startRequest.Header.Set("Content-Type", "application/json")
 	startResponse := httptest.NewRecorder()
 	firstServer.ServeHTTP(startResponse, startRequest)
@@ -13181,7 +13010,7 @@ func TestServerAgentRunToolApprovalAcceptsHyphenatedActionPaths(t *testing.T) {
 		{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"demo.txt","content":"hello"}`)}}},
 	})
 	firstServer := NewServer(firstRuntime)
-	startRequest := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"write a file","background":true}`))
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"write a file","background":true}`))
 	startRequest.Header.Set("Content-Type", "application/json")
 	startResponse := httptest.NewRecorder()
 	firstServer.ServeHTTP(startResponse, startRequest)
@@ -13228,7 +13057,7 @@ func TestServerLegacyApprovalStreamResumesDurableAgentRun(t *testing.T) {
 		{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"demo.txt","content":"hello"}`)}}},
 	})
 	firstServer := NewServer(firstRuntime)
-	startRequest := httptest.NewRequest(http.MethodPost, "/api/run", strings.NewReader(`{"input":"write a file","background":true}`))
+	startRequest := httptest.NewRequest(http.MethodPost, "/api/runs", strings.NewReader(`{"input":"write a file","background":true}`))
 	startRequest.Header.Set("Content-Type", "application/json")
 	startResponse := httptest.NewRecorder()
 	firstServer.ServeHTTP(startResponse, startRequest)
@@ -13447,6 +13276,7 @@ func TestServerWorkflowRunCancelClearsPausedToolApproval(t *testing.T) {
 	if first.Status != "awaiting_tool_approval" || first.RunID == "" {
 		t.Fatalf("expected awaiting tool approval with run id, got %#v", first)
 	}
+	t.Cleanup(func() { _ = runtimeRef.ReleaseTaskStaging(first.RunID) })
 	if len(runtimeRef.SessionSnapshot().PendingApprovals) != 1 {
 		t.Fatalf("expected pending approval before cancel, got %#v", runtimeRef.SessionSnapshot().PendingApprovals)
 	}
@@ -13532,7 +13362,7 @@ func TestServerWorkflowRunCancelClearsPausedToolApproval(t *testing.T) {
 	}
 }
 
-func TestServerWorkflowRunActionsDisableApproveToolsForUnsandboxedRiskyTool(t *testing.T) {
+func TestServerWorkflowRunActionsKeepCurrentBatchApprovalForUnsandboxedRiskyTool(t *testing.T) {
 	runtimeRef := newAPIRiskPolicyWorkflowApprovalRuntime(t)
 	server := NewServer(runtimeRef)
 	request := httptest.NewRequest(http.MethodPost, "/api/workflows/plan-fix-audit", strings.NewReader(`{"input":"write a demo file"}`))
@@ -13549,6 +13379,7 @@ func TestServerWorkflowRunActionsDisableApproveToolsForUnsandboxedRiskyTool(t *t
 	if first.Status != "awaiting_tool_approval" || first.RunID == "" {
 		t.Fatalf("expected awaiting tool approval with run id, got %#v", first)
 	}
+	t.Cleanup(func() { _ = runtimeRef.ReleaseTaskStaging(first.RunID) })
 	run, ok := workflowRunByID(runtimeRef.SessionSnapshot().WorkflowRuns, first.RunID)
 	if !ok {
 		t.Fatalf("expected workflow run %s", first.RunID)
@@ -13561,15 +13392,59 @@ func TestServerWorkflowRunActionsDisableApproveToolsForUnsandboxedRiskyTool(t *t
 	if approveTools == nil {
 		t.Fatalf("expected approve_all_tools action, got %#v", actions)
 	}
-	if approveTools.Available || approveTools.Durable || approveTools.Background {
-		t.Fatalf("expected approve_all_tools disabled by tool_risk_policy, got %#v", approveTools)
+	if !approveTools.Available || !approveTools.Durable || !approveTools.Background {
+		t.Fatalf("expected current-batch approval to remain available, got %#v", approveTools)
 	}
-	if !strings.Contains(approveTools.Reason, "tool_risk_policy") {
-		t.Fatalf("expected tool_risk_policy reason, got %#v", approveTools)
+	if !strings.Contains(approveTools.Reason, "current assistant turn") {
+		t.Fatalf("expected bounded current-batch reason, got %#v", approveTools)
 	}
 }
 
-func TestServerWorkflowRunApproveToolsResumesAndScopesAutoApproval(t *testing.T) {
+func TestServerWorkflowRunApproveToolsApprovesOnlyCurrentVisibleBatch(t *testing.T) {
+	runtimeRef, mcpClient := newAPIRiskPolicyWorkflowBatchApprovalRuntime(t)
+	server := NewServer(runtimeRef)
+	request := httptest.NewRequest(http.MethodPost, "/api/workflows/plan-fix-audit", strings.NewReader(`{"input":"write two demo files"}`))
+	request.Header.Set("Content-Type", "application/json")
+	response := httptest.NewRecorder()
+	server.ServeHTTP(response, request)
+	if response.Code != http.StatusOK {
+		t.Fatalf("expected workflow 200, got %d body=%s", response.Code, response.Body.String())
+	}
+	var first agent.WorkflowResult
+	if err := json.NewDecoder(response.Body).Decode(&first); err != nil {
+		t.Fatalf("decode first workflow result: %v", err)
+	}
+	if first.Status != "awaiting_tool_approval" || first.RunID == "" {
+		t.Fatalf("expected awaiting tool approval with run id, got %#v", first)
+	}
+	t.Cleanup(func() { _ = runtimeRef.ReleaseTaskStaging(first.RunID) })
+
+	approveRequest := httptest.NewRequest(http.MethodPost, "/api/workflow-runs/"+first.RunID+"/approve-tools", nil)
+	approveResponse := httptest.NewRecorder()
+	server.ServeHTTP(approveResponse, approveRequest)
+	if approveResponse.Code != http.StatusOK {
+		t.Fatalf("expected approve-tools 200, got %d body=%s", approveResponse.Code, approveResponse.Body.String())
+	}
+	var resumed agent.WorkflowResult
+	if err := json.NewDecoder(approveResponse.Body).Decode(&resumed); err != nil {
+		t.Fatalf("decode resumed workflow result: %v", err)
+	}
+	if resumed.Status != "blocked" {
+		t.Fatalf("expected the visible batch to finish in one action while quality remains blocked, got %#v", resumed)
+	}
+	if mcpClient.calls != 2 {
+		t.Fatalf("expected both visible tool calls to execute, got %d", mcpClient.calls)
+	}
+	snapshot := runtimeRef.SessionSnapshot()
+	if len(snapshot.PendingApprovals) != 0 {
+		t.Fatalf("expected current batch approvals to be cleared, got %#v", snapshot.PendingApprovals)
+	}
+	if len(snapshot.ApprovalScopes) != 0 {
+		t.Fatalf("current-batch approval must not create remembered scopes, got %#v", snapshot.ApprovalScopes)
+	}
+}
+
+func TestServerWorkflowRunApproveToolsRequiresFreshApprovalForChangedArguments(t *testing.T) {
 	runtimeRef, mcpClient := newAPIWorkflowRepeatedToolApprovalRuntime(t)
 	server := NewServer(runtimeRef)
 	request := httptest.NewRequest(http.MethodPost, "/api/workflows/plan-fix-audit", strings.NewReader(`{"input":"write a demo file"}`))
@@ -13588,6 +13463,7 @@ func TestServerWorkflowRunApproveToolsResumesAndScopesAutoApproval(t *testing.T)
 	if first.Status != "awaiting_tool_approval" || first.RunID == "" {
 		t.Fatalf("expected awaiting tool approval with run id, got %#v", first)
 	}
+	t.Cleanup(func() { _ = runtimeRef.ReleaseTaskStaging(first.RunID) })
 
 	approveRequest := httptest.NewRequest(http.MethodPost, "/api/workflow-runs/"+first.RunID+"/approve-tools", nil)
 	approveResponse := httptest.NewRecorder()
@@ -13600,25 +13476,26 @@ func TestServerWorkflowRunApproveToolsResumesAndScopesAutoApproval(t *testing.T)
 	if err := json.NewDecoder(approveResponse.Body).Decode(&resumed); err != nil {
 		t.Fatalf("decode resumed workflow result: %v", err)
 	}
-	if resumed.Status != "completed" {
-		t.Fatalf("expected workflow completion after workflow-scoped approve tools, got %#v", resumed)
+	if resumed.Status != "awaiting_tool_approval" {
+		t.Fatalf("expected changed tool arguments to require a fresh approval, got %#v", resumed)
 	}
-	if mcpClient.calls != 2 {
-		t.Fatalf("expected current and later matching write calls to execute once each, got %d", mcpClient.calls)
+	if mcpClient.calls != 1 {
+		t.Fatalf("expected only the exactly approved write call to execute, got %d", mcpClient.calls)
 	}
 	snapshot := runtimeRef.SessionSnapshot()
-	if len(snapshot.PendingApprovals) != 0 {
-		t.Fatalf("expected no pending approvals after scoped auto approval, got %#v", snapshot.PendingApprovals)
+	if len(snapshot.PendingApprovals) != 1 || snapshot.PendingApprovals[0].CallID != "call-2" {
+		t.Fatalf("expected changed call-2 to remain pending, got %#v", snapshot.PendingApprovals)
 	}
-	if snapshot.Workflow.Status != "completed" || snapshot.Workflow.PendingCallID != "" {
-		t.Fatalf("expected completed workflow snapshot without pending call, got %#v", snapshot.Workflow)
+	if snapshot.Workflow.Status != "awaiting_tool_approval" || snapshot.Workflow.PendingCallID != "call-2" {
+		t.Fatalf("expected approval-waiting workflow snapshot for call-2, got %#v", snapshot.Workflow)
 	}
 }
 
 func TestServerWorkflowRunToolApprovalResumesAfterSessionLoad(t *testing.T) {
 	firstState := session.New(8)
 	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, []schema.ChatResponse{
-		{Message: schema.Message{Content: "durable plan ready"}},
+		{Message: schema.Message{Content: "Goal: write a demo file\nAcceptance Checks: file exists\nRisks: approval must survive restart"}},
+		{Message: schema.Message{Content: "Implementation Steps: write the file\nTarget Files: demo.txt\nVerification Commands: read demo.txt"}},
 		{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"demo.txt","content":"hello"}`)}}},
 	})
 	firstServer := NewServer(firstRuntime)
@@ -13675,11 +13552,11 @@ func TestServerWorkflowRunToolApprovalResumesAfterSessionLoad(t *testing.T) {
 	if err := json.NewDecoder(approveResponse.Body).Decode(&resumed); err != nil {
 		t.Fatalf("decode resumed workflow: %v", err)
 	}
-	if resumed.Status != "completed" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) != 3 {
-		t.Fatalf("expected workflow to complete after durable tool approval, got %#v", resumed)
+	if resumed.Status != "blocked" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) < 7 {
+		t.Fatalf("expected workflow to finish after durable tool approval and retain quality blocking, got %#v", resumed)
 	}
 	snapshot := secondRuntime.SessionSnapshot()
-	if snapshot.Workflow.Status != "completed" || snapshot.Workflow.PendingCallID != "" || len(snapshot.PendingApprovals) != 0 {
+	if snapshot.Workflow.Status != "blocked" || snapshot.Workflow.PendingCallID != "" || len(snapshot.PendingApprovals) != 0 {
 		t.Fatalf("expected pending approval cleared after durable resume, got %#v", snapshot)
 	}
 }
@@ -13696,7 +13573,8 @@ func TestServerWorkflowRunToolApprovalResumesAfterSessionLoadWithExternalizedLar
 	firstState := session.New(8)
 	firstState.SetArtifactObjectStore(store)
 	firstRuntime := newAPITestRuntimeWithStateAndResponses(t, firstState, []schema.ChatResponse{
-		{Message: schema.Message{Content: "durable plan ready"}},
+		{Message: schema.Message{Content: "Goal: write a large demo file\nAcceptance Checks: file exists\nRisks: approval arguments must remain content-addressed"}},
+		{Message: schema.Message{Content: "Implementation Steps: write the large file\nTarget Files: demo.txt\nVerification Commands: verify content hash"}},
 		{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(args)}}},
 	})
 	firstServer := NewServer(firstRuntime)
@@ -13751,11 +13629,11 @@ func TestServerWorkflowRunToolApprovalResumesAfterSessionLoadWithExternalizedLar
 	if err := json.NewDecoder(approveResponse.Body).Decode(&resumed); err != nil {
 		t.Fatalf("decode resumed workflow: %v", err)
 	}
-	if resumed.Status != "completed" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) != 3 {
-		t.Fatalf("expected workflow to complete after large durable tool approval, got %#v", resumed)
+	if resumed.Status != "blocked" || resumed.RunID != paused.RunID || len(resumed.CompletedStages) < 7 {
+		t.Fatalf("expected workflow to finish after large durable tool approval and retain quality blocking, got %#v", resumed)
 	}
 	snapshot := secondRuntime.SessionSnapshot()
-	if snapshot.Workflow.Status != "completed" || snapshot.Workflow.PendingCallID != "" || len(snapshot.PendingApprovals) != 0 {
+	if snapshot.Workflow.Status != "blocked" || snapshot.Workflow.PendingCallID != "" || len(snapshot.PendingApprovals) != 0 {
 		t.Fatalf("expected pending approval cleared after large durable resume, got %#v", snapshot)
 	}
 }
@@ -13792,7 +13670,7 @@ func TestServerWorkflowRunRetryCreatesLinkedAttempt(t *testing.T) {
 		t.Fatalf("expected new retry run id, first=%#v retry=%#v", first, retried)
 	}
 	run := workflowRunSnapshotByID(t, runtimeRef, retried.RunID)
-	if run.RetryOf != first.RunID || run.Attempt != 2 || run.Status != "completed" {
+	if run.RetryOf != first.RunID || run.Attempt != 2 || run.Status != "blocked" {
 		t.Fatalf("expected linked retry attempt, got %#v", run)
 	}
 	var retryStarted bool
@@ -13882,6 +13760,10 @@ func waitAgentRunStatus(t *testing.T, runtimeRef *agent.Runtime, runID, status s
 	for time.Now().Before(deadline) {
 		run := agentRunSnapshotByID(t, runtimeRef, runID)
 		if strings.EqualFold(run.Status, status) {
+			if strings.EqualFold(status, "awaiting_tool_approval") && len(run.PendingApprovals) == 0 {
+				time.Sleep(10 * time.Millisecond)
+				continue
+			}
 			return run
 		}
 		time.Sleep(10 * time.Millisecond)
@@ -13897,7 +13779,7 @@ func waitAgentRunActionAvailable(t *testing.T, server *Server, runtimeRef *agent
 	for time.Now().Before(deadline) {
 		run := agentRunSnapshotByID(t, runtimeRef, runID)
 		if agentRunActionAvailable(server.agentRunActions(run), action, durable) {
-			return run
+			return agentRunSnapshotByID(t, runtimeRef, runID)
 		}
 		time.Sleep(10 * time.Millisecond)
 	}
@@ -13979,6 +13861,15 @@ func assertFileContains(t *testing.T, path, needle string) {
 func runCollectionAvailableActionExists(items []runCollectionAvailableAction, name, path string, requiresBody bool) bool {
 	for _, item := range items {
 		if item.Name == name && item.Path == path && item.Method == http.MethodPost && item.RequiresBody == requiresBody {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowRunActionPathExists(items []workflowRunAction, name, path string) bool {
+	for _, item := range items {
+		if item.Name == name && item.Path == path && item.Available {
 			return true
 		}
 	}
@@ -14068,7 +13959,7 @@ func testStringSliceContains(items []string, want string) bool {
 func TestServerApprovalStreamResumesOrdinaryToolLoop(t *testing.T) {
 	runtimeRef := newAPIApprovalStreamRuntime(t)
 	server := NewServer(runtimeRef)
-	runRequest := httptest.NewRequest(http.MethodPost, "/api/run/stream", strings.NewReader(`{"input":"write a file"}`))
+	runRequest := httptest.NewRequest(http.MethodPost, "/api/runs/stream", strings.NewReader(`{"input":"write a file"}`))
 	runRequest.Header.Set("Content-Type", "application/json")
 	runResponse := httptest.NewRecorder()
 
@@ -14119,4 +14010,91 @@ func newAPIApprovalStreamRuntime(t *testing.T) *agent.Runtime {
 		t.Fatalf("NewRuntime: %v", err)
 	}
 	return runtimeRef
+}
+
+func TestTryLockSettlingWorkflowRunWaitsForSameRun(t *testing.T) {
+	server := &Server{}
+	server.workflowExecMu.Lock()
+	server.registerActiveWorkflowRun("wf-1", func() {})
+
+	released := make(chan struct{})
+	go func() {
+		time.Sleep(30 * time.Millisecond)
+		server.unregisterActiveWorkflowRun("wf-1")
+		server.workflowExecMu.Unlock()
+		close(released)
+	}()
+
+	if !server.tryLockSettlingWorkflowRun("wf-1", time.Second) {
+		t.Fatal("expected action to wait for the same workflow run to settle")
+	}
+	server.workflowExecMu.Unlock()
+	<-released
+}
+
+func TestTryLockSettlingWorkflowRunRejectsDifferentRun(t *testing.T) {
+	server := &Server{}
+	server.workflowExecMu.Lock()
+	defer server.workflowExecMu.Unlock()
+	server.registerActiveWorkflowRun("wf-other", func() {})
+	defer server.unregisterActiveWorkflowRun("wf-other")
+
+	if server.tryLockSettlingWorkflowRun("wf-1", time.Second) {
+		t.Fatal("expected a different active workflow run to remain exclusive")
+	}
+}
+
+func TestTryLockSettlingAgentRunWaitsForSameRun(t *testing.T) {
+	server := NewServer(newAPITestRuntime(t))
+	server.agentExecMu.Lock()
+	token := server.registerActiveAgentRun("agent-1", func() {})
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		server.unregisterActiveAgentRun("agent-1", token)
+		server.agentExecMu.Unlock()
+	}()
+	if !server.tryLockSettlingAgentRun("agent-1", time.Second) {
+		t.Fatal("expected same agent run action to wait for the settling execution lock")
+	}
+	server.agentExecMu.Unlock()
+}
+
+func TestTryLockSettlingAgentRunRejectsDifferentRun(t *testing.T) {
+	server := NewServer(newAPITestRuntime(t))
+	server.agentExecMu.Lock()
+	token := server.registerActiveAgentRun("agent-2", func() {})
+	defer func() {
+		server.unregisterActiveAgentRun("agent-2", token)
+		server.agentExecMu.Unlock()
+	}()
+	if server.tryLockSettlingAgentRun("agent-1", time.Second) {
+		t.Fatal("expected a different active agent run to remain exclusive")
+	}
+}
+
+func TestTryLockSettlingAgentRunWaitsDuringUnregisteredUnlockGap(t *testing.T) {
+	server := NewServer(newAPITestRuntime(t))
+	server.agentExecMu.Lock()
+	go func() {
+		time.Sleep(25 * time.Millisecond)
+		server.agentExecMu.Unlock()
+	}()
+	if !server.tryLockSettlingAgentRun("agent-1", time.Second) {
+		t.Fatal("expected approval action to wait through the old worker's unregister-before-unlock gap")
+	}
+	server.agentExecMu.Unlock()
+}
+
+func TestUnregisterActiveAgentRunDoesNotDeleteNewGeneration(t *testing.T) {
+	server := NewServer(newAPITestRuntime(t))
+	oldToken := server.registerActiveAgentRun("agent-1", func() {})
+	newToken := server.registerActiveAgentRun("agent-1", func() {})
+	server.unregisterActiveAgentRun("agent-1", oldToken)
+	if _, ok := server.agentRunCancelFunc("agent-1"); !ok {
+		t.Fatal("expected old worker unregister to preserve the newer same-run registration")
+	}
+	server.unregisterActiveAgentRun("agent-1", newToken)
+	if _, ok := server.agentRunCancelFunc("agent-1"); ok {
+		t.Fatal("expected current worker unregister to remove its registration")
+	}
 }

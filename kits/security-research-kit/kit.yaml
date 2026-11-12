@@ -2,9 +2,14 @@ kind: goflow.kit
 version: 1
 min_supported_version: 1
 name: security-research-kit
-title: Security Research Kit
-description: Plan authorized security reviews, collect evidence, classify risk, and prepare defensive reports.
+title: 安全研究资源包
+description: 规划已授权安全审查、收集证据、判定风险并生成防御性报告。
 category: security
+routing:
+    version: 1
+    match_terms: [安全评估, 安全审计, 漏洞误报复核, 漏洞扫描, 无损漏洞验证, 安全证据评估, 渗透测试, 漏扫, 安全整改, authorized assessment, vulnerability review, penetration test]
+    entry_workflow: security-assessment
+    required_tools: [file_tools/read_file]
 tags:
     - security
     - audit
@@ -26,6 +31,9 @@ skills:
     - binary-vulnerability-research
     - reverse-engineering
     - code-audit
+    - security-assessment
+    - security-evidence-review
+    - event-notification
 tools:
     - file_tools/read_file
     - file_tools/search_files
@@ -42,14 +50,15 @@ tools:
     - python_notes/binary_symbol_hints
     - python_notes/binary_extract_window
     - python_notes/redaction_check
+    - notification_tools/publish_event
 workflows:
     - skill-chain
+    - security-assessment
 workflow_templates:
     - web-research-risk
     - security-audit-evidence-gate
     - authorized-red-team-validation
     - binary-triage
-    - human-input-security-review
 team_templates:
     - audit-security-team
     - web-research-team
@@ -60,20 +69,20 @@ policy_rules:
     - team_approval_gate
     - expression
 examples:
-    - title: Authorized review
-      description: Create a scoped evidence-backed security review.
-      request: Create an authorized security review plan and identify evidence requirements.
+    - title: 已授权安全审查
+      description: 创建范围明确、有证据支撑的安全审查。
+      request: 制定已授权安全审查计划，并明确所需证据。
       workflow: skill-chain
       agent: security-researcher
-    - title: Evidence-gated review
-      description: Collect scoped evidence, audit risk, and route findings through a quality gate.
-      request: Review this authorized target and produce an evidence-backed remediation report.
+    - title: 证据门禁安全审查
+      description: 收集范围内证据、审计风险，并让发现通过质量门禁。
+      request: 审查这个已授权目标，并输出有证据支撑的修复报告。
       workflow: security-audit-evidence-gate
       agent: security-researcher
 vertical_pack:
     domain: security-research
     maturity: production-ready
-    summary: Plans authorized security reviews, collects evidence across code, web, binary, and configuration surfaces, arbitrates exploitability, blocks disallowed actions, and routes findings through red-team, blue-team, risk, and quality gates.
+    summary: 规划已授权安全审查，收集代码、Web、二进制和配置证据，裁定可利用性，阻止越权动作，并让发现通过红队、蓝队、风险和质量门禁。
     supported_tasks:
         - authorized security review planning
         - evidence collection
@@ -116,10 +125,9 @@ vertical_pack:
         - risk decision
         - disclosure-safe report
         - remediation report
-    simple_mode:
+    presentation_guidance:
         - Show scope, target type, allowed actions, evidence status, and risk summary.
         - Show whether offensive validation is authorized, blocked, or complete.
-    expert_mode:
         - Show tool allowlists, approval decisions, evidence refs, severity policy, and route diagnostics.
         - Show red-team scope, exclusions, allowed payload classes, rate limits, and blue-team handoff refs.
         - Show authorization blockers, disallowed actions, weak evidence, unresolved exploitability, and disclosure-safe report checks.
@@ -139,10 +147,16 @@ vertical_pack:
             - static binary triage
         verifier:
             - severity and evidence review
+acceptance:
+  sample_request: 在授权范围内修复默认拒绝、路径越界、请求头注入和令牌脱敏四项缺陷并复测。
+  verify_commands: [go test ./..., go vet ./...]
+  deliverables: [deliverables/security-report.md]
+  min_quality_score: 80
+
 metadata:
     preset: security-research
     recommended_agent: security-researcher
-    recommended_workflow: human-input-security-review
+    recommended_workflow: security-audit-evidence-gate
     scaffold_preset: security-research
     recommended_team: audit-security-team
     primary_skill: vulnerability-research

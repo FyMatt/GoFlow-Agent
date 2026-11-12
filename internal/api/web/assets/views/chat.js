@@ -1,10 +1,16 @@
-import { agentRunEventsURL, agentRunExportURL, checkWorkspaceRequirement, createCollaborationBlackboardEntry, createCollaborationMessage, escapeHTML, fetchAgentRun, fetchAgentRunActions, fetchAgentRunArtifacts, fetchAgentRunContext, fetchAgentRunDiffs, fetchAgentRunReplay, fetchAgentRuns, fetchAgentRunTimeline, fetchCollaborationBlackboard, fetchCollaborationMessages, fetchRuns, fetchTeamState, fetchWorkflowRun, fetchWorkflowRunActions, fetchWorkflowRunArtifacts, fetchWorkflowRunContext, fetchWorkflowRunDiffs, fetchWorkflowRunEvidence, fetchWorkflowRunReplay, fetchWorkflowRuns, fetchWorkflowRunStages, fetchWorkflowRunTimeline, postJSON, renderSafeMarkdown, request, startAgentRun, startWorkflowRun, streamAgentRunEvents, streamWorkflowRunEvents, submitWorkflowRunInput, updateCollaborationBlackboardAction, workflowRunEventsURL, workflowRunExportURL } from "../api.js";
+import { agentRunEventsURL, agentRunExportURL, checkWorkspaceRequirement, createCollaborationBlackboardEntry, createCollaborationMessage, escapeHTML, fetchAgentRun, fetchAgentRunActions, fetchAgentRunArtifacts, fetchAgentRunContext, fetchAgentRunDiffs, fetchAgentRunReplay, fetchAgentRuns, fetchCollaborationBlackboard, fetchCollaborationMessages, fetchRun, fetchRunActionDiscovery, fetchRunArtifacts, fetchRunContext, fetchRunDelivery, fetchRunDiffs, fetchRunEvidence, fetchRunStages, fetchRunTimeline, fetchRuns, fetchRunWorkbench, fetchTeamState, fetchWorkflowRun, fetchWorkflowRunActions, fetchWorkflowRunArtifacts, fetchWorkflowRunContext, fetchWorkflowRunDiffs, fetchWorkflowRunEvidence, fetchWorkflowRunReplay, fetchWorkflowRuns, fetchWorkflowRunStages, postJSON, preflightTask, renderSafeMarkdown, request, runExportURL, startAgentRun, startWorkflowRun, streamAgentRunEvents, streamWorkflowRunEvents, submitWorkflowRunInput, updateCollaborationBlackboardAction, uploadAttachments, workflowRunEventsURL, workflowRunExportURL } from "../api.js";
 import { currentLanguage, localizedText, t } from "../i18n.js";
+import { icon } from "../icons.js";
 import { extractSkillScriptContextFromRun, isSkillScriptToolName, skillScriptContextSignature } from "../run_context.js";
+import { formatTokenText } from "../token_format.js";
 
 const runStateStorageKey = "goflow.playground.runState";
 const workflowStudioRunKey = "goflow.workflowStudio.activeRun";
 const runTargetRecentStorageKey = "goflow.playground.recentTargets";
+const executionTargetStorageKey = "goflow.playground.executionTarget";
+const resourceTaskDraftKey = "goflow.playground.resourceDraft";
+const reasoningEffortStorageKey = "goflow.playground.reasoningEffort";
+const permissionModeStorageKey = "goflow.playground.permissionMode";
 const workflowRunPollIntervalMS = 2200;
 const workflowRunHistoryPollIntervalMS = 6600;
 const defaultRunEventReconnectMS = 2200;
@@ -14,69 +20,104 @@ let timelineEventFlushFrame = 0;
 const examplePlaceholder = value => escapeHTML(t("common.exampleValue", { value }));
 
 export async function renderChat(root, runtime, refreshRuntime) {
-  const options = await safeRequest("/api/workflow-options", { agents: [], skills: [], tools: [] });
-  const workflows = await safeRequest("/api/workflow-graphs", []);
+  const [options, workflows] = await Promise.all([
+    safeRequest("/api/workflow-options", { agents: [], skills: [], tools: [] }),
+    safeRequest("/api/workflow-graphs", [])
+  ]);
   root.innerHTML = `
     <div class="grid chat-grid">
       <section class="panel span-8 chat-panel">
-        <div class="panel-head chat-head">
-          <div>
-            <p class="eyebrow">${t("view.playground.eyebrow")}</p>
-            <h2>${t("chat.consoleTitle")}</h2>
-          </div>
-          <div class="chat-statusbar">
-            <span id="targetSummary" class="badge"></span>
-            <span id="runStatus" class="run-status idle" role="status" aria-live="polite"><i></i><span>${t("chat.ready")}</span></span>
-          </div>
-        </div>
         <div class="run-console-grid">
-          <section class="run-brief panel inset" data-tour-id="playground-targets">
+          <section class="run-brief panel inset">
             <div class="panel-head compact run-task-head">
               <div>
-                <h3>${t("chat.taskBriefTitle")}</h3>
-                <p class="muted">${t("chat.taskBriefHelp")}</p>
+                <h3 class="panel-title">${icon("clipboard-list")}<span>${t("chat.taskBriefTitle")}</span></h3>
               </div>
-              <span class="badge">${t("chat.runSetupBadge")}</span>
+              <div class="chat-statusbar">
+                <span id="runStatus" class="run-status idle ${runtime?.setup?.model_ready === false ? "attention" : ""}" role="status" aria-live="polite"><i></i><span>${runtime?.setup?.model_ready === false ? t("chat.setupRequired") : t("chat.ready")}</span></span>
+                <button id="taskDrawerToggle" type="button" class="icon-button task-drawer-toggle" aria-controls="taskHistoryDrawer" aria-expanded="false" aria-label="${escapeHTML(t("chat.taskDrawerOpen"))}" title="${escapeHTML(t("chat.taskDrawerOpen"))}">
+                  ${icon("history")}
+                </button>
+              </div>
+            </div>
+            <div id="taskExecutionContext" class="task-execution-context" aria-live="polite"></div>
+            <div id="executionTargetField" class="task-execution-target hidden">
+              ${icon("monitor")}
+              <label><span>${t("chat.executionTargetLabel")}</span><select id="executionTargetSelect"></select></label>
+            </div>
+            <div class="run-control-bar" aria-label="${escapeHTML(t("chat.runControlTitle"))}">
+              <label>
+                <span>${t("chat.runMode")}</span>
+                <select id="runMode"><option value="auto">${t("chat.modeAuto")}</option><option value="agent">${t("chat.modeAgent")}</option><option value="workflow">${t("chat.modeWorkflow")}</option></select>
+              </label>
+              <label id="agentField" class="hidden">
+                <span>${t("chat.agent")}</span>
+                <select id="agentSelect"></select>
+              </label>
+              <label id="workflowField" class="hidden">
+                <span>${t("chat.workflow")}</span>
+                <select id="workflowSelect"></select>
+              </label>
+              <label>
+                <span>${t("chat.reasoningEffortLabel")}</span>
+                <select id="reasoningEffort">
+                  <option value="low">${t("chat.reasoningLow")}</option>
+                  <option value="mid">${t("chat.reasoningMedium")}</option>
+                  <option value="high">${t("chat.reasoningHigh")}</option>
+                </select>
+              </label>
+              <label>
+                <span>${t("chat.permissionModeLabel")}</span>
+                <select id="permissionMode">
+                  <option value="confirm">${t("chat.permissionConfirm")}</option>
+                  <option value="workspace">${t("chat.permissionWorkspace")}</option>
+                  <option value="full">${t("chat.permissionFull")}</option>
+                </select>
+              </label>
+              <span id="permissionModeHint" class="run-permission-hint"></span>
             </div>
             <div class="composer-shell">
               <div class="composer-toolbar">
-                <div class="reference-picker" data-tour-id="playground-files">
-                  <button id="referenceToggle" type="button" class="reference-toggle" aria-haspopup="dialog" aria-expanded="false">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5v14M5 12h14"/></svg>
+                <div class="reference-picker">
+                  <button id="referenceToggle" type="button" class="reference-toggle" aria-haspopup="dialog" aria-expanded="false" aria-label="${escapeHTML(t("chat.referenceFiles"))}" title="${escapeHTML(t("chat.referenceFiles"))}">
+                    ${icon("file-plus")}
                     <span>${t("chat.referenceFiles")}</span>
                   </button>
                   <span id="referenceFeedback" class="reference-feedback" role="status" aria-live="polite"></span>
                 </div>
+                <button id="attachmentPicker" type="button" class="icon-button" aria-label="${escapeHTML(t("chat.attachmentsAdd"))}" title="${escapeHTML(t("chat.attachmentsAdd"))}">${icon("paperclip")}</button>
+                <input id="attachmentInput" type="file" multiple hidden>
               </div>
               <div class="composer">
                 <textarea id="prompt" aria-label="${escapeHTML(t("chat.promptInput"))}" placeholder="${escapeHTML(t("chat.placeholder"))}"></textarea>
                 <div class="stack">
-                  <button id="send" class="primary" aria-disabled="false">${t("chat.run")}</button>
-                  <button id="clear">${t("chat.clear")}</button>
+                  <button id="send" class="primary icon-text" aria-label="${escapeHTML(t("chat.run"))}" title="${escapeHTML(t("chat.run"))}" aria-disabled="${runtime?.setup?.model_ready === false ? "true" : "false"}" ${runtime?.setup?.model_ready === false ? "disabled" : ""}>${icon("send")}<span>${t("chat.run")}</span></button>
+                  <button id="clear" class="icon-text" aria-label="${escapeHTML(t("chat.clear"))}" title="${escapeHTML(t("chat.clear"))}">${icon("eraser")}<span>${t("chat.clear")}</span></button>
                 </div>
               </div>
+              <div id="attachmentTray" class="attachment-tray hidden" aria-live="polite"></div>
               <div id="referencePopover" class="reference-popover hidden" role="dialog" aria-label="${escapeHTML(t("chat.referenceFiles"))}">
                 <div class="reference-popover-head">
                   <div>
                     <strong>${t("chat.referenceFiles")}</strong>
                     <small>${t("chat.referenceFilesHelp")}</small>
                   </div>
-                  <button id="referenceClose" type="button" class="icon-button" aria-label="${escapeHTML(t("chat.referenceClose"))}">
-                    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+                  <button id="referenceClose" type="button" class="icon-button" aria-label="${escapeHTML(t("chat.referenceClose"))}" title="${escapeHTML(t("chat.referenceClose"))}">
+                    ${icon("x")}
                   </button>
                 </div>
                 <input id="referencePrefix" class="reference-search" aria-label="${escapeHTML(t("chat.referenceFilterLabel"))}" placeholder="${escapeHTML(t("chat.referenceFilter"))}">
                 <div id="fileSuggestions" class="file-suggestions reference-list"></div>
               </div>
             </div>
-            <div class="run-recommended-targets">
-              <div class="run-section-copy">
+            <details class="run-recommended-targets">
+              <summary class="run-section-copy">
                 <strong>${t("chat.recommendedTargetsTitle")}</strong>
                 <span>${t("chat.recommendedTargetsHelp")}</span>
-              </div>
+              </summary>
               <div id="runTargetCards" class="run-target-cards" aria-label="${escapeHTML(t("chat.targetCardsAria"))}"></div>
-            </div>
-            <details class="run-options-panel expert-mode-section">
+            </details>
+            <details class="run-options-panel advanced-only-section">
               <summary>
                 <span>
                   <strong>${t("chat.runOptionsTitle")}</strong>
@@ -85,29 +126,21 @@ export async function renderChat(root, runtime, refreshRuntime) {
                 <span id="runOptionsSummary" class="badge neutral"></span>
               </summary>
               <div class="run-target-panel">
-                <label class="compact-field"><span>${t("chat.runMode")}</span><select id="runMode"><option value="agent">${t("chat.modeAgent")}</option><option value="workflow">${t("chat.modeWorkflow")}</option></select></label>
-                <label class="compact-field"><span>${t("chat.agent")}</span><select id="agentSelect"></select></label>
-                <label class="compact-field hidden" id="workflowField"><span>${t("chat.workflow")}</span><select id="workflowSelect"></select></label>
                 <label class="compact-field"><span>${t("chat.skill")}</span><select id="skillSelect"></select></label>
                 <label class="compact-field"><span>${t("chat.tool")}</span><select id="toolSelect"></select></label>
                 <div class="context-actions">
-                  <button id="insertContext">${t("chat.insertContext")}</button>
+                  <button id="insertContext" aria-label="${escapeHTML(t("chat.insertContext"))}" title="${escapeHTML(t("chat.insertContext"))}">${t("chat.insertContext")}</button>
                   <span id="contextFeedback" role="status" aria-live="polite"></span>
                 </div>
               </div>
             </details>
-            <div class="run-helper" aria-label="${escapeHTML(t("chat.runHelperAria"))}">
-              <span><strong>1</strong>${t("chat.helperTask")}</span>
-              <span><strong>2</strong>${t("chat.helperTarget")}</span>
-              <span><strong>3</strong>${t("chat.helperTrack")}</span>
-            </div>
-            <div id="runContextGuide" class="run-context-guide expert-mode-section" aria-live="polite"></div>
+            <div id="runContextGuide" class="run-context-guide advanced-only-section" aria-live="polite"></div>
           </section>
 
-          <section class="run-timeline panel inset" data-tour-id="playground-timeline">
+          <section class="run-timeline panel inset">
             <div class="panel-head compact">
               <div>
-                <h3>${t("chat.timelineTitle")}</h3>
+                <h3 class="panel-title">${icon("activity")}<span>${t("chat.timelineTitle")}</span></h3>
                 <p class="muted">${t("chat.timelineHelp")}</p>
               </div>
               <div class="run-live-stack">
@@ -116,15 +149,19 @@ export async function renderChat(root, runtime, refreshRuntime) {
               </div>
             </div>
             <div id="runAttention" class="run-attention hidden"></div>
-            <div id="messages" class="messages"></div>
-            <button id="timelineJumpLatest" class="timeline-jump-latest hidden" type="button">${t("chat.timelineJumpLatest")}</button>
+            <div class="timeline-feed">
+              <div id="messages" class="messages"><div class="timeline-empty-state"><strong>${t("chat.timelineEmptyTitle")}</strong><span>${t("chat.timelineEmptyBody")}</span></div></div>
+              <button id="timelineJumpLatest" class="timeline-jump-latest hidden icon-text" type="button" aria-label="${escapeHTML(t("chat.timelineJumpLatest"))}" title="${escapeHTML(t("chat.timelineJumpLatest"))}">${icon("arrow-up")}<span>${t("chat.timelineJumpLatest")}</span></button>
+            </div>
           </section>
 
+          <section id="runTimelineTotals" class="timeline-run-totals run-totals-strip hidden" aria-live="polite"></section>
+
           <section class="run-output-stack" aria-label="${escapeHTML(t("chat.resultTitle"))}">
-            <aside class="run-results panel inset">
+            <aside class="run-results panel inset hidden">
               <div class="panel-head compact">
                 <div>
-                  <h3>${t("chat.resultTitle")}</h3>
+                  <h3 class="panel-title">${icon("clipboard-list")}<span>${t("chat.resultTitle")}</span></h3>
                   <p class="muted">${t("chat.resultHelp")}</p>
                 </div>
                 <span id="resultStatus" class="badge">${t("chat.resultIdle")}</span>
@@ -133,7 +170,7 @@ export async function renderChat(root, runtime, refreshRuntime) {
               <div id="resultPreview" class="result-preview hidden" aria-live="polite"></div>
               <div id="resultOutput" class="result-output hidden"></div>
             </aside>
-            <details id="runCollabPanel" class="run-collab panel inset collab-panel expert-mode-section" data-tour-id="playground-collaboration">
+            <details id="runCollabPanel" class="run-collab panel inset collab-panel advanced-only-section">
               <summary class="collab-summary">
                 <div class="panel-head compact collab-head">
                   <div>
@@ -207,25 +244,35 @@ export async function renderChat(root, runtime, refreshRuntime) {
           </section>
         </div>
       </section>
-      <aside class="panel span-4 file-panel history-aside">
-        <section class="run-history-panel" data-tour-id="playground-run-history">
+      <button id="taskDrawerBackdrop" type="button" class="task-drawer-backdrop hidden" aria-label="${escapeHTML(t("common.close"))}"></button>
+      <aside id="taskHistoryDrawer" class="panel span-4 file-panel history-aside task-context-drawer" aria-hidden="true" aria-label="${escapeHTML(t("chat.taskDrawerTitle"))}" inert>
+        <div class="task-drawer-head">
+          <div>
+            <strong>${t("chat.taskDrawerTitle")}</strong>
+            <small>${t("chat.taskDrawerHelp")}</small>
+          </div>
+          <button id="taskDrawerClose" type="button" class="icon-button" aria-label="${escapeHTML(t("common.close"))}" title="${escapeHTML(t("common.close"))}">
+            ${icon("x")}
+          </button>
+        </div>
+        <section class="run-history-panel">
           <div class="panel-head compact">
             <div>
-              <h3>${t("chat.runHistoryTitle")}</h3>
+              <h3 class="panel-title">${icon("history")}<span>${t("chat.runHistoryTitle")}</span></h3>
               <p class="muted">${t("chat.runHistoryHelp")}</p>
             </div>
-            <button id="runHistoryRefresh" type="button" class="ghost-button">${t("chat.runHistoryRefresh")}</button>
+            <button id="runHistoryRefresh" type="button" class="ghost-button icon-text">${icon("refresh-cw")}<span>${t("chat.runHistoryRefresh")}</span></button>
           </div>
           <span id="runHistoryStatus" class="badge">${t("chat.runHistoryLoading")}</span>
-          <div id="runHistoryFilters" class="run-history-filters expert-mode-section" aria-label="${escapeHTML(t("chat.runHistoryFilters"))}"></div>
+          <div id="runHistoryFilters" class="run-history-filters advanced-only-section" aria-label="${escapeHTML(t("chat.runHistoryFilters"))}"></div>
           <div id="runHistoryList" class="run-history-list"></div>
-          <section class="run-history-detail-shell" aria-label="${escapeHTML(t("chat.runHistoryDetailTitle"))}">
+          <section class="run-history-detail-shell hidden" aria-label="${escapeHTML(t("chat.runHistoryDetailTitle"))}">
             <div class="run-history-detail-label">
               <div>
                 <strong>${t("chat.runHistoryDetailTitle")}</strong>
                 <small>${t("chat.runHistoryDetailHelp")}</small>
               </div>
-              <span class="badge neutral expert-mode-section">${t("chat.runHistoryDetailBadge")}</span>
+              <span class="badge neutral advanced-only-section">${t("chat.runHistoryDetailBadge")}</span>
             </div>
             <div id="runHistoryDetail" class="run-history-detail"></div>
           </section>
@@ -245,7 +292,12 @@ export async function renderChat(root, runtime, refreshRuntime) {
   const prompt = root.querySelector("#prompt");
   const send = root.querySelector("#send");
   const clear = root.querySelector("#clear");
+  const taskDrawer = root.querySelector("#taskHistoryDrawer");
+  const taskDrawerToggle = root.querySelector("#taskDrawerToggle");
+  const taskDrawerClose = root.querySelector("#taskDrawerClose");
+  const taskDrawerBackdrop = root.querySelector("#taskDrawerBackdrop");
   const agentSelect = root.querySelector("#agentSelect");
+  const agentField = root.querySelector("#agentField");
   const runMode = root.querySelector("#runMode");
   const workflowField = root.querySelector("#workflowField");
   const workflowSelect = root.querySelector("#workflowSelect");
@@ -254,17 +306,29 @@ export async function renderChat(root, runtime, refreshRuntime) {
   const insertContext = root.querySelector("#insertContext");
   const runTargetCards = root.querySelector("#runTargetCards");
   const runOptionsSummary = root.querySelector("#runOptionsSummary");
+  const taskExecutionContext = root.querySelector("#taskExecutionContext");
+  const executionTargetField = root.querySelector("#executionTargetField");
+  const executionTargetSelect = root.querySelector("#executionTargetSelect");
+  const reasoningEffort = root.querySelector("#reasoningEffort");
+  const permissionMode = root.querySelector("#permissionMode");
+  const permissionModeHint = root.querySelector("#permissionModeHint");
   const runCollabPanel = root.querySelector("#runCollabPanel");
   const referenceToggle = root.querySelector("#referenceToggle");
   const referenceClose = root.querySelector("#referenceClose");
   const referencePopover = root.querySelector("#referencePopover");
   const referencePrefix = root.querySelector("#referencePrefix");
   const referenceFeedback = root.querySelector("#referenceFeedback");
+  const attachmentPicker = root.querySelector("#attachmentPicker");
+  const attachmentInput = root.querySelector("#attachmentInput");
+  const attachmentTray = root.querySelector("#attachmentTray");
   const targetSummary = root.querySelector("#targetSummary");
   const runStatus = root.querySelector("#runStatus");
   const contextFeedback = root.querySelector("#contextFeedback");
   const suggestions = root.querySelector("#fileSuggestions");
   let promptSelection = { start: 0, end: 0 };
+  let taskAttachments = [];
+  let pendingAttachmentUploads = [];
+  let attachmentUploadCount = 0;
   const rememberPromptSelection = () => {
     const end = prompt.value.length;
     promptSelection = {
@@ -279,6 +343,98 @@ export async function renderChat(root, runtime, refreshRuntime) {
   }
   rememberPromptSelection();
 
+  const renderTaskAttachments = () => {
+    if (!attachmentTray) return;
+    const items = [...taskAttachments.map(item => ({ ...item, uploaded: true })), ...pendingAttachmentUploads];
+    attachmentTray.classList.toggle("hidden", items.length === 0);
+    attachmentTray.innerHTML = items.map((item, index) => {
+      const imageURL = item.previewURL || (item.kind === "image" && item.hash ? `/api/attachments/${encodeURIComponent(item.hash)}` : "");
+      return `
+      <span class="attachment-chip ${item.error ? "error" : item.uploaded ? "ready" : "uploading"}" title="${escapeHTML(item.name || "附件")}">
+        ${imageURL ? `<img src="${escapeHTML(imageURL)}" alt="">` : ""}
+        <span class="attachment-chip-kind">${item.kind === "image" ? "图" : "件"}</span>
+        <span class="attachment-chip-name">${escapeHTML(item.name || "附件")}</span>
+        ${item.uploaded ? "" : `<small>${item.error ? "失败" : "上传中"}</small>`}
+        <button type="button" data-remove-attachment="${index}" data-attachment-uploaded="${item.uploaded ? "true" : "false"}" aria-label="删除附件"${!item.uploaded && !item.error ? " disabled aria-disabled=\"true\"" : ""}>×</button>
+      </span>`;
+    }).join("");
+  };
+  const uploadTaskFiles = async files => {
+    const list = Array.from(files || []).filter(file => file && file.size > 0);
+    if (!list.length) return;
+    if (taskAttachments.length + pendingAttachmentUploads.length + list.length > 12) {
+      showContextFeedback(referenceFeedback, "单次最多添加 12 个附件", true);
+      return;
+    }
+    const batchID = `${Date.now()}-${Math.random().toString(36).slice(2)}`;
+    const pending = list.map((file, index) => ({
+      id: `${batchID}-${index}`,
+      batchID,
+      file,
+      name: file.name || "附件",
+      kind: file.type.startsWith("image/") ? "image" : "file",
+      previewURL: file.type.startsWith("image/") ? URL.createObjectURL(file) : "",
+      uploaded: false,
+      error: false
+    }));
+    pendingAttachmentUploads.push(...pending);
+    renderTaskAttachments();
+    attachmentUploadCount += 1;
+    attachmentPicker?.setAttribute("aria-busy", "true");
+    try {
+      const response = await uploadAttachments(list);
+      const uploaded = Array.isArray(response?.attachments) ? response.attachments : [];
+      taskAttachments = [...taskAttachments, ...uploaded].filter((item, index, all) => item?.hash && all.findIndex(other => other.hash === item.hash) === index);
+      for (const item of pending) {
+        if (item.previewURL) URL.revokeObjectURL(item.previewURL);
+      }
+      pendingAttachmentUploads = pendingAttachmentUploads.filter(item => item.batchID !== batchID);
+    } catch (error) {
+      pendingAttachmentUploads = pendingAttachmentUploads.map(item => item.batchID === batchID ? { ...item, error: true } : item);
+      showContextFeedback(referenceFeedback, error?.message || "附件上传失败", true);
+    } finally {
+      attachmentUploadCount = Math.max(0, attachmentUploadCount - 1);
+      if (attachmentUploadCount === 0) attachmentPicker?.removeAttribute("aria-busy");
+      if (attachmentInput) attachmentInput.value = "";
+      renderTaskAttachments();
+    }
+  };
+  attachmentPicker?.addEventListener("click", () => attachmentInput?.click());
+  attachmentInput?.addEventListener("change", event => uploadTaskFiles(event.target.files));
+  attachmentTray?.addEventListener("click", event => {
+    const button = event.target instanceof Element ? event.target.closest("[data-remove-attachment]") : null;
+    if (!button) return;
+    const index = Number(button.dataset.removeAttachment);
+    if (button.dataset.attachmentUploaded === "true") {
+      taskAttachments.splice(index, 1);
+    } else {
+      const pendingIndex = index - taskAttachments.length;
+      const [removed] = pendingAttachmentUploads.splice(pendingIndex, 1);
+      if (removed?.previewURL) URL.revokeObjectURL(removed.previewURL);
+    }
+    renderTaskAttachments();
+  });
+  prompt?.addEventListener("paste", event => {
+    const files = Array.from(event.clipboardData?.files || []).filter(file => file.type.startsWith("image/"));
+    if (files.length) {
+      event.preventDefault();
+      uploadTaskFiles(files);
+    }
+  });
+  prompt?.addEventListener("dragover", event => {
+    if (event.dataTransfer?.types?.includes("Files")) {
+      event.preventDefault();
+      prompt.classList.add("drop-active");
+    }
+  });
+  prompt?.addEventListener("dragleave", () => prompt.classList.remove("drop-active"));
+  prompt?.addEventListener("drop", event => {
+    if (!event.dataTransfer?.files?.length) return;
+    event.preventDefault();
+    prompt.classList.remove("drop-active");
+    uploadTaskFiles(event.dataTransfer.files);
+  });
+
   if (!(runtime.agents || []).length) {
     const option = document.createElement("option");
     option.value = runtime.active_agent || "";
@@ -288,27 +444,115 @@ export async function renderChat(root, runtime, refreshRuntime) {
   for (const agent of runtime.agents || []) {
     const option = document.createElement("option");
     option.value = agent.id;
-    option.textContent = `${agent.id} (${modeLabel(agent.mode)})`;
+    option.textContent = `${agent.name || agent.id} (${modeLabel(agent.mode)})`;
     agentSelect.appendChild(option);
   }
   agentSelect.value = runtime.active_agent || agentSelect.value;
-  const skillValues = (options.skills?.length ? options.skills : runtime.skills || []).map(item => item.name);
+  const skillValues = (options.skills?.length ? options.skills : runtime.skills || []).map(item => ({
+    value: item.name,
+    label: taskResourceDisplayName("skill", item.name, item.name),
+    title: item.description || ""
+  }));
   const toolValues = options.tools?.length ? options.tools : runtime.tools || [];
   const workflowEntries = workflowExecutorEntries(options, workflows);
   fillSelect(workflowSelect, workflowEntries, t("chat.noWorkflow"));
   fillSelect(skillSelect, skillValues, t("chat.autoSkill"));
   fillSelect(toolSelect, toolValues, t("chat.noTool"));
+  populateExecutionTargetSelect(executionTargetSelect, runtime);
+  const reasoningStorageKey = reasoningEffortKey(runtime);
+  reasoningEffort.value = storedRunControl(reasoningStorageKey, runtimeReasoningEffort(runtime));
+  permissionMode.value = storedRunControl(permissionModeStorageKey, "confirm");
+  applyResourceTaskDraft(readResourceTaskDraft(), { runMode, agentSelect, workflowSelect, skillSelect, toolSelect });
 
   const runState = createRunState(messages, timelineJumpLatest, resultPreview, resultOutput, resultEmpty, resultStatus, runAttention, runTimelineHint, runLiveStatus, root, runStatus, send);
   runState.refreshRuntime = refreshRuntime;
   let latestRuntime = runtime;
+  let latestPreflight = null;
+  const syncTaskExecutionContext = () => renderTaskExecutionContext(taskExecutionContext, latestRuntime, {
+    agent: agentSelect.value,
+    workflow: workflowSelect.value,
+    skill: skillSelect.value,
+    tool: toolSelect.value,
+    targetID: executionTargetSelect.value || "local",
+    reasoningEffort: reasoningEffort.value,
+    permissionMode: permissionMode.value,
+    preflight: latestPreflight
+  });
+  const syncExecutionTargetField = () => {
+    const targets = Array.isArray(latestRuntime?.execution_targets) ? latestRuntime.execution_targets : [];
+    const show = targets.length > 1 || taskSelectionRequiresExecutionTarget(latestRuntime, {
+      agent: agentSelect.value,
+      skill: skillSelect.value
+    });
+    executionTargetField?.classList.toggle("hidden", !show);
+  };
+  const syncTaskReadiness = () => {
+    const modelReady = latestRuntime?.setup?.model_ready !== false;
+    const active = currentRunStillActive(runState) || runState.requestInFlight;
+    const blocked = !modelReady && !active;
+    if (blocked) {
+      runState.setupBlocked = true;
+      runStatus?.classList.add("attention");
+      const label = runStatus?.querySelector("span");
+      if (label) label.textContent = t("chat.setupRequired");
+      send.disabled = true;
+      send.setAttribute("aria-disabled", "true");
+      send.title = t("chat.setupRequired");
+      runAttention.className = "run-attention setup-required";
+      runAttention.innerHTML = `<strong>${escapeHTML(t("chat.setupRequiredTitle"))}</strong><p>${escapeHTML(t("chat.setupRequiredBody"))}</p><div class="run-attention-actions"><button type="button" data-open-settings>${escapeHTML(t("chat.openSettings"))}</button></div>`;
+      runAttention.classList.remove("hidden");
+    } else if (runState.setupBlocked) {
+      runState.setupBlocked = false;
+      runStatus?.classList.remove("attention");
+      send.title = "";
+      if (!active) setRunStatus(root, runStatus, send, false);
+      if (runAttention.classList.contains("setup-required")) {
+        runAttention.innerHTML = "";
+        runAttention.className = "run-attention hidden";
+      }
+    }
+  };
   const disposeTimelineLayoutSync = bindRunTimelineHeightSync(root);
   const disposeTimelineFollow = bindTimelineFollowMode(runState);
+  const disposeRunControlHints = bindRunControlHints(root);
   const collaborationState = createCollaborationState(root, runtime, runState);
   const historyState = createWorkflowHistoryState(root, runState, collaborationState, refreshRuntime);
   bindRunEmptyStateActions(root, prompt);
   const referencePickerController = new AbortController();
   runState.submitWorkflowInput = createWorkflowInputSubmitHandler(runState, messages, collaborationState, refreshRuntime);
+  const taskDrawerIsOpen = () => taskDrawer?.classList.contains("open") === true;
+  const closeTaskDrawer = () => {
+    taskDrawer?.classList.remove("open");
+    taskDrawer?.setAttribute("aria-hidden", "true");
+    taskDrawer?.setAttribute("inert", "");
+    taskDrawerToggle?.setAttribute("aria-expanded", "false");
+    taskDrawerBackdrop?.classList.add("hidden");
+    document.body.classList.remove("task-drawer-open");
+    stopWorkflowHistoryPolling(historyState);
+  };
+  const openTaskDrawer = async ({ focus = "" } = {}) => {
+    taskDrawer?.classList.add("open");
+    taskDrawer?.setAttribute("aria-hidden", "false");
+    taskDrawer?.removeAttribute("inert");
+    taskDrawerToggle?.setAttribute("aria-expanded", "true");
+    taskDrawerBackdrop?.classList.remove("hidden");
+    document.body.classList.add("task-drawer-open");
+    await loadWorkflowRunHistory(historyState, focus || currentHistoryRunKey(runState), { forceDetail: Boolean(focus) }).catch(() => {});
+    startWorkflowHistoryPolling(historyState);
+  };
+  taskDrawerToggle?.addEventListener("click", () => {
+    if (taskDrawerIsOpen()) closeTaskDrawer();
+    else openTaskDrawer();
+  });
+  taskDrawerClose?.addEventListener("click", closeTaskDrawer);
+  taskDrawerBackdrop?.addEventListener("click", closeTaskDrawer);
+  const closeTaskDrawerOnEscape = event => {
+    if (event.key === "Escape" && taskDrawerIsOpen()) {
+      closeTaskDrawer();
+      taskDrawerToggle?.focus();
+    }
+  };
+  document.addEventListener("keydown", closeTaskDrawerOnEscape);
   runState.historyRefresh = () => loadWorkflowRunHistory(historyState, currentHistoryRunKey(runState), { background: true }).catch(() => {});
   const disposeRunView = () => {
     referencePickerController.abort();
@@ -318,6 +562,9 @@ export async function renderChat(root, runtime, refreshRuntime) {
     stopWorkflowHistoryPolling(historyState);
     disposeTimelineLayoutSync();
     disposeTimelineFollow();
+    disposeRunControlHints();
+    document.removeEventListener("keydown", closeTaskDrawerOnEscape);
+    document.body.classList.remove("task-drawer-open");
     syncRunUnloadGuard(runState);
   };
   window.addEventListener("goflow:view-dispose", disposeRunView, { once: true });
@@ -350,15 +597,50 @@ export async function renderChat(root, runtime, refreshRuntime) {
   });
   runState.syncContextGuide = syncRunContextGuide;
   const syncTarget = () => {
+    latestPreflight = null;
+    agentField.classList.toggle("hidden", runMode.value !== "agent");
     workflowField.classList.toggle("hidden", runMode.value !== "workflow");
-    const target = runMode.value === "workflow" && workflowSelect.value ? workflowSelect.value : agentSelect.value || "-";
-    targetSummary.textContent = `${runModeLabel(runMode.value)}: ${target}`;
+    const target = runMode.value === "auto"
+      ? t("chat.autoTarget")
+      : runMode.value === "workflow" && workflowSelect.value
+        ? workflowSelect.value
+        : agentSelect.value || "-";
+    if (targetSummary) targetSummary.textContent = `${runModeLabel(runMode.value)}: ${target}`;
     if (runOptionsSummary) runOptionsSummary.textContent = t("chat.runOptionsSummary", { mode: runModeLabel(runMode.value), target });
+    permissionModeHint.textContent = permissionModeHelp(permissionMode.value);
+    permissionModeHint.classList.toggle("danger", permissionMode.value === "full");
     syncTargetCards();
+    syncTaskExecutionContext();
+    syncExecutionTargetField();
     syncRunContextGuide();
   };
-  [runMode, agentSelect, workflowSelect, skillSelect, toolSelect].forEach(input => {
-    input.addEventListener("change", syncTarget);
+  runMode.addEventListener("change", syncTarget);
+  agentSelect.addEventListener("change", () => {
+    runMode.value = "agent";
+    syncTarget();
+  });
+  workflowSelect.addEventListener("change", () => {
+    runMode.value = "workflow";
+    syncTarget();
+  });
+  [skillSelect, toolSelect].forEach(input => input.addEventListener("change", syncTarget));
+  [reasoningEffort, permissionMode].forEach(input => {
+    input.addEventListener("change", () => {
+      try {
+        localStorage.setItem(input === reasoningEffort ? reasoningStorageKey : permissionModeStorageKey, input.value);
+      } catch {
+        // Storage is optional; the selected control still applies to this task.
+      }
+      syncTarget();
+    });
+  });
+  executionTargetSelect.addEventListener("change", () => {
+    try {
+      localStorage.setItem(executionTargetStorageKey, executionTargetSelect.value || "local");
+    } catch {
+      // Storage is optional; the selected value still applies to this task.
+    }
+    syncTarget();
   });
   syncTarget();
   bindCollaborationControls(collaborationState);
@@ -370,8 +652,25 @@ export async function renderChat(root, runtime, refreshRuntime) {
   } else if (runState.currentRunType !== "agent" && shouldPollWorkflowRunStatus(runState.lastWorkflowStatus)) {
     startWorkflowRunPolling(runState, collaborationState, { runID: runState.currentRunID, workflowName: runState.currentWorkflowName });
   }
-  await loadWorkflowRunHistory(historyState, initialRunHistoryFocus(runState));
-  startWorkflowHistoryPolling(historyState);
+  const initialHistoryFocus = initialRunHistoryFocus(runState);
+  if (initialHistoryFocus) {
+    await openTaskDrawer({ focus: initialHistoryFocus });
+  } else {
+    loadWorkflowRunHistory(historyState, "", { background: true, listOnly: true })
+      .then(() => {
+        if (historyState.status && !historyState.runs?.length) {
+          historyState.status.textContent = t("chat.taskDrawerIdle");
+        }
+      })
+      .catch(() => {});
+  }
+  syncTaskReadiness();
+  if (globalThis.performance?.now) {
+    globalThis.__GOFLOW_PERFORMANCE__ = {
+      ...(globalThis.__GOFLOW_PERFORMANCE__ || {}),
+      taskPageInteractiveMS: Math.round(globalThis.performance.now())
+    };
+  }
 
   insertContext.onclick = () => {
     const lines = contextDirectives(root);
@@ -460,10 +759,6 @@ export async function renderChat(root, runtime, refreshRuntime) {
       location.hash = "workspace";
       return;
     }
-    if (name === "approvals") {
-      location.hash = "approvals";
-      return;
-    }
     if (name === "cost") {
       location.hash = "status";
       return;
@@ -473,19 +768,48 @@ export async function renderChat(root, runtime, refreshRuntime) {
     }
   });
   root.addEventListener("click", event => {
+    if (event.target.closest("[data-open-settings]")) {
+      location.hash = "settings";
+      return;
+    }
+    const officeEdit = event.target instanceof Element ? event.target.closest("[data-office-edit-path]") : null;
+    if (officeEdit) {
+      const path = String(officeEdit.dataset.officeEditPath || "").trim();
+      if (path) {
+        const instruction = `${t("chat.officeArtifactContinue")} @${path}：`;
+        prompt.value = prompt.value.trim() ? `${prompt.value.trim()}\n${instruction}` : instruction;
+        prompt.focus();
+        prompt.setSelectionRange(prompt.value.length, prompt.value.length);
+        prompt.dispatchEvent(new Event("input", { bubbles: true }));
+      }
+      return;
+    }
     if (!event.target.closest(".reference-picker") && !event.target.closest(".reference-popover")) closeReferencePicker();
   });
   ["click", "keyup", "select", "input"].forEach(type => prompt.addEventListener(type, rememberPromptSelection));
   prompt.addEventListener("input", syncRunContextGuide);
   window.addEventListener("goflow:runtime", event => {
     latestRuntime = event.detail || latestRuntime;
+    populateExecutionTargetSelect(executionTargetSelect, latestRuntime, executionTargetSelect.value);
+    syncTaskExecutionContext();
+    syncExecutionTargetField();
     syncRunContextGuide();
+    syncTaskReadiness();
   }, { signal: referencePickerController.signal });
 
   send.onclick = async () => {
+    if (attachmentUploadCount > 0) {
+      showContextFeedback(referenceFeedback, "附件仍在上传，请稍候", true);
+      return;
+    }
+    if (pendingAttachmentUploads.some(item => item.error)) {
+      showContextFeedback(referenceFeedback, "请删除上传失败的附件后重试", true);
+      return;
+    }
     const rawInput = prompt.value.trim();
     const directives = contextDirectives(root);
-    const input = [directives.join("\n"), rawInput].filter(Boolean).join("\n\n");
+    const taskInput = rawInput || (taskAttachments.length ? "请分析附件并根据其中的信息完成任务。" : "");
+    const input = [directives.join("\n"), taskInput].filter(Boolean).join("\n\n");
     if (!input) return;
     if (runMode.value === "workflow" && !workflowSelect.value) {
       appendTimelineEvent(messages, {
@@ -501,23 +825,42 @@ export async function renderChat(root, runtime, refreshRuntime) {
       send,
       runState,
       messages,
-      mode: runMode.value,
+      mode: runMode.value === "auto" ? "agent" : runMode.value,
       input,
       workflowName: workflowSelect.value,
       agentName: agentSelect.value || ""
     });
     if (!workspaceReady) return;
-    const targetValue = runMode.value === "workflow" ? workflowSelect.value : agentSelect.value || "";
-    rememberRunTarget(runMode.value, targetValue, targetValue);
+    let preflight;
+    const requestedTargetID = executionTargetSelect.value || "local";
+    try {
+      preflight = await preflightTask(runMode.value === "auto"
+        ? { type: "auto", input, approve: false, target_id: requestedTargetID }
+        : runMode.value === "workflow"
+          ? { type: "workflow", workflow: workflowSelect.value, input, approve: false, target_id: requestedTargetID }
+          : { type: "agent", agent: agentSelect.value || "", skill: skillSelect.value || "", tool: toolSelect.value || "", input, target_id: requestedTargetID });
+    } catch (error) {
+      showRunAttention(runState, t("chat.preflightTitle"), chatDisplayText(error.message || t("chat.preflightFallback")), "error");
+      return;
+    }
+    latestPreflight = preflight;
+    syncTaskExecutionContext();
+    if (!preflight?.valid) {
+      showTaskPreflightAttention(runState, preflight);
+      return;
+    }
+    const effectiveMode = preflight.kind === "workflow" ? "workflow" : "agent";
+    const targetValue = String(preflight.target || (effectiveMode === "workflow" ? workflowSelect.value : agentSelect.value) || "").trim();
+    rememberRunTarget(effectiveMode, targetValue, targetValue);
     rerenderRunTargetCards();
     stopWorkflowRunPolling(runState);
     stopAgentRunPolling(runState);
     resetRunState(runState);
-    resetCollaborationState(collaborationState, runMode.value === "workflow" ? workflowSelect.value : agentSelect.value);
-    runState.currentRunType = runMode.value;
-    runState.currentWorkflowName = runMode.value === "workflow" ? workflowSelect.value : "";
+    resetCollaborationState(collaborationState, targetValue);
+    runState.currentRunType = effectiveMode;
+    runState.currentWorkflowName = effectiveMode === "workflow" ? targetValue : "";
     runState.submitWorkflowInput = createWorkflowInputSubmitHandler(runState, messages, collaborationState, refreshRuntime);
-    saveRunState(runState, { mode: runMode.value, target: runState.currentWorkflowName || agentSelect.value || "" });
+    saveRunState(runState, { mode: effectiveMode, target: targetValue });
     appendTimelineEvent(messages, {
       tone: "stage",
       title: t("chat.requestSubmitted"),
@@ -530,25 +873,35 @@ export async function renderChat(root, runtime, refreshRuntime) {
     setResultStatus(runState, t("chat.resultStreaming"));
     setRunLiveStatus(runState, t("chat.realtimeSyncing"), "syncing");
     setCollaborationStatus(collaborationState, t("chat.collabRunning"));
-    saveRunState(runState, { mode: runMode.value, target: runState.currentWorkflowName || agentSelect.value || "", running: true });
+    saveRunState(runState, { mode: effectiveMode, target: targetValue, running: true });
     runState.requestInFlight = true;
     runState.durableWorkflowActive = true;
     syncRunUnloadGuard(runState);
     try {
-      if (runMode.value === "agent" && agentSelect.value && agentSelect.value !== runtime.active_agent) {
-        await postJSON("/api/runtime/agent", { agent: agentSelect.value });
+      const targetID = preflight?.execution_target?.id || "local";
+      if (effectiveMode === "agent" && targetValue && targetValue !== runtime.active_agent) {
+        await postJSON("/api/runtime/agent", { agent: targetValue });
       }
-      if (runMode.value === "workflow") {
-        const response = await startWorkflowRun(workflowSelect.value, { input, approve: false, background: true });
-        await handleWorkflowBackgroundResponse(response, messages, runState, collaborationState, workflowSelect.value, "start");
+      if (effectiveMode === "workflow") {
+        const response = await startWorkflowRun(targetValue, { type: runMode.value === "auto" ? "auto" : "workflow", input, attachments: taskAttachments, approve: false, background: true, target_id: targetID, reasoning_effort: reasoningEffort.value, permission_mode: permissionMode.value });
+        await handleWorkflowBackgroundResponse(response, messages, runState, collaborationState, targetValue, "start");
         startWorkflowRunPolling(runState, collaborationState, {
           runID: runState.currentRunID,
-          workflowName: workflowSelect.value,
+          workflowName: targetValue,
           eventsURL: runEventsURLFromActionResponse(response)
         });
       } else {
-        const response = await startAgentRun(input, { agent: agentSelect.value || "" });
-        await handleAgentBackgroundResponse(response, messages, runState, collaborationState, agentSelect.value || "", "start");
+        const response = await startAgentRun(input, {
+          type: runMode.value === "auto" ? "auto" : "agent",
+          agent: runMode.value === "auto" ? "" : targetValue,
+          skill: runMode.value === "agent" ? skillSelect.value || "" : "",
+          tool: runMode.value === "agent" ? toolSelect.value || "" : "",
+          attachments: taskAttachments,
+          target_id: targetID,
+          reasoning_effort: reasoningEffort.value,
+          permission_mode: permissionMode.value
+        });
+        await handleAgentBackgroundResponse(response, messages, runState, collaborationState, targetValue, "start");
         startAgentRunPolling(runState, collaborationState, {
           runID: runState.currentRunID,
           eventsURL: runEventsURLFromActionResponse(response)
@@ -601,6 +954,12 @@ export async function renderChat(root, runtime, refreshRuntime) {
     setRunLiveStatus(runState, t("chat.realtimeIdle"), "idle");
     resetCollaborationState(collaborationState, "");
     markCollaborationStale(collaborationState);
+    taskAttachments = [];
+    for (const item of pendingAttachmentUploads) {
+      if (item.previewURL) URL.revokeObjectURL(item.previewURL);
+    }
+    pendingAttachmentUploads = [];
+    renderTaskAttachments();
     syncRunContextGuide();
   };
 }
@@ -734,7 +1093,7 @@ async function ensureWorkspaceRequirementBeforeAction(runState, action, runType 
 
 function workspaceOperationForAction(action = {}, runType = "") {
   const name = String(action.name || "").toLowerCase();
-  if (["approve_tool", "approve_all_tools", "approve_remember_tool"].includes(name)) return "tool";
+  if (["approve_task_scope", "approve_tool", "approve_all_tools", "approve_remember_tool"].includes(name)) return "tool";
   if (["approve_stage", "resume_sub_workflow", "submit_input"].includes(name)) return "workflow";
   if (name === "retry") return runType === "workflow" ? "workflow" : "run";
   return "";
@@ -921,6 +1280,52 @@ function fillSelect(select, values, emptyLabel) {
   }
 }
 
+function readResourceTaskDraft() {
+  try {
+    const raw = localStorage.getItem(resourceTaskDraftKey);
+    if (!raw) return null;
+    localStorage.removeItem(resourceTaskDraftKey);
+    const draft = JSON.parse(raw);
+    return draft && typeof draft === "object" ? draft : null;
+  } catch {
+    localStorage.removeItem(resourceTaskDraftKey);
+    return null;
+  }
+}
+
+function applyResourceTaskDraft(draft, controls) {
+  const kind = String(draft?.kind || "").toLowerCase();
+  const name = String(draft?.name || "").trim();
+  if (!kind || !name) return false;
+  if ((kind === "agent" || kind === "subagent") && selectHasValue(controls.agentSelect, name)) {
+    controls.runMode.value = "agent";
+    controls.agentSelect.value = name;
+    return true;
+  }
+  if (kind === "workflow" && selectHasValue(controls.workflowSelect, name)) {
+    controls.runMode.value = "workflow";
+    controls.workflowSelect.value = name;
+    return true;
+  }
+  if (kind === "skill" && selectHasValue(controls.skillSelect, name)) {
+    controls.skillSelect.value = name;
+    return true;
+  }
+  if (kind === "mcp") {
+    const prefix = `${name.toLowerCase()}/`;
+    const option = [...controls.toolSelect.options].find(candidate => String(candidate.value || "").toLowerCase().startsWith(prefix));
+    if (option) {
+      controls.toolSelect.value = option.value;
+      return true;
+    }
+  }
+  return false;
+}
+
+function selectHasValue(select, value) {
+  return [...(select?.options || [])].some(option => option.value === value);
+}
+
 function renderRunTargetCards(container, options = {}) {
   if (!container) return;
   const cards = runTargetCardItems(options.runtime, options.workflowEntries);
@@ -987,7 +1392,7 @@ function runTargetCardItems(runtime = {}, workflowEntries = []) {
     add({
       mode: "agent",
       value: name,
-      title: name || t("chat.modeAgent"),
+      title: agent.name || name || t("chat.modeAgent"),
       help: agent.description || t(agent.id === active ? "chat.targetCardActiveAgentHelp" : "chat.targetCardAgentHelp", { mode: modeLabel(agent.mode) }),
       kind: t("chat.modeAgent")
     });
@@ -1000,12 +1405,12 @@ function runTargetCardItems(runtime = {}, workflowEntries = []) {
     add({
       mode: "workflow",
       value: item.value,
-      title: item.name || item.value,
+      title: item.label || item.name || item.value,
       help: item.title || t("chat.targetCardWorkflowHelp"),
       kind: t("chat.modeWorkflow")
     });
   });
-  return items.sort((a, b) => runTargetCardSortScore(b) - runTargetCardSortScore(a)).slice(0, 4);
+  return items.sort((a, b) => runTargetCardSortScore(b) - runTargetCardSortScore(a)).slice(0, 2);
 }
 
 function sortRunTargetsByRecent(items = [], recent = []) {
@@ -1076,11 +1481,162 @@ function updateRunTargetCards(container, mode, agentValue, workflowValue) {
   });
 }
 
-function runTargetCardIconHTML(mode) {
-  if (mode === "workflow") {
-    return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M7 7h4v4H7zM13 13h4v4h-4zM11 9h3.5a1.5 1.5 0 0 1 1.5 1.5V13M9 11v2.5A1.5 1.5 0 0 0 10.5 15H13"/></svg>`;
+function renderTaskExecutionContext(container, runtime = {}, selection = {}) {
+  if (!container) return;
+  const preflight = selection.preflight && typeof selection.preflight === "object" ? selection.preflight : {};
+  const orchestration = Array.isArray(preflight.orchestration) ? preflight.orchestration : [];
+  const plannedWorkflow = preflight.kind === "workflow" ? String(preflight.target || "").trim() : String(selection.workflow || "").trim();
+  const agents = Array.isArray(runtime.agents) ? runtime.agents : [];
+  const plannedAgent = preflight.kind === "agent" ? String(preflight.target || "").trim() : "";
+  const firstPlannedAgent = orchestration.find(step => String(step?.agent || "").trim())?.agent || "";
+  const agentID = plannedAgent || firstPlannedAgent || selection.agent || runtime.active_agent || agents[0]?.id || "-";
+  const agent = agents.find(item => item.id === agentID) || {};
+  const providers = Array.isArray(runtime.providers) ? runtime.providers : [];
+  const provider = providers.find(item => item.id === agent.provider || item.provider === agent.provider) || {};
+  const workspace = runtime.workspace || {};
+  const workspaceValue = workspace.display || workspace.root || t("chat.executionContextWorkspaceDefault");
+  const providerValue = provider.id || agent.provider || t("chat.executionContextProviderUnset");
+  const modelValue = provider.model || agent.model || t("chat.executionContextModelUnset");
+  const orchestrationAgents = [...new Set(orchestration.map(step => String(step?.agent || "").trim()).filter(Boolean))];
+  const agentValue = plannedWorkflow && orchestrationAgents.length
+    ? t("chat.orchestrationAgentCount", { count: orchestrationAgents.length })
+    : taskResourceDisplayName("agent", agentID, agent.name || agentID);
+  const reasoningValue = reasoningEffortLabel(selection.reasoningEffort || provider.reasoning_effort || agent.reasoning_effort || "");
+  const permissionValue = permissionModeLabel(selection.permissionMode || "confirm");
+  const orchestrationSkills = [...new Set(orchestration.map(step => String(step?.skill || "").trim()).filter(Boolean))];
+  const resources = [
+    plannedWorkflow ? `${t("chat.workflow")}: ${taskResourceDisplayName("workflow", plannedWorkflow, plannedWorkflow)}` : "",
+    selection.skill ? `${t("chat.skill")}: ${taskResourceDisplayName("skill", selection.skill, selection.skill)}` : "",
+    !selection.skill && orchestrationSkills.length ? `${t("chat.skill")}: ${orchestrationSkills.map(value => taskResourceDisplayName("skill", value, value)).join(" / ")}` : "",
+    selection.tool ? `${t("chat.tool")}: ${taskToolDisplayName(selection.tool)}` : ""
+  ].filter(Boolean).join(" · ") || t("chat.executionContextResourcesAuto");
+  const executionTargets = Array.isArray(runtime.execution_targets) ? runtime.execution_targets : [];
+  const executionTarget = selection.preflight?.execution_target
+    || executionTargets.find(item => item.id === selection.targetID)
+    || executionTargets[0]
+    || { id: "local" };
+  const requiresExecutionTarget = Boolean(selection.preflight?.requires_execution_target)
+    || taskSelectionRequiresExecutionTarget(runtime, selection)
+    || Boolean(selection.targetID && selection.targetID !== "local");
+  const executionTargetValue = executionTarget.id === "local" ? t("chat.executionContextTargetLocal") : executionTarget.display_name || executionTarget.id;
+  const items = [
+    [t("chat.executionContextWorkspace"), workspaceValue, workspace.confirmed ? "ready" : "attention"],
+    ...(requiresExecutionTarget ? [[t("chat.executionContextTarget"), executionTargetValue, "ready"]] : []),
+    [t("chat.executionContextAgent"), agentValue, ""],
+    [t("chat.executionContextModel"), `${modelValue} · ${providerValue}`, provider.api_key_set === false ? "attention" : ""],
+    [t("chat.executionContextReasoning"), reasoningValue, ""],
+    [t("chat.executionContextPermission"), permissionValue, ""],
+    [t("chat.executionContextResources"), resources, ""]
+  ];
+  const chips = items.map(([label, value, tone]) => `<span class="task-context-chip ${tone}"><small>${escapeHTML(label)}</small><strong title="${escapeHTML(value)}">${escapeHTML(value)}</strong></span>`).join("");
+  container.innerHTML = `${chips}${taskOrchestrationPlanHTML(orchestration, preflight.reason || "", plannedWorkflow)}`;
+}
+
+function taskOrchestrationPlanHTML(steps = [], reason = "", workflow = "") {
+  if (!Array.isArray(steps) || !steps.length) return "";
+  const rows = steps.map((step, index) => {
+    const stage = chatDisplayText(step.stage || t("chat.orchestrationStage", { index: index + 1 }));
+    const agent = String(step.agent || "").trim();
+    const skill = String(step.skill || "").trim();
+    const resources = [
+      agent ? taskResourceDisplayName("agent", agent, localizedText(agent)) : "",
+      skill ? taskResourceDisplayName("skill", skill, localizedText(skill)) : ""
+    ].filter(Boolean).join(" · ");
+    const outcome = [chatDisplayText(step.purpose || ""), step.expected_output ? `${t("chat.orchestrationOutput")}: ${chatDisplayText(step.expected_output)}` : ""].filter(Boolean).join(" ");
+    return `<li data-orchestration-stage="${escapeHTML(String(step.stage || ""))}" data-orchestration-agent="${escapeHTML(agent)}" data-orchestration-skill="${escapeHTML(skill)}">
+      <span class="task-orchestration-index">${index + 1}</span>
+      <span class="task-orchestration-copy"><strong>${escapeHTML(stage)}</strong>${resources ? `<small>${escapeHTML(resources)}</small>` : ""}${outcome ? `<p>${escapeHTML(outcome)}</p>` : ""}</span>
+    </li>`;
+  }).join("");
+  return `<details class="task-orchestration-plan" data-orchestration-workflow="${escapeHTML(workflow)}" data-orchestration-agent-count="${new Set(steps.map(step => String(step?.agent || "").trim()).filter(Boolean)).size}" open>
+    <summary><span><strong>${escapeHTML(t("chat.orchestrationTitle"))}</strong><small>${escapeHTML(reason || t("chat.orchestrationHelp"))}</small></span><em>${escapeHTML(t("chat.orchestrationSteps", { count: steps.length }))}</em></summary>
+    <ol>${rows}</ol>
+  </details>`;
+}
+
+function runtimeReasoningEffort(runtime = {}) {
+  const agents = Array.isArray(runtime.agents) ? runtime.agents : [];
+  const agent = agents.find(item => item.id === runtime.active_agent) || agents[0] || {};
+  const providers = Array.isArray(runtime.providers) ? runtime.providers : [];
+  const provider = providers.find(item => item.id === agent.provider || item.provider === agent.provider) || providers[0] || {};
+  const normalized = String(provider.reasoning_effort || agent.reasoning_effort || "mid").toLowerCase();
+  if (["minimal", "low"].includes(normalized)) return "low";
+  if (["high", "xhigh", "max", "heavy"].includes(normalized)) return "high";
+  return "mid";
+}
+
+function reasoningEffortKey(runtime = {}) {
+  const agents = Array.isArray(runtime.agents) ? runtime.agents : [];
+  const agent = agents.find(item => item.id === runtime.active_agent) || agents[0] || {};
+  const providers = Array.isArray(runtime.providers) ? runtime.providers : [];
+  const provider = providers.find(item => item.id === agent.provider || item.provider === agent.provider) || providers[0] || {};
+  return `${reasoningEffortStorageKey}:${JSON.stringify([provider.id || agent.provider || "", agent.model || provider.model || "", runtimeReasoningEffort(runtime)])}`;
+}
+
+function storedRunControl(key, fallback) {
+  try {
+    return localStorage.getItem(key) || fallback;
+  } catch {
+    return fallback;
   }
-  return `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 5a4 4 0 0 1 4 4v2a4 4 0 0 1-8 0V9a4 4 0 0 1 4-4zM6 19a6 6 0 0 1 12 0M8 11h8"/></svg>`;
+}
+
+function permissionModeLabel(value) {
+  if (value === "full") return t("chat.permissionFull");
+  if (value === "workspace") return t("chat.permissionWorkspace");
+  return t("chat.permissionConfirm");
+}
+
+function permissionModeHelp(value) {
+  if (value === "full") return t("chat.permissionFullHelp");
+  if (value === "workspace") return t("chat.permissionWorkspaceHelp");
+  return t("chat.permissionConfirmHelp");
+}
+
+function reasoningEffortLabel(value) {
+  const normalized = String(value || "").trim().toLowerCase();
+  if (!normalized) return t("chat.executionContextReasoningUnset");
+  if (["mid", "med", "medium"].includes(normalized)) return t("chat.reasoningMedium");
+  if (["minimal", "low"].includes(normalized)) return t("chat.reasoningLow");
+  if (["high", "xhigh", "max", "heavy"].includes(normalized)) return t("chat.reasoningHigh");
+  return localizedText(normalized);
+}
+
+function populateExecutionTargetSelect(select, runtime = {}, preferredValue = "") {
+  if (!select) return;
+  const targets = Array.isArray(runtime.execution_targets) && runtime.execution_targets.length
+    ? runtime.execution_targets
+    : [{ id: "local", kind: "local", display_name: t("chat.executionContextTargetLocal"), enabled: true }];
+  let stored = "";
+  try {
+    stored = localStorage.getItem(executionTargetStorageKey) || "";
+  } catch {
+    stored = "";
+  }
+  const requested = preferredValue || stored || "local";
+  select.innerHTML = targets.map(target => {
+    const disabled = target.enabled === false;
+    const label = target.id === "local"
+      ? t("chat.executionContextTargetLocal")
+      : target.display_name || target.id;
+    const suffix = disabled ? ` (${t("chat.executionTargetDisabled")})` : "";
+    return `<option value="${escapeHTML(target.id || "")}" ${disabled ? "disabled" : ""}>${escapeHTML(label + suffix)}</option>`;
+  }).join("");
+  const requestedOption = Array.from(select.options).find(option => option.value === requested && !option.disabled);
+  select.value = requestedOption?.value || Array.from(select.options).find(option => !option.disabled)?.value || "local";
+}
+
+function taskSelectionRequiresExecutionTarget(runtime = {}, selection = {}) {
+  const targetScoped = value => String(value || "").trim().toLowerCase() === "host";
+  const agents = Array.isArray(runtime.agents) ? runtime.agents : [];
+  const skills = Array.isArray(runtime.skills) ? runtime.skills : [];
+  const agent = agents.find(item => item.id === selection.agent);
+  const skill = skills.find(item => item.name === selection.skill);
+  return targetScoped(agent?.target_scope) || targetScoped(skill?.target_scope);
+}
+
+function runTargetCardIconHTML(mode) {
+  return icon(mode === "workflow" ? "workflow" : "bot");
 }
 
 function workflowExecutorEntries(options = {}, workflowGraphs = []) {
@@ -1093,10 +1649,152 @@ function workflowExecutorEntries(options = {}, workflowGraphs = []) {
       return {
         value: item.name,
         name: item.name,
-        label: `${item.name}${suffix}`,
+        label: `${taskResourceDisplayName("workflow", item.name, item.name)}${suffix}`,
         title: item.detail || item.description || ""
       };
     });
+}
+
+function taskResourceDisplayName(kind, name, fallback = "") {
+  if (currentLanguage() !== "zh") return fallback || name;
+  const labels = {
+    "agent:auditor": "质量审计智能体",
+    "agent:binary-analyst": "二进制分析智能体",
+    "agent:chat": "通用任务智能体",
+    "agent:documentation-specialist": "办公文档智能体",
+    "agent:fixer": "代码修复智能体",
+    "agent:framework-extension-architect": "平台扩展架构智能体",
+    "agent:operations-specialist": "网络运维智能体",
+    "agent:planner": "任务规划智能体",
+    "agent:quality-engineer": "质量验证智能体",
+    "agent:research-specialist": "互联网资料研究智能体",
+    "agent:security-researcher": "网络安全智能体",
+    "agent:software-engineer": "软件开发智能体",
+    "agent:source-verifier": "来源核验智能体",
+    "agent:support-specialist": "问题支持智能体",
+    "agent:web-security-researcher": "Web 安全智能体",
+    "workflow:multi-domain-intake-router": "多领域复杂任务协作",
+    "workflow:plan-fix-audit": "规划、实现与质量审计",
+    "workflow:plan-implement-audit": "规划、实现与最终验收",
+    "workflow:skill-chain": "专业技能链协作",
+    "workflow:task-decomposition-plan": "复杂任务拆解规划",
+    "skill:authorized-red-team-validation": "授权红队验证",
+    "skill:binary-vulnerability-research": "二进制漏洞研究",
+    "skill:code-audit": "代码审计",
+    "skill:code-writing": "代码实现",
+    "skill:controlled-operations": "受控运维操作",
+    "skill:execution-plan": "实施计划",
+    "skill:internet-research": "互联网资料研究",
+    "skill:local-host-diagnostics": "本机诊断",
+    "skill:managed-local-config": "受管本地配置",
+    "skill:office-document-production": "办公文档制作",
+    "skill:remote-host-diagnostics": "远程主机诊断",
+    "skill:source-verification": "来源核验",
+    "skill:reverse-engineering": "逆向工程",
+    "skill:vulnerability-research": "漏洞研究",
+    "skill:web-vulnerability-research": "Web 漏洞研究"
+  };
+  return labels[`${kind}:${name}`] || fallback || name;
+}
+
+function taskToolDisplayName(value) {
+  const raw = String(value || "").trim();
+  if (!raw || currentLanguage() !== "zh") return raw;
+  const name = raw.toLowerCase().split("/").pop();
+  const labels = {
+    apply_patch: "应用精确补丁",
+    binary_entropy_map: "二进制熵图",
+    binary_extract_window: "提取二进制片段",
+    binary_file_info: "二进制文件信息",
+    binary_format_summary: "二进制格式摘要",
+    binary_strings: "提取二进制字符串",
+    binary_symbol_hints: "二进制符号提示",
+    browser_probe_points: "浏览器探测面",
+    browser_snapshot: "浏览器快照",
+    compile_research_evidence: "编译研究证据",
+    create_docx: "创建 Word 文档",
+    create_pdf: "创建 PDF 文档",
+    create_pptx: "创建演示文稿",
+    create_xlsx: "创建 Excel 工作簿",
+    delete_file: "删除文件",
+    device_batch_command_plan: "批量设备命令计划",
+    device_command_plan: "设备命令计划",
+    device_config_dry_run: "设备配置干跑",
+    device_discovery_plan: "设备发现计划",
+    device_restconf_live_apply: "应用设备 RESTCONF 变更",
+    disk_usage: "磁盘使用情况",
+    fetch_page_assets: "获取页面资源",
+    fetch_url: "获取网页",
+    file_info: "文件信息",
+    hex_preview: "十六进制预览",
+    host_facts: "主机事实",
+    inspect_managed_json: "检查受管 JSON 配置",
+    inspect_office_document: "检查办公文档",
+    json_read: "读取 JSON",
+    list_dir: "列出目录",
+    list_ports: "列出端口",
+    list_processes: "列出进程",
+    list_tree: "列出文件树",
+    markdown_link_check: "检查 Markdown 链接",
+    mkdir: "创建目录",
+    move_path: "移动路径",
+    note_read: "读取笔记",
+    note_write: "写入笔记",
+    python_outline: "分析 Python 结构",
+    read_file: "读取文件",
+    read_file_range: "分段读取文件",
+    read_log_tail: "读取日志尾部",
+    redaction_check: "检查敏感信息",
+    research_snapshot: "批量研究快照",
+    render_office_preview: "生成文档预览",
+    replace_office_text: "修改办公文档文本",
+    replace_text: "替换文本",
+    restore_file_change: "恢复文件修改",
+    restore_managed_json_change: "恢复受管 JSON 配置",
+    office_capabilities: "检测办公套件能力",
+    export_office_pdf: "导出办公文档 PDF",
+    fill_office_template: "基于模板生成文档",
+    run_command: "运行命令",
+    start_process: "启动开发服务",
+    process_status: "查看服务状态",
+    stop_process: "停止开发服务",
+    run_script: "运行 Skill 脚本",
+    search_files: "搜索文件",
+    service_status: "服务状态",
+    set_managed_json_value: "修改受管 JSON 配置",
+    ssh_host_key_scan: "扫描 SSH 主机指纹",
+    ssh_run_command: "运行 SSH 白名单命令",
+    support_case_summary: "汇总支持案例",
+    validate_office_document: "校验办公文档质量",
+    web_search: "搜索互联网",
+    write_file: "写入文件"
+  };
+  return labels[name] || raw;
+}
+
+function taskMachineDisplayName(value) {
+  const raw = String(value || "").trim();
+  if (!raw || currentLanguage() !== "zh") return raw;
+  const labels = {
+    completed: "已完成",
+    denied: "已拒绝",
+    exec: "执行",
+    failed: "失败",
+    inspect: "检查",
+    modify: "修改",
+    network: "网络",
+    read: "读取",
+    running: "运行中",
+    started: "已启动",
+    starting: "正在启动",
+    succeeded: "已成功",
+    write: "写入"
+  };
+  const direct = labels[raw.toLowerCase()];
+  if (direct) return direct;
+  const tool = taskToolDisplayName(raw);
+  if (tool !== raw) return tool;
+  return taskResourceDisplayName("agent", raw, raw);
 }
 
 function modeLabel(value) {
@@ -1108,6 +1806,7 @@ function modeLabel(value) {
 }
 
 function runModeLabel(value) {
+  if (value === "auto") return t("chat.modeAuto");
   if (value === "workflow") return t("chat.modeWorkflow");
   if (value === "agent") return t("chat.modeAgent");
   return value || "-";
@@ -1116,6 +1815,7 @@ function runModeLabel(value) {
 function chatDisplayText(value) {
   const text = String(value || "").trim();
   if (!text) return "";
+  if (/^(?:provider (?:response|request)|workflow stage .+: llm chat:|llm chat:|send Responses stream request:|read Responses stream:)/i.test(text)) return localizedText(text);
   if (chatLooksTechnical(text)) return text;
   return localizedText(text);
 }
@@ -1158,10 +1858,10 @@ function runContextGuideItems(selection = {}, runtime = {}) {
     items.push({ kind: "target", title: t("chat.runContextGuideWorkflow"), body: t("chat.runContextGuideWorkflowHelp") });
   }
   if (selection.skill) {
-    items.push({ kind: "skill", title: t("chat.runContextGuideSkill"), body: t("chat.runContextGuideSkillHelp", { skill: selection.skill }) });
+    items.push({ kind: "skill", title: t("chat.runContextGuideSkill"), body: t("chat.runContextGuideSkillHelp", { skill: taskResourceDisplayName("skill", selection.skill, selection.skill) }) });
   }
   if (selection.tool) {
-    items.push({ kind: "tool", title: t("chat.runContextGuideTool"), body: t("chat.runContextGuideToolHelp", { tool: selection.tool }) });
+    items.push({ kind: "tool", title: t("chat.runContextGuideTool"), body: t("chat.runContextGuideToolHelp", { tool: taskToolDisplayName(selection.tool) }) });
   }
   const latestCost = runtime?.cost?.latest || runtime?.session?.prompt_budget || null;
   const historySamples = Number(runtime?.cost?.samples || 0);
@@ -1187,16 +1887,6 @@ function runContextActionItems(selection = {}, runtime = {}) {
       body: t("chat.runContextWorkspaceBody"),
       action: t("chat.workspacePreflightAction"),
       actionName: "workspace"
-    });
-  }
-  const approvals = runPendingApprovalCount(runtime, selection.runState);
-  if (approvals > 0) {
-    items.push({
-      kind: "approval action",
-      title: t("chat.runContextApprovalTitle", { count: approvals }),
-      body: t("chat.runContextApprovalBody"),
-      action: t("chat.openApprovals"),
-      actionName: "approvals"
     });
   }
   if (!selection.referenceOpen && runPromptLooksFileScoped(selection.promptValue)) {
@@ -1305,11 +1995,17 @@ function createRunState(messages, timelineJumpLatest, resultPreview, resultOutpu
     root,
     messages,
     timelineJumpLatest,
+    timelineTotals: root?.querySelector("#runTimelineTotals"),
     timelinePinnedToLatest: true,
+    timelineSectionVisible: true,
     timelineUnseenEvents: 0,
+    tokenTotals: emptyTimelineTokenTotals(),
+    tokenSeen: new Set(),
+    lastPromptEstimate: 0,
     resultPreview,
     resultOutput,
     resultEmpty,
+    resultPanel: root?.querySelector(".run-results"),
     resultStatus,
     runAttention,
     runTimelineHint,
@@ -1318,6 +2014,7 @@ function createRunState(messages, timelineJumpLatest, resultPreview, resultOutpu
     send,
     hasResult: false,
     hasError: false,
+    setupBlocked: false,
     awaitingApproval: false,
     awaitingInput: false,
     inputRequest: null,
@@ -1334,6 +2031,9 @@ function createRunState(messages, timelineJumpLatest, resultPreview, resultOutpu
     refreshRuntime: null,
     pollTimer: null,
     pollInFlight: false,
+    actionRefreshTimer: null,
+    actionRefreshInFlight: false,
+    actionRefreshQueued: false,
     pollRunID: "",
     pollWorkflowName: "",
     historyPollTimer: null,
@@ -1404,10 +2104,13 @@ function bindRunTimelineHeightSync(root) {
 function bindTimelineFollowMode(runState) {
   const messages = runState?.messages;
   const jump = runState?.timelineJumpLatest;
+  const section = runState?.root?.querySelector(".run-timeline");
   if (!messages) return () => {};
   timelineRunStates.set(messages, runState);
-  const sync = () => {
-    const pinned = isScrollNearBottom(messages, 72);
+  const syncPin = () => {
+    runState.timelineSectionVisible = isTimelineSectionInView(runState);
+    if (!runState.timelineSectionVisible) return;
+    const pinned = isFollowingTimelineLatest(messages);
     runState.timelinePinnedToLatest = pinned;
     if (pinned) {
       runState.timelineUnseenEvents = 0;
@@ -1417,16 +2120,66 @@ function bindTimelineFollowMode(runState) {
   const jumpToLatest = () => {
     runState.timelinePinnedToLatest = true;
     runState.timelineUnseenEvents = 0;
-    scrollTimelineToBottom(messages);
+    followTimelineLatest(runState, messages);
     setTimelineJumpLatestVisible(runState, false);
   };
-  messages.addEventListener("scroll", sync, { passive: true });
+  const onWindowScroll = () => syncPin();
+  const pauseForHistoryReview = event => {
+    if (event.deltaY <= 0 || !timelineCanScroll(messages)) return;
+    runState.timelinePinnedToLatest = false;
+  };
+  messages.addEventListener("scroll", syncPin, { passive: true });
+  messages.addEventListener("wheel", pauseForHistoryReview, { passive: true });
+  window.addEventListener("scroll", onWindowScroll, { passive: true });
   jump?.addEventListener("click", jumpToLatest);
-  requestAnimationFrame(sync);
+  const observer = typeof IntersectionObserver === "function"
+    ? new IntersectionObserver(entries => {
+      const visible = entries.some(entry => entry.isIntersecting && entry.intersectionRatio > 0.18);
+      runState.timelineSectionVisible = visible;
+      if (visible && runState.timelinePinnedToLatest) followTimelineLatest(runState, messages);
+    }, { threshold: [0.18, 0.4, 0.75] })
+    : null;
+  if (section) observer?.observe(section);
+  requestAnimationFrame(syncPin);
   return () => {
-    messages.removeEventListener("scroll", sync);
+    messages.removeEventListener("scroll", syncPin);
+    messages.removeEventListener("wheel", pauseForHistoryReview);
+    window.removeEventListener("scroll", onWindowScroll);
     jump?.removeEventListener("click", jumpToLatest);
+    observer?.disconnect();
     timelineRunStates.delete(messages);
+  };
+}
+
+function bindRunControlHints(root) {
+  if (!root) return () => {};
+  let frame = 0;
+  const sync = () => {
+    frame = 0;
+    if (!root.isConnected || currentLanguage() !== "zh") return;
+    root.querySelectorAll("button, [role=button]").forEach(control => {
+      const visible = String(control.textContent || "").replace(/\s+/g, " ").trim();
+      const aria = localizedText(control.getAttribute("aria-label") || "");
+      const title = localizedText(control.getAttribute("title") || "");
+      const actionName = control.dataset.agentAction || control.dataset.runAction || control.dataset.historyAction || "";
+      const actionLabel = actionName ? workflowRunActionLabel(actionName, agentRunActionLabel(actionName, "")) : "";
+      const candidates = [visible, aria, title, actionLabel].filter(Boolean);
+      const label = candidates.find(text => /[\u3400-\u9fff]/.test(text)) || candidates[0] || "";
+      if (!label) return;
+      if (control.getAttribute("title") !== label) control.setAttribute("title", label);
+      if (control.getAttribute("aria-label") !== label) control.setAttribute("aria-label", label);
+    });
+  };
+  const schedule = () => {
+    if (frame) return;
+    frame = requestAnimationFrame(sync);
+  };
+  const observer = typeof MutationObserver === "function" ? new MutationObserver(schedule) : null;
+  observer?.observe(root, { childList: true, characterData: true, subtree: true });
+  schedule();
+  return () => {
+    if (frame) cancelAnimationFrame(frame);
+    observer?.disconnect();
   };
 }
 
@@ -1498,6 +2251,10 @@ async function restorePlaygroundRunState(runState, collaborationState, runtime) 
   const saved = readSavedRunState();
   if (saved?.mode === "agent") {
     let agentRunID = saved.runID || latestRelevantAgentRunID(runtime, saved);
+    if (saved.runID && !(await savedRunIsAvailable(saved.runID, "agent"))) {
+      clearSavedRunState();
+      return;
+    }
     if (!agentRunID) {
       try {
         const runs = normalizeAgentRunList(await fetchAgentRuns());
@@ -1508,10 +2265,14 @@ async function restorePlaygroundRunState(runState, collaborationState, runtime) 
     }
     if (agentRunID) {
       try {
-        const run = await fetchAgentRun(agentRunID);
-        await renderAgentRunSnapshot(runState, collaborationState, run);
+        const run = await fetchWorkbenchRunSnapshot(agentRunID, "agent");
+        await renderAgentRunSnapshot(runState, collaborationState, run, { hydrate: false });
         return;
-      } catch {
+      } catch (error) {
+        if (Number(error?.status) === 404) {
+          clearSavedRunState();
+          return;
+        }
         // Fall back to local restoration below.
       }
     }
@@ -1522,27 +2283,80 @@ async function restorePlaygroundRunState(runState, collaborationState, runtime) 
   }
   let runID = workflow.run_id || saved?.runID || "";
   if (!runID) {
-    runID = latestRelevantWorkflowRunID(runtime, saved);
+    // Do not scan historical runs during the first task render. The history
+    // drawer loads them on demand; a missing saved run means there is nothing
+    // to restore into the active task.
+    return;
   }
-  if (!runID) {
-    try {
-      const runs = normalizeWorkflowRunList(await fetchWorkflowRuns());
-      runID = latestRelevantWorkflowRunID({ session: { workflow_runs: runs } }, saved);
-    } catch {
-      runID = "";
-    }
+  if (!(await savedRunIsAvailable(runID, "workflow"))) {
+    clearSavedRunState();
+    return;
   }
   if (runID) {
     try {
-      const run = await fetchWorkflowRun(runID);
-      await renderWorkflowRunSnapshot(runState, collaborationState, run);
+      const run = await fetchWorkbenchRunSnapshot(runID, "workflow");
+      await renderWorkflowRunSnapshot(runState, collaborationState, run, { hydrate: false });
       return;
-    } catch {
+    } catch (error) {
+      if (Number(error?.status) === 404) {
+        clearSavedRunState();
+        return;
+      }
       // Fall back to local restoration below.
     }
   }
   if (saved && Date.now() - Number(saved.updatedAt || 0) < 24 * 60 * 60 * 1000) {
     restoreLocalRunSnapshot(runState, saved);
+  }
+}
+
+async function fetchWorkbenchRunSnapshot(runID, expectedType) {
+  try {
+    const payload = await fetchRunWorkbench(runID);
+    const run = payload?.run && typeof payload.run === "object" ? { ...payload.run } : {};
+    const task = payload?.task && typeof payload.task === "object" ? payload.task : {};
+    const actions = Array.isArray(payload?.actions) ? payload.actions : [];
+    const timeline = Array.isArray(payload?.timeline) ? payload.timeline : [];
+    return {
+      ...run,
+      final_output: String(payload?.final_output || ""),
+      output: String(payload?.final_output || run.output || ""),
+      summary: String(payload?.final_output || run.summary || ""),
+      execution: payload?.execution && typeof payload.execution === "object" ? payload.execution : run.execution,
+      run_type: task.type || task.kind || expectedType,
+      actions,
+      actions_summary: task.actions_summary || run.actions_summary,
+      timeline,
+      token_usage: payload?.token_usage && typeof payload.token_usage === "object" ? payload.token_usage : run.token_usage,
+      events_url: task.events_url || run.events_url,
+      events_path: task.events_path || run.events_path,
+      timeline_path: task.timeline_path || run.timeline_path,
+      replay_path: task.replay_path || run.replay_path,
+      artifacts_path: task.artifacts_path || run.artifacts_path,
+      context_path: task.context_path || run.context_path,
+      actions_path: task.actions_path || run.actions_path,
+      diffs_path: task.diffs_path || run.diffs_path,
+      delivery_path: task.delivery_path || run.delivery_path,
+      export_path: task.export_path || run.export_path,
+      needs_action: Boolean(task.needs_action || run.needs_action),
+      resumable: Boolean(task.resumable || run.resumable)
+    };
+  } catch (error) {
+    if (Number(error?.status) === 404) throw error;
+    return fetchRun(runID, { summary: true });
+  }
+}
+
+async function savedRunIsAvailable(runID, expectedType) {
+  try {
+    const payload = await fetchRuns({ limit: 100 });
+    return normalizeRunCollection(payload).some(run => {
+      const type = run?.run_type === "agent" ? "agent" : "workflow";
+      return type === expectedType && run.id === runID;
+    });
+  } catch {
+    // A temporary history failure should not discard a possibly live run.
+    return true;
   }
 }
 
@@ -1648,6 +2462,7 @@ function startWorkflowRunEventStream(runState, collaborationState, options = {})
     runState.eventAbortController = null;
     const run = runState.currentRunID ? await fetchWorkflowRun(runState.currentRunID).catch(() => null) : null;
     if (run) await renderWorkflowRunSnapshot(runState, collaborationState, run);
+    await runState.historyRefresh?.();
     if (!shouldPollWorkflowRunStatus(runState.lastWorkflowStatus) && !runState.requestInFlight) {
       stopWorkflowRunPolling(runState);
     } else {
@@ -1738,6 +2553,7 @@ function startAgentRunEventStream(runState, collaborationState, options = {}) {
     runState.eventAbortController = null;
     const run = runState.currentRunID ? await fetchAgentRun(runState.currentRunID).catch(() => null) : null;
     if (run) await renderAgentRunSnapshot(runState, collaborationState, run);
+    await runState.historyRefresh?.();
     if (!shouldPollAgentRunStatus(runState.lastWorkflowStatus) && !runState.requestInFlight) {
       stopAgentRunPolling(runState);
     } else {
@@ -1759,6 +2575,7 @@ function startAgentRunEventStream(runState, collaborationState, options = {}) {
 
 async function handleAgentRunStreamEvent(event, runState, collaborationState) {
   const seq = workflowRunEventSeq(event);
+  if (seq > 0 && seq <= runState.lastEventSeq) return;
   if (seq > runState.lastEventSeq) runState.lastEventSeq = seq;
   if (applyRunEventRetryDirective(event, runState)) return;
   if (event?.type === "agent_run_error") {
@@ -1775,6 +2592,7 @@ async function handleAgentRunStreamEvent(event, runState, collaborationState) {
     runState.awaitingApproval = true;
     setTimelineHint(runState, t("chat.timelineApproval"));
     setResultStatus(runState, t("chat.resultBlocked"));
+    queueRunActionSnapshotRefresh(runState, collaborationState, "agent");
   }
   setRunLiveStatus(runState, t("chat.realtimeLive"), "live");
   scheduleRunStateSave(runState, {
@@ -1823,13 +2641,17 @@ async function resolvePolledAgentRun(runState) {
 
 async function handleWorkflowRunStreamEvent(event, runState, collaborationState) {
   const seq = workflowRunEventSeq(event);
+  if (seq > 0 && seq <= runState.lastEventSeq) return;
   if (seq > runState.lastEventSeq) runState.lastEventSeq = seq;
   if (applyRunEventRetryDirective(event, runState)) return;
   if (event?.type === "workflow_run_error") {
     throw new Error(chatDisplayText(event.error || event.message || t("chat.runHistoryActionFailed")));
   }
   if (event?.type === "workflow_run_snapshot") {
-    await renderWorkflowRunSnapshot(runState, collaborationState, event);
+    const snapshot = event.execution || event.change_slices
+      ? event
+      : await fetchWorkbenchRunSnapshot(event.id || runState.currentRunID, "workflow").catch(() => event);
+    await renderWorkflowRunSnapshot(runState, collaborationState, snapshot);
     scheduleRunStateSave(runState, { lastEventSeq: runState.lastEventSeq, eventsURL: runState.eventsURL });
     return;
   }
@@ -1837,6 +2659,9 @@ async function handleWorkflowRunStreamEvent(event, runState, collaborationState)
   if (event?.workflow_name) runState.currentWorkflowName = event.workflow_name;
   if (event?.next_stage) runState.currentStage = event.next_stage;
   handleRunEvent(event, runState.messages, runState, collaborationState);
+  if (workflowEventNeedsActionSnapshot(event)) {
+    queueRunActionSnapshotRefresh(runState, collaborationState, "workflow");
+  }
   setRunLiveStatus(runState, t("chat.realtimeLive"), "live");
   scheduleRunStateSave(runState, {
     running: shouldPollWorkflowRunStatus(runState.lastWorkflowStatus),
@@ -1844,6 +2669,47 @@ async function handleWorkflowRunStreamEvent(event, runState, collaborationState)
     lastEventSeq: runState.lastEventSeq,
     eventsURL: runState.eventsURL
   });
+}
+
+function workflowEventNeedsActionSnapshot(event = {}) {
+  const type = String(event.type || "").toLowerCase();
+  const status = String(event.workflow_status || event.status || "").toLowerCase();
+  return Boolean(
+    event.needs_action ||
+    event.suspended ||
+    type === "approval" ||
+    type === "workflow_tool_approval_submitted" ||
+    (type === "workflow_result" && isWorkflowRunTerminal(status)) ||
+    (type === "workflow_result" && (isApprovalStatus(status) || status === "awaiting_input" || status === "awaiting_sub_workflow"))
+  );
+}
+
+function queueRunActionSnapshotRefresh(runState, collaborationState, runType) {
+  if (!runState?.currentRunID) return;
+  runState.actionRefreshQueued = true;
+  if (runState.actionRefreshTimer || runState.actionRefreshInFlight) return;
+  runState.actionRefreshTimer = window.setTimeout(async () => {
+    runState.actionRefreshTimer = null;
+    if (runState.actionRefreshInFlight || !runState.actionRefreshQueued) return;
+    const runID = runState.currentRunID;
+    runState.actionRefreshQueued = false;
+    runState.actionRefreshInFlight = true;
+    try {
+      const snapshot = await fetchWorkbenchRunSnapshot(runID, runType);
+      if (runState.currentRunID !== runID) return;
+      if (runType === "agent") {
+        await renderAgentRunSnapshot(runState, collaborationState, snapshot, { hydrate: false });
+      } else {
+        await renderWorkflowRunSnapshot(runState, collaborationState, snapshot, { hydrate: false });
+      }
+      runState.historyRefresh?.();
+    } catch {
+      // The regular reconnect/poll path remains active when this eager refresh fails.
+    } finally {
+      runState.actionRefreshInFlight = false;
+      if (runState.actionRefreshQueued) queueRunActionSnapshotRefresh(runState, collaborationState, runType);
+    }
+  }, 60);
 }
 
 function workflowRunEventSeq(event) {
@@ -1894,8 +2760,19 @@ async function pollWorkflowRunSnapshot(runState, collaborationState) {
 async function resolvePolledWorkflowRun(runState) {
   if (runState.currentRunID || runState.pollRunID) {
     const runID = runState.currentRunID || runState.pollRunID;
-    const run = await fetchWorkflowRun(runID).catch(() => null);
-    if (run) return run;
+    try {
+      const run = await fetchWorkbenchRunSnapshot(runID, "workflow");
+      if (run) return run;
+    } catch (error) {
+      if (Number(error?.status) === 404) {
+        clearSavedRunState();
+        runState.currentRunID = "";
+        runState.pollRunID = "";
+        runState.lastWorkflowStatus = "";
+        stopWorkflowRunPolling(runState);
+        return null;
+      }
+    }
   }
   const runs = normalizeWorkflowRunList(await fetchWorkflowRuns().catch(() => []));
   const workflowName = String(runState.pollWorkflowName || runState.currentWorkflowName || "").trim();
@@ -1913,8 +2790,8 @@ function shouldPollAgentRunStatus(status) {
   return value === "running" || value === "cancelling" || value === "awaiting_tool_approval";
 }
 
-async function renderAgentRunSnapshot(runState, collaborationState, run) {
-  run = await hydrateAgentRunDetails(run);
+async function renderAgentRunSnapshot(runState, collaborationState, run, options = {}) {
+  if (options.hydrate !== false) run = await hydrateAgentRunDetails(run);
   const snapshotKey = agentRunSnapshotKey(run);
   const viewState = captureRunViewState(runState);
   resetRunState(runState, { keepStorage: true });
@@ -1929,16 +2806,16 @@ async function renderAgentRunSnapshot(runState, collaborationState, run) {
   syncCollaborationContext(runState, collaborationState);
   const events = Array.isArray(run.events) ? run.events : [];
   const replayTimeline = Array.isArray(run.timeline) && run.timeline.length
-    ? timelineItemsForAgentRun(run.timeline, run)
+    ? timelineItemsForTaskRun(run.timeline, run)
     : [];
   if (replayTimeline.length) {
-    replayTimeline.forEach(event => appendTimelineEvent(runState.messages, event));
+    replayTimeline.forEach(event => appendSnapshotTimelineEvent(runState.messages, event));
     for (const event of events) {
       if (event?.needs_action || event?.suspended) runState.awaitingApproval = true;
     }
   } else {
     for (const event of events) {
-      handleRunEvent(event, runState.messages, runState, collaborationState);
+      handleRunEvent({ ...event, replay_snapshot: true }, runState.messages, runState, collaborationState);
       if (event?.needs_action || event?.suspended) {
         runState.awaitingApproval = true;
       }
@@ -1948,7 +2825,10 @@ async function renderAgentRunSnapshot(runState, collaborationState, run) {
   if (output && !isInternalWorkflowPrompt(output)) {
     replaceResult(runState, output);
   }
+  renderRunExecutionSummary(runState, run);
   renderRunSupplementalDetails(runState, run);
+  syncTimelineTotalsFromRun(runState, run);
+  let terminalActions = [];
   if (run.error) {
     runState.hasError = true;
     showRunAttention(runState, t("chat.errorTitle"), run.error, "error");
@@ -1957,10 +2837,15 @@ async function renderAgentRunSnapshot(runState, collaborationState, run) {
     const actions = await safeAgentRunActions(run);
     renderAgentRunApprovalAttention(runState, actions, collaborationState);
   } else {
-    clearRunAttention(runState);
+    runState.awaitingApproval = false;
+    terminalActions = await safeAgentRunActions(run);
+    renderAgentRunTaskActions(runState, terminalActions, collaborationState);
   }
   const active = shouldPollAgentRunStatus(run.status);
-  if (String(run.status || "").toLowerCase() === "completed") {
+  if (runAwaitingStagedApply(terminalActions)) {
+    setTimelineHint(runState, "等待应用已验证变更");
+    setResultStatus(runState, "待应用");
+  } else if (String(run.status || "").toLowerCase() === "completed") {
     setTimelineHint(runState, t("chat.timelineDone"));
     setResultStatus(runState, runState.hasResult ? t("chat.resultReady") : t("chat.resultIdle"));
   } else if (runState.awaitingApproval) {
@@ -2012,10 +2897,8 @@ async function hydrateAgentRunDetails(run, options = {}) {
   if (replay.status === "fulfilled") {
     mergeAgentRunReplay(next, replay.value);
   }
-  if (!Array.isArray(next.timeline) || !next.timeline.length) {
-    const timeline = await fetchAgentRunTimeline(run, { limit: 80 }).catch(() => null);
-    if (Array.isArray(timeline)) next.timeline = timeline;
-  }
+  const timeline = await fetchRunTimeline(run, { limit: 80 }).catch(() => null);
+  if (Array.isArray(timeline)) next.timeline = timeline;
   if (detailMode === "full" && diffs?.status === "fulfilled" && Array.isArray(diffs.value?.diffs)) next.diffs = diffs.value.diffs;
   return next;
 }
@@ -2031,11 +2914,12 @@ function mergeAgentRunReplay(run, replay) {
 }
 
 function agentRunLatestEventSeq(run) {
-  const events = Array.isArray(run?.events) ? run.events : [];
+  const events = [...(run?.events || []), ...(run?.timeline || [])];
   return events.reduce((max, event) => Math.max(max, workflowRunEventSeq(event)), 0);
 }
 
 async function safeAgentRunActions(run) {
+  if (Array.isArray(run?.actions)) return run.actions;
   if (!runIDForAction(run)) return [];
   try {
     const actions = await fetchAgentRunActions(run);
@@ -2066,21 +2950,21 @@ function runEventsURLFromActionResponse(response, action = {}) {
 }
 
 function renderAgentRunApprovalAttention(runState, actions, collaborationState) {
-  const visible = (actions || []).filter(action => ["approve_tool", "approve_remember_tool", "deny_tool", "cancel"].includes(action.name));
+  const visible = (actions || []).filter(action =>
+    ["approve_task_scope", "approve_tool", "approve_remember_tool", "deny_tool", "cancel"].includes(action.name) &&
+    !(action.name === "approve_remember_tool" && action.available === false)
+  );
+	const hasTaskScope = visible.some(action => action.name === "approve_task_scope" && action.available !== false);
   const buttons = visible.length
-    ? visible.map(action => agentRunActionButton(action)).join("")
-    : `<button type="button" data-open-approvals>${escapeHTML(t("chat.openApprovals"))}</button>`;
+    ? visible.map(action => agentRunActionButton(action, hasTaskScope)).join("")
+    : `<p class="workflow-run-action-help">${escapeHTML(t("chat.awaitingApprovalHelp"))}</p>`;
   const help = agentRunActionUnavailableHelp(visible);
   runState.runAttention.className = "run-attention approval";
   runState.runAttention.innerHTML = `
     <strong>${escapeHTML(t("chat.awaitingApprovalTitle"))}</strong>
-    <p>${escapeHTML(t("chat.agentApprovalDurabilityHelp"))}</p>
     <div class="workflow-run-actions agent-run-actions">${buttons}</div>
     ${help ? `<p class="workflow-run-action-help">${escapeHTML(help)}</p>` : ""}`;
   runState.runAttention.classList.remove("hidden");
-  runState.runAttention.querySelector("[data-open-approvals]")?.addEventListener("click", () => {
-    location.hash = "approvals";
-  });
   runState.runAttention.querySelectorAll("button[data-agent-action]").forEach(button => {
     const action = visible.find(item => item.name === button.dataset.agentAction);
     button.addEventListener("click", () => {
@@ -2094,24 +2978,57 @@ function renderAgentRunApprovalAttention(runState, actions, collaborationState) 
   });
 }
 
-function agentRunActionButton(action) {
+function renderAgentRunTaskActions(runState, actions, collaborationState) {
+  const visibleNames = ["continue_output", "retry", "cancel", "apply_staged_changes", "restore_staged_changes", "discard_staged_changes"];
+  const visible = (actions || []).filter(action => action?.path && visibleNames.includes(action.name));
+  if (!visible.length) {
+    clearRunAttention(runState);
+    return;
+  }
+  const summary = stagedRunActionSummary(visible);
+  runState.runAttention.className = "run-attention";
+  runState.runAttention.innerHTML = `
+    <strong>${escapeHTML(t("chat.runActionsTitle"))}</strong>
+    <div class="workflow-run-actions agent-run-actions">${visible.map(action => agentRunActionButton(action)).join("")}</div>
+    ${summary ? `<p class="run-action-summary">${escapeHTML(summary)}</p>` : ""}`;
+  runState.runAttention.classList.remove("hidden");
+  runState.runAttention.querySelectorAll("button[data-agent-action]").forEach(button => {
+    const action = visible.find(item => item.name === button.dataset.agentAction);
+    button.addEventListener("click", () => {
+      if (button.disabled) return;
+      if (runState.actionInFlight && action?.name !== "cancel") return;
+      setWorkflowActionButtonsPending(runState.runAttention, true, action?.name || "");
+      executeAgentRunAction(runState, action, collaborationState).finally(() => {
+        syncWorkflowActionButtonsPending(runState.runAttention, runState);
+      });
+    });
+  });
+}
+
+function agentRunActionButton(action, hasTaskScope = false) {
   const unavailable = action.available === false || !action.path;
   const reasonText = localizedWorkflowActionReason(action.reason || "") || (action.durable === false ? t("chat.agentActionNonDurable") : "");
-  const reason = reasonText ? ` title="${escapeHTML(reasonText)}"` : "";
-  const primaryActions = ["approve_tool", "approve_remember_tool", "retry"];
+  const label = agentRunActionLabel(action.name, action.label);
+  const tooltip = reasonText || label;
+  const primaryActions = hasTaskScope ? ["approve_task_scope"] : ["approve_tool", "approve_remember_tool", "apply_staged_changes", "continue_output", "retry"];
   const classes = action.destructive || action.name === "deny_tool" ? "danger" : action.recommended || primaryActions.includes(action.name) ? "primary" : "";
-  return `<button type="button" class="${classes}" data-agent-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}${reason}>${escapeHTML(agentRunActionLabel(action.name, action.label))}</button>`;
+  return `<button type="button" class="${classes}" data-agent-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}" aria-label="${escapeHTML(label)}" title="${escapeHTML(tooltip)}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}>${escapeHTML(label)}</button>`;
 }
 
 function agentRunActionLabel(name, fallback = "") {
   if (name === "cancel") return t("chat.cancelRun");
   if (name === "retry") return t("chat.retryRun");
+  if (name === "continue_output") return t("chat.continueExecution");
+  if (name === "approve_task_scope") return t("approvals.approveTaskScope");
   if (name === "approve_tool") return t("approvals.approveTool");
   if (name === "approve_all_tools") return t("approvals.approveAllTools");
   if (name === "approve_remember_tool") return t("approvals.approveRemember");
   if (name === "approve_remember_all_tools") return t("approvals.approveRememberAllTools");
   if (name === "deny_tool") return t("approvals.denyTool");
   if (name === "deny_all_tools") return t("approvals.denyAllTools");
+  if (name === "apply_staged_changes") return fallback ? localizedText(fallback) : t("chat.applyStagedChanges");
+  if (name === "restore_staged_changes") return fallback ? localizedText(fallback) : t("chat.restoreStagedChanges");
+  if (name === "discard_staged_changes") return fallback ? localizedText(fallback) : t("chat.discardStagedChanges");
   return runActionFallbackLabel(name, fallback, t("chat.runActionsTitle"));
 }
 
@@ -2120,7 +3037,7 @@ function agentRunActionUnavailableHelp(actions) {
   if (!unavailable.length) return "";
   const remember = unavailable.find(action => action.name === "approve_remember_tool" || action.name === "approve_remember_all_tools");
   if (remember) return localizedWorkflowActionReason(remember.reason || "") || t("chat.toolRememberBlockedByRiskPolicy");
-  const approval = unavailable.find(action => action.name === "approve_tool" || action.name === "deny_tool");
+  const approval = unavailable.find(action => action.name === "approve_task_scope" || action.name === "approve_tool" || action.name === "deny_tool");
   if (approval) return localizedWorkflowActionReason(approval.reason || "") || t("chat.agentToolContextUnavailable");
   return localizedWorkflowActionReason(unavailable[0].reason || "") || t("chat.workflowActionUnavailableHelp");
 }
@@ -2156,11 +3073,20 @@ async function executeAgentRunAction(runState, action, collaborationState) {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ background: true })
     });
-    await handleAgentBackgroundResponse(response, runState.messages, runState, collaborationState, "", action.name || "");
-    startAgentRunPolling(runState, collaborationState, {
-      runID: runState.currentRunID,
-      eventsURL: runEventsURLFromActionResponse(response, action)
-    });
+    if (isStagedRunAction(action)) {
+      appendTimelineEvent(runState.messages, {
+        tone: "success",
+        title: actionLabel,
+        detail: stagedRunActionResponseSummary(response, action)
+      });
+      setResultStatus(runState, t("chat.resultReady"));
+    } else {
+      await handleAgentBackgroundResponse(response, runState.messages, runState, collaborationState, "", action.name || "");
+      startAgentRunPolling(runState, collaborationState, {
+        runID: runState.currentRunID,
+        eventsURL: runEventsURLFromActionResponse(response, action)
+      });
+    }
   } catch (error) {
     const message = chatDisplayText(error.message || t("chat.errorTitle"));
     appendTimelineEvent(runState.messages, {
@@ -2200,8 +3126,9 @@ async function refreshAgentRunAfterAction(runState, collaborationState) {
   markCollaborationStale(collaborationState);
 }
 
-async function renderWorkflowRunSnapshot(runState, collaborationState, run) {
-  run = await hydrateWorkflowRunDetails(run);
+async function renderWorkflowRunSnapshot(runState, collaborationState, run, options = {}) {
+  if (options.hydrate !== false) run = await hydrateWorkflowRunDetails(run);
+  run = { ...run, status: workflowRunEffectiveStatus(run) };
   const snapshotKey = workflowRunSnapshotKey(run);
   const viewState = captureRunViewState(runState);
   resetRunState(runState, { keepStorage: true });
@@ -2215,14 +3142,15 @@ async function renderWorkflowRunSnapshot(runState, collaborationState, run) {
   runState.lastEventSeq = Math.max(runState.lastEventSeq || 0, workflowRunLatestEventSeq(run));
   const actions = await workflowRunActions(run);
   const actionNames = new Set(actions.filter(action => action.available).map(action => action.name));
+  const awaitingStagedApply = runAwaitingStagedApply(actions);
   runState.awaitingApproval = actionNames.has("approve_tool") || actionNames.has("deny_tool") || actionNames.has("approve_stage") || isApprovalStatus(run.status);
   runState.awaitingInput = actionNames.has("submit_input") || run.status === "awaiting_input";
   const events = focusWorkflowTimelineEvents(run);
   const timelineEvents = Array.isArray(run.timeline) && run.timeline.length
-    ? timelineItemsForWorkflowRun(run.timeline, run)
+    ? timelineItemsForTaskRun(run.timeline, run)
     : timelineEventsForWorkflowRun(events, run);
   if (timelineEvents.length) {
-    timelineEvents.forEach(event => appendTimelineEvent(runState.messages, event));
+    timelineEvents.forEach(event => appendSnapshotTimelineEvent(runState.messages, event));
   } else {
     appendTimelineEvent(runState.messages, {
       tone: isWorkflowRunActive(run.status) ? "stage" : "success",
@@ -2232,7 +3160,9 @@ async function renderWorkflowRunSnapshot(runState, collaborationState, run) {
   }
   const output = workflowRunResultText(run);
   if (output) replaceResult(runState, output);
+  renderRunExecutionSummary(runState, run);
   renderRunSupplementalDetails(runState, run);
+  syncTimelineTotalsFromRun(runState, run);
   if (runState.awaitingInput) {
     runState.inputRequest = {
       runID: run.id || "",
@@ -2245,12 +3175,12 @@ async function renderWorkflowRunSnapshot(runState, collaborationState, run) {
     };
     renderWorkflowInputAttention(runState, runState.inputRequest);
   } else if (runState.awaitingApproval) {
-    showRunAttention(runState, t("chat.awaitingApprovalTitle"), run.approval_prompt || t("chat.awaitingApprovalHelp"), "approval", true);
+    showRunAttention(runState, t("chat.awaitingApprovalTitle"), run.approval_prompt || t("chat.awaitingApprovalHelp"), "approval");
   }
   renderWorkflowRunActions(runState, actions, collaborationState);
-  setTimelineHint(runState, workflowRunTimelineLabel(run.status));
-  setResultStatus(runState, workflowRunResultLabel(run.status, Boolean(output)));
-  setRunStatus(runState.root, runState.runStatus, runState.send, actionNames.has("cancel") && isWorkflowRunActive(run.status), workflowRunTimelineLabel(run.status));
+  setTimelineHint(runState, awaitingStagedApply ? "等待应用已验证变更" : workflowRunTimelineLabel(run.status));
+  setResultStatus(runState, awaitingStagedApply ? "待应用" : workflowRunResultLabel(run.status, Boolean(output)));
+  setRunStatus(runState.root, runState.runStatus, runState.send, actionNames.has("cancel") && isWorkflowRunActive(run.status), awaitingStagedApply ? "待应用" : workflowRunTimelineLabel(run.status));
   setRunLiveStatus(runState, shouldPollWorkflowRunStatus(run.status) ? t("chat.realtimeLive") : t("chat.realtimeUpdated"), shouldPollWorkflowRunStatus(run.status) ? "live" : "idle");
   syncCollaborationContext(runState, collaborationState);
   saveRunState(runState, {
@@ -2263,8 +3193,33 @@ async function renderWorkflowRunSnapshot(runState, collaborationState, run) {
   restoreRunViewState(runState, viewState);
 }
 
+export function workflowRunEffectiveStatus(run = {}) {
+  const status = String(run?.status || "").toLowerCase();
+  if (!["completed", "complete", "success", "succeeded", "finished", "done"].includes(status)) return run?.status || "";
+  const stages = Array.isArray(run?.completed_stages) ? run.completed_stages : [];
+  for (const stage of [...stages].reverse()) {
+    if (["quality_gate", "quality_guard"].includes(stage?.node_type)) {
+      const quality = String(stage?.output_values?.quality_status || stage?.outputs?.quality_status || "").toLowerCase().trim();
+      if (["failed", "fail", "failure", "error", "blocked", "denied", "invalid", "rejected"].includes(quality)) return "blocked";
+      if (["passed", "pass", "success", "ok", "completed", "complete", "verified", "valid"].includes(quality)) return run.status;
+    }
+    const outputs = stage?.output_values || stage?.outputs || {};
+    let decision = String(outputs?.decision || "").toLowerCase().trim();
+    if (!decision) {
+      try {
+        decision = String(JSON.parse(String(stage?.result?.output || "{}"))?.decision || "").toLowerCase().trim();
+      } catch {
+        decision = "";
+      }
+    }
+    if (["blocked", "needs_action", "needs-action"].includes(decision)) return "blocked";
+    if (["failed", "failure", "error", "rejected"].includes(decision)) return "failed";
+  }
+  return run?.status || "";
+}
+
 function workflowRunLatestEventSeq(run) {
-  const events = Array.isArray(run?.events) ? run.events : [];
+  const events = [...(run?.events || []), ...(run?.timeline || [])];
   return events.reduce((max, event) => Math.max(max, workflowRunEventSeq(event)), 0);
 }
 
@@ -2274,6 +3229,10 @@ function workflowRunSnapshotKey(run) {
   const artifacts = Array.isArray(run?.artifacts) ? run.artifacts.length : run?.artifacts_count || 0;
   const diffs = Array.isArray(run?.diffs) ? run.diffs.length : 0;
   const risk = toolRiskSignature(runToolRiskContext(run).risk);
+  const slices = Array.isArray(run?.execution?.change_slices)
+    ? run.execution.change_slices
+    : Array.isArray(run?.change_slices) ? run.change_slices : [];
+  const sliceSignature = slices.map(slice => `${slice?.id || ""}:${slice?.status || ""}:${slice?.blocked_reason || ""}:${Array.isArray(slice?.changed_files) ? slice.changed_files.join(",") : ""}`).join(",");
   return [
     run?.id || "",
     run?.status || "",
@@ -2283,7 +3242,8 @@ function workflowRunSnapshotKey(run) {
     stages,
     artifacts,
     risk,
-    diffs
+    diffs,
+    sliceSignature
   ].join("|");
 }
 
@@ -2301,10 +3261,8 @@ async function hydrateWorkflowRunDetails(run, options = {}) {
   if (replay.status === "fulfilled") {
     mergeWorkflowRunReplay(next, replay.value);
   }
-  if (!Array.isArray(next.timeline) || !next.timeline.length) {
-    const timeline = await fetchWorkflowRunTimeline(run, { limit: 80 }).catch(() => null);
-    if (Array.isArray(timeline)) next.timeline = timeline;
-  }
+  const timeline = await fetchRunTimeline(run, { limit: 80 }).catch(() => null);
+  if (Array.isArray(timeline)) next.timeline = timeline;
   if (artifacts.status === "fulfilled" && Array.isArray(artifacts.value)) {
     next.artifacts = artifacts.value;
   }
@@ -2343,6 +3301,7 @@ function mergeWorkflowRunReplay(run, replay) {
 }
 
 async function workflowRunActions(run) {
+  if (Array.isArray(run?.actions)) return run.actions;
   if (!run?.id) return Array.isArray(run?.actions) ? run.actions : [];
   try {
     const actions = await fetchWorkflowRunActions(run);
@@ -2357,7 +3316,6 @@ function fallbackWorkflowRunActions(run) {
   const unavailableReason = t("chat.workflowActionUnavailableHelp");
   if (run.status === "awaiting_input") actions.push({ name: "submit_input", label: t("chat.submitWorkflowInput"), available: true, durable: true });
   if (run.status === "awaiting_sub_workflow") actions.push({ name: "resume_sub_workflow", label: t("chat.resumeSubWorkflow"), available: false, durable: true, background: true, reason: unavailableReason });
-  if (isApprovalStatus(run.status)) actions.push({ name: "open_approvals", label: t("chat.openApprovals"), available: true, durable: false });
   if (isWorkflowRunActive(run.status)) actions.push({ name: "cancel", label: t("chat.cancelRun"), available: false, durable: true, destructive: true, reason: unavailableReason });
   if (!isWorkflowRunActive(run.status) && run.name && run.request) actions.push({ name: "retry", label: t("chat.retryRun"), available: false, durable: true, reason: unavailableReason });
   return actions;
@@ -2367,10 +3325,11 @@ function renderWorkflowRunActions(runState, actions, collaborationState) {
   const visible = (actions || []).filter(action => action.name !== "submit_input");
   runState.runAttention.querySelector("[data-workflow-run-actions]")?.remove();
   runState.runAttention.querySelector("[data-workflow-run-action-help]")?.remove();
+  runState.runAttention.querySelector(".run-action-summary")?.remove();
   if (!visible.length) return;
   if (runState.runAttention.classList.contains("hidden")) {
     runState.runAttention.className = "run-attention";
-    runState.runAttention.innerHTML = `<strong>${escapeHTML(t("chat.runActionsTitle"))}</strong><p>${escapeHTML(t("chat.runActionsHelp"))}</p>`;
+    runState.runAttention.innerHTML = `<strong>${escapeHTML(t("chat.runActionsTitle"))}</strong>`;
     runState.runAttention.classList.remove("hidden");
   }
   const wrapper = document.createElement("div");
@@ -2378,6 +3337,13 @@ function renderWorkflowRunActions(runState, actions, collaborationState) {
   wrapper.dataset.workflowRunActions = "true";
   wrapper.innerHTML = visible.map(action => workflowRunActionButton(action)).join("");
   runState.runAttention.appendChild(wrapper);
+  const summary = stagedRunActionSummary(visible);
+  if (summary) {
+    const note = document.createElement("p");
+    note.className = "run-action-summary";
+    note.textContent = summary;
+    runState.runAttention.appendChild(note);
+  }
   syncWorkflowActionButtonsPending(wrapper, runState);
   const help = workflowRunActionUnavailableHelp(visible);
   if (help) {
@@ -2391,10 +3357,6 @@ function renderWorkflowRunActions(runState, actions, collaborationState) {
     const action = visible.find(item => item.name === button.dataset.runAction);
     button.addEventListener("click", () => {
       if (button.disabled) return;
-      if (action?.name === "open_approvals") {
-        location.hash = "approvals";
-        return;
-      }
       if (runState.actionInFlight && action?.name !== "cancel") return;
       setWorkflowActionButtonsPending(wrapper, true, action?.name || "");
       executeWorkflowRunAction(runState, action, collaborationState).finally(() => {
@@ -2407,10 +3369,11 @@ function renderWorkflowRunActions(runState, actions, collaborationState) {
 function workflowRunActionButton(action) {
   const unavailable = action.available === false || (!action.path && !workflowRunActionCanOpenLocally(action));
   const reasonText = localizedWorkflowActionReason(action.reason || "");
-  const reason = reasonText ? ` title="${escapeHTML(reasonText)}"` : "";
-  const primaryActions = ["retry", "escalate_model", "approve_budget", "continue_output", "approve_stage", "approve_tool", "approve_all_tools", "submit_input", "resume_sub_workflow"];
+  const label = workflowRunActionLabel(action.name, action.label);
+  const tooltip = reasonText || label;
+  const primaryActions = ["apply_staged_changes", "retry", "escalate_model", "approve_budget", "continue_output", "approve_stage", "approve_tool", "approve_all_tools", "submit_input", "resume_sub_workflow"];
   const classes = action.destructive ? "danger" : action.recommended || primaryActions.includes(action.name) ? "primary" : "";
-  return `<button type="button" class="${classes}" data-run-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}${reason}>${escapeHTML(workflowRunActionLabel(action.name, action.label))}</button>`;
+  return `<button type="button" class="${classes}" data-run-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}" aria-label="${escapeHTML(label)}" title="${escapeHTML(tooltip)}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}>${escapeHTML(label)}</button>`;
 }
 
 function workflowRunActionLabel(name, fallback = "") {
@@ -2429,6 +3392,9 @@ function workflowRunActionLabel(name, fallback = "") {
   if (name === "approve_budget") return t("workflow.approveBudget");
   if (name === "continue_output") return t("workflow.continueOutput");
   if (name === "escalate_model") return t("workflow.escalateModel");
+  if (name === "apply_staged_changes") return fallback ? localizedText(fallback) : t("chat.applyStagedChanges");
+  if (name === "restore_staged_changes") return fallback ? localizedText(fallback) : t("chat.restoreStagedChanges");
+  if (name === "discard_staged_changes") return fallback ? localizedText(fallback) : t("chat.discardStagedChanges");
   return runActionFallbackLabel(name, fallback, t("chat.runActionsTitle"));
 }
 
@@ -2439,11 +3405,45 @@ function runActionFallbackLabel(name, fallback = "", defaultLabel = "") {
   return generated ? localizedText(generated) : defaultLabel;
 }
 
+function isStagedRunAction(action = {}) {
+  return action.name === "apply_staged_changes" || action.name === "restore_staged_changes" || action.name === "discard_staged_changes";
+}
+
+function runAwaitingStagedApply(actions = []) {
+  return actions.some(action => action?.name === "apply_staged_changes" && action.available !== false && action.workspace_mode !== "live");
+}
+
+function stagedRunActionSummary(actions = []) {
+  const action = actions.find(isStagedRunAction);
+  if (!action) return "";
+  const parts = [];
+  const changeCount = Number(action.change_count || 0);
+  if (changeCount > 0) parts.push(`${changeCount} 个文件变更`);
+  const recoveryID = String(action.recovery_id || "").trim();
+  if (recoveryID) parts.push(`恢复编号 ${recoveryID}`);
+  const reason = localizedWorkflowActionReason(action.reason || "");
+  if (reason) parts.push(reason);
+  return parts.join(" · ");
+}
+
+function stagedRunActionResponseSummary(response = {}, action = {}) {
+  const manifest = response?.manifest || {};
+  const apply = response?.apply || response?.recovery || {};
+  const changeCount = Array.isArray(manifest.changes) ? manifest.changes.length : Number(action.change_count || 0);
+  const recoveryID = String(apply.apply_id || action.recovery_id || "").trim();
+  const live = manifest.workspace_mode === "live" || action.workspace_mode === "live";
+  const resultLabel = action.name === "restore_staged_changes"
+    ? (live ? "已回退到上一工作区版本" : "已恢复应用前状态")
+    : action.name === "discard_staged_changes"
+      ? (live ? "已撤销本次工作区变更" : "已放弃暂存变更")
+      : (live ? "已保存当前工作区版本" : "已写回真实工作区");
+  const parts = [resultLabel];
+  if (changeCount > 0) parts.push(`${changeCount} 个文件变更`);
+  if (recoveryID) parts.push(`恢复编号 ${recoveryID}`);
+  return parts.join(" · ");
+}
+
 async function executeWorkflowRunAction(runState, action, collaborationState) {
-  if (action?.name === "open_approvals") {
-    location.hash = "approvals";
-    return;
-  }
   if (!action || action.available === false || !action.path) return;
   const isCancelAction = action.name === "cancel";
   const useBackgroundAction = workflowRunActionPrefersBackground(action);
@@ -2533,8 +3533,8 @@ async function executeWorkflowRunAction(runState, action, collaborationState) {
 async function refreshWorkflowRunAfterAction(runState, collaborationState) {
   const runID = runState.currentRunID || "";
   if (runID) {
-    const run = await fetchWorkflowRun(runID).catch(() => null);
-    if (run) await renderWorkflowRunSnapshot(runState, collaborationState, run);
+    const run = await fetchWorkbenchRunSnapshot(runID, "workflow").catch(() => null);
+    if (run) await renderWorkflowRunSnapshot(runState, collaborationState, run, { hydrate: false });
   }
   await runState.refreshRuntime?.().catch(() => {});
   runState.historyRefresh?.();
@@ -2569,7 +3569,7 @@ function workflowRunActionPrefersBackground(action = {}) {
 }
 
 function workflowRunActionCanOpenLocally(action = {}) {
-  return ["open_approvals", "open_workflow_studio", "submit_input"].includes(action.name);
+  return ["open_workflow_studio", "submit_input"].includes(action.name);
 }
 
 function workflowRunActionUnavailableHelp(actions) {
@@ -2620,6 +3620,7 @@ function createWorkflowHistoryState(root, runState, collaborationState, refreshR
     refreshRuntime,
     list: root.querySelector("#runHistoryList"),
     detail: root.querySelector("#runHistoryDetail"),
+    detailShell: root.querySelector(".run-history-detail-shell"),
     status: root.querySelector("#runHistoryStatus"),
     filters: root.querySelector("#runHistoryFilters"),
     refresh: root.querySelector("#runHistoryRefresh"),
@@ -2717,8 +3718,7 @@ function currentHistoryRunKey(runState) {
 }
 
 function initialRunHistoryFocus(runState) {
-  const focused = consumeRunHistoryNavigationFocus();
-  return focused || currentHistoryRunKey(runState);
+  return consumeRunHistoryNavigationFocus();
 }
 
 function consumeRunHistoryNavigationFocus() {
@@ -2747,9 +3747,11 @@ async function loadWorkflowRunHistory(state, preferredRunID = "", options = {}) 
     state.historyMeta = history.meta || {};
     state.runs = runs;
     renderRunHistoryFilters(state);
-    const selected = selectedWorkflowHistoryRunID(state, runs, preferredRunID);
+    const selected = options.listOnly ? "" : selectedWorkflowHistoryRunID(state, runs, preferredRunID);
     renderWorkflowRunHistoryList(state, selected, { preserveScroll: options.background });
+    state.detailShell?.classList.toggle("hidden", !selected);
     setRunHistoryStatus(state, runHistoryStatusText(runs, state.historyMeta, state.historyFilter, state.historyActionFilter));
+    if (options.listOnly) return;
     if (selected) {
       const listed = runs.find(run => historyRunKey(run) === selected) || parseHistoryRunKey(selected);
       const detailSummaryKey = workflowRunHistoryDetailSummaryKey(listed);
@@ -2841,7 +3843,7 @@ function runHistoryQueryForFilter(historyFilter = "all", actionFilter = "") {
 function historyRunMatchesFilter(run, historyFilter = "all") {
   if (!historyFilter || historyFilter === "all") return true;
   if (historyFilter === "needs_action") return Boolean(run?.needs_action || isApprovalStatus(run?.status) || run?.status === "awaiting_input" || run?.status === "awaiting_sub_workflow");
-  if (historyFilter === "errors") return Boolean(run?.has_error || ["failed", "error", "denied", "cancelled", "blocked"].includes(String(run?.status || "").toLowerCase()));
+  if (historyFilter === "errors") return Boolean(run?.has_error || ["failed", "error", "action_failed", "denied", "cancelled", "blocked", "interrupted"].includes(String(run?.status || "").toLowerCase()));
   if (historyFilter === "active") {
     const status = String(run?.status || "").toLowerCase();
     return Boolean(status) && !isWorkflowRunTerminal(status);
@@ -3048,6 +4050,7 @@ function selectedWorkflowHistoryRunID(state, runs, preferredRunID = "") {
 
 function renderWorkflowHistoryError(state, message) {
   setRunHistoryStatus(state, t("chat.runHistoryLoadFailed"));
+  state.detailShell?.classList.remove("hidden");
   if (state.detail) state.detail.innerHTML = renderRunHistoryEmptyState({
     title: t("chat.runHistoryLoadFailed"),
     body: message,
@@ -3065,12 +4068,7 @@ function setRunHistoryStatus(state, text) {
 function renderWorkflowRunHistoryList(state, selectedRunID, options = {}) {
   state.selectedRunID = selectedRunID || "";
   if (!state.runs.length) {
-    state.list.innerHTML = renderRunHistoryEmptyState({
-      title: t("chat.runHistoryEmpty"),
-      body: t("chat.runHistoryEmptyHelp"),
-      primaryLabel: t("chat.runHistoryStartTask"),
-      primaryAction: "focus-prompt"
-    });
+    state.list.innerHTML = `<div class="run-history-empty run-history-compact-empty">${escapeHTML(t("chat.runHistoryEmptyHelp"))}</div>`;
     state.listKey = "";
     return;
   }
@@ -3240,6 +4238,7 @@ async function renderWorkflowRunHistoryDetail(state, runKey, options = {}) {
   if (!runKey) return;
   const listed = state.runs.find(run => historyRunKey(run) === runKey) || parseHistoryRunKey(runKey);
   if (!listed?.id) return;
+  state.detailShell?.classList.remove("hidden");
   state.selectedRunID = historyRunKey(listed);
   renderWorkflowRunHistoryList(state, state.selectedRunID, { preserveScroll: options.background || options.preserveScroll });
   const previousScrollNode = workflowRunHistoryDetailScrollNode(state.detail);
@@ -3389,24 +4388,29 @@ function historyRunTypeLabel(run) {
 
 function historyRunTitle(run) {
   if (run?.run_type === "agent") {
-    return [localizedText(run.agent_id || run.agent || t("chat.agent")), run.mode ? modeLabel(run.mode) : ""].filter(Boolean).join(" / ");
+    const agentID = run.agent_id || run.agent || t("chat.agent");
+    return [taskResourceDisplayName("agent", agentID, localizedText(agentID)), run.mode ? modeLabel(run.mode) : ""].filter(Boolean).join(" / ");
   }
   return [localizedText(run.name || t("chat.workflow")), `#${run.attempt || 1}`].filter(Boolean).join(" ");
 }
 
 async function hydrateHistoryRun(run, options = {}) {
-  if (run?.run_type === "agent") {
-    const fresh = await fetchAgentRun(run.id, options.summary ? { summary: true } : {});
-    const next = normalizeHistoryRun({ ...run, ...fresh }, "agent");
-    return options.summary ? next : normalizeHistoryRun(await hydrateAgentRunDetails(next), "agent");
-  }
-  const fresh = await fetchWorkflowRun(run.id, options.summary ? { summary: true } : {});
-  const next = normalizeHistoryRun({ ...run, ...fresh }, "workflow");
-  return options.summary ? next : normalizeHistoryRun(await hydrateWorkflowRunDetails(next), "workflow");
+  const type = run?.run_type === "agent" ? "agent" : "workflow";
+  const fresh = await fetchRun(run, options.summary ? { summary: true } : {});
+  const next = normalizeHistoryRun({ ...run, ...fresh }, type);
+  if (options.summary) return next;
+  return type === "agent"
+    ? normalizeHistoryRun(await hydrateAgentRunDetails(next), type)
+    : normalizeHistoryRun(await hydrateWorkflowRunDetails(next), type);
 }
 
 async function historyRunActions(run) {
-  const actions = run?.run_type === "agent" ? await safeAgentRunActions(run) : await workflowRunActions(run);
+  let actions = [];
+  try {
+    actions = (await fetchRunActionDiscovery(run)).actions || [];
+  } catch {
+    actions = Array.isArray(run?.actions) ? run.actions : [];
+  }
   return (actions || []).map(action => ({
     ...action,
     run_type: run?.run_type === "agent" ? "agent" : "workflow"
@@ -3454,7 +4458,7 @@ function workflowRunHistoryDetail(run, actions) {
   const diffCount = diffs.length || run.diffs_count || 0;
   const facts = [
     detailChipHTML(t("chat.runHistoryStatus"), workflowRunStatusLabel(run.status || "")),
-    detailChipHTML(isAgent ? t("chat.runHistoryAgent") : t("chat.runHistoryStage"), isAgent ? localizedText(run.agent_id || run.agent || "-") : localizedText(run.next_stage || lastCompletedStageName(run) || "-")),
+    detailChipHTML(isAgent ? t("chat.runHistoryAgent") : t("chat.runHistoryStage"), isAgent ? taskResourceDisplayName("agent", run.agent_id || run.agent || "-", localizedText(run.agent_id || run.agent || "-")) : localizedText(run.next_stage || lastCompletedStageName(run) || "-")),
     isAgent ? detailChipHTML(t("chat.runHistoryMode"), modeLabel(run.mode || "")) : detailChipHTML(t("chat.runHistoryStages"), String(stageCount)),
     detailChipHTML(t("chat.runHistoryArtifacts"), String(artifactCount)),
     detailChipHTML(t("chat.runHistoryDiffs"), String(diffCount)),
@@ -3509,7 +4513,9 @@ function workflowRunHistoryDetail(run, actions) {
 }
 
 function workflowRunHistoryVisibleActions(run, actions) {
-  const visible = Array.isArray(actions) ? [...actions] : [];
+  const visible = Array.isArray(actions)
+    ? actions.filter(action => !(run?.run_type === "agent" && action?.name === "approve_remember_tool" && action.available === false))
+    : [];
   if (run?.run_type !== "agent" && run?.id && !visible.some(action => action?.name === "open_workflow_studio")) {
     visible.push({
       name: "open_workflow_studio",
@@ -3523,10 +4529,10 @@ function workflowRunHistoryVisibleActions(run, actions) {
 
 function runHistoryLazyPanelsHTML(run, counts = {}) {
   const panels = [
+    runHistoryLazyPanelHTML("delivery", t("chat.runHistoryLazyDelivery"), t("chat.runHistoryLazyDeliveryHelp"), 1, t("chat.runDeliveryTitle")),
     runHistoryLazyPanelHTML("context", t("chat.runHistoryLazyContext"), t("chat.runHistoryLazyContextHelp"), 1, t("chat.runContextTitle")),
     runHistoryLazyPanelHTML("timeline", t("chat.runHistoryLazyTimeline"), t("chat.runHistoryLazyTimelineHelp"), counts.eventCount || 0, t("chat.runHistoryEvents")),
     runHistoryLazyPanelHTML("artifacts", t("chat.runHistoryLazyArtifacts"), t("chat.runHistoryLazyArtifactsHelp"), counts.artifactCount || 0, t("chat.runArtifactsTitle")),
-    run?.run_type === "agent" ? "" : runHistoryLazyPanelHTML("evidence", t("chat.runHistoryLazyEvidence"), t("chat.runHistoryLazyEvidenceHelp"), (counts.artifactCount || 0) + (counts.stageCount || 0), t("chat.runEvidenceTitle")),
     runHistoryLazyPanelHTML("diffs", t("chat.runHistoryLazyDiffs"), t("chat.runHistoryLazyDiffsHelp"), counts.diffCount || 0, t("chat.runHistoryDiffs"))
   ].filter(Boolean).join("");
   if (!panels) return "";
@@ -3642,6 +4648,7 @@ function bindRunHistoryLazyPanels(state, run) {
 }
 
 async function loadRunHistoryLazyPanel(run, kind) {
+  if (kind === "delivery") return runHistoryLazyDeliveryHTML(run);
   if (kind === "context") return runHistoryLazyContextHTML(run);
   if (kind === "timeline") return runHistoryLazyTimelineHTML(run);
   if (kind === "artifacts") return runHistoryLazyArtifactsHTML(run);
@@ -3650,10 +4657,74 @@ async function loadRunHistoryLazyPanel(run, kind) {
   return "";
 }
 
+async function runHistoryLazyDeliveryHTML(run) {
+  const manifest = await fetchRunDelivery(run);
+  return runDeliveryManifestHTML(manifest);
+}
+
+function runDeliveryManifestHTML(manifest = {}) {
+  const conclusion = String(manifest.conclusion || "unverified").trim();
+  const quality = manifest.quality && typeof manifest.quality === "object" ? manifest.quality : {};
+  const metrics = manifest.metrics && typeof manifest.metrics === "object" ? manifest.metrics : {};
+  const gates = Array.isArray(manifest.hard_gates) ? manifest.hard_gates : [];
+  const checks = [
+    ...(Array.isArray(manifest.acceptance) ? manifest.acceptance : []),
+    ...(Array.isArray(manifest.verification) ? manifest.verification : [])
+  ];
+  const failedGates = gates.filter(gate => gate?.required && !gate?.passed);
+  const failedChecks = checks.filter(check => ["failed", "unknown", "warning"].includes(String(check?.status || "").toLowerCase()));
+  const unverified = Array.isArray(manifest.unverified) ? manifest.unverified : [];
+  const risks = Array.isArray(manifest.remaining_risks) ? manifest.remaining_risks : [];
+  const score = Number(quality.score ?? 0);
+  const facts = [
+    [t("chat.runDeliveryScore"), String(Number.isFinite(score) ? score : 0)],
+    [t("chat.runDeliveryStrongEvidence"), String(Number(quality.strong_evidence || 0))],
+    [t("chat.runDeliveryChanges"), String(Number(metrics.changes || 0))],
+    [t("chat.runDeliveryToolCalls"), String(Number(metrics.tool_calls || 0))],
+    [t("chat.runDeliveryTokens"), tokenCountText(metrics.total_tokens || 0)]
+  ];
+  const issueItems = [
+    ...failedGates.map(gate => gate.detail || gate.name),
+    ...failedChecks.map(check => check.detail || check.name || check.kind),
+    ...unverified,
+    ...risks
+  ].filter(Boolean);
+  const checksHTML = checks.length
+    ? `<div class="run-delivery-checks">${checks.slice(0, 10).map(check => `<div class="run-delivery-check ${acceptanceToneClass(check.status)}">
+        <span>${escapeHTML(localizedText(check.name || check.kind || t("chat.runDeliveryCheck")))}</span>
+        <strong>${escapeHTML(acceptanceStatusLabel(check.status || "unknown"))}</strong>
+      </div>`).join("")}</div>`
+    : `<div class="run-history-empty">${escapeHTML(t("chat.runDeliveryNoChecks"))}</div>`;
+  return `<section class="run-delivery-manifest ${acceptanceToneClass(conclusion)}">
+    <div class="run-evidence-card-head">
+      <div>
+        <strong>${escapeHTML(t("chat.runDeliveryTitle"))}</strong>
+        <small>${escapeHTML(t("chat.runDeliverySchema", { version: manifest.schema_version || "v1" }))}</small>
+      </div>
+      <span class="badge ${workflowRunStatusTone(conclusion)}">${escapeHTML(runDeliveryConclusionLabel(conclusion))}</span>
+    </div>
+    <p>${escapeHTML(localizedText(manifest.summary || manifest.request || t("chat.runDeliveryNoSummary")))}</p>
+    <div class="run-evidence-meta">${facts.map(([label, value]) => evidenceMetaItemHTML(label, value)).join("")}</div>
+    ${checksHTML}
+    ${issueItems.length ? `<div class="run-delivery-issues"><strong>${escapeHTML(t("chat.runDeliveryIssues"))}</strong><ul>${issueItems.slice(0, 10).map(item => `<li>${escapeHTML(localizedText(item))}</li>`).join("")}</ul></div>` : `<div class="run-delivery-pass">${escapeHTML(t("chat.runDeliveryPassed"))}</div>`}
+  </section>`;
+}
+
+function runDeliveryConclusionLabel(value) {
+  const key = String(value || "unverified").toLowerCase();
+  const labels = {
+    success: t("chat.runDeliveryConclusion.success"),
+    partial: t("chat.runDeliveryConclusion.partial"),
+    unverified: t("chat.runDeliveryConclusion.unverified"),
+    failed: t("chat.runDeliveryConclusion.failed"),
+    waiting_input: t("chat.runDeliveryConclusion.waiting_input"),
+    running: t("chat.runDeliveryConclusion.running")
+  };
+  return labels[key] || localizedText(value || t("chat.runDeliveryConclusion.unverified"));
+}
+
 async function runHistoryLazyContextHTML(run) {
-  const payload = run?.run_type === "agent"
-    ? await fetchAgentRunContext(run)
-    : await fetchWorkflowRunContext(run);
+  const payload = await fetchRunContext(run);
   return runContextDiagnosticsHTML(payload);
 }
 
@@ -3800,18 +4871,14 @@ function runContextEmptyHTML(text) {
 }
 
 async function runHistoryLazyTimelineHTML(run) {
-  const items = run?.run_type === "agent"
-    ? await fetchAgentRunTimeline(run, { limit: 120 })
-    : await fetchWorkflowRunTimeline(run, { limit: 120 });
-  const events = run?.run_type === "agent" ? timelineItemsForAgentRun(items, run) : timelineItemsForWorkflowRun(items, run);
+  const items = await fetchRunTimeline(run, { limit: 120 });
+  const events = timelineItemsForTaskRun(items, run);
   if (!events.length) return "";
   return `<div class="run-history-lazy-timeline">${events.map(runHistoryTimelineItemHTML).join("")}</div>`;
 }
 
 async function runHistoryLazyArtifactsHTML(run) {
-  const payload = run?.run_type === "agent"
-    ? await fetchAgentRunArtifacts(run, { include_content: true, limit: 12 })
-    : await fetchWorkflowRunArtifacts(run, { envelope: true, include_content: true, limit: 12 });
+  const payload = await fetchRunArtifacts(run, { envelope: true, include_content: true, limit: 12 });
   return runArtifactViewerHTML(payload, { compact: true });
 }
 
@@ -3827,12 +4894,21 @@ function runHistoryTimelineItemHTML(item = {}) {
 
 async function runHistoryLazyEvidenceHTML(run) {
   const [artifacts, stages, evidence] = await Promise.allSettled([
-    fetchWorkflowRunArtifacts(run, { include_content: true, limit: 8 }),
-    fetchWorkflowRunStages(run, { include_content: true, limit: 8 }),
-    fetchWorkflowRunEvidence(run, { limit: 16 })
+    fetchRunArtifacts(run, { include_content: true, limit: 8 }),
+    fetchRunStages(run, { include_content: true, limit: 8 }),
+    fetchRunEvidence(run, { limit: 16 })
   ]);
   const next = { ...run };
-  if (artifacts.status === "fulfilled" && Array.isArray(artifacts.value)) next.artifacts = artifacts.value;
+  if (artifacts.status === "fulfilled") {
+    const items = Array.isArray(artifacts.value)
+      ? artifacts.value
+      : Array.isArray(artifacts.value?.artifacts)
+        ? artifacts.value.artifacts
+        : Array.isArray(artifacts.value?.items)
+          ? artifacts.value.items
+          : [];
+    if (items.length) next.artifacts = items;
+  }
   if (stages.status === "fulfilled" && Array.isArray(stages.value)) next.completed_stages = stages.value;
   if (evidence.status === "fulfilled") {
     const normalized = normalizeWorkflowRunEvidencePayload(evidence.value);
@@ -3843,20 +4919,14 @@ async function runHistoryLazyEvidenceHTML(run) {
 }
 
 async function runHistoryLazyDiffsHTML(run) {
-  const payload = run?.run_type === "agent"
-    ? await fetchAgentRunDiffs(run, { include_content: true, limit: 12 })
-    : await fetchWorkflowRunDiffs(run, { include_content: true, limit: 12 });
+  const payload = await fetchRunDiffs(run, { include_content: true, limit: 12 });
   return runDiffViewerHTML(payload?.diffs || [], { compact: true, maxDiffs: 12, maxLines: 40 });
 }
 
 function historyRunExportButtons(run) {
   if (!run?.id) return "";
-  const jsonURL = run.run_type === "agent"
-    ? agentRunExportURL(run, { format: "json", include_content: true })
-    : workflowRunExportURL(run, { format: "json", include_content: true });
-  const markdownURL = run.run_type === "agent"
-    ? agentRunExportURL(run, { format: "md", include_content: true })
-    : workflowRunExportURL(run, { format: "md", include_content: true });
+  const jsonURL = runExportURL(run, { format: "json", include_content: true });
+  const markdownURL = runExportURL(run, { format: "md", include_content: true });
   return `<div class="run-history-export-actions" aria-label="${escapeHTML(t("chat.exportRun"))}">
     <span>${escapeHTML(t("chat.exportRun"))}</span>
     <a href="${escapeHTML(jsonURL)}" target="_blank" rel="noreferrer">${escapeHTML(t("chat.exportRunJSON"))}</a>
@@ -3877,8 +4947,8 @@ function workflowRunHistoryNextStep(run, actions = []) {
   };
   const status = String(run?.status || "").toLowerCase();
   if (run?.run_type === "agent") {
-    if (has("approve_tool") || has("approve_remember_tool") || status === "awaiting_tool_approval") {
-      const action = has("approve_tool") ? actionLabel("approve_tool") : has("approve_remember_tool") ? actionLabel("approve_remember_tool") : t("chat.openApprovals");
+    if (has("approve_task_scope") || has("approve_tool") || has("approve_remember_tool") || status === "awaiting_tool_approval") {
+      const action = has("approve_task_scope") ? actionLabel("approve_task_scope") : has("approve_tool") ? actionLabel("approve_tool") : has("approve_remember_tool") ? actionLabel("approve_remember_tool") : t("approvals.approveTool");
       return {
         tone: "waiting",
         title: t("chat.runNextStep.approvalTitle"),
@@ -3929,7 +4999,7 @@ function workflowRunHistoryNextStep(run, actions = []) {
     };
   }
   if (has("approve_tool") || has("approve_all_tools") || status === "awaiting_tool_approval" || status === "awaiting_approval") {
-    const action = has("approve_all_tools") ? actionLabel("approve_all_tools") : has("approve_tool") ? actionLabel("approve_tool") : t("chat.openApprovals");
+    const action = has("approve_all_tools") ? actionLabel("approve_all_tools") : has("approve_tool") ? actionLabel("approve_tool") : t("approvals.approveTool");
     return {
       tone: "waiting",
       title: t("chat.runNextStep.approvalTitle"),
@@ -4021,10 +5091,10 @@ function formatRunTime(value) {
 
 function historyRunActionButton(action) {
   const unavailable = action.available === false || (!action.path && !workflowRunActionCanOpenLocally(action));
-  const reason = action.reason ? ` title="${escapeHTML(localizedWorkflowActionReason(action.reason) || action.reason)}"` : "";
-  const classes = action.destructive || action.name === "deny_tool" ? "danger" : action.recommended || ["retry", "escalate_model", "approve_stage", "approve_tool", "approve_all_tools", "approve_remember_tool", "submit_input", "resume_sub_workflow"].includes(action.name) ? "primary" : "";
+  const classes = action.destructive || action.name === "deny_tool" ? "danger" : action.recommended || ["retry", "escalate_model", "approve_stage", "approve_task_scope", "approve_tool", "approve_all_tools", "approve_remember_tool", "submit_input", "resume_sub_workflow"].includes(action.name) ? "primary" : "";
   const label = action.run_type === "agent" ? agentRunActionLabel(action.name, action.label) : workflowRunActionLabel(action.name, action.label);
-  return `<button type="button" class="${classes}" data-history-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}${reason}>${escapeHTML(label)}</button>`;
+  const tooltip = localizedWorkflowActionReason(action.reason || "") || label;
+  return `<button type="button" class="${classes}" data-history-action="${escapeHTML(action.name)}" data-unavailable="${unavailable ? "true" : "false"}" aria-label="${escapeHTML(label)}" title="${escapeHTML(tooltip)}"${unavailable ? " disabled aria-disabled=\"true\"" : ""}>${escapeHTML(label)}</button>`;
 }
 
 async function executeHistoryRunAction(state, run, action) {
@@ -4039,10 +5109,6 @@ async function executeWorkflowRunHistoryAction(state, run, action) {
   state.runState.currentWorkflowName = run.name || state.runState.currentWorkflowName;
   state.runState.currentStage = run.next_stage || lastCompletedStageName(run) || state.runState.currentStage;
   state.runState.lastWorkflowStatus = run.status || state.runState.lastWorkflowStatus;
-  if (action.name === "open_approvals") {
-    location.hash = "approvals";
-    return;
-  }
   if (action.name === "open_workflow_studio") {
     openWorkflowRunInStudio(run);
     return;
@@ -4101,9 +5167,9 @@ function workflowRunSortValue(run) {
 function workflowRunStatusTone(status) {
   const value = String(status || "").toLowerCase();
   if (isWorkflowRunActive(value)) return "info";
-  if (isApprovalStatus(value) || value === "awaiting_input" || value === "awaiting_sub_workflow") return "warn";
+  if (isApprovalStatus(value) || value === "awaiting_input" || value === "awaiting_sub_workflow" || value === "paused_need_more_budget") return "warn";
   if (["completed", "complete", "done", "success", "succeeded", "finished"].includes(value)) return "good";
-  if (["failed", "error", "denied", "blocked", "cancelled", "canceled"].includes(value)) return "bad";
+  if (["failed", "error", "action_failed", "denied", "blocked", "cancelled", "canceled", "interrupted"].includes(value)) return "bad";
   return "";
 }
 
@@ -4115,11 +5181,13 @@ function workflowRunStatusLabel(status) {
   if (value === "awaiting_sub_workflow") return t("chat.status.awaitingSubWorkflow");
   if (value === "running") return t("chat.status.running");
   if (value === "cancelling") return t("chat.status.cancelling");
+  if (value === "paused_need_more_budget") return t("chat.status.pausedContinue");
   if (["completed", "complete", "done", "success", "succeeded", "finished"].includes(value)) return t("chat.status.completed");
-  if (["failed", "error"].includes(value)) return t("chat.status.failed");
+  if (["failed", "error", "action_failed"].includes(value)) return t("chat.status.failed");
   if (value === "denied") return t("chat.status.denied");
   if (["cancelled", "canceled"].includes(value)) return t("chat.status.cancelled");
   if (value === "blocked") return t("chat.status.blocked");
+  if (value === "interrupted") return t("chat.status.interrupted");
   return status || t("chat.timelineIdle");
 }
 
@@ -4127,7 +5195,10 @@ function workflowRunEventToTimeline(event, run) {
   const type = String(event.type || "").toLowerCase();
   const workflowStatus = String(event.workflow_status || event.status || "").toLowerCase();
   const runStatus = String(run?.status || "").toLowerCase();
-  const lowLevelTypes = new Set(["text", "delta", "token", "message", "final_message", "token_usage", "prompt_budget", "status"]);
+  if (type === "token_usage") {
+    return timelineTokenUsageEvent(event);
+  }
+  const lowLevelTypes = new Set(["text", "delta", "token", "message", "final_message", "prompt_budget", "status", "reasoning"]);
   const budgetReason = String(event.budget_reason || event.budgetReason || event.reason || "").toLowerCase();
   const budgetDiagnostic = Boolean(
     budgetReason.includes("budget_") ||
@@ -4138,7 +5209,8 @@ function workflowRunEventToTimeline(event, run) {
     event.budget_hard_limit ||
     event.budgetHardLimit
   );
-  if ((lowLevelTypes.has(type) && !budgetDiagnostic) || type.endsWith("_delta") || type.includes("stream_chunk")) {
+  const providerStatus = isProviderRequestStatusEvent(event);
+  if ((lowLevelTypes.has(type) && !budgetDiagnostic && !providerStatus) || type.endsWith("_delta") || type.includes("stream_chunk")) {
     return null;
   }
   const isError = event.is_error || type === "error";
@@ -4147,6 +5219,13 @@ function workflowRunEventToTimeline(event, run) {
       tone: "error",
       title: t("chat.errorTitle"),
       detail: timelineDetail([event.content, event.arguments_summary])
+    };
+  }
+  if (providerStatus) {
+    return {
+      tone: String(event.reason || "").toLowerCase() === "provider_request_retry" ? "warn" : "info",
+      title: t("chat.providerRequestTitle"),
+      detail: providerRequestTimelineDetail(event, run, event.content)
     };
   }
   if (budgetDiagnostic && budgetReason === "budget_soft_limit_hit" && type !== "workflow_result") {
@@ -4182,7 +5261,7 @@ function workflowRunEventToTimeline(event, run) {
     return {
       tone: "approval",
       title: scriptInfo ? t("chat.skillScriptApprovalTitle") : t("chat.awaitingApprovalTitle"),
-      detail: scriptInfo ? skillScriptTimelineDetail(scriptInfo) : timelineDetail([event.tool_name, event.arguments_summary, approvalDetailText(event.content)])
+      detail: scriptInfo ? skillScriptTimelineDetail(scriptInfo) : timelineDetail([taskToolDisplayName(event.tool_name), event.arguments_summary, approvalDetailText(event.content)])
     };
   }
   if (type.includes("input")) {
@@ -4216,27 +5295,32 @@ function workflowRunEventToTimeline(event, run) {
     };
   }
   if (type === "tool_call") {
+    const toolInfo = taskToolTimelineInfo(event, "call");
+    if (toolInfo) return toolInfo;
     const scriptInfo = skillScriptEventContext(event, run);
     return {
       tone: "tool",
       title: scriptInfo ? t("chat.skillScriptCalling") : t("chat.toolCalling"),
-      detail: scriptInfo ? skillScriptTimelineDetail(scriptInfo) : timelineDetail([event.tool_name, event.arguments_summary])
+      detail: scriptInfo ? skillScriptTimelineDetail(scriptInfo) : timelineDetail([taskToolDisplayName(event.tool_name), event.arguments_summary])
     };
   }
   if (type === "tool_result") {
     if (isApprovalRequiredToolEvent(event)) return null;
+    const toolInfo = taskToolTimelineInfo(event, "result");
+    if (toolInfo) return toolInfo;
     const scriptInfo = skillScriptEventContext(event, run);
+    const commandInfo = commandToolResultTimelineInfo(event);
     return {
-      tone: "success",
+      tone: commandInfo?.failed ? "error" : "success",
       title: scriptInfo ? t("chat.skillScriptReturned") : t("chat.toolReturned"),
-      detail: scriptInfo ? skillScriptTimelineDetail(scriptInfo) : timelineDetail([event.tool_name, event.arguments_summary])
+      detail: scriptInfo ? skillScriptTimelineDetail(scriptInfo) : timelineDetail([taskToolDisplayName(event.tool_name), event.arguments_summary, commandInfo?.detail])
     };
   }
   if (type.includes("tool")) {
     const scriptInfo = skillScriptEventContext(event, run);
     return {
       tone: "tool",
-      title: scriptInfo ? t("chat.skillScriptTitle") : event.tool_name ? `${t("chat.tool")}: ${event.tool_name}` : t("chat.tool"),
+      title: scriptInfo ? t("chat.skillScriptTitle") : event.tool_name ? `${t("chat.tool")}: ${taskToolDisplayName(event.tool_name)}` : t("chat.tool"),
       detail: scriptInfo ? skillScriptTimelineDetail(scriptInfo) : timelineDetail([event.arguments_summary])
     };
   }
@@ -4257,6 +5341,45 @@ function workflowRunEventToTimeline(event, run) {
     };
   }
   return null;
+}
+
+function commandToolResultTimelineInfo(event = {}) {
+  const toolName = String(event.tool_name || "").toLowerCase().split("/").pop();
+  if (toolName !== "run_command") return null;
+  let payload;
+  try {
+    payload = JSON.parse(String(event.content || "{}"));
+  } catch {
+    return null;
+  }
+  if (!payload || typeof payload !== "object" || Array.isArray(payload)) return null;
+  const exitCode = Number(payload.exit_code);
+  const timedOut = payload.timed_out === true;
+  const cancelled = payload.cancelled === true;
+  const parts = [];
+  if (Number.isFinite(exitCode)) parts.push(`exit=${exitCode}`);
+  if (Number.isFinite(Number(payload.duration_ms))) parts.push(`${Number(payload.duration_ms)}ms`);
+  if (timedOut) parts.push("timeout");
+  if (cancelled) parts.push("cancelled");
+  const stdout = compactCommandTimelineText(payload.stdout);
+  const stderr = compactCommandTimelineText(payload.stderr);
+  if (stdout) parts.push(`stdout=${stdout}`);
+  if (stderr) parts.push(`stderr=${stderr}`);
+  if (payload.stdout_artifact) parts.push(`stdout_log=${payload.stdout_artifact}`);
+  if (payload.stderr_artifact) parts.push(`stderr_log=${payload.stderr_artifact}`);
+  if (payload.classification) parts.push(`${t("chat.commandClass")}=${payload.classification}`);
+  if (payload.risk_level) parts.push(`${t("chat.commandRisk")}=${payload.risk_level}`);
+  if (payload.requires_explicit_approval === true) parts.push(t("chat.commandApproval"));
+  return {
+    failed: timedOut || cancelled || Number.isFinite(exitCode) && exitCode !== 0,
+    detail: parts.join(" · ")
+  };
+}
+
+function compactCommandTimelineText(value) {
+  const text = String(value || "").replace(/\s+/g, " ").trim();
+  if (!text) return "";
+  return text.length > 160 ? `${text.slice(0, 157)}...` : text;
 }
 
 function focusWorkflowTimelineEvents(run) {
@@ -4307,18 +5430,21 @@ function timelineEventsForWorkflowRun(events, run) {
   return mapped;
 }
 
-function timelineItemsForWorkflowRun(items, run) {
+export function timelineItemsForTaskRun(items, run) {
   const seen = new Set();
+  const runType = String(run?.run_type || items?.[0]?.run_type || "").toLowerCase();
+  const fallbackTitle = runType === "agent" ? t("chat.modeAgent") : t("chat.workflow");
+  const events = collapseParallelTaskTimeline(taskTimelineItemsWithoutCompletedCalls(items || [])
+    .map(item => workflowReplayTimelineItem(item, run, fallbackTitle))
+    .filter(Boolean));
   const mapped = [];
-  for (const item of items || []) {
-    const event = workflowReplayTimelineItem(item, run);
-    if (!event) continue;
+  for (const event of events) {
     const key = `${event.tone || ""}::${event.title || ""}::${event.detail || ""}`;
     if (seen.has(key)) continue;
     seen.add(key);
     mapped.push(event);
   }
-  if (isApprovalStatus(run?.status) && !mapped.some(item => item.tone === "approval")) {
+  if (runType !== "agent" && isApprovalStatus(run?.status) && !mapped.some(item => item.tone === "approval")) {
     mapped.push({
       tone: "approval",
       title: t("chat.awaitingApprovalTitle"),
@@ -4328,23 +5454,105 @@ function timelineItemsForWorkflowRun(items, run) {
   return mapped;
 }
 
-function timelineItemsForAgentRun(items, run) {
-  const seen = new Set();
-  const mapped = [];
+function taskTimelineItemsWithoutCompletedCalls(items) {
+  const completed = new Set((items || [])
+    .filter(item => String(item?.type || item?.kind || "").toLowerCase() === "tool_result")
+    .map(item => String(item?.tool_call_id || item?.toolCallID || "").trim())
+    .filter(Boolean));
+  return (items || []).filter(item => {
+    const type = String(item?.type || item?.kind || "").toLowerCase();
+    const callID = String(item?.tool_call_id || item?.toolCallID || "").trim();
+    return !(type === "tool_call" && callID && completed.has(callID));
+  });
+}
+
+function collapseParallelTaskTimeline(items) {
+  const output = [];
+  const groups = new Map();
   for (const item of items || []) {
-    const event = workflowReplayTimelineItem(item, run, t("chat.modeAgent"));
-    if (!event) continue;
-    const key = `${event.tone || ""}::${event.title || ""}::${event.detail || ""}`;
-    if (seen.has(key)) continue;
-    seen.add(key);
-    mapped.push(event);
+    const groupKind = String(item.groupKind || "").toLowerCase();
+    const groupID = String(item.groupID || "").trim();
+    if (groupKind !== "parallel" || !groupID) {
+      output.push(item);
+      continue;
+    }
+    const key = `${groupKind}:${groupID}`;
+    const group = groups.get(key);
+    if (group) {
+      group.items.push(item);
+      continue;
+    }
+    groups.set(key, { index: output.length, items: [item] });
+    output.push(item);
   }
-  return mapped;
+  for (const group of groups.values()) {
+    if (group.items.length < 2) continue;
+    const descriptions = [...new Set(group.items.map(item => {
+      const title = localizedText(item.title || "");
+      const detail = localizedText(item.detail || "");
+      return detail && detail !== title ? `${title}: ${detail}` : title;
+    }).filter(Boolean))];
+    const current = group.items.find(item => item.current);
+    const visible = descriptions.slice(0, 4);
+    if (descriptions.length > visible.length) visible.push(`+${descriptions.length - visible.length}`);
+    output[group.index] = {
+      tone: parallelTaskTimelineTone(group.items),
+      title: t("chat.timelineParallelBranches"),
+      detail: compactTimelineText(timelineDetail([
+        current ? t("chat.timelineCurrentStep", { step: localizedText(current.title || "") }) : "",
+        visible.join(" / ")
+      ]), 360),
+      groupKind: "parallel",
+      groupID: group.items[0].groupID,
+      parentID: group.items[0].parentID,
+      current: Boolean(current)
+    };
+  }
+  return output;
+}
+
+function parallelTaskTimelineTone(items) {
+  const tones = new Set((items || []).map(item => item.tone));
+  if (tones.has("error")) return "error";
+  if (tones.has("warn")) return "warn";
+  if (tones.has("approval")) return "approval";
+  if (tones.size === 1 && tones.has("success")) return "success";
+  return "stage";
 }
 
 function workflowReplayTimelineItem(item = {}, run = {}, fallbackTitle = t("chat.workflow")) {
-  const kind = String(item.kind || item.type || "").trim().toLowerCase();
-  const lowLevelKinds = new Set(["text", "delta", "token", "message", "final_message", "token_usage", "prompt_budget", "status"]);
+  const envelopeKind = String(item.kind || "").trim().toLowerCase();
+  const eventType = String(item.type || "").trim().toLowerCase();
+  const diagnosticStatus = eventType === "status" && Boolean(
+    item.reason ||
+    item.source_ref ||
+    item.sourceRef ||
+    item.needs_action ||
+    item.suspended ||
+    ["warning", "error"].includes(String(item.severity || "").toLowerCase())
+  );
+  const kind = envelopeKind === "event" && !diagnosticStatus ? eventType : (envelopeKind || eventType);
+  const plan = Array.isArray(item.plan) ? item.plan : [];
+  if (kind === "plan") {
+    const planSteps = plan.map(step => localizedText(step?.name || "")).filter(Boolean);
+    const currentStep = plan.find(step => step?.current)?.name || "";
+    return {
+      tone: "stage",
+      title: t("chat.timelinePlanPreview"),
+      detail: timelineDetail([
+        planSteps.join(" -> ") || item.summary,
+        currentStep ? t("chat.timelineCurrentStep", { step: localizedText(currentStep) }) : ""
+      ]),
+      current: Boolean(currentStep)
+    };
+  }
+  if (kind === "token_usage") {
+    return timelineTokenUsageEvent(item);
+  }
+  if (kind === "tool_call" || kind === "tool_result") {
+    return taskToolTimelineInfo(item, kind === "tool_call" ? "call" : "result");
+  }
+  const lowLevelKinds = new Set(["text", "delta", "token", "message", "final_message", "prompt_budget", "status", "reasoning"]);
   const budgetReason = String(item.budget_reason || item.budgetReason || item.reason || "").toLowerCase();
   const budgetDiagnostic = Boolean(
     budgetReason.includes("budget_") ||
@@ -4355,10 +5563,25 @@ function workflowReplayTimelineItem(item = {}, run = {}, fallbackTitle = t("chat
     item.budget_hard_limit ||
     item.budgetHardLimit
   );
-  if ((lowLevelKinds.has(kind) && !budgetDiagnostic) || kind.endsWith("_delta") || kind.includes("stream_chunk")) return null;
+  const providerStatus = isProviderRequestStatusEvent(item);
+  if ((lowLevelKinds.has(kind) && !budgetDiagnostic && !providerStatus) || kind.endsWith("_delta") || kind.includes("stream_chunk")) return null;
+  if (providerStatus) {
+    return {
+      tone: String(item.reason || "").toLowerCase() === "provider_request_retry" ? "warn" : "info",
+      title: t("chat.providerRequestTitle"),
+      detail: providerRequestTimelineDetail(item, run, item.summary || item.content || item.detail),
+      stage: String(item.task_stage || item.stage || "").trim(),
+      agent: String(item.agent_id || item.agentID || "").trim()
+    };
+  }
   if (isLowValueTimelineChunk(item)) return null;
-  const title = item.title || item.stage || item.tool_name || item.agent_id || item.kind || item.type || run.name || fallbackTitle;
-  const summary = item.summary || item.content || item.status || "";
+  const rawTitle = item.title || item.stage || item.tool_name || item.agent_id || item.kind || item.type || run.name || fallbackTitle;
+  const title = item.tool_name
+    ? taskToolDisplayName(item.tool_name)
+    : item.agent_id
+      ? taskResourceDisplayName("agent", item.agent_id, localizedText(item.agent_id))
+      : taskMachineDisplayName(rawTitle);
+  const summary = taskMachineDisplayName(item.summary || item.content || item.status || "");
   if (!title && !summary) return null;
   const budgetLimit = runWorkflowBudgetLimitText({
     budgetMetric: String(item.budget_metric || item.budgetMetric || "").trim(),
@@ -4374,15 +5597,19 @@ function workflowReplayTimelineItem(item = {}, run = {}, fallbackTitle = t("chat
       : budgetReason === "budget_soft_limit_hit"
         ? t("chat.timelineBudgetWarning")
         : "";
+  const action = String(item.action || "").toLowerCase();
+  const attempt = Number(item.attempt || 0);
+  const current = Boolean(item.current);
+  const currentStep = item.stage || item.next_stage || item.nextStage || title;
   const tone = item.is_error
     ? "error"
     : (budgetReason === "budget_soft_limit_hit" && kind === "status") || String(item.severity || "").toLowerCase() === "warning"
       ? "warn"
-      : item.needs_action || item.suspended || kind.includes("approval")
+      : item.needs_action || item.suspended || kind.includes("approval") || ["approval", "input", "budget"].includes(action)
       ? "approval"
       : kind.includes("tool")
         ? "tool"
-        : kind.includes("complete") || kind.includes("artifact")
+        : kind.includes("complete")
           ? "success"
           : "stage";
   return {
@@ -4390,18 +5617,221 @@ function workflowReplayTimelineItem(item = {}, run = {}, fallbackTitle = t("chat
     title: budgetTitle || localizedText(title),
     detail: timelineDetail([
       summary,
-      item.status && item.status !== summary ? item.status : "",
+      item.status && item.status !== summary ? taskMachineDisplayName(item.status) : "",
       item.reason && item.reason !== summary ? item.reason : "",
       item.contract_check || item.contractCheck,
       budgetLimit,
-      item.source_ref || item.sourceRef
-    ])
+      /^sha256:[a-f\d]+$/i.test(String(item.source_ref || item.sourceRef || "")) ? "" : item.source_ref || item.sourceRef,
+      attempt > 1 ? t("chat.timelineAttempt", { attempt }) : "",
+      current ? t("chat.timelineCurrentStep", { step: localizedText(currentStep) }) : ""
+    ]),
+    stage: String(item.task_stage || item.stage || item.next_stage || "").trim(),
+    agent: String(item.agent_id || item.agentID || "").trim(),
+    kindLabel: kind.includes("tool") ? t("chat.toolCalling") : "",
+    groupKind: item.group_kind || item.groupKind || "",
+    groupID: item.group_id || item.groupID || "",
+    parentID: item.parent_id || item.parentID || "",
+    current
   };
+}
+
+function taskToolTimelineInfo(item = {}, phase = "result") {
+  const toolName = String(item.tool_name || item.toolName || "").trim();
+  if (!toolName) return null;
+  const tool = toolName.toLowerCase().split("/").pop();
+  const displayName = taskToolDisplayName(toolName);
+  if (phase === "call") {
+    return {
+      tone: "tool",
+      title: t("chat.timelineToolRunning", { tool: displayName }),
+      detail: taskToolCallDetail(item),
+      stage: String(item.task_stage || item.stage || "").trim(),
+      agent: String(item.agent_id || item.agentID || "").trim(),
+      kindLabel: t("chat.timelineInProgress"),
+      current: true
+    };
+  }
+  const payload = item.tool_result && typeof item.tool_result === "object" ? item.tool_result
+    : parseTimelineToolPayload(item.content) || parseTimelineToolPayload(item.summary) || parseTimelineToolPayload(item.detail);
+  const processTool = ["start_process", "process_status", "stop_process"].includes(tool);
+  const expectedProcessState = processTool && (payload?.running === true || payload?.stop_requested === true);
+  const failed = Boolean(item.is_error || payload?.is_error || payload?.timed_out || payload?.cancelled || !expectedProcessState && payload?.exit_code != null && Number.isFinite(Number(payload.exit_code)) && Number(payload.exit_code) !== 0);
+  return {
+    tone: failed ? "error" : "success",
+    title: t(failed ? "chat.timelineToolFailed" : "chat.timelineToolCompleted", { tool: displayName }),
+    detail: taskToolResultDetail(tool, payload, item),
+    usage: extractTimelineTokenUsage(item),
+    stage: String(item.task_stage || item.stage || "").trim(),
+    agent: String(item.agent_id || item.agentID || "").trim(),
+    kindLabel: taskToolCategoryLabel(tool),
+    current: false,
+    preview: processTool ? timelineProcessPreview(payload) : null
+  };
+}
+
+function parseTimelineToolPayload(value) {
+  const raw = String(value || "").trim();
+  if (!raw.startsWith("{") || !raw.endsWith("}")) return null;
+  try {
+    const parsed = JSON.parse(raw);
+    return parsed && typeof parsed === "object" && !Array.isArray(parsed) ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+
+function taskToolCallDetail(item = {}) {
+  const summary = String(item.arguments_summary || item.argumentsSummary || item.summary || "").trim();
+  if (!summary || ["read", "write", "exec", "inspect", "network"].includes(summary.toLowerCase())) return "";
+  return compactTimelineText(chatDisplayText(summary), 180);
+}
+
+function taskToolResultDetail(tool, payload, item = {}) {
+  const raw = String(item.summary || item.content || item.detail || "").trim();
+  if (!payload) return compactTimelineText(chatDisplayText(raw), 220);
+  const path = timelineWorkspacePath(payload.relative_path || payload.path || payload.cwd || "");
+  const count = Array.isArray(payload.entries) ? payload.entries.length : Array.isArray(payload.matches) ? payload.matches.length : 0;
+  const exitCode = Number(payload.exit_code);
+  const duration = Number(payload.duration_ms);
+  const parts = [];
+  if (["read_file", "read_file_range", "file_info", "python_ast_summary"].includes(tool)) {
+    if (path) parts.push(path);
+    if (Number(payload.start_line) > 0 || Number(payload.end_line) > 0) parts.push(t("chat.timelineLineRange", { start: payload.start_line || 1, end: payload.end_line || payload.start_line || 1 }));
+    if (Number(payload.size) > 0) parts.push(formatTimelineBytes(payload.size));
+  } else if (["list_dir", "list_tree", "search_files"].includes(tool)) {
+    if (path) parts.push(path);
+    parts.push(t("chat.timelineItemsFound", { count }));
+    if (payload.truncated) parts.push(t("chat.timelineResultTruncated"));
+  } else if (["write_file", "apply_patch", "replace_text", "delete_file", "move_path", "mkdir"].includes(tool)) {
+    if (tool === "move_path") parts.push(`${timelineWorkspacePath(payload.source_relative || payload.source)} → ${timelineWorkspacePath(payload.destination_relative || payload.destination)}`);
+    else if (path) parts.push(path);
+    if (payload.status) parts.push(taskMachineDisplayName(payload.status));
+    if (payload.added_lines != null && payload.deleted_lines != null) parts.push(t("chat.timelineLineChanges", { added: payload.added_lines, deleted: payload.deleted_lines }));
+    else if (tool === "move_path" && !payload.overwrote && !payload.is_dir) parts.push(t("chat.timelineLineChanges", { added: 0, deleted: 0 }));
+  } else if (tool === "run_command") {
+    const command = [payload.program, ...(Array.isArray(payload.args) ? payload.args : [])].filter(Boolean).join(" ");
+    if (command) parts.push(compactTimelineText(command, 150));
+    if (Number.isFinite(exitCode)) parts.push(t("chat.timelineExitCode", { code: exitCode }));
+    if (Number.isFinite(duration) && duration >= 0) parts.push(formatTimelineDuration(duration));
+    const signal = compactCommandTimelineText(exitCode === 0 ? payload.stdout : payload.stderr || payload.stdout);
+    if (signal) parts.push(signal);
+    if (payload.recommendation) parts.push(chatDisplayText(payload.recommendation));
+  } else if (["start_process", "process_status", "stop_process"].includes(tool)) {
+    if (payload.process_id) parts.push(t("chat.timelineProcessID", { id: String(payload.process_id).slice(0, 12) }));
+    if (Number(payload.pid) > 0) parts.push(`PID ${payload.pid}`);
+    parts.push(payload.running ? t("chat.timelineProcessRunning") : t("chat.timelineProcessStopped"));
+    const address = `${payload.stdout || ""} ${payload.stderr || ""}`.match(/https?:\/\/[^\s]+/i)?.[0];
+    if (address) parts.push(address.replace(/[.,;]+$/, ""));
+  } else {
+    if (path) parts.push(path);
+    if (count) parts.push(t("chat.timelineItemsFound", { count }));
+    if (payload.status) parts.push(taskMachineDisplayName(payload.status));
+  }
+  if (!parts.length && raw) parts.push(compactTimelineText(chatDisplayText(raw), 220));
+  return timelineDetail(parts);
+}
+
+function taskToolCategoryLabel(tool) {
+  if (["read_file", "read_file_range", "file_info", "list_dir", "list_tree", "search_files", "python_ast_summary"].includes(tool)) return t("chat.timelineCategoryRead");
+  if (["write_file", "apply_patch", "replace_text", "delete_file", "move_path", "mkdir"].includes(tool)) return t("chat.timelineCategoryChange");
+  if (["run_command", "start_process", "process_status", "stop_process"].includes(tool)) return t("chat.timelineCategoryRun");
+  return t("chat.timelineCategoryTool");
+}
+
+function timelineWorkspacePath(value) {
+  let path = String(value || "").trim();
+  if (!path) return "";
+  path = path.replaceAll("\\", "/");
+  const staged = path.toLowerCase().lastIndexOf("/workspace/");
+  if (staged >= 0) path = path.slice(staged + "/workspace/".length);
+  const drive = path.match(/^[a-z]:\/.*?\/(web|src|internal|cmd|pkg|docs|scripts|configs|skills|workflows)\//i);
+  if (drive) path = path.slice(path.toLowerCase().indexOf(`/${drive[1].toLowerCase()}/`) + 1);
+  return path;
+}
+
+function safePreviewURL(value) {
+  try {
+    const url = new URL(String(value || ""));
+    if (!["http:", "https:"].includes(url.protocol) || url.username || url.password) return "";
+    if (["0.0.0.0", "[::]"].includes(url.hostname)) url.hostname = "127.0.0.1";
+    return url.href;
+  } catch { return ""; }
+}
+
+function timelineProcessPreview(payload) {
+  if (!payload) return null;
+  const address = `${payload.stdout || ""}\n${payload.stderr || ""}`.match(/https?:\/\/[^\s\u001b]+/i)?.[0];
+  const url = safePreviewURL(payload.preview_url || address?.replace(/[.,;]+$/, ""));
+  return url ? { url, running: payload.running === true && !payload.stop_requested } : null;
+}
+
+function runPreviewLinksHTML(previews = []) {
+  const items = previews.map(item => ({ ...item, url: safePreviewURL(item.url) })).filter(item => item.url);
+  if (!items.length) return "";
+  return `<div class="run-preview-links" aria-label="${escapeHTML(t("chat.previewAddress"))}">${items.map(item => `<div class="run-preview-link ${item.running ? "running" : "stopped"}"><strong>${escapeHTML(t("chat.previewAddress"))}</strong>${item.running ? `<a href="${escapeHTML(item.url)}" target="_blank" rel="noopener noreferrer">${escapeHTML(item.url)} ↗</a>` : `<span>${escapeHTML(item.url)}</span>`}<small>${escapeHTML(t(item.running ? "chat.previewOpen" : "chat.previewUnavailable"))}</small></div>`).join("")}</div>`;
+}
+
+function formatTimelineBytes(value) {
+  const bytes = Number(value || 0);
+  if (!Number.isFinite(bytes) || bytes <= 0) return "";
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(bytes < 10 * 1024 ? 1 : 0)} KB`;
+  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
+}
+
+function formatTimelineDuration(value) {
+  const ms = Number(value || 0);
+  if (!Number.isFinite(ms) || ms < 0) return "";
+  if (ms < 1000) return `${Math.round(ms)} ms`;
+  if (ms < 60000) return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)} s`;
+  const minutes = Math.floor(ms / 60000);
+  const seconds = Math.round(ms % 60000 / 1000);
+  return `${minutes} min ${seconds} s`;
 }
 
 function isWorkflowRunTerminal(status) {
   const value = String(status || "").toLowerCase();
-  return ["completed", "complete", "done", "success", "succeeded", "finished", "failed", "error", "denied", "blocked", "cancelled", "canceled"].includes(value);
+  return ["completed", "complete", "done", "success", "succeeded", "finished", "failed", "error", "denied", "blocked", "cancelled", "canceled", "interrupted"].includes(value);
+}
+
+function isProviderRequestStatusEvent(event = {}) {
+  if (String(event.type || "").toLowerCase() !== "status") return false;
+  return ["provider_request_started", "provider_response_connected", "provider_request_retry"].includes(String(event.reason || "").toLowerCase());
+}
+
+function providerRequestTimelineDetail(event = {}, run = {}, text = "") {
+  const detail = [text];
+  if (providerRequestIsLive(event, run)) {
+    const startedAt = Date.parse(event.at || event.created_at || event.createdAt || "");
+    if (Number.isFinite(startedAt)) {
+      detail.push(t("chat.providerWaitingElapsed", { duration: providerWaitingDuration(Date.now() - startedAt) }));
+    }
+  }
+  return timelineDetail(detail);
+}
+
+function providerRequestIsLive(event = {}, run = {}) {
+  if (!isWorkflowRunActive(run?.status)) return false;
+  const events = Array.isArray(run?.timeline)
+    ? run.timeline
+    : Array.isArray(run?.events)
+      ? run.events
+      : [];
+  const providerEvents = events.filter(isProviderRequestStatusEvent);
+  if (!providerEvents.length) return Boolean(event.current);
+  const latest = providerEvents[providerEvents.length - 1];
+  const eventSeq = Number(event.seq || 0);
+  const latestSeq = Number(latest.seq || 0);
+  if (eventSeq && latestSeq) return eventSeq === latestSeq;
+  return String(event.at || "") !== "" && String(event.at || "") === String(latest.at || "") && String(event.reason || "") === String(latest.reason || "");
+}
+
+function providerWaitingDuration(value) {
+  const totalSeconds = Math.max(0, Math.floor(Number(value || 0) / 1000));
+  const minutes = Math.floor(totalSeconds / 60);
+  const seconds = totalSeconds % 60;
+  if (minutes > 0) return t("chat.providerWaitingMinutes", { minutes, seconds });
+  return t("chat.providerWaitingSeconds", { seconds });
 }
 
 function isApprovalRequiredToolEvent(event) {
@@ -4461,7 +5891,7 @@ function skillScriptEventContext(event, run) {
 
 function skillScriptTimelineDetail(info) {
   if (!info) return "";
-  const label = [info.skill, info.script].filter(Boolean).join(" / ") || info.toolName || t("chat.skillScriptUnknown");
+  const label = [taskResourceDisplayName("skill", info.skill, info.skill), info.script].filter(Boolean).join(" / ") || taskToolDisplayName(info.toolName) || t("chat.skillScriptUnknown");
   return timelineDetail([
     label,
     info.path,
@@ -4503,8 +5933,10 @@ function compactTimelineText(value, maxLength = 160) {
 
 function workflowRunTimelineLabel(status) {
   const value = String(status || "").toLowerCase();
+  if (value === "blocked") return t("chat.timelineBlocked");
   if (value === "completed" || value === "success") return t("chat.timelineDone");
-  if (["failed", "error", "denied", "blocked", "cancelled", "canceled"].includes(value)) return t("chat.timelineError");
+  if (["failed", "error", "action_failed", "denied", "blocked", "cancelled", "canceled", "interrupted"].includes(value)) return t("chat.timelineError");
+	if (value === "paused_need_more_budget") return t("chat.timelinePausedContinue");
   if (value === "awaiting_input") return t("chat.timelineInput");
   if (value === "awaiting_sub_workflow") return t("chat.timelineSubWorkflow");
   if (isApprovalStatus(value)) return t("chat.timelineApproval");
@@ -4514,18 +5946,26 @@ function workflowRunTimelineLabel(status) {
 
 function workflowRunResultLabel(status, hasOutput) {
   const value = String(status || "").toLowerCase();
-  if (["failed", "error", "denied", "blocked", "cancelled", "canceled"].includes(value)) return t("chat.resultError");
+  if (value === "blocked") return t("chat.resultQualityBlocked");
+  if (["failed", "error", "action_failed", "denied", "blocked", "cancelled", "canceled"].includes(value)) return t("chat.resultError");
+	if (value === "paused_need_more_budget") return t("chat.resultPausedContinue");
   if (isWorkflowRunActive(value)) return t("chat.resultStreaming");
   if (value === "awaiting_sub_workflow") return t("chat.resultBlocked");
   if (hasOutput) return t("chat.resultReady");
   return t("chat.resultIdle");
 }
 
-function workflowRunResultText(run) {
+export function workflowRunResultText(run) {
+  const explicitOutput = workflowRunFirstPublicOutput([run.final_output, run.output]);
+  if (explicitOutput) return explicitOutput;
   const stages = Array.isArray(run.completed_stages) ? run.completed_stages : [];
   const finalStage = workflowRunPreferredFinalStage(stages);
   const finalStageText = workflowRunStagePublicOutput(finalStage);
   if (finalStageText) return finalStageText;
+  if (isWorkflowRunTerminal(run.status)) {
+    const summary = workflowRunFirstPublicOutput([run.summary]);
+    if (summary) return summary;
+  }
   const artifacts = Array.isArray(run.artifacts) ? run.artifacts : [];
   const finalArtifact = workflowRunPreferredFinalArtifact(artifacts);
   const finalArtifactText = workflowRunArtifactPublicOutput(finalArtifact);
@@ -4558,18 +5998,18 @@ function workflowRunStagePublicOutput(stage = {}) {
   const candidates = [
     outputs.final_report,
     outputs.final_summary,
-    outputs.summary,
+    stage.result?.output,
+    stage.summary,
     outputs.output,
     outputs.report,
-    stage.summary,
-    stage.result?.output
+    outputs.summary
   ];
   return workflowRunFirstPublicOutput(candidates);
 }
 
 function workflowRunArtifactPublicOutput(artifact = {}) {
   if (!artifact) return "";
-  return workflowRunFirstPublicOutput([artifact.content, artifact.summary]);
+  return workflowRunFirstPublicOutput([artifact.content]);
 }
 
 function workflowRunFirstPublicOutput(values = []) {
@@ -4587,12 +6027,14 @@ function workflowRunNameLooksFinal(value = "") {
     text.includes("-final") ||
     text.includes("最终") ||
     text.includes("交付") ||
-    text.includes("总结");
+    text.includes("总结") ||
+    text.includes("consolidate");
 }
 
 function workflowRunLooksLikeInternalArtifact(value = "") {
   const text = String(value || "").trim();
   if (!text) return true;
+  if (/^Implementation summary, files changed, verification attempted, deviations, remaining work, and risk notes\.?$/i.test(text)) return true;
   if (isInternalWorkflowPrompt(text)) return true;
   if (text.length > 80 && /^[\[{]/.test(text)) {
     try {
@@ -4625,6 +6067,18 @@ function localizedRunMarkdownText(value) {
   const direct = localizedText(raw);
   if (direct !== raw || currentLanguage() !== "zh") return direct;
   return raw
+    .replace(/The model response timed out after tool execution\. This stage paused safely without replaying tools\. (\d+) tool results were preserved \(([^)]*)\); use Continue task to finish the remaining implementation and verification in the saved task workspace\./gi, (_, count, tools) => {
+      const names = String(tools || "").split(",").map(name => name.trim()).filter(Boolean).join("、");
+      return `模型响应在工具执行后超时，本阶段已安全暂停，没有重放工具调用。已保留 ${count} 条工具结果（${names}）；可点击“继续执行”从已保存的任务暂存区完成剩余实现和验证。`;
+    })
+    .replace(/\n\s*Verification pass:\s*/gi, "\n\n## 最终质量审查\n\n")
+    .replace(/^(\s*)Status:\s*fail\s*$/gmi, "$1**结论：未通过**")
+    .replace(/^(\s*)Status:\s*pass\s*$/gmi, "$1**结论：通过**")
+    .replace(/^(\s*)Status:\s*warn(?:ing)?\s*$/gmi, "$1**结论：需要关注**")
+    .replace(/^(\s*)(Risks|Next):\s*(?:none|n\/a)\s*$/gmi, (_, prefix, label) => `${prefix}${label.toLowerCase() === "risks" ? "风险" : "下一步"}：无`)
+    .replace(/^(\s*)Checked:\s*/gmi, "$1已检查：")
+    .replace(/^(\s*)Risks:\s*/gmi, "$1风险：")
+    .replace(/^(\s*)Next:\s*/gmi, "$1下一步：")
     .replace(/^(\s{0,3}#{1,6}\s*)([A-Za-z][A-Za-z\s/-]{2,64})(\s*)$/gm, (match, prefix, label, suffix) => {
       const translated = localizedText(label.trim());
       return translated && translated !== label.trim() ? `${prefix}${translated}${suffix}` : match;
@@ -4655,10 +6109,15 @@ function renderRunTokenUsage(state, run) {
 function runTokenUsageHTML(run, options = {}) {
   const summary = runTokenUsageSummary(run);
   if (!summary) return "";
-  const usageFacts = [
-    summary.prompt ? [t("chat.tokenPrompt"), tokenCountText(summary.prompt)] : null,
+  const coreFacts = [
+    summary.prompt ? [t("chat.tokenInput"), tokenCountText(summary.prompt)] : null,
     summary.output ? [t("chat.tokenOutput"), tokenCountText(summary.output)] : null,
+    summary.total ? [t("chat.tokenRunTotal"), tokenCountText(summary.total, { allowZero: true })] : null,
     summary.cached ? [t("chat.tokenCached"), tokenCountText(summary.cached)] : null,
+    summary.cached ? [t("chat.tokenCacheHit"), tokenCacheHitRateText(summary)] : null,
+    summary.samples ? [t("chat.tokenSamples"), String(summary.samples)] : null
+  ];
+  const diagnosticFacts = [
     summary.estimatedPrompt ? [t("chat.tokenEstimatedPrompt"), tokenCountText(summary.estimatedPrompt)] : null,
     summary.savedTokens ? [t("workflow.runtimeField.budgetSavedTokens"), tokenCountText(summary.savedTokens)] : null,
     summary.grossPrompt ? [t("workflow.runtimeField.budgetGrossPromptTokens"), tokenCountText(summary.grossPrompt)] : null,
@@ -4668,9 +6127,9 @@ function runTokenUsageHTML(run, options = {}) {
     summary.estimatedOutputCost ? [t("workflow.runtimeField.budgetEstimatedOutputCost"), costText(summary.estimatedOutputCost, summary.costCurrency)] : null,
     summary.estimatedTotalCost ? [t("workflow.runtimeField.budgetEstimatedTotalCost"), costText(summary.estimatedTotalCost, summary.costCurrency)] : null,
     summary.pricingSource ? [t("workflow.runtimeField.budgetPricingSource"), summary.pricingSource] : null,
-    summary.samples ? [t("chat.tokenSamples"), String(summary.samples)] : null,
     summary.prefix ? [t("chat.tokenPrefix"), shortRunID(summary.prefix)] : null
-  ].filter(Boolean);
+  ];
+  const usageFacts = [...coreFacts, ...(options.compact ? [] : diagnosticFacts)].filter(Boolean);
   const total = summary.total || summary.prompt + summary.output;
   const badge = total ? tokenCountText(total) : summary.estimatedPrompt ? tokenCountText(summary.estimatedPrompt) : t("chat.tokenTitle");
   return `<section class="run-token-usage ${options.compact ? "compact" : ""}" data-run-token-usage>
@@ -4685,13 +6144,68 @@ function runTokenUsageHTML(run, options = {}) {
   </section>`;
 }
 
-function runTokenUsageSummary(run) {
+function runTokenCallLedgerHTML(run) {
+  const calls = runTokenCallLedger(run);
+  if (!calls.length) return "";
+  return `<div class="run-token-ledger">
+    <strong>${escapeHTML(t("chat.tokenCallLedger"))}</strong>
+    <ol>${calls.map(call => `<li><span>${escapeHTML(call.kind)}</span>${timelineTokenMetricsHTML(call.usage)}${call.detail ? `<small>${escapeHTML(call.detail)}</small>` : ""}</li>`).join("")}</ol>
+  </div>`;
+}
+
+function runTokenCallLedger(run) {
+  const events = Array.isArray(run?.events) ? run.events : Array.isArray(run?.token_usage_history) ? run.token_usage_history : [];
+  const samples = Array.isArray(run?.token_usage_history) ? run.token_usage_history : [];
+  const rows = [];
+  const source = events.length ? events : samples;
+  for (const event of source) {
+    const type = String(event?.type || event?.output_kind || event?.outputKind || "").toLowerCase();
+    const isUsage = type === "token_usage" || event?.prompt_tokens || event?.promptTokens || event?.output_kind || event?.outputKind;
+    if (!isUsage && type && type !== "token_usage") continue;
+    if (type && type !== "token_usage" && !event?.output_kind && !event?.outputKind && !(event?.prompt_tokens || event?.promptTokens)) continue;
+    const prompt = runTokenNumber(event, ["prompt_tokens", "input_tokens", "promptTokens", "inputTokens"]);
+    const output = runTokenNumber(event, ["output_tokens", "completion_tokens", "outputTokens", "completionTokens"]);
+    const cached = runTokenNumber(event, ["cached_tokens", "cachedTokens", "budget_cached_tokens", "budgetCachedTokens"]);
+    const kind = tokenOutputKindLabel(event.output_kind || event.outputKind || event.content || "");
+    const agent = String(event.agent_id || event.agentID || "").trim();
+    const mode = String(event.mode || "").trim();
+    const tools = Array.isArray(event.tool_names) ? event.tool_names.join(", ") : String(event.tool_name || event.toolName || "").trim();
+    if (!prompt && !output && !cached && !kind) continue;
+    const usage = extractTimelineTokenUsage(event) || { prompt, input: prompt, output, cached, total: prompt + output, cacheHitRate: prompt > 0 ? cached / prompt : 0 };
+    const detailParts = [
+      agent && mode ? `${agent}/${mode}` : agent || mode,
+      tools
+    ].filter(Boolean);
+    rows.push({ kind, detail: detailParts.join(" · "), usage });
+  }
+  return rows;
+}
+
+function tokenOutputKindLabel(kind) {
+  const value = String(kind || "").trim().toLowerCase();
+  if (value === "text" || value === "tool_calls" || value === "mixed" || value === "empty") {
+    return t(`chat.tokenKind.${value}`);
+  }
+  return t("chat.tokenKind.unknown");
+}
+
+export function runTokenUsageSummary(run) {
   const events = Array.isArray(run?.events) ? run.events : [];
+  const retained = run?.token_usage && typeof run.token_usage === "object" ? run.token_usage : {};
+  const retainedCalls = runTokenNumber(retained, ["model_calls", "modelCalls"]);
+  const persisted = {
+    prompt: runTokenNumber(run, ["budget_prompt_tokens", "prompt_tokens", "input_tokens", "PromptTokens", "promptTokens"]),
+    output: runTokenNumber(run, ["budget_output_tokens", "output_tokens", "completion_tokens", "OutputTokens", "outputTokens"]),
+    cached: runTokenNumber(run, ["budget_cached_tokens", "cached_tokens", "CachedTokens", "cachedTokens"]),
+    total: runTokenNumber(run, ["budget_total_tokens", "total_tokens", "TotalTokens", "totalTokens"])
+  };
   const summary = {
-    prompt: runTokenNumber(run, ["prompt_tokens", "input_tokens", "PromptTokens", "promptTokens"]),
-    output: runTokenNumber(run, ["output_tokens", "completion_tokens", "OutputTokens", "outputTokens"]),
-    cached: runTokenNumber(run, ["cached_tokens", "CachedTokens", "cachedTokens"]),
-    total: runTokenNumber(run, ["total_tokens", "TotalTokens", "totalTokens"]),
+    reported: Boolean(run?.token_usage && typeof run.token_usage === "object"),
+    prompt: retainedCalls ? runTokenNumber(retained, ["prompt_tokens", "promptTokens"]) : 0,
+    output: retainedCalls ? runTokenNumber(retained, ["output_tokens", "outputTokens"]) : 0,
+    cached: retainedCalls ? runTokenNumber(retained, ["cached_tokens", "cachedTokens"]) : 0,
+    cacheHitRate: 0,
+    total: retainedCalls ? runTokenNumber(retained, ["total_tokens", "totalTokens"]) : 0,
     estimatedPrompt: runTokenNumber(run, ["budget_estimated_prompt_tokens", "budgetEstimatedPromptTokens"]),
     netPrompt: runTokenNumber(run, ["budget_net_prompt_tokens", "budgetNetPromptTokens"]),
     grossPrompt: runTokenNumber(run, ["budget_gross_prompt_tokens", "budgetGrossPromptTokens"]),
@@ -4712,7 +6226,7 @@ function runTokenUsageSummary(run) {
     budgetHardLimit: runTokenNumber(run, ["budget_hard_limit", "budgetHardLimit"]),
     budgetRemaining: runTokenNumber(run, ["budget_remaining", "budgetRemaining"]),
     budgetLimit: "",
-    samples: 0,
+    samples: retainedCalls,
     prefix: ""
   };
   const eventBudgetTotals = runEmptyBudgetAttribution();
@@ -4720,10 +6234,10 @@ function runTokenUsageSummary(run) {
   let eventBudgetSamples = 0;
   for (const event of events) {
     const type = String(event?.type || "").toLowerCase();
-    if (type === "token_usage") {
+    if (type === "token_usage" && !retainedCalls) {
       const prompt = runTokenNumber(event, ["prompt_tokens", "input_tokens", "promptTokens", "inputTokens"]);
       const output = runTokenNumber(event, ["output_tokens", "completion_tokens", "outputTokens", "completionTokens"]);
-      const cached = runTokenNumber(event, ["cached_tokens", "cachedTokens"]);
+      const cached = runTokenNumber(event, ["cached_tokens", "cachedTokens", "budget_cached_tokens", "budgetCachedTokens"]);
       const total = runTokenNumber(event, ["total_tokens", "totalTokens"]);
       summary.prompt += prompt;
       summary.output += output;
@@ -4761,6 +6275,12 @@ function runTokenUsageSummary(run) {
       summary.budgetRemaining = runTokenNumber(event, ["budget_remaining", "budgetRemaining"]) || summary.budgetRemaining;
     }
   }
+  if (summary.samples === 0 && !summary.reported) {
+    summary.prompt = persisted.prompt;
+    summary.output = persisted.output;
+    summary.cached = persisted.cached;
+    summary.total = persisted.total || persisted.prompt + persisted.output;
+  }
   const directBudget = run?.prompt_budget || run?.promptBudget;
   if (eventBudgetSamples > 0) {
     runBudgetAttributionMax(summary, eventBudgetTotals);
@@ -4780,8 +6300,10 @@ function runTokenUsageSummary(run) {
   if (!summary.grossPrompt && (summary.netPrompt || summary.savedTokens)) summary.grossPrompt = summary.netPrompt + summary.savedTokens;
   if (!summary.total && (summary.prompt || summary.output)) summary.total = summary.prompt + summary.output;
   if (!summary.estimatedTotalCost && (summary.estimatedInputCost || summary.estimatedOutputCost)) summary.estimatedTotalCost = summary.estimatedInputCost + summary.estimatedOutputCost;
+  const input = Number(summary.prompt || summary.input || 0);
+  summary.cacheHitRate = input > 0 ? Number(summary.cached || 0) / input : 0;
   summary.budgetLimit = runWorkflowBudgetLimitText(summary);
-  return summary.prompt || summary.output || summary.cached || summary.total || summary.estimatedPrompt || summary.savedTokens || summary.grossPrompt || summary.budgetLimit || summary.estimatedTotalCost || summary.estimatedInputCost || summary.estimatedOutputCost || summary.samples ? summary : null;
+  return summary.reported || summary.prompt || summary.output || summary.cached || summary.total || summary.estimatedPrompt || summary.savedTokens || summary.grossPrompt || summary.budgetLimit || summary.estimatedTotalCost || summary.estimatedInputCost || summary.estimatedOutputCost || summary.samples ? summary : null;
 }
 
 function runEmptyBudgetAttribution() {
@@ -4872,10 +6394,21 @@ function runWorkflowBudgetLimitText(summary = {}) {
   return parts.join(" / ");
 }
 
-function tokenCountText(value) {
+function tokenCountText(value, options = {}) {
   const number = Number(value || 0);
-  if (!Number.isFinite(number) || number <= 0) return "-";
-  return `${number.toLocaleString()} ${t("chat.tokens")}`;
+  return formatTokenText(number, t("chat.tokens"), { allowZero: Boolean(options.allowZero) });
+}
+
+function tokenCacheHitRateText(usage = {}) {
+  let rate = Number(usage.cacheHitRate);
+  if (!Number.isFinite(rate) || rate < 0) {
+    const input = Number(usage.input || usage.prompt || 0);
+    rate = input > 0 ? Number(usage.cached || 0) / input : 0;
+  }
+  if (rate > 1 && rate <= 100) rate /= 100;
+  if (rate > 1) rate = 1;
+  const percent = rate * 100;
+  return `${percent.toFixed(2)}%`;
 }
 
 function costText(value, currency = "") {
@@ -4946,6 +6479,183 @@ function renderRunSupplementalDetails(state, run) {
   updateResultEmptyState(state);
 }
 
+function renderRunExecutionSummary(state, run) {
+  if (!state?.resultOutput) return;
+  state.resultOutput.querySelector("[data-result-execution]")?.remove();
+  const execution = normalizedRunExecutionSummary(run);
+  if (!execution) {
+    updateResultEmptyState(state);
+    return;
+  }
+  ensureResultOutputShell(state);
+  const wrapper = document.createElement("div");
+  wrapper.dataset.resultExecution = "true";
+  wrapper.innerHTML = runPreviewLinksHTML(run?.execution?.previews || []) + runExecutionSummaryHTML(execution);
+  const firstContent = state.resultOutput.querySelector(":scope > :not(.result-section-label)");
+  if (firstContent) state.resultOutput.insertBefore(wrapper, firstContent);
+  else state.resultOutput.appendChild(wrapper);
+  state.resultOutput.classList.remove("hidden");
+  state.hasResult = true;
+  updateResultEmptyState(state);
+}
+
+function normalizedRunExecutionSummary(run = {}) {
+  const source = run?.execution && typeof run.execution === "object" ? run.execution : {};
+  const slices = Array.isArray(source.change_slices)
+    ? source.change_slices.slice(0, 12)
+    : Array.isArray(run.change_slices) ? run.change_slices.slice(0, 12) : [];
+  const current = source.current_slice && typeof source.current_slice === "object"
+    ? source.current_slice
+    : slices.find(slice => ["running", "in_progress", "active", "blocked", "awaiting_approval", "awaiting_input"].includes(String(slice?.status || "").toLowerCase()))
+      || slices.find(slice => !["completed", "succeeded", "verified", "skipped"].includes(String(slice?.status || "").toLowerCase()))
+      || slices.at(-1)
+      || null;
+  const contractSource = source.contract && typeof source.contract === "object" ? source.contract : {};
+  const contract = {
+    request: String(contractSource.request || run.request || "").trim(),
+    workflow: String(contractSource.workflow || run.name || "").trim(),
+    status: String(contractSource.status || run.status || "").trim(),
+    current_stage: String(contractSource.current_stage || run.next_stage || "").trim(),
+    target_id: String(contractSource.target_id || run.target_id || "").trim()
+  };
+  const blockers = Array.isArray(source.blockers) ? source.blockers.filter(Boolean).slice(0, 6) : [];
+  if (!blockers.length && current?.blocked_reason) blockers.push(current.blocked_reason);
+  const verification = Array.isArray(source.verification) ? source.verification.slice(0, 12) : [];
+  const artifacts = Array.isArray(source.artifacts) ? source.artifacts.slice(0, 12) : [];
+  const outcomeSource = source.outcome && typeof source.outcome === "object" ? source.outcome : {};
+  const outcome = {
+    conclusion: String(outcomeSource.conclusion || "").trim(),
+    qualityScore: Number(outcomeSource.quality_score || 0),
+    durationMS: Number(outcomeSource.duration_ms || 0),
+    modelCalls: Number(outcomeSource.model_calls || 0),
+    toolCalls: Number(outcomeSource.tool_calls || 0),
+    changeCount: Number(outcomeSource.change_count || 0),
+    artifactCount: Number(outcomeSource.artifact_count || 0),
+    changedFiles: Array.isArray(outcomeSource.changed_files) ? outcomeSource.changed_files.filter(Boolean) : [],
+    unverified: Array.isArray(outcomeSource.unverified) ? outcomeSource.unverified.filter(Boolean) : [],
+    remainingRisks: Array.isArray(outcomeSource.remaining_risks) ? outcomeSource.remaining_risks.filter(Boolean) : []
+  };
+  if (!slices.length && !blockers.length && !verification.length && !artifacts.length && !contract.request && !contract.workflow) return null;
+  return {
+    contract,
+    outcome,
+    current,
+    slices,
+    blockers,
+    verification,
+    artifacts,
+    omittedSlices: Number(source.omitted_slices || 0),
+    omittedChecks: Number(source.omitted_verification || 0),
+    omittedArtifacts: Number(source.omitted_artifacts || 0)
+  };
+}
+
+function runExecutionSummaryHTML(execution) {
+  const current = execution.current || {};
+  const outcome = execution.outcome || {};
+  const conclusion = execution.contract.status === "paused_need_more_budget" ? execution.contract.status : outcome.conclusion;
+  const currentTitle = runExecutionOutcomeTitle(conclusion) || current.title || execution.contract.current_stage || execution.contract.workflow || t("chat.executionSummaryNoSlice");
+  const currentStatus = conclusion || current.status || execution.contract.status || "";
+  const blocker = execution.blockers[0] || "";
+  const facts = [
+    outcome.changeCount ? t("chat.executionSummaryChangedCount", { count: outcome.changeCount }) : "",
+    outcome.toolCalls ? t("chat.executionSummaryToolCalls", { count: outcome.toolCalls }) : "",
+    outcome.modelCalls ? t("chat.executionSummaryModelCalls", { count: outcome.modelCalls }) : "",
+    outcome.durationMS ? formatTimelineDuration(outcome.durationMS) : "",
+    execution.slices.length ? t("chat.executionSummarySliceCount", { count: execution.slices.length + execution.omittedSlices }) : "",
+    execution.verification.length ? t("chat.executionSummaryVerificationCount", { count: execution.verification.length + execution.omittedChecks }) : "",
+    execution.artifacts.length ? t("chat.executionSummaryArtifactCount", { count: execution.artifacts.length + execution.omittedArtifacts }) : ""
+  ].filter(Boolean).join(" · ");
+  const contractRows = [
+    [t("chat.executionSummaryGoal"), execution.contract.request],
+    [t("chat.executionSummaryWorkflow"), execution.contract.workflow],
+    [t("chat.executionSummaryStage"), execution.contract.current_stage],
+    [t("chat.executionSummaryTarget"), execution.contract.target_id]
+  ].filter(([, value]) => value);
+  const blockers = execution.blockers.length
+    ? `<section><h4>${escapeHTML(t("chat.executionSummaryBlockers"))}</h4><ul class="run-execution-blockers">${execution.blockers.map(value => `<li>${escapeHTML(chatDisplayText(value))}</li>`).join("")}</ul></section>`
+    : "";
+  const slices = execution.slices.length
+    ? `<section><h4>${escapeHTML(t("chat.executionSummarySlices"))}</h4><div class="run-execution-slices">${execution.slices.map(runExecutionSliceHTML).join("")}</div></section>`
+    : "";
+  const verification = execution.verification.length
+    ? `<section><h4>${escapeHTML(t("chat.executionSummaryVerification"))}</h4><ul class="run-execution-checks">${execution.verification.map(runExecutionVerificationHTML).join("")}</ul></section>`
+    : "";
+  const artifacts = execution.artifacts.length
+    ? `<section><h4>${escapeHTML(t("chat.executionSummaryArtifacts"))}</h4><ul class="run-execution-artifacts">${execution.artifacts.map(runExecutionArtifactHTML).join("")}</ul></section>`
+    : "";
+  const outcomeIssues = [...outcome.unverified, ...outcome.remainingRisks];
+  const outcomeHTML = `<section class="run-execution-outcome ${escapeHTML(runExecutionStatusTone(outcome.conclusion))}">
+    <div class="run-execution-outcome-head"><strong>${escapeHTML(runExecutionOutcomeTitle(conclusion) || t("chat.executionSummaryTitle"))}</strong>${outcome.conclusion ? `<span>${escapeHTML(t("chat.executionSummaryQuality", { score: outcome.qualityScore }))}</span>` : ""}</div>
+    ${outcome.changedFiles.length ? `<p>${escapeHTML(t("chat.executionSummaryChangedFiles", { files: outcome.changedFiles.join(", ") }))}</p>` : ""}
+    ${outcomeIssues.length ? `<ul>${outcomeIssues.map(value => `<li>${escapeHTML(chatDisplayText(value))}</li>`).join("")}</ul>` : `<p>${escapeHTML(t("chat.executionSummaryNoOutstandingIssues"))}</p>`}
+  </section>`;
+  const open = runExecutionStatusTone(outcome.conclusion) === "bad" || execution.blockers.length > 0;
+  return `<details class="run-execution-summary"${open ? " open" : ""}>
+    <summary>
+      <span class="run-execution-heading"><strong>${escapeHTML(t("chat.executionSummaryTitle"))}</strong><small>${escapeHTML(chatDisplayText(currentTitle))}</small></span>
+      ${currentStatus ? `<span class="run-execution-status ${escapeHTML(runExecutionStatusTone(currentStatus))}">${escapeHTML(runExecutionOutcomeTitle(currentStatus) || workflowRunStatusLabel(currentStatus))}</span>` : ""}
+      <span class="run-execution-facts">${escapeHTML(chatDisplayText(blocker || facts || t("chat.executionSummaryEmpty")))}</span>
+    </summary>
+    <div class="run-execution-body">
+      ${outcomeHTML}
+      ${contractRows.length ? `<section><h4>${escapeHTML(t("chat.executionSummaryContract"))}</h4><dl>${contractRows.map(([label, value]) => `<div><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(chatDisplayText(value))}</dd></div>`).join("")}</dl></section>` : ""}
+      ${blockers}${slices}${verification}${artifacts}
+    </div>
+  </details>`;
+}
+
+function runExecutionOutcomeTitle(conclusion) {
+  const value = String(conclusion || "").toLowerCase();
+  if (["partial", "unverified"].includes(value)) return t(`chat.runDeliveryConclusion.${value}`);
+  if (value === "paused_need_more_budget") return workflowRunStatusLabel(value);
+  if (value === "success") return t("chat.executionOutcomePassed");
+  if (value === "failed") return t("chat.executionOutcomeFailed");
+  if (value === "running") return t("chat.executionOutcomeRunning");
+  if (value === "waiting_input") return t("chat.executionOutcomeWaiting");
+  return "";
+}
+
+function runExecutionSliceHTML(slice = {}) {
+  const targets = Array.isArray(slice.target_files) ? slice.target_files.filter(Boolean) : [];
+  const checks = Array.isArray(slice.verification_commands) ? slice.verification_commands.filter(Boolean) : [];
+  const detail = [
+    targets.length ? t("chat.executionSummaryTargets", { value: targets.join(", ") }) : "",
+    Array.isArray(slice.changed_files) && slice.changed_files.length ? `${t("chat.deliveryChangedFiles")}: ${slice.changed_files.filter(Boolean).join(", ")}` : "",
+    checks.length ? t("chat.executionSummaryCommands", { value: checks.join(" · ") }) : "",
+    slice.blocked_reason ? chatDisplayText(slice.blocked_reason) : ""
+  ].filter(Boolean).join(" · ");
+  return `<div class="run-execution-slice${slice.blocked_reason ? " blocked" : ""}">
+    <span><strong>${escapeHTML(chatDisplayText(slice.title || slice.id || t("chat.executionSummaryNoSlice")))}</strong>${detail ? `<small>${escapeHTML(detail)}</small>` : ""}</span>
+    <em class="${escapeHTML(runExecutionStatusTone(slice.status))}">${escapeHTML(workflowRunStatusLabel(slice.status))}</em>
+  </div>`;
+}
+
+function runExecutionVerificationHTML(check = {}) {
+  const kind = String(check.kind || "").toLowerCase();
+  const title = kind === "verifier"
+    ? t("chat.executionSummaryVerifier")
+    : kind === "tool"
+      ? taskToolDisplayName(check.name || check.kind)
+      : check.name || check.kind || t("chat.executionSummaryVerification");
+  const detail = [check.stage, check.detail].filter(Boolean).map(chatDisplayText).join(" · ");
+  return `<li><span><strong>${escapeHTML(chatDisplayText(title))}</strong>${detail ? `<small>${escapeHTML(detail)}</small>` : ""}</span><em class="${escapeHTML(runExecutionStatusTone(check.status))}">${escapeHTML(workflowRunStatusLabel(check.status))}</em></li>`;
+}
+
+function runExecutionArtifactHTML(artifact = {}) {
+  const title = artifact.title || artifact.id || artifact.artifact_ref || t("chat.executionSummaryArtifact");
+  const detail = [artifact.kind, artifact.mime, artifact.summary].filter(Boolean).map(chatDisplayText).join(" · ");
+  return `<li><strong>${escapeHTML(chatDisplayText(title))}</strong>${detail ? `<small>${escapeHTML(detail)}</small>` : ""}</li>`;
+}
+
+function runExecutionStatusTone(status) {
+  const value = String(status || "").toLowerCase();
+  if (["completed", "complete", "passed", "verified", "success", "succeeded"].includes(value)) return "good";
+  if (["failed", "error", "blocked", "denied", "cancelled", "canceled"].includes(value)) return "bad";
+  if (["running", "in_progress", "active"].includes(value)) return "active";
+  return "neutral";
+}
+
 function ensureResultOutputShell(state) {
   if (!state?.resultOutput) return;
   if (!state.resultOutput.querySelector(".result-section-label")) {
@@ -4957,13 +6667,14 @@ function runSupplementalDetailItems(run) {
   const items = [];
   const tokenSummary = runTokenUsageSummary(run);
   if (tokenSummary) {
-    const estimated = tokenSummary.grossPrompt || tokenSummary.estimatedPrompt || tokenSummary.total || tokenSummary.prompt || 0;
+    const actual = tokenSummary.total || tokenSummary.prompt + tokenSummary.output || 0;
     items.push({
       kind: "cost",
       title: t("chat.runContextualCostTitle"),
-      body: estimated ? t("chat.runContextualCostBody", { tokens: tokenCountText(estimated) }) : t("chat.tokenHelp"),
+      body: actual ? t("chat.runContextualCostBody", { tokens: tokenCountText(actual) }) : t("chat.tokenHelp"),
       action: t("chat.runContextualOpenContext"),
-      detail: runTokenUsageHTML(run, { compact: true })
+      detail: runTokenUsageHTML(run, { compact: true }),
+      open: false
     });
   }
   const toolRisk = `${runSkillScriptContextHTML(run, { compact: true })}${runToolRiskMiniHTML(run, { compact: true })}`;
@@ -4980,19 +6691,41 @@ function runSupplementalDetailItems(run) {
   const artifactCount = workflowRunArtifacts(run).length || run?.artifacts_count || 0;
   const stageCount = workflowRunStages(run).length || run?.stages_count || 0;
   if (diffCount || artifactCount || stageCount || workflowRunQualitySummary(run)) {
+    const quality = workflowRunQualitySummary(run);
     items.push({
       kind: "evidence",
       title: t("chat.runContextualEvidenceTitle"),
       body: t("chat.runContextualEvidenceBody", { artifacts: artifactCount, diffs: diffCount }),
       action: t("chat.runContextualOpenEvidence"),
-      detail: runEvidenceSummaryHTML(run)
+      detail: runEvidenceSummaryHTML(run),
+      open: Boolean(quality && ["failed", "blocked", "error"].includes(String(quality.status || "").toLowerCase()))
     });
   }
   return items;
 }
 
+function runResourcePins(run) {
+	const pins = Array.isArray(run?.resource_pins) ? run.resource_pins : [];
+	return pins
+		.map(pin => ({
+			kind: String(pin?.kind || "").trim(),
+			name: String(pin?.name || "").trim(),
+			version: String(pin?.version || "").trim()
+		}))
+		.filter(pin => pin.kind && pin.name && pin.version)
+		.sort((left, right) => `${left.kind}/${left.name}`.localeCompare(`${right.kind}/${right.name}`));
+}
+
+function runResourcePinsHTML(pins) {
+	return `<div class="run-evidence-meta">${pins.map(pin => {
+		const hash = pin.version.startsWith("sha256:") ? pin.version.slice(7) : pin.version;
+		const compact = hash.length > 16 ? `${hash.slice(0, 12)}...` : hash;
+		return `<span><small>${escapeHTML(`${pin.kind} / ${pin.name}`)}</small><code title="${escapeHTML(pin.version)}">${escapeHTML(compact)}</code></span>`;
+	}).join("")}</div>`;
+}
+
 function runSupplementalDetailItemHTML(item) {
-  return `<details class="run-contextual-prompt ${escapeHTML(item.kind || "")}">
+  return `<details class="run-contextual-prompt ${escapeHTML(item.kind || "")}"${item.open ? " open" : ""}>
     <summary>
       <span>
         <strong>${escapeHTML(item.title)}</strong>
@@ -5063,7 +6796,7 @@ function runSkillScriptContextHTML(run, options = {}) {
 function runToolRiskMiniHTML(run, options = {}) {
   const { risk, toolName, doc } = runToolRiskContext(run);
   if (!risk) return "";
-  const container = runToolContainerSummary(risk, doc);
+  const sandbox = runToolSandboxSummary(risk, doc);
   const level = String(risk.risk_level || "").trim();
   const tone = runToolRiskTone(risk);
   const workspaceScoped = risk.workspace_scoped_inputs === true;
@@ -5076,20 +6809,17 @@ function runToolRiskMiniHTML(run, options = {}) {
     risk.external_sandbox_recommended ? runToolRiskChipHTML(t("chat.toolRiskExternalSandbox"), "warn") : "",
     workspaceScoped ? runToolRiskChipHTML(t("chat.toolRiskWorkspaceInputs"), workspaceEnforced ? "good" : "warn") : "",
     workspaceScoped ? runToolRiskChipHTML(workspaceEnforced ? t("chat.toolRiskWorkspaceEnforced") : t("chat.toolRiskWorkspaceNotEnforced"), workspaceEnforced ? "good" : "warn") : "",
-    ...runToolContainerChips(container)
+    ...runToolSandboxChips(sandbox)
   ].filter(Boolean).join("");
   const facts = [
-    toolName ? [t("chat.tool"), toolName] : null,
+    toolName ? [t("chat.tool"), taskToolDisplayName(toolName)] : null,
     risk.kind ? [t("chat.toolRiskKind"), runToolRiskKindLabel(risk.kind)] : null,
     risk.isolation_level || risk.isolation ? [t("chat.toolRiskIsolation"), runToolRiskIsolationLabel(risk.isolation_level || risk.isolation)] : null,
     Array.isArray(risk.capabilities) && risk.capabilities.length ? [t("chat.toolRiskCapabilities"), risk.capabilities.slice(0, 4).join(", ")] : null,
     workspaceScoped ? [t("chat.toolRiskWorkspaceScope"), workspaceEnforced ? t("chat.toolRiskWorkspaceEnforced") : t("chat.toolRiskWorkspaceNotEnforced")] : null,
-    container.isolation_profile ? [t("catalog.isolationProfile"), runToolIsolationProfileLabel(container.isolation_profile)] : null,
-    container.container_image ? [t("catalog.isolationImage"), container.container_image] : null,
-    container.container_pull_policy ? [t("catalog.isolationPullPolicy"), runToolContainerPullPolicyLabel(container.container_pull_policy)] : null,
-    container.sandbox_features.length ? [t("catalog.sandboxFeatures"), runToolSandboxFeatureListLabel(container.sandbox_features)] : null,
-    container.missing_sandbox_features.length ? [t("catalog.sandboxMissingFeatures"), runToolSandboxFeatureListLabel(container.missing_sandbox_features)] : null,
-    container.windows_isolation ? [t("catalog.windowsIsolation"), runToolWindowsIsolationLabel(container.windows_isolation)] : null
+    sandbox.sandbox_features.length ? [t("catalog.sandboxFeatures"), runToolSandboxFeatureListLabel(sandbox.sandbox_features)] : null,
+    sandbox.missing_sandbox_features.length ? [t("catalog.sandboxMissingFeatures"), runToolSandboxFeatureListLabel(sandbox.missing_sandbox_features)] : null,
+    sandbox.windows_isolation ? [t("catalog.windowsIsolation"), runToolWindowsIsolationLabel(sandbox.windows_isolation)] : null
   ].filter(Boolean);
   const warnings = [
     workspaceScoped && !workspaceEnforced ? t("chat.toolRiskWorkspaceNotEnforcedHelp") : "",
@@ -5102,7 +6832,7 @@ function runToolRiskMiniHTML(run, options = {}) {
     <div class="run-evidence-head">
       <div>
         <strong>${escapeHTML(t("chat.toolRiskTitle"))}</strong>
-        <span>${escapeHTML(toolName || t("chat.toolRiskProfile"))}</span>
+        <span>${escapeHTML(taskToolDisplayName(toolName) || t("chat.toolRiskProfile"))}</span>
       </div>
       <small>${escapeHTML(runToolRiskLevelLabel(level || "unknown"))}</small>
     </div>
@@ -5153,12 +6883,6 @@ function isToolRiskProfile(risk) {
     "isolation_level",
     "isolation",
     "isolation_options",
-    "isolation_profile",
-    "container_image",
-    "container_image_reference_type",
-    "container_image_digest_pinned",
-    "container_image_production_ready",
-    "container_pull_policy",
     "sandbox_features",
     "missing_sandbox_features",
     "windows_isolation"
@@ -5167,7 +6891,6 @@ function isToolRiskProfile(risk) {
 
 function toolRiskSignature(risk) {
   if (!isToolRiskProfile(risk)) return "";
-  const isolationOptions = risk?.isolation_options || {};
   return [
     risk.risk_level || "",
     risk.kind || "",
@@ -5178,12 +6901,6 @@ function toolRiskSignature(risk) {
     risk.external_sandbox_recommended === true ? "external" : "",
     risk.workspace_scoped_inputs === true ? "path-inputs" : "",
     risk.workspace_scope_enforced === true ? "workspace-enforced" : risk.workspace_scope_enforced === false ? "workspace-open" : "",
-    risk.isolation_profile || "",
-    risk.container_image || isolationOptions.image || "",
-    risk.container_image_reference_type || "",
-    typeof risk.container_image_digest_pinned === "boolean" ? `digest:${risk.container_image_digest_pinned}` : "",
-    typeof risk.container_image_production_ready === "boolean" ? `production:${risk.container_image_production_ready}` : "",
-    risk.container_pull_policy || isolationOptions.pull_policy || "",
     Array.isArray(risk.sandbox_features) ? risk.sandbox_features.join(",") : "",
     Array.isArray(risk.missing_sandbox_features) ? risk.missing_sandbox_features.join(",") : "",
     risk.windows_isolation ? JSON.stringify(risk.windows_isolation) : "",
@@ -5204,76 +6921,23 @@ function runToolRiskChipHTML(label, tone = "") {
   return `<span class="resource-risk-chip ${escapeHTML(tone)}">${escapeHTML(label)}</span>`;
 }
 
-function runToolContainerSummary(risk = {}, doc = {}) {
-  const riskOptions = risk?.isolation_options || {};
-  const docOptions = doc?.isolation_options || {};
+function runToolSandboxSummary(risk = {}, doc = {}) {
   return {
-    isolation_profile: runFirstNonEmpty(risk.isolation_profile, doc.isolation_profile, riskOptions.profile, docOptions.profile),
-    container_image: runFirstNonEmpty(risk.container_image, doc.container_image, riskOptions.image, docOptions.image),
-    container_image_reference_type: runFirstNonEmpty(risk.container_image_reference_type, doc.container_image_reference_type),
-    container_image_digest_pinned: runFirstBoolean(risk.container_image_digest_pinned, doc.container_image_digest_pinned),
-    container_image_production_ready: runFirstBoolean(risk.container_image_production_ready, doc.container_image_production_ready),
-    container_pull_policy: runFirstNonEmpty(risk.container_pull_policy, doc.container_pull_policy, riskOptions.pull_policy, docOptions.pull_policy),
     sandbox_features: runFirstArray(risk.sandbox_features, doc.sandbox_features),
     missing_sandbox_features: runFirstArray(risk.missing_sandbox_features, doc.missing_sandbox_features),
     windows_isolation: risk.windows_isolation || doc.windows_isolation || null
   };
 }
 
-function runToolContainerChips(container = {}) {
+function runToolSandboxChips(sandbox = {}) {
   const chips = [];
-  const refType = String(container.container_image_reference_type || "").trim();
-  if (refType) {
-    chips.push(runToolRiskChipHTML(runToolContainerImageReferenceLabel(refType), runToolContainerImageReferenceTone(refType)));
+  if (Array.isArray(sandbox.sandbox_features) && sandbox.sandbox_features.length) {
+    chips.push(runToolRiskChipHTML(t("catalog.sandboxEnabledCount", { count: sandbox.sandbox_features.length }), "good"));
   }
-  if (typeof container.container_image_digest_pinned === "boolean") {
-    chips.push(runToolRiskChipHTML(container.container_image_digest_pinned ? t("catalog.containerDigestPinned") : t("catalog.containerDigestNotPinned"), container.container_image_digest_pinned ? "good" : "warn"));
-  }
-  if (typeof container.container_image_production_ready === "boolean") {
-    chips.push(runToolRiskChipHTML(container.container_image_production_ready ? t("catalog.containerProductionReady") : t("catalog.containerProductionNotReady"), container.container_image_production_ready ? "good" : "warn"));
-  }
-  if (container.container_pull_policy) {
-    chips.push(runToolRiskChipHTML(runToolContainerPullPolicyLabel(container.container_pull_policy), runToolContainerPullPolicyTone(container.container_pull_policy)));
-  }
-  if (Array.isArray(container.sandbox_features) && container.sandbox_features.length) {
-    chips.push(runToolRiskChipHTML(t("catalog.sandboxEnabledCount", { count: container.sandbox_features.length }), "good"));
-  }
-  if (Array.isArray(container.missing_sandbox_features) && container.missing_sandbox_features.length) {
-    chips.push(runToolRiskChipHTML(t("catalog.sandboxMissingCount", { count: container.missing_sandbox_features.length }), "warn"));
+  if (Array.isArray(sandbox.missing_sandbox_features) && sandbox.missing_sandbox_features.length) {
+    chips.push(runToolRiskChipHTML(t("catalog.sandboxMissingCount", { count: sandbox.missing_sandbox_features.length }), "warn"));
   }
   return chips;
-}
-
-function runToolContainerImageReferenceTone(value) {
-  const normalized = String(value || "").toLowerCase();
-  if (normalized === "digest") return "good";
-  if (normalized === "floating" || normalized === "missing") return "warn";
-  return "neutral";
-}
-
-function runToolContainerImageReferenceLabel(value) {
-  const normalized = String(value || "").toLowerCase();
-  const translated = t(`catalog.containerImageRef.${normalized}`);
-  return translated === `catalog.containerImageRef.${normalized}` ? localizedText(value) : translated;
-}
-
-function runToolContainerPullPolicyTone(value) {
-  const normalized = String(value || "").toLowerCase();
-  if (normalized === "never") return "good";
-  if (normalized === "always") return "warn";
-  return "neutral";
-}
-
-function runToolContainerPullPolicyLabel(value) {
-  const normalized = String(value || "").toLowerCase();
-  const translated = t(`catalog.pullPolicy.${normalized}`);
-  return translated === `catalog.pullPolicy.${normalized}` ? localizedText(value) : translated;
-}
-
-function runToolIsolationProfileLabel(value) {
-  const normalized = String(value || "").toLowerCase();
-  const translated = t(`catalog.isolationProfile.${normalized}`);
-  return translated === `catalog.isolationProfile.${normalized}` ? localizedText(value) : translated;
 }
 
 function runToolSandboxFeatureListLabel(features = []) {
@@ -5295,18 +6959,6 @@ function runToolWindowsIsolationLabel(profile = {}) {
     profile.lifecycle_only ? t("catalog.windowsIsolation.lifecycleOnly") : ""
   ].filter(Boolean);
   return labels.join(", ") || t("catalog.windowsIsolation.none");
-}
-
-function runFirstNonEmpty(...values) {
-  for (const value of values) {
-    const text = String(value || "").trim();
-    if (text) return text;
-  }
-  return "";
-}
-
-function runFirstBoolean(...values) {
-  return values.find(value => typeof value === "boolean");
 }
 
 function runFirstArray(...values) {
@@ -5414,6 +7066,7 @@ function workflowRunDeliveryHTML(run, options = {}) {
   const artifacts = workflowRunArtifacts(run);
   const stages = workflowRunStages(run);
   const diffs = Array.isArray(run?.diffs) ? run.diffs : [];
+  const diffCount = diffs.length || Number(run?.diffs_count || 0);
   const publicSummary = publicResultText(options.summary || "");
   const hasOutput = Boolean(options.hasOutput && publicSummary && publicSummary !== t("chat.runHistoryNoSummary"));
   const summary = publicSummary || t("chat.deliveryNoSummary");
@@ -5430,9 +7083,9 @@ function workflowRunDeliveryHTML(run, options = {}) {
     },
     {
       label: t("chat.deliveryChangedFiles"),
-      value: diffs.length ? t("chat.deliveryChangedFilesCount", { count: diffs.length }) : t("chat.deliveryNone"),
-      detail: filePreview || t("chat.deliveryChangedFilesHelp"),
-      tone: diffs.length ? "info" : "neutral"
+      value: diffCount ? t("chat.deliveryChangedFilesCount", { count: diffCount }) : t("chat.deliveryNone"),
+      detail: filePreview || (diffCount ? t("chat.runHistoryLazyDiffsHelp") : t("chat.deliveryChangedFilesHelp")),
+      tone: diffCount ? "info" : "neutral"
     },
     {
       label: t("chat.deliveryArtifacts"),
@@ -5579,6 +7232,7 @@ function normalizeRunArtifactItem(item = {}) {
   let storedBytesValue = item.stored_bytes;
   if (storedBytesValue === null || storedBytesValue === undefined) storedBytesValue = item.storedBytes;
   if (storedBytesValue === null || storedBytesValue === undefined) storedBytesValue = 0;
+  const workspaceArtifact = workspaceArtifactPayload(item);
   return {
     ...item,
     id: item.id || item.name || ref || item.title || item.kind || "artifact",
@@ -5590,11 +7244,43 @@ function normalizeRunArtifactItem(item = {}) {
     artifact_ref: item.artifact_ref || item.artifactRef || ref,
     size: Number(sizeValue || 0),
     stored_bytes: Number(storedBytesValue || 0),
-    metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {}
+    metadata: item.metadata && typeof item.metadata === "object" ? item.metadata : {},
+    workspace_artifact: workspaceArtifact
   };
 }
 
+function workspaceArtifactPayload(item = {}) {
+  const candidates = [item, item.metadata];
+  const content = String(item.content || "").trim();
+  if (content.startsWith("{") && content.endsWith("}")) {
+    try {
+      candidates.push(JSON.parse(content));
+    } catch {
+      // Tool summaries are allowed to be ordinary text.
+    }
+  }
+  for (const candidate of candidates) {
+    if (!candidate || typeof candidate !== "object" || Array.isArray(candidate)) continue;
+    const artifactPath = String(candidate.artifact_path || candidate.artifactPath || "").trim();
+    if (!artifactPath) continue;
+    return {
+      artifact_path: artifactPath,
+      pdf_path: String(candidate.pdf_path || candidate.pdfPath || "").trim(),
+      preview_paths: Array.isArray(candidate.preview_paths)
+        ? candidate.preview_paths.map(value => String(value || "").trim()).filter(Boolean)
+        : Array.isArray(candidate.previewPaths)
+          ? candidate.previewPaths.map(value => String(value || "").trim()).filter(Boolean)
+          : [],
+      mime: String(candidate.mime || item.mime || "").trim(),
+      sha256: String(candidate.sha256 || "").trim()
+    };
+  }
+  return null;
+}
+
 function selectRunArtifact(items) {
+  const officeArtifact = items.find(item => item.workspace_artifact?.artifact_path);
+  if (officeArtifact) return officeArtifact;
   return items.find(item => String(item.content || "").trim()) || items[0];
 }
 
@@ -5603,7 +7289,7 @@ function runArtifactListItemHTML(item, selected) {
   const summary = compactRunArtifactText(item.summary || item.content || t("chat.runArtifactNoSummary"), 150);
   const meta = [
     item.stage ? localizedText(item.stage) : "",
-    item.tool_name || item.toolName || "",
+    taskToolDisplayName(item.tool_name || item.toolName || ""),
     item.size ? `${formatRunArtifactNumber(item.size)} B` : ""
   ].filter(Boolean);
   return `<article class="run-artifact-list-item ${selected ? "active" : ""} ${item.is_error ? "error" : ""}" role="listitem">
@@ -5628,13 +7314,14 @@ function runArtifactPreviewHTML(item = {}) {
   const meta = [
     item.kind ? [t("chat.runArtifactKind"), artifactKindLabel(item.kind) || item.kind] : null,
     item.stage ? [t("chat.runHistoryStage"), localizedText(item.stage)] : null,
-    item.tool_name ? [t("chat.tool"), item.tool_name] : null,
+    item.tool_name ? [t("chat.tool"), taskToolDisplayName(item.tool_name)] : null,
     item.mime ? [t("chat.artifactViewerMime"), item.mime] : null,
     item.size ? [t("chat.artifactViewerSize"), `${formatRunArtifactNumber(item.size)} B`] : null,
     item.stored_bytes ? [t("chat.artifactViewerStored"), `${formatRunArtifactNumber(item.stored_bytes)} B`] : null,
     metadata.status ? [t("chat.runHistoryStatus"), localizedText(metadata.status)] : null,
     metadata.files ? [t("chat.deliveryChangedFiles"), metadata.files] : null
   ].filter(Boolean);
+  const officeArtifact = officeArtifactHTML(item.workspace_artifact, { preview: true });
   return `<div class="run-artifact-preview-inner ${item.is_error ? "error" : ""}">
     <div class="run-artifact-preview-head">
       <div>
@@ -5645,12 +7332,13 @@ function runArtifactPreviewHTML(item = {}) {
     </div>
     ${summary && item.content ? `<p class="run-artifact-preview-summary">${escapeHTML(compactRunArtifactText(localizedText(summary), 260))}</p>` : ""}
     ${meta.length ? `<div class="run-evidence-meta">${meta.map(([label, value]) => evidenceMetaItemHTML(label, value)).join("")}</div>` : ""}
+    ${officeArtifact}
     <div class="run-artifact-content-shell">
       <div class="run-artifact-content-head">
         <span>${escapeHTML(item.content ? t("chat.artifactViewerContent") : t("chat.artifactViewerSummary"))}</span>
         <span>${escapeHTML(item.content ? t("chat.artifactViewerLoaded") : t("chat.artifactViewerSummaryOnly"))}</span>
       </div>
-      <div class="run-markdown run-artifact-content">${renderMarkdown(localizedRunMarkdownText(content))}</div>
+      <div class="run-markdown run-artifact-content">${renderMarkdown(markdownResultText(localizedRunMarkdownText(content)))}</div>
     </div>
   </div>`;
 }
@@ -5806,10 +7494,11 @@ function runArtifactCard(artifact) {
   const meta = [
     artifact.stage ? [t("chat.runHistoryStage"), localizedText(artifact.stage)] : null,
     artifact.kind ? [t("chat.runArtifactKind"), artifactKindLabel(artifact.kind)] : null,
-    artifact.tool_name ? [t("chat.tool"), artifact.tool_name] : null,
+    artifact.tool_name ? [t("chat.tool"), taskToolDisplayName(artifact.tool_name)] : null,
     isAcceptance && metadata.status ? [t("chat.acceptanceStatus"), acceptanceStatusLabel(metadata.status)] : null,
     isAcceptance && metadata.expected ? [t("chat.acceptanceExpected"), metadata.expected] : null
   ].filter(Boolean);
+  const workspaceArtifact = artifact.workspace_artifact || workspaceArtifactPayload(artifact);
   return `<article class="run-artifact-card ${artifact.is_error ? "error" : ""} ${isAcceptance ? acceptanceToneClass(metadata.status) : ""}">
     <div class="run-evidence-card-head">
       <strong>${escapeHTML(localizedText(title))}</strong>
@@ -5817,7 +7506,32 @@ function runArtifactCard(artifact) {
     </div>
     <div class="run-markdown run-evidence-text">${renderMarkdown(truncateEvidenceText(localizedRunMarkdownText(summary), 420))}</div>
     ${meta.length ? `<div class="run-evidence-meta">${meta.map(([label, value]) => evidenceMetaItemHTML(label, value)).join("")}</div>` : ""}
+    ${officeArtifactHTML(workspaceArtifact, { compact: true })}
   </article>`;
+}
+
+function officeArtifactHTML(payload, options = {}) {
+  if (!payload?.artifact_path) return "";
+  const path = String(payload.artifact_path || "").trim();
+  const previewPath = String(payload.preview_paths?.[0] || "").trim();
+  const pdfPath = String(payload.pdf_path || "").trim();
+  const downloadURL = workspaceArtifactURL(path, true);
+  const previewTarget = previewPath || pdfPath || (String(payload.mime || "").toLowerCase() === "application/pdf" ? path : "");
+  const previewURL = previewTarget ? workspaceArtifactURL(previewTarget, false) : "";
+  return `<div class="office-artifact ${options.compact ? "compact" : ""}">
+    ${options.preview && previewPath ? `<img loading="lazy" src="${escapeHTML(previewURL)}" alt="${escapeHTML(t("chat.officeArtifactPreviewAlt"))}">` : ""}
+    <div class="office-artifact-actions">
+      <a href="${escapeHTML(downloadURL)}">${escapeHTML(t("chat.officeArtifactDownload"))}</a>
+      ${previewURL ? `<a href="${escapeHTML(previewURL)}" target="_blank" rel="noopener">${escapeHTML(t("chat.officeArtifactPreview"))}</a>` : ""}
+      <button type="button" data-office-edit-path="${escapeHTML(path)}">${escapeHTML(t("chat.officeArtifactContinue"))}</button>
+    </div>
+  </div>`;
+}
+
+function workspaceArtifactURL(path, download) {
+  const params = new URLSearchParams({ path: String(path || "") });
+  if (download) params.set("download", "1");
+  return `/api/workspace-file?${params.toString()}`;
 }
 
 function runStageCard(stage) {
@@ -5830,9 +7544,9 @@ function runStageCard(stage) {
   const meta = [
     stage.status ? [t("chat.runHistoryStatus"), workflowRunTimelineLabel(stage.status)] : null,
     stage.node_type ? [t("workflow.runtimeField.nodeType"), localizedText(stage.node_type)] : null,
-    stage.agent_id ? [t("chat.agent"), localizedText(stage.agent_id)] : null,
-    stage.skill ? [t("chat.skill"), localizedText(stage.skill)] : null,
-    stage.tool ? [t("chat.tool"), localizedText(stage.tool)] : null,
+    stage.agent_id ? [t("chat.agent"), taskResourceDisplayName("agent", stage.agent_id, localizedText(stage.agent_id))] : null,
+    stage.skill ? [t("chat.skill"), taskResourceDisplayName("skill", stage.skill, localizedText(stage.skill))] : null,
+    stage.tool ? [t("chat.tool"), taskToolDisplayName(stage.tool)] : null,
     stage.attempts ? [t("workflow.runtimeField.attempts"), stage.attempts] : null,
     routeText ? [t("chat.runStageRoute"), routeText] : null,
     outputCount ? [t("workflow.runtimeField.outputs"), t("chat.runStageOutputsCount", { count: outputCount })] : null,
@@ -5976,7 +7690,9 @@ function runDiffItemHTML(item, options = {}) {
     item.stage ? [t("chat.runHistoryStage"), localizedText(item.stage)] : null,
     statusKey ? [t("chat.diffStatus"), diffStatusLabel(statusKey)] : null,
     item.line_range ? [t("chat.diffLineRange"), item.line_range] : null,
-    item.tool_name ? [t("chat.tool"), item.tool_name] : null
+    item.tool_name ? [t("chat.tool"), taskToolDisplayName(item.tool_name)] : null,
+    item.change_id ? [t("chat.diffChangeID"), item.change_id] : null,
+    item.reversible ? [t("chat.diffRecoveryScope"), item.recovery_scope || "file_only"] : null
   ].filter(Boolean);
   const detailKey = ["diff", item.path || "", item.stage || "", statusKey, statText].join("|");
   return `<details class="run-diff-item" data-detail-key="${escapeHTML(detailKey)}" ${options.compact ? "" : "open"}>
@@ -6686,13 +8402,19 @@ function detectRunContext(event, runState, collaborationState) {
 function resetRunState(state) {
   state.messages.innerHTML = "";
   state.timelinePinnedToLatest = true;
+  state.timelineSectionVisible = true;
   state.timelineUnseenEvents = 0;
+  state.tokenTotals = emptyTimelineTokenTotals();
+  state.tokenSeen = new Set();
+  state.lastPromptEstimate = 0;
   setTimelineJumpLatestVisible(state, false);
+  renderTimelineRunTotals(state);
   state.resultPreview.innerHTML = "";
   state.resultPreview.classList.add("hidden");
   state.resultOutput.innerHTML = "";
   state.resultOutput.classList.add("hidden");
   state.resultEmpty.classList.remove("hidden");
+  state.resultPanel?.classList.add("hidden");
   state.runAttention.innerHTML = "";
   state.runAttention.classList.add("hidden");
   state.hasResult = false;
@@ -6991,8 +8713,8 @@ function normalizeWorkflowInputField(field) {
   return {
     name,
     type,
-    label: String(field.label || field.title || name).trim(),
-    description: String(field.description || field.help || "").trim(),
+    label: String((currentLanguage() === "zh" ? (field.label_zh || field.labelZH) : "") || field.label || field.title || name).trim(),
+    description: String((currentLanguage() === "zh" ? (field.description_zh || field.descriptionZH) : "") || field.description || field.help || "").trim(),
     placeholder: String(field.placeholder || "").trim(),
     required: Boolean(field.required),
     defaultValue: field.default ?? field.default_value ?? "",
@@ -7373,8 +9095,17 @@ function handleRunEvent(event, messages, runState, collaborationState) {
   if (contextChanged && collaborationState && runState.currentRunID) {
     markCollaborationStale(collaborationState);
   }
+  rememberTimelinePromptEstimate(runState, event);
+  if (isProviderRequestStatusEvent(event)) {
+    appendRunTimelineEvent(messages, event);
+    return;
+  }
   if (event.type === "text") {
     updateStreamingResult(runState, event.content || "");
+    return;
+  }
+  if (event.type === "reasoning") {
+    updateStreamingReasoning(runState, event.content || "");
     return;
   }
   if (event.type === "final_message") {
@@ -7392,12 +9123,15 @@ function handleRunEvent(event, messages, runState, collaborationState) {
     return;
   }
   if (event.type === "token_usage") {
+    appendRunTimelineEvent(messages, event);
     return;
   }
   if (event.type === "workflow_result") {
     appendRunTimelineEvent(messages, event);
     const status = String(event.workflow_status || event.status || "").toLowerCase();
     if (isWorkflowRunTerminal(status)) {
+      const finalOutput = publicResultText(formatStructuredValue(event.content || event.summary || "", true));
+      if (finalOutput) replaceResult(runState, finalOutput);
       setTimelineHint(runState, t("chat.timelineDone"));
       setResultStatus(runState, t("chat.resultReady"));
     } else if (isApprovalStatus(status)) {
@@ -7426,7 +9160,7 @@ function handleRunEvent(event, messages, runState, collaborationState) {
   if (event.type === "approval") {
     runState.awaitingApproval = true;
     appendRunTimelineEvent(messages, event);
-    showRunAttention(runState, t("chat.awaitingApprovalTitle"), t("chat.awaitingApprovalHelp"), "approval", true);
+    showRunAttention(runState, t("chat.awaitingApprovalTitle"), t("chat.awaitingApprovalHelp"), "approval");
     setTimelineHint(runState, t("chat.timelineApproval"));
     setResultStatus(runState, t("chat.resultBlocked"));
     if (collaborationState) {
@@ -7445,6 +9179,10 @@ function appendRunTimelineEvent(messages, event) {
   appendTimelineEvent(messages, workflowRunEventToTimeline(event, null));
 }
 
+function appendSnapshotTimelineEvent(messages, event) {
+  if (event) appendTimelineEvent(messages, { ...event, accountUsage: false });
+}
+
 function appendTimelineEvent(messages, event, options = {}) {
   if (!event) return;
   const buffer = timelineEventBuffers.get(messages) || [];
@@ -7458,62 +9196,72 @@ function flushTimelineEvents() {
   timelineEventFlushFrame = 0;
   for (const [messages, entries] of timelineEventBuffers) {
     if (!messages?.isConnected || !entries.length) continue;
+    messages.querySelector(".timeline-empty-state")?.remove();
     const runState = timelineRunStates.get(messages);
-    const stickToBottom = shouldStickTimelineToBottom(messages, entries);
-    const fragment = document.createDocumentFragment();
+    const stickToLatest = shouldStickTimelineToLatest(messages, entries);
+    const heightBefore = messages.scrollHeight;
+    const created = [];
     let changed = 0;
     for (const { event, options } of entries) {
-      const signature = timelineEventSignature(event);
-      const coalesceKey = timelineEventCoalesceKey(event);
-      const previous = options.coalesce === false ? null : findRecentTimelineEventNode(messages, fragment, signature, coalesceKey);
+      const decorated = decorateTimelineEvent(event, runState);
+      if (!decorated) continue;
+      const signature = timelineEventSignature(decorated);
+      const coalesceKey = timelineEventCoalesceKey(decorated);
+      const previous = options.coalesce === false ? null : findRecentTimelineEventNode(messages, created, signature, coalesceKey);
       if (previous) {
-        incrementTimelineRepeat(previous, event);
+        incrementTimelineRepeat(previous, decorated);
+        applyTimelineEventUsage(runState, previous, decorated);
         changed += 1;
         continue;
       }
       const div = document.createElement("div");
-      div.className = `timeline-event ${event.tone || "neutral"}`;
+      div.className = `timeline-event ${decorated.tone || "neutral"}`;
       div.dataset.timelineSignature = signature;
       div.dataset.timelineCoalesceKey = coalesceKey;
       div.dataset.timelineRepeatCount = "1";
-      const detail = timelineEventDisplayDetail(event);
-      div.innerHTML = `
-        <div class="timeline-marker"></div>
-        <div class="timeline-card">
-          <strong>${escapeHTML(event.title || "")}</strong>
-          ${detail ? `<p>${escapeHTML(detail)}</p>` : ""}
-        </div>`;
-      fragment.appendChild(div);
+      if (decorated.stage) div.dataset.timelineStage = decorated.stage;
+      if (decorated.agent) div.dataset.timelineAgent = decorated.agent;
+      div.innerHTML = timelineEventCardHTML(decorated);
+      applyTimelineEventUsage(runState, div, decorated);
+      created.push(div);
       changed += 1;
     }
-    messages.appendChild(fragment);
-    if (stickToBottom) {
+    const fragment = document.createDocumentFragment();
+    for (let index = created.length - 1; index >= 0; index -= 1) fragment.appendChild(created[index]);
+    const anchor = messages.querySelector(":scope > .timeline-event, :scope > .timeline-window-notice");
+    if (anchor) messages.insertBefore(fragment, anchor);
+    else messages.appendChild(fragment);
+    trimTimelineWindow(messages, stickToLatest);
+    if (stickToLatest) {
       if (runState) {
         runState.timelinePinnedToLatest = true;
         runState.timelineUnseenEvents = 0;
         setTimelineJumpLatestVisible(runState, false);
       }
-      scrollTimelineToBottom(messages);
-    } else if (runState && changed > 0) {
-      runState.timelinePinnedToLatest = false;
-      runState.timelineUnseenEvents = Math.min(99, (runState.timelineUnseenEvents || 0) + changed);
-      setTimelineJumpLatestVisible(runState, true);
+      followTimelineLatest(runState, messages);
+    } else {
+      preserveTimelineScrollAfterPrepend(messages, messages.scrollHeight - heightBefore);
+      if (runState && changed > 0) {
+        runState.timelinePinnedToLatest = false;
+        runState.timelineUnseenEvents = Math.min(99, (runState.timelineUnseenEvents || 0) + changed);
+        setTimelineJumpLatestVisible(runState, true);
+      }
     }
   }
   timelineEventBuffers.clear();
 }
 
-function findRecentTimelineEventNode(messages, fragment, signature, coalesceKey) {
+function findRecentTimelineEventNode(messages, created, signature, coalesceKey) {
   const match = node => {
     if (!node?.classList?.contains("timeline-event")) return false;
     if (node.dataset.timelineSignature === signature) return true;
     return Boolean(coalesceKey && node.dataset.timelineCoalesceKey === coalesceKey);
   };
-  for (let node = fragment?.lastElementChild; node; node = node.previousElementSibling) {
-    if (match(node)) return node;
+  for (let index = created.length - 1; index >= 0; index -= 1) {
+    if (match(created[index])) return created[index];
   }
   let scanned = 0;
-  for (let node = messages?.lastElementChild; node && scanned < 18; node = node.previousElementSibling, scanned += 1) {
+  for (let node = messages?.firstElementChild; node && scanned < 18; node = node.nextElementSibling, scanned += 1) {
     if (match(node)) return node;
   }
   return null;
@@ -7541,6 +9289,196 @@ function timelineEventDisplayDetail(event = {}) {
   const title = timelineSignaturePart(event.title || "");
   const detail = timelineSignaturePart(event.detail || "");
   return isFragmentaryTimelineEvent(title, detail) ? "" : detail;
+}
+
+function timelineTokenUsageEvent(source = {}) {
+  const usage = extractTimelineTokenUsage(source);
+  const rawTools = Array.isArray(source.tool_names) ? source.tool_names : String(source.tool_name || source.toolName || "").split(",");
+  const tools = rawTools.map(taskToolDisplayName).filter(Boolean).join("、");
+  const outputKind = tokenOutputKindLabel(source.output_kind || source.outputKind || source.content || "");
+  const knownKind = outputKind === t("chat.tokenKind.unknown") ? "" : outputKind;
+  const agentID = String(source.agent_id || source.agentID || "").trim();
+  return {
+    accountUsage: !source.replay_snapshot,
+    tone: "info",
+    title: knownKind ? `${t("chat.tokenCallTitle")} · ${knownKind}` : t("chat.tokenCallTitle"),
+    detail: timelineDetail([
+      agentID ? taskResourceDisplayName("agent", agentID, agentID) : "",
+      source.mode ? modeLabel(source.mode) : "",
+      source.task_stage || source.stage ? taskMachineDisplayName(source.task_stage || source.stage) : "",
+      tools
+    ]),
+    usage,
+    stage: String(source.task_stage || source.stage || "").trim(),
+    agent: String(source.agent_id || source.agentID || "").trim(),
+    kindLabel: t("chat.tokenCallTitle")
+  };
+}
+
+export function extractTimelineTokenUsage(source = {}) {
+  const budget = source.prompt_budget || source.promptBudget || source.usage || {};
+  const estimated = runTokenNumber(source, ["budget_estimated_prompt_tokens", "estimated_prompt_tokens", "estimatedPromptTokens"])
+    || runTokenNumber(budget, ["estimated_prompt_tokens", "estimatedPromptTokens", "budget_estimated_prompt_tokens"]);
+  const input = runTokenNumber(source, ["prompt_tokens", "input_tokens", "promptTokens", "inputTokens", "budget_prompt_tokens", "budget_reported_prompt_tokens"])
+    || runTokenNumber(budget, ["prompt_tokens", "input_tokens", "promptTokens"]);
+  const output = runTokenNumber(source, ["output_tokens", "completion_tokens", "outputTokens", "completionTokens", "budget_output_tokens"])
+    || runTokenNumber(budget, ["output_tokens", "completion_tokens", "outputTokens"]);
+  const cached = runTokenNumber(source, ["cached_tokens", "cachedTokens", "budget_cached_tokens"])
+    || runTokenNumber(budget, ["cached_tokens", "cachedTokens", "budget_cached_tokens"]);
+  const total = runTokenNumber(source, ["total_tokens", "totalTokens", "budget_total_tokens"])
+    || runTokenNumber(budget, ["total_tokens", "totalTokens"])
+    || (input + output);
+  const prompt = estimated || input;
+  if (!prompt && !input && !output && !cached && !total) return null;
+  const usage = {
+    prompt,
+    input: input || prompt,
+    output,
+    cached,
+    total: total || input + output,
+    cacheHitRate: 0
+  };
+  usage.cacheHitRate = usage.input > 0 ? usage.cached / usage.input : 0;
+  return usage;
+}
+
+function decorateTimelineEvent(event, runState) {
+  if (!event) return event;
+  const usage = event.usage || extractTimelineTokenUsage(event);
+  if (usage) {
+    if (runState?.lastPromptEstimate && usage.prompt === usage.input && runState.lastPromptEstimate !== usage.input) {
+      usage.prompt = runState.lastPromptEstimate;
+    } else if (runState?.lastPromptEstimate && !usage.prompt) {
+      usage.prompt = runState.lastPromptEstimate;
+    }
+    event.usage = usage;
+  }
+  if (!event.stage && runState?.currentStage) event.stage = runState.currentStage;
+  return event;
+}
+
+function rememberTimelinePromptEstimate(runState, event = {}) {
+  if (!runState) return;
+  const budget = event.prompt_budget || event.promptBudget || event;
+  const estimated = runTokenNumber(event, ["budget_estimated_prompt_tokens", "estimated_prompt_tokens", "estimatedPromptTokens"])
+    || runTokenNumber(budget, ["estimated_prompt_tokens", "estimatedPromptTokens"]);
+  if (estimated > 0) runState.lastPromptEstimate = estimated;
+}
+
+function timelineEventCardHTML(event = {}) {
+  const detail = timelineEventDisplayDetail(event);
+  const kind = event.kindLabel || "";
+  return `
+    <div class="timeline-marker"></div>
+    <div class="timeline-card">
+      <div class="timeline-card-head">
+        <strong>${escapeHTML(event.title || "")}</strong>
+        ${kind ? `<em>${escapeHTML(kind)}</em>` : ""}
+      </div>
+      ${detail ? `<p>${escapeHTML(detail)}</p>` : ""}
+      ${event.preview ? runPreviewLinksHTML([event.preview]) : ""}
+      ${timelineTokenMetricsHTML(event.usage)}
+    </div>`;
+}
+
+function timelineTokenMetricsHTML(usage) {
+  if (!usage) return "";
+  const items = [
+    Number(usage.input || 0) > 0 ? ["input", t("chat.tokenInput"), tokenCountText(usage.input)] : null,
+    Number(usage.output || 0) > 0 ? ["output", t("chat.tokenOutput"), tokenCountText(usage.output)] : null,
+    Number(usage.cached || 0) > 0 ? ["cached", t("chat.tokenCached"), tokenCountText(usage.cached)] : null,
+    Number(usage.cached || 0) > 0 ? ["hit", t("chat.tokenCacheHit"), tokenCacheHitRateText(usage)] : null,
+    Number(usage.total || 0) > 0 ? ["total", t("chat.tokenStepTotal"), tokenCountText(usage.total)] : null
+  ].filter(Boolean);
+  if (!items.length) return "";
+  return `<dl class="timeline-token-metrics">${items.map(([kind, label, value]) => `
+    <div data-metric="${escapeHTML(kind)}"><dt>${escapeHTML(label)}</dt><dd>${escapeHTML(value)}</dd></div>`).join("")}</dl>`;
+}
+
+function emptyTimelineTokenTotals() {
+  return { prompt: 0, input: 0, output: 0, cached: 0, total: 0, samples: 0, cacheHitRate: 0 };
+}
+
+function applyTimelineEventUsage(runState, node, event = {}) {
+  const usage = event.usage;
+  if (!node || !usage) return;
+  node.dataset.timelineUsage = JSON.stringify(usage);
+  syncTimelineEventUsageRow(node, usage);
+  if (!runState) return;
+  if (!runState.tokenSeen) runState.tokenSeen = new Set();
+  if (!runState.tokenTotals) runState.tokenTotals = emptyTimelineTokenTotals();
+  const key = node.dataset.timelineSignature || "";
+  if (event.accountUsage && key && !runState.tokenSeen.has(key)) {
+    runState.tokenSeen.add(key);
+    runState.tokenTotals.prompt += Number(usage.prompt || 0);
+    runState.tokenTotals.input += Number(usage.input || 0);
+    runState.tokenTotals.output += Number(usage.output || 0);
+    runState.tokenTotals.cached += Number(usage.cached || 0);
+    runState.tokenTotals.total += Number(usage.total || 0);
+    runState.tokenTotals.samples += 1;
+    runState.tokenTotals.cacheHitRate = runState.tokenTotals.input > 0
+      ? runState.tokenTotals.cached / runState.tokenTotals.input
+      : 0;
+    renderTimelineRunTotals(runState);
+  }
+}
+
+function syncTimelineEventUsageRow(node, usage) {
+  if (!node || !usage) return;
+  const card = node.querySelector(".timeline-card");
+  if (!card) return;
+  let metrics = card.querySelector(".timeline-token-metrics");
+  const html = timelineTokenMetricsHTML(usage);
+  if (!html) return;
+  if (metrics) metrics.outerHTML = html;
+  else card.insertAdjacentHTML("beforeend", html);
+}
+
+function syncTimelineTotalsFromRun(runState, run) {
+  if (!runState) return;
+  const summary = runTokenUsageSummary(run);
+  if (!summary) {
+    renderTimelineRunTotals(runState);
+    return;
+  }
+  const current = runState.tokenTotals || emptyTimelineTokenTotals();
+  const reported = summary.reported;
+  runState.tokenTotals = {
+    prompt: reported ? summary.prompt : Math.max(current.prompt || 0, summary.prompt || 0),
+    input: reported ? summary.prompt : Math.max(current.input || 0, summary.prompt || 0),
+    output: reported ? summary.output : Math.max(current.output || 0, summary.output || 0),
+    cached: reported ? summary.cached : Math.max(current.cached || 0, summary.cached || 0),
+    total: reported ? summary.total : Math.max(current.total || 0, summary.total || 0),
+    samples: reported ? summary.samples : Math.max(current.samples || 0, summary.samples || 0)
+  };
+  runState.tokenTotals.cacheHitRate = runState.tokenTotals.input > 0
+    ? runState.tokenTotals.cached / runState.tokenTotals.input
+    : Number(summary.cacheHitRate || 0);
+  renderTimelineRunTotals(runState);
+}
+
+function renderTimelineRunTotals(runState) {
+  const node = runState?.timelineTotals;
+  if (!node) return;
+  const totals = runState.tokenTotals || emptyTimelineTokenTotals();
+  if (!(totals.total || totals.input || totals.output || totals.prompt)) {
+    node.classList.add("hidden");
+    node.innerHTML = "";
+    return;
+  }
+  node.classList.remove("hidden");
+  node.innerHTML = `
+    <div>
+      <strong>${escapeHTML(t("chat.tokenRunTotal"))}</strong>
+      <span>${escapeHTML(t("chat.tokenSamples"))} ${escapeHTML(String(totals.samples || 0))}</span>
+    </div>
+    <dl>
+      ${Number(totals.input || 0) > 0 ? `<div data-metric="input"><dt>${escapeHTML(t("chat.tokenInput"))}</dt><dd>${escapeHTML(tokenCountText(totals.input))}</dd></div>` : ""}
+      ${Number(totals.output || 0) > 0 ? `<div data-metric="output"><dt>${escapeHTML(t("chat.tokenOutput"))}</dt><dd>${escapeHTML(tokenCountText(totals.output))}</dd></div>` : ""}
+      ${Number(totals.cached || 0) > 0 ? `<div data-metric="cached"><dt>${escapeHTML(t("chat.tokenCached"))}</dt><dd>${escapeHTML(tokenCountText(totals.cached))}</dd></div>` : ""}
+      ${Number(totals.cached || 0) > 0 ? `<div data-metric="hit"><dt>${escapeHTML(t("chat.tokenCacheHit"))}</dt><dd>${escapeHTML(tokenCacheHitRateText(totals))}</dd></div>` : ""}
+      <div data-metric="total"><dt>${escapeHTML(t("chat.tokenRunTotal"))}</dt><dd>${escapeHTML(tokenCountText(totals.total || totals.input + totals.output))}</dd></div>
+    </dl>`;
 }
 
 function isFragmentaryTimelineEvent(title, detail) {
@@ -7579,26 +9517,43 @@ function incrementTimelineRepeat(node, event = {}) {
     card.appendChild(badge);
   }
   badge.textContent = `x${next}`;
-  badge.setAttribute("aria-label", `x${next}`);
+  badge.setAttribute("aria-label", t("chat.timelineRepeatCount", { count: next }));
+  syncTimelineEventUsageRow(node, event.usage);
 }
 
-function shouldStickTimelineToBottom(messages, entries = []) {
+function shouldStickTimelineToLatest(messages, entries = []) {
   if (!messages) return true;
-  if (entries.some(item => item.options.stickToBottom === true)) return true;
-  if (entries.some(item => item.options.stickToBottom === false)) return false;
+  if (entries.some(item => item.options.stickToLatest === true || item.options.stickToBottom === true)) return true;
+  if (entries.some(item => item.options.stickToLatest === false || item.options.stickToBottom === false)) return false;
   const runState = timelineRunStates.get(messages);
   if (runState && runState.timelinePinnedToLatest === false) return false;
+  if (runState && runState.timelineSectionVisible === false) return false;
   const eventCount = messages.querySelectorAll(".timeline-event").length;
   if (eventCount < 3) return true;
-  return isScrollNearBottom(messages, 140);
+  return isFollowingTimelineLatest(messages);
 }
 
-function scrollTimelineToBottom(messages) {
+function followTimelineLatest(runState, messages) {
   if (!messages) return;
-  messages.scrollTop = messages.scrollHeight;
-  requestAnimationFrame(() => {
-    messages.scrollTop = messages.scrollHeight;
-  });
+  if (timelineCanScroll(messages)) {
+    messages.scrollTop = 0;
+    requestAnimationFrame(() => {
+      messages.scrollTop = 0;
+    });
+    return;
+  }
+  if (runState && !isTimelineSectionInView(runState)) return;
+  const first = messages.querySelector(":scope > .timeline-event");
+  first?.scrollIntoView({ block: "nearest", inline: "nearest" });
+}
+
+function preserveTimelineScrollAfterPrepend(messages, delta) {
+  if (!messages || !(delta > 0)) return;
+  if (timelineCanScroll(messages)) {
+    messages.scrollTop += delta;
+    return;
+  }
+  window.scrollBy(0, delta);
 }
 
 function setTimelineJumpLatestVisible(runState, visible) {
@@ -7606,9 +9561,12 @@ function setTimelineJumpLatestVisible(runState, visible) {
   if (!button) return;
   const count = Math.max(0, Number(runState.timelineUnseenEvents || 0));
   button.classList.toggle("hidden", !visible || count <= 0);
-  button.textContent = count > 0
+  const label = count > 0
     ? t("chat.timelineJumpLatestCount", { count })
     : t("chat.timelineJumpLatest");
+  button.innerHTML = `${icon("arrow-up")}<span>${escapeHTML(label)}</span>`;
+  button.setAttribute("aria-label", label);
+  button.setAttribute("title", label);
 }
 
 function captureRunViewState(state) {
@@ -7626,9 +9584,10 @@ function restoreRunViewState(state, viewState, options = {}) {
   if (!viewState) return;
   restoreRunScrollNode(state?.messages, viewState.timeline);
   if (state?.messages && viewState.timeline) {
-    state.timelinePinnedToLatest = Boolean(viewState.timeline.atBottom);
+    state.timelinePinnedToLatest = Boolean(viewState.timeline.atLatest ?? viewState.timeline.atBottom);
     state.timelineUnseenEvents = 0;
     setTimelineJumpLatestVisible(state, false);
+    if (state.timelinePinnedToLatest) followTimelineLatest(state, state.messages);
   }
   restoreRunScrollNode(state?.resultPreview, viewState.resultPreview);
   restoreRunScrollNode(state?.resultOutput, viewState.resultOutput);
@@ -7636,7 +9595,7 @@ function restoreRunViewState(state, viewState, options = {}) {
   requestAnimationFrame(() => {
     restoreRunScrollNode(state?.messages, viewState.timeline);
     if (state?.messages && viewState.timeline) {
-      state.timelinePinnedToLatest = isScrollNearBottom(state.messages, 72);
+      state.timelinePinnedToLatest = isFollowingTimelineLatest(state.messages);
       if (state.timelinePinnedToLatest) {
         state.timelineUnseenEvents = 0;
         setTimelineJumpLatestVisible(state, false);
@@ -7659,7 +9618,8 @@ function captureRunScrollNode(node) {
   return {
     top: node.scrollTop || 0,
     left: node.scrollLeft || 0,
-    atBottom: isScrollNearBottom(node)
+    atBottom: isScrollNearBottom(node),
+    atLatest: isScrollNearLatest(node)
   };
 }
 
@@ -7667,13 +9627,41 @@ function restoreRunScrollNode(node, state) {
   if (!node || !state) return;
   const maxTop = Math.max(0, node.scrollHeight - node.clientHeight);
   const maxLeft = Math.max(0, node.scrollWidth - node.clientWidth);
-  node.scrollTop = state.atBottom ? maxTop : Math.min(state.top || 0, maxTop);
+  if (state.atLatest && node.id === "messages") node.scrollTop = 0;
+  else node.scrollTop = state.atBottom ? maxTop : Math.min(state.top || 0, maxTop);
   node.scrollLeft = Math.min(state.left || 0, maxLeft);
 }
 
 function isScrollNearBottom(node, threshold = 48) {
   if (!node) return true;
   return node.scrollHeight - node.scrollTop - node.clientHeight <= threshold;
+}
+
+function isScrollNearLatest(node, threshold = 8) {
+  if (!node) return true;
+  return (node.scrollTop || 0) <= threshold;
+}
+
+function timelineCanScroll(node) {
+  if (!node) return false;
+  const overflow = window.getComputedStyle(node).overflowY;
+  if (overflow === "visible" || overflow === "clip") return false;
+  return node.scrollHeight > node.clientHeight + 8;
+}
+
+function isFollowingTimelineLatest(messages) {
+  if (!messages) return true;
+  if (timelineCanScroll(messages)) return isScrollNearLatest(messages, 8);
+  const first = messages.querySelector(":scope > .timeline-event") || messages;
+  const rect = first.getBoundingClientRect();
+  return rect.top >= -48 && rect.top < window.innerHeight * 0.62;
+}
+
+function isTimelineSectionInView(runState) {
+  const section = runState?.root?.querySelector(".run-timeline") || runState?.messages;
+  if (!section) return true;
+  const rect = section.getBoundingClientRect();
+  return rect.bottom > 96 && rect.top < window.innerHeight - 72;
 }
 
 function updateStreamingResult(state, chunk) {
@@ -7684,6 +9672,31 @@ function updateStreamingResult(state, chunk) {
   state.hasPreview = true;
   updateResultEmptyState(state);
   scheduleRunStateSave(state);
+}
+
+function updateStreamingReasoning(state, chunk) {
+  if (!state?.resultOutput || !chunk) return;
+  let node = state.resultOutput.querySelector("[data-result-reasoning] .reasoning-body");
+  if (!node) {
+    if (!state.resultOutput.querySelector(".result-section-label")) {
+      state.resultOutput.innerHTML = `<div class="result-section-label">${escapeHTML(t("chat.resultOutputTitle"))}</div>`;
+    }
+    const wrapper = document.createElement("section");
+    wrapper.className = "run-reasoning";
+    wrapper.dataset.resultReasoning = "true";
+    wrapper.innerHTML = `<div class="run-evidence-head"><div><strong>${escapeHTML(t("chat.reasoningTitle"))}</strong><span>${escapeHTML(t("chat.reasoningHelp"))}</span></div></div><pre class="reasoning-body"></pre>`;
+    const preview = previewResultNode(state);
+    if (preview?.parentNode === state.resultOutput) {
+      state.resultOutput.insertBefore(wrapper, preview);
+    } else {
+      state.resultOutput.appendChild(wrapper);
+    }
+    node = wrapper.querySelector(".reasoning-body");
+    state.resultOutput.classList.remove("hidden");
+    state.hasResult = true;
+    updateResultEmptyState(state);
+  }
+  node.textContent = `${node.textContent || ""}${chunk}`;
 }
 
 function schedulePreviewRender(state, raw) {
@@ -7709,7 +9722,7 @@ function replaceResult(state, text) {
   node.className = "result-card markdown final";
   node.dataset.resultFinal = "true";
   node.dataset.raw = text;
-  node.innerHTML = renderMarkdown(localizedRunMarkdownText(text || ""));
+  node.innerHTML = renderMarkdown(markdownResultText(localizedRunMarkdownText(text || "")));
   state.resultOutput.innerHTML = `<div class="result-section-label">${escapeHTML(t("chat.resultOutputTitle"))}</div>`;
   state.resultOutput.appendChild(node);
   state.finalNode = node;
@@ -7773,8 +9786,9 @@ function finalResultNode(state) {
 }
 
 function updateResultEmptyState(state) {
-  const hasSupplement = state.resultOutput?.querySelector("[data-result-evidence], [data-result-diffs], [data-result-supplemental]");
+  const hasSupplement = state.resultOutput?.querySelector("[data-result-evidence], [data-result-diffs], [data-result-supplemental], [data-result-execution]");
   const hasVisibleResult = Boolean(previewResultNode(state) || finalResultNode(state) || hasSupplement);
+  state.resultPanel?.classList.toggle("hidden", !hasVisibleResult);
   state.resultEmpty.classList.toggle("hidden", hasVisibleResult);
   state.resultPreview.classList.toggle("hidden", !previewResultNode(state));
   state.resultOutput.classList.toggle("hidden", !finalResultNode(state) && !hasSupplement);
@@ -7810,24 +9824,49 @@ function syncRunUnloadGuard(state) {
   }
 }
 
+function trimTimelineWindow(messages, stickToLatest, limit = 240) {
+  const events = Array.from(messages.querySelectorAll(":scope > .timeline-event"));
+  if (events.length <= limit) return;
+  const previousTop = messages.scrollTop;
+  const previousHeight = messages.scrollHeight;
+  const removeCount = events.length - limit;
+  for (let index = events.length - removeCount; index < events.length; index += 1) events[index].remove();
+  const totalTrimmed = Number(messages.dataset.timelineTrimmedCount || 0) + removeCount;
+  messages.dataset.timelineTrimmedCount = String(totalTrimmed);
+  let notice = messages.querySelector(":scope > .timeline-window-notice");
+  if (!notice) {
+    notice = document.createElement("div");
+    notice.className = "timeline-window-notice";
+    messages.appendChild(notice);
+  }
+  notice.textContent = t("chat.timelineEarlierEventsCollapsed", { count: totalTrimmed });
+  if (!stickToLatest && timelineCanScroll(messages)) {
+    const removedHeight = Math.max(0, previousHeight - messages.scrollHeight);
+    messages.scrollTop = Math.max(0, previousTop - removedHeight);
+  }
+}
+
 function warnBeforeLeavingActiveRun(event) {
   event.preventDefault();
   event.returnValue = t("chat.leaveWarning");
   return event.returnValue;
 }
 
-function showRunAttention(state, title, body, tone, withLink = false) {
+function showRunAttention(state, title, body, tone) {
   setRunTimelineWorkflowInput(state, false);
   state.runAttention.className = `run-attention ${tone || "neutral"}`;
   state.runAttention.innerHTML = `
     <strong>${escapeHTML(title)}</strong>
-    <p>${escapeHTML(body)}</p>
-    ${withLink ? `<button type="button" data-open-approvals>${escapeHTML(t("chat.openApprovals"))}</button>` : ""}`;
+    <p>${escapeHTML(body)}</p>`;
   state.runAttention.classList.remove("hidden");
-  state.runAttention.querySelector("[data-open-approvals]")?.addEventListener("click", () => {
-    location.hash = "approvals";
-  });
   state.syncContextGuide?.();
+}
+
+function showTaskPreflightAttention(state, preflight = {}) {
+  const issues = Array.isArray(preflight.issues) ? preflight.issues : [];
+  const issue = issues.find(item => String(item?.severity || "").toLowerCase() === "error") || issues[0] || {};
+  const detail = [issue.message, issue.recommendation].map(value => chatDisplayText(value || "")).filter(Boolean).join(" ");
+  showRunAttention(state, t("chat.preflightTitle"), detail || t("chat.preflightFallback"), "error");
 }
 
 function showWorkspaceRequirementAttention(state, requirement) {
@@ -7858,4 +9897,18 @@ function workspaceRequirementBody(requirement = {}) {
 
 function renderMarkdown(value) {
   return renderSafeMarkdown(value);
+}
+
+function markdownResultText(value) {
+  const text = String(value || "").trim();
+  if (!text || text.startsWith("```")) return text;
+  if (!text.startsWith("{") && !text.startsWith("[")) return text;
+  try {
+    const parsed = JSON.parse(text);
+    if (!parsed || typeof parsed !== "object") return text;
+    const pretty = JSON.stringify(parsed, null, 2).replaceAll("```", "\\u0060\\u0060\\u0060");
+    return `\`\`\`json\n${pretty}\n\`\`\``;
+  } catch {
+    return text;
+  }
 }

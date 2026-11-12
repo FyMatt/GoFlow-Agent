@@ -1,135 +1,56 @@
-# 架构说明
+# 架构
 
-[English](./architecture.md) | [简体中文](./architecture.zh-CN.md)
+GoFlow V3 是面向 Windows 10/11 x64 的本地智能体工作流平台，提供 PC Web 任务工作台、确定性 Go 编排、模型推理、原生受控执行和可验证交付。远程 Linux 主机通过目标资源和 SSH 工具接入。
 
-## 设计原则
+## 请求流程
 
-GoFlow Agent 的架构围绕几条规则展开：
+```text
+用户输入、截图和文件
+  -> 需求编译
+  -> 简单任务直达或复杂工作流路由
+  -> 上下文检索与仓库指令
+  -> 持久化状态机
+  -> MCP 工具代理与内联审批
+  -> 工作区快照与检查点
+  -> 质量门
+  -> 产物、Diff、证据、应用或恢复
+```
 
-1. 运行时由小而明确的原语组成。
-2. 把 Agent 推理、工具执行、会话状态和审计日志分开。
-3. 工具权限必须可见、可解释、可执行。
-4. CLI、HTTP 和后续传输层复用同一套运行时契约。
-5. 明确区分 **runtime home** 和 **workspace root**。
-6. Web Studio 是 CLI 能力的可视化实现，而不是另一套独立运行时。
-7. 读取工作区文本文件时统一按 UTF-8 处理；可以接受 UTF-8 BOM 并自动去除，非 UTF-8 字节应交给二进制分析工具，而不是文本读取器。
+简单任务直接执行；复杂任务只选择必要阶段。无产物模型调用、重复工具调用和只讨论不交付的子智能体工作会被拒绝或去重。
 
-## runtime home 与 workspace root
+## 产品界面
 
-- **runtime home**：GoFlow 框架安装目录，包含 `configs/goflow.yaml`、`configs/agents/`、`configs/providers/`、`configs/mcp_servers/`、`skills/`、`mcp_servers/` 和 `workflows/`。
-- **workspace root**：目标项目目录。文件工具、`@file` 引用、会话状态和任务产物都以这里为边界。
+主要界面是 `/console`，包含任务输入、粘贴截图、拖入文件、内联审批、进度、产物、Diff 和恢复。资源管理只保留智能体、子智能体、工作流、Skill 和 MCP 连接。设置页只要求填写默认 OpenAI 兼容 Provider API Key。
 
-这样可以让 GoFlow 安装一次，指向多个不同项目使用。
+工作流画布编辑运行时使用的同一份 YAML 图。节点位置只影响显示，不影响执行。前端嵌入 Go 二进制，运行时不需要额外构建。静态资源（HTML、CSS、JavaScript）使用 gzip 压缩与 ETag 条件请求，首屏传输从约 1.2 MB 降至约 230 KB。
 
-## 主要模块
+## 执行核心
 
-### `cmd/goflow`
+持久化状态机记录普通任务和工作流。检查点、审批、工具结果、外置大参数、产物和恢复状态可跨重启保存。任务第一次写入前会在工作区外创建只读恢复快照；获批工具直接在真实项目目录中修改、构建和测试，因此可以使用项目自己的虚拟环境、依赖和运行数据。完成后保存为工作区版本，默认保留最近 3 个版本；回退前会核对当前文件哈希，避免覆盖任务结束后的人工修改。
 
-CLI 入口，负责：
+## 原生安全
 
-- 解析 runtime home、config 和 workspace。
-- 启动共享 runtime app。
-- 渲染 CLI 流式事件、启动 banner、状态输出和审批菜单。
-- 处理 `/` 命令、`@file` 引用、Tab 补全、工作区确认和工作区切换。
+Windows 使用 AppContainer、受限令牌、低完整性目录、NTFS ACL 租约和 Job Object。未知代码和第三方 MCP 在强边界不可用时拒绝运行。仓库中的 Linux 隔离实现保留为兼容源码，不属于当前发布目标。
 
-### `internal/app`
+## 上下文与性能
 
-CLI、HTTP 和未来传输层共享的启动层，负责：
+代码库地图、增量索引、仓库指令发现、上下文去重、提示压缩、结构化日志摘要、浏览器动作缓存、幂等工具调用和候选修复验证共同降低 Token 与延迟。
 
-- 加载配置。
-- 初始化 Provider、Skill、MCP、Session、Audit 和 Agent runtime。
-- 绑定 runtime home 与 workspace root。
+## 交付
 
-### `internal/agent`
+回复不等于完成。交付必须包含真实文件、Diff、构建、测试、静态检查、来源证据、变更后复测或文档校验，交付清单同时记录产物、验证、限制与恢复动作。
 
-Agent 请求生命周期和多 Agent 协作核心，负责：
+参见 [配置](./configuration.zh-CN.md)、[MCP](./mcp.zh-CN.md) 和 [工作流](./workflows.zh-CN.md)。
 
-- 选择 active agent。
-- 匹配 Skill。
-- 构建系统提示词。
-- 执行 LLM/工具循环。
-- 发出流式事件。
-- 执行 built-in workflow 和 graph workflow。
-- 从 `internal/agent/templates/workflows/*.yaml` 和 `internal/agent/templates/teams/*.yaml` 加载内置 Workflow/Team 模板，并允许 runtime home 用 `templates/workflows/*.yaml`、`templates/teams/*.yaml` 覆盖。
-- 处理审批、取消、重试、durable run、输出传递、控制流和协作状态。
+## 当前架构要点（2026-11-10）
 
-### `internal/api`
-
-HTTP/Web Studio 后端，负责：
-
-- `/api/run` 与 `/api/run/stream`
-- durable Agent run 与 Workflow run
-- 资源管理：Agent、Provider、Skill、Tool、Workflow、Team、Kit
-- 配置诊断、运行时状态、工作区生命周期、文件引用搜索
-- SSE 事件流、审批、取消、重试和事件回放
-
-### `internal/mcp`
-
-MCP server 管理层，负责：
-
-- stdio MCP 进程生命周期。
-- 工具发现、缓存、路由和健康状态。
-- 启动命令白名单。
-- 每个 server 的超时、请求/响应大小上限、`max_concurrent_calls` 队列上限、
-  `restart_limit` 和 `cooldown` 轻量熔断。
-- Docker/Podman container isolation。
-- 原生 fallback 隔离模式和风险诊断。
-
-### `internal/skill`
-
-加载 `skills/<name>/SKILL.md`，兼容 GoFlow 原生 Skill 与 Claude/Codex 风格 Skill。
-
-### `internal/session`
-
-保存 workspace-scoped 状态，包括：
-
-- 对话历史。
-- pending approval。
-- ordinary Agent durable run。
-- Workflow durable run。
-- artifacts、diffs、协作和 team 状态。
-
-`.goflow/session.json` 是轻量索引，服务于快速启动状态和 Web Studio 轮询。
-完整运行详情、工具输出和阶段结果保存在 `.goflow/session.full.json.gz` 压缩归档中。
-加载时优先读取完整归档；旧版大 `session.json` 会自动迁移为“轻量索引 + 完整压缩归档”。
-
-## 运行时数据流
-
-1. 用户通过 CLI 或 HTTP 发送请求。
-2. Runtime 根据 routing、active agent、skill 和 workflow 判断执行路径。
-3. Agent 构建提示词并调用模型 Provider。
-4. 模型请求工具时，Agent 进入策略和审批流程。
-5. MCP manager 调用目标工具。
-6. 工具结果回到 Agent，Agent 继续推理。
-7. 结果、工具调用、审批、token 和状态以统一事件模型输出。
-8. Session 持久化关键状态，支持刷新、重连和恢复。
-
-## 工作流生命周期
-
-GoFlow 会区分“可编辑图资源”和“可运行 workflow 入口”：
-
-- `/api/workflow-graphs` 只暴露 runtime home 中持久化的图工作流文件，适合
-  Web Studio 编辑和保存。
-- `/api/workflow-options.workflow_executors` 暴露可运行入口，包括有效的图工作流
-  和 `plan-fix-audit`、`skill-chain` 这类兼容执行器，适合聊天页和运行页做
-  workflow 下拉框。
-
-如果保存了一个与兼容执行器同名且有效的图工作流，它会覆盖兼容执行器；如果同名
-图存在但无效，兼容执行器会被阻断并暴露图错误，避免用户以为运行的是旧逻辑。
-
-## Web Studio
-
-Web Studio 应当被视为 CLI 能力的图形化入口。新增后端能力时，优先考虑：
-
-- 是否有 HTTP API。
-- 是否有能力发现字段。
-- 是否有配置诊断。
-- 是否有前端可渲染的 schema 或 contract。
-- 是否能和 CLI 共享同一套 runtime 逻辑。
-
-## 当前边界
-
-- MCP transport 当前以 stdio 为主。
-- Docker/Podman 是推荐强沙箱；原生模式只作为辅助。
-- Skill 匹配以关键词为主，后续可扩展为更强的检索和路由。
-- 更新检查应由用户显式开启，因为它需要访问 GitHub 网络。
+- **领域只在 Kit 里**：内核不再维护领域关键词或 domain→agent/workflow 表。任务页先按 Kit 的
+  `routing` 合约匹配；未匹配时简单任务回退当前智能体，复杂任务要求显式选择。
+- **阶段独立会话**：每个阶段重新构建提示，靠稳定前缀吃缓存。实测同架构下缓存命中 70–76%
+  已是上限；继续优化的重点在"每轮新增内容"，不在命中率。
+- **工具输出源头有界**：`read_file` 默认 300 行并给 `next_offset`；`read_files` 每文件 200 行；
+  `fetch_url` 正文默认 4000 字符；命令输出落盘并给引用。
+- **定位优先**：`read_file_outline` 给出函数/类型行号，`search_files` 的 `context_lines`
+  返回命中区间，模型先定位再按区间读取。
+- **读取复用**：阶段提示注入前序阶段的已读文件摘要；同一对话内重复读取折叠为存根。
+- **成本可观测**：Provider 配置的 `pricing` 让运行估算成本可计算，界面显示在运行详情。

@@ -41,6 +41,17 @@ func TestExpandAtFileReferencesRejectsWorkspaceEscape(t *testing.T) {
 	}
 }
 
+func TestExpandAtFileReferencesRejectsSensitiveFiles(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("API_KEY=workspace-secret\n"), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
+	_, _, err := expandAtFileReferences("read @.env", root)
+	if err == nil || !strings.Contains(err.Error(), "sensitive files") {
+		t.Fatalf("expected sensitive file rejection, got %v", err)
+	}
+}
+
 func TestExpandAtFileReferencesRejectsSymlinkEscape(t *testing.T) {
 	root := t.TempDir()
 	outside := filepath.Join(t.TempDir(), "outside.txt")
@@ -124,12 +135,18 @@ func TestFormatAtReferenceSuggestionsShowsRootMatchesForAtOnly(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(root, "README.md"), []byte("# Demo\n"), 0o644); err != nil {
 		t.Fatalf("write readme: %v", err)
 	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("API_KEY=workspace-secret\n"), 0o600); err != nil {
+		t.Fatalf("write .env: %v", err)
+	}
 	output, handled, err := formatAtReferenceSuggestions("@", root)
 	if err != nil {
 		t.Fatalf("suggest refs: %v", err)
 	}
 	if !handled || !strings.Contains(output, "@README.md") {
 		t.Fatalf("expected @ root suggestions, handled=%t output=%q", handled, output)
+	}
+	if strings.Contains(output, "@.env") {
+		t.Fatalf("expected sensitive files to stay out of suggestions, got %q", output)
 	}
 }
 

@@ -39,8 +39,8 @@ func (s *Server) handleWorkflowGraphCollection(w http.ResponseWriter, r *http.Re
 			http.Error(w, "workflow name is required", http.StatusBadRequest)
 			return
 		}
-		if err := s.runtime.WorkflowRunner().SaveWorkflowGraphDocument(doc.Name, doc); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if err := s.saveWorkflowGraphResource(doc.Name, doc); err != nil {
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		writeJSONStatus(w, http.StatusCreated, doc)
@@ -89,7 +89,7 @@ func (s *Server) handleWorkflowGraphItem(w http.ResponseWriter, r *http.Request)
 				http.NotFound(w, r)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		writeJSON(w, doc)
@@ -103,8 +103,8 @@ func (s *Server) handleWorkflowGraphItem(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
-		if err := runner.SaveWorkflowGraphDocument(name, doc); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+		if err := s.saveWorkflowGraphResource(name, doc); err != nil {
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		updated, err := runner.LoadWorkflowGraphDocument(name)
@@ -128,12 +128,12 @@ func (s *Server) handleWorkflowGraphItem(w http.ResponseWriter, r *http.Request)
 			http.NotFound(w, r)
 			return
 		}
-		if err := runner.DeleteWorkflowGraphDocument(name); err != nil {
+		if err := s.deleteWorkflowGraphResource(name); err != nil {
 			if errors.Is(err, os.ErrNotExist) {
 				http.NotFound(w, r)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -145,7 +145,7 @@ func (s *Server) handleWorkflowGraphItem(w http.ResponseWriter, r *http.Request)
 func (s *Server) handleWorkflowGraphValidate(w http.ResponseWriter, r *http.Request, name string) {
 	doc, err := decodeWorkflowGraphDocument(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 		return
 	}
 	if strings.TrimSpace(name) == "" {
@@ -184,7 +184,7 @@ func (s *Server) handleWorkflowGraphExpressionValidate(w http.ResponseWriter, r 
 				http.NotFound(w, r)
 				return
 			}
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		doc = loaded
@@ -224,15 +224,15 @@ func firstWorkflowGraphExpressionDocument(values ...agent.WorkflowGraphDocument)
 func (s *Server) handleWorkflowGraphImport(w http.ResponseWriter, r *http.Request) {
 	doc, err := decodeWorkflowGraphDocument(r)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 		return
 	}
 	if strings.TrimSpace(doc.Name) == "" {
 		http.Error(w, "workflow name is required", http.StatusBadRequest)
 		return
 	}
-	if err := s.runtime.WorkflowRunner().SaveWorkflowGraphDocument(doc.Name, doc); err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+	if err := s.saveWorkflowGraphResource(doc.Name, doc); err != nil {
+		http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 		return
 	}
 	updated, err := s.runtime.WorkflowRunner().LoadWorkflowGraphDocument(doc.Name)
@@ -250,12 +250,12 @@ func (s *Server) handleWorkflowGraphExport(w http.ResponseWriter, r *http.Reques
 			http.NotFound(w, r)
 			return
 		}
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 		return
 	}
 	data, contentType, err := agent.RenderWorkflowGraphDocument(doc, r.URL.Query().Get("format"))
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 		return
 	}
 	ext := "yaml"

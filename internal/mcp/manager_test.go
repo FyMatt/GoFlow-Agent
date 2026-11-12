@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -14,6 +15,27 @@ import (
 )
 
 const validToolSchema = `{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`
+
+func TestManagerUpsertAndRemoveOptionalServer(t *testing.T) {
+	manager := NewManager(nil)
+	if err := manager.UpsertServer(config.MCPServerRef{
+		Name:     "notes-helper",
+		Command:  "missing-goflow-mcp-server",
+		Enabled:  true,
+		Optional: true,
+	}); err != nil {
+		t.Fatalf("UpsertServer: %v", err)
+	}
+	if _, ok := manager.clients["notes-helper"]; !ok {
+		t.Fatal("expected notes-helper client to be registered")
+	}
+	if err := manager.RemoveServer("notes-helper"); err != nil {
+		t.Fatalf("RemoveServer: %v", err)
+	}
+	if _, ok := manager.clients["notes-helper"]; ok {
+		t.Fatal("expected notes-helper client to be removed")
+	}
+}
 
 func TestFindToolClientRejectsAmbiguousShortNames(t *testing.T) {
 	manager := &Manager{
@@ -231,6 +253,73 @@ func TestManagerCloseClearsClientsAndIndexes(t *testing.T) {
 	}
 }
 
+func TestManagerCachesClientsPerTaskWorkspace(t *testing.T) {
+	manager := NewManager([]config.MCPServerRef{{
+		Name:          "file_tools",
+		Command:       "file-tools",
+		Enabled:       true,
+		WorkspaceRoot: t.TempDir(),
+	}})
+	client := manager.clients["file_tools"]
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	first, err := manager.scopedClientForWorkspace(client, firstRoot)
+	if err != nil {
+		t.Fatalf("first scoped client: %v", err)
+	}
+	again, err := manager.scopedClientForWorkspace(client, firstRoot)
+	if err != nil {
+		t.Fatalf("cached scoped client: %v", err)
+	}
+	second, err := manager.scopedClientForWorkspace(client, secondRoot)
+	if err != nil {
+		t.Fatalf("second scoped client: %v", err)
+	}
+	if first != again || first == second {
+		t.Fatalf("unexpected scoped client cache behavior: first=%p again=%p second=%p", first, again, second)
+	}
+	if first.workspaceRoot != filepath.Clean(firstRoot) {
+		t.Fatalf("unexpected scoped workspace root: %q", first.workspaceRoot)
+	}
+	joined := strings.Join(first.env, "\n")
+	if !strings.Contains(joined, "GOFLOW_WORKSPACE_ROOT="+filepath.Clean(firstRoot)) {
+		t.Fatalf("scoped client environment does not contain task workspace: %q", joined)
+	}
+	if err := manager.ReleaseWorkspace(firstRoot); err != nil {
+		t.Fatalf("ReleaseWorkspace: %v", err)
+	}
+	if len(manager.scopedClients) != 1 {
+		t.Fatalf("expected only the other task client to remain, got %d", len(manager.scopedClients))
+	}
+}
+
+func TestManagerCarriesValidatedTaskWorkspaceScope(t *testing.T) {
+	manager := NewManager([]config.MCPServerRef{{Name: "file_tools", Command: "file-tools", Enabled: true}})
+	client := manager.clients["file_tools"]
+	root := t.TempDir()
+	input := filepath.Join(root, "input")
+	workspace := filepath.Join(root, "workspace")
+	for _, path := range []string{input, workspace} {
+		if err := os.MkdirAll(path, 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	scoped, err := manager.scopedClientForTaskWorkspace(client, schema.TaskWorkspaceScope{
+		RunID: "run-scope",
+		Root:  root, Input: input, Workspace: workspace,
+	})
+	if err != nil {
+		t.Fatalf("scoped task client: %v", err)
+	}
+	if scoped.taskScope.RunID != "run-scope" || scoped.taskScope.Root != filepath.Clean(root) || scoped.taskScope.Input != filepath.Clean(input) || scoped.taskScope.Workspace != filepath.Clean(workspace) {
+		t.Fatalf("unexpected task scope: %#v", scoped.taskScope)
+	}
+	outside := t.TempDir()
+	if _, err := manager.scopedClientForTaskWorkspace(client, schema.TaskWorkspaceScope{Root: root, Workspace: outside}); err == nil || !strings.Contains(err.Error(), "escapes") {
+		t.Fatalf("expected escaped task workspace to be rejected, got %v", err)
+	}
+}
+
 func TestManagerReportsClientCallMetrics(t *testing.T) {
 	manager := NewManager([]config.MCPServerRef{{
 		Name:               "file_tools",
@@ -250,6 +339,46 @@ func TestManagerReportsClientCallMetrics(t *testing.T) {
 	item := metrics["file_tools"]
 	if item.MaxConcurrentCalls != 2 || item.ActiveCalls != 1 || item.QueuedCalls != 0 || item.AvailableCallSlots != 1 {
 		t.Fatalf("unexpected manager metrics: %#v", metrics)
+	}
+}
+
+func TestManagerKeepsRequiredToolsWhenOptionalServerFails(t *testing.T) {
+	t.Setenv("GOFLOW_TEST_MCP_HELPER", "1")
+	t.Setenv("GOFLOW_TEST_MCP_TOOLS", `[{"name":"required_tool","kind":"read","input_schema":{"type":"object","properties":{},"additionalProperties":false}}]`)
+	manager := NewManager([]config.MCPServerRef{
+		{
+			Name:             "optional_missing",
+			Command:          "goflow-mcp-command-that-does-not-exist",
+			Enabled:          true,
+			Optional:         true,
+			Timeout:          time.Second,
+			MaxRequestBytes:  64 * 1024,
+			MaxResponseBytes: 64 * 1024,
+		},
+		{
+			Name:             "required_helper",
+			Command:          os.Args[0],
+			Args:             []string{"-test.run=TestMCPManagerHelperProcess"},
+			Enabled:          true,
+			Timeout:          5 * time.Second,
+			EnvAllowlist:     []string{"GOFLOW_TEST_MCP_HELPER", "GOFLOW_TEST_MCP_TOOLS"},
+			AllowedCommands:  []string{os.Args[0]},
+			MaxRequestBytes:  64 * 1024,
+			MaxResponseBytes: 2 * 1024 * 1024,
+		},
+	})
+	t.Cleanup(func() { _ = manager.Close() })
+
+	tools, err := manager.RefreshTools(context.Background())
+	if err != nil {
+		t.Fatalf("RefreshTools: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "required_tool" {
+		t.Fatalf("expected required tools to remain available, got %#v", tools)
+	}
+	status := manager.HealthStatus(context.Background())
+	if !strings.HasPrefix(status["optional_missing"], "degraded:") {
+		t.Fatalf("expected optional server degraded health, got %#v", status)
 	}
 }
 

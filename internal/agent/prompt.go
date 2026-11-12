@@ -21,15 +21,20 @@ const (
 // BuildSystemPrompt assembles the runtime system prompt.
 func BuildSystemPrompt(profile config.AgentProfile, skill *schema.Skill, snapshot session.Snapshot) string {
 	_ = snapshot
-	return BuildSystemPromptWithMemory(profile, skill, session.Snapshot{}, "")
+	return BuildSystemPromptWithRepository(profile, skill, session.Snapshot{}, "")
 }
 
 // BuildSystemPromptWithMemory assembles the stable runtime system prompt.
 // Dynamic memory and session history are injected as messages so provider-side
 // cacheable prefixes remain stable across turns.
 func BuildSystemPromptWithMemory(profile config.AgentProfile, skill *schema.Skill, snapshot session.Snapshot, memoryText string) string {
+	return BuildSystemPromptWithRepository(profile, skill, snapshot, "")
+}
+
+// BuildSystemPromptWithRepository assembles the stable runtime prompt and
+// includes bounded repository instructions loaded before task planning.
+func BuildSystemPromptWithRepository(profile config.AgentProfile, skill *schema.Skill, snapshot session.Snapshot, repositoryInstructions string) string {
 	_ = snapshot
-	_ = memoryText
 	var builder strings.Builder
 	builder.WriteString("You are ")
 	builder.WriteString(profile.Name)
@@ -95,13 +100,18 @@ func BuildSystemPromptWithMemory(profile config.AgentProfile, skill *schema.Skil
 			builder.WriteString("Use these resource paths as authoring context; do not assume they are workspace files unless the user copies or references them explicitly.\n")
 		}
 	}
+	if instructions := strings.TrimSpace(repositoryInstructions); instructions != "" {
+		builder.WriteString("\n")
+		builder.WriteString(instructions)
+		builder.WriteString("\n")
+	}
 	builder.WriteString("When using tools, choose only the tools necessary for the current request.")
 	return builder.String()
 }
 
 func sessionContextPromptText(snapshot session.Snapshot, currentInput string) string {
 	prompts := recentPromptsExcludingCurrent(snapshot.RecentPrompts, currentInput)
-	if snapshot.LastSkill == "" && len(prompts) == 0 && len(snapshot.RecentTools) == 0 {
+	if snapshot.LastSkill == "" && len(prompts) == 0 && len(snapshot.RecentTools) == 0 && len(snapshot.TokenUsages) == 0 {
 		return ""
 	}
 	var builder strings.Builder
@@ -121,6 +131,28 @@ func sessionContextPromptText(snapshot session.Snapshot, currentInput string) st
 		builder.WriteString("- Recent tool summaries:\n")
 		for _, summary := range compactSessionHistoryForPrompt(snapshot.RecentTools, systemPromptRecentToolLimit, systemPromptToolItemBytes, "tool summaries") {
 			builder.WriteString(fmt.Sprintf("  - %s\n", summary))
+		}
+	}
+	if len(snapshot.TokenUsages) > 0 {
+		builder.WriteString("- Recent AI calls:\n")
+		usages := snapshot.TokenUsages
+		if len(usages) > 6 {
+			usages = usages[len(usages)-6:]
+		}
+		for _, usage := range usages {
+			kind := strings.TrimSpace(usage.OutputKind)
+			if kind == "" {
+				kind = "unknown"
+			}
+			line := fmt.Sprintf("  - %s/%s %s in=%d out=%d cached=%d", strings.TrimSpace(usage.AgentID), strings.TrimSpace(usage.Mode), kind, usage.PromptTokens, usage.OutputTokens, usage.CachedTokens)
+			if usage.CacheHitRate > 0 {
+				line += fmt.Sprintf(" cache_hit=%.0f%%", usage.CacheHitRate*100)
+			}
+			if len(usage.ToolNames) > 0 {
+				line += " tools=" + strings.Join(usage.ToolNames, ",")
+			}
+			builder.WriteString(line)
+			builder.WriteString("\n")
 		}
 	}
 	return strings.TrimSpace(builder.String())
@@ -374,8 +406,125 @@ func compactMessagesForResumePrompt(messages []schema.Message) []schema.Message 
 	return compactMessagesForPrompt(messages, 2, 12, 1600, 1200)
 }
 
+// compactMessagesForConversation keeps the recent turn window intact and trims
+// older entries. The window is intentionally not tighter than this: shrinking
+// it made the model forget files it had already read, so re-reads cost more
+// calls than the saved tokens were worth.
 func compactMessagesForConversation(messages []schema.Message) []schema.Message {
-	return compactMessagesForPrompt(messages, 2, 16, 1600, 1200)
+	// Keep a wide recent window: most workflow stages stay under this many
+	// messages, so nothing is pruned inside a stage and the prompt becomes
+	// append-only, which is what makes provider prefix caching pay off.
+	return dedupeRepeatedFileReads(pruneMessagesForConversation(messages, 24, 1200, 900))
+}
+
+// pruneMessagesForConversation keeps the whole conversation and only shrinks
+// entries that have already left the recent window. Dropping a sliding window
+// (the previous behaviour) rewrote the head of the prompt on every turn, so
+// provider prefix caching missed almost everything: measured runs cached a
+// fixed ~5.5k head while the prompt grew past 17k. Pruning in place changes a
+// message at most once (full text -> pruned text) and then leaves it stable, so
+// the cacheable prefix keeps growing with the conversation.
+func pruneMessagesForConversation(messages []schema.Message, keepRecent, messageBytes, toolBytes int) []schema.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	// Move the compaction boundary in blocks. A boundary that advances by one
+	// message every turn rewrites the prompt prefix and invalidates the
+	// provider cache from that point onward; a block boundary keeps the prefix
+	// stable for several turns at a time.
+	const compactionBlock = 8
+	cut := len(messages) - keepRecent
+	if cut < 0 {
+		cut = 0
+	}
+	cut = (cut / compactionBlock) * compactionBlock
+	out := make([]schema.Message, 0, len(messages))
+	for index, message := range messages {
+		copied := schema.CopyMessage(message)
+		if index < cut {
+			limit := messageBytes
+			if strings.EqualFold(copied.Role, "tool") {
+				limit = toolBytes
+			}
+			if limit > 0 {
+				copied.Content = compactHistoryItemForPrompt(copied.Content, limit)
+			}
+		}
+		out = append(out, copied)
+	}
+	return out
+}
+
+func normalizeToolConversationMessages(messages []schema.Message) ([]schema.Message, int) {
+	if len(messages) == 0 {
+		return nil, 0
+	}
+	out := make([]schema.Message, 0, len(messages))
+	repairs := 0
+	for index := 0; index < len(messages); {
+		message := schema.CopyMessage(messages[index])
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "assistant") || len(message.ToolCalls) == 0 {
+			if strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+				message.Role = "user"
+				message.Content = fmt.Sprintf("[GoFlow preserved orphan tool observation call_id=%s tool=%s] %s", strings.TrimSpace(message.ToolCallID), strings.TrimSpace(message.Name), message.Content)
+				message.ToolCallID = ""
+				message.Name = ""
+				repairs++
+			}
+			out = append(out, message)
+			index++
+			continue
+		}
+
+		out = append(out, message)
+		toolMessages := make(map[string]schema.Message, len(message.ToolCalls))
+		toolOrder := make([]string, 0, len(message.ToolCalls))
+		next := index + 1
+		for next < len(messages) && strings.EqualFold(strings.TrimSpace(messages[next].Role), "tool") {
+			toolMessage := schema.CopyMessage(messages[next])
+			callID := strings.TrimSpace(toolMessage.ToolCallID)
+			if callID != "" {
+				if _, exists := toolMessages[callID]; !exists {
+					toolMessages[callID] = toolMessage
+					toolOrder = append(toolOrder, callID)
+				} else {
+					repairs++
+				}
+			} else {
+				repairs++
+			}
+			next++
+		}
+		used := make(map[string]struct{}, len(message.ToolCalls))
+		for _, call := range message.ToolCalls {
+			callID := strings.TrimSpace(call.ID)
+			if toolMessage, ok := toolMessages[callID]; ok && callID != "" {
+				out = append(out, toolMessage)
+				used[callID] = struct{}{}
+				continue
+			}
+			out = append(out, schema.Message{
+				Role:       "tool",
+				Name:       call.Name,
+				ToolCallID: call.ID,
+				Content:    fmt.Sprintf("[GoFlow synthesized missing tool result for call_id=%s tool=%s; the call outcome is unavailable and must not be treated as success]", call.ID, call.Name),
+			})
+			repairs++
+		}
+		for _, callID := range toolOrder {
+			if _, ok := used[callID]; ok {
+				continue
+			}
+			toolMessage := toolMessages[callID]
+			out = append(out, schema.Message{
+				Role:    "user",
+				Content: fmt.Sprintf("[GoFlow preserved unmatched tool observation call_id=%s tool=%s] %s", callID, toolMessage.Name, toolMessage.Content),
+			})
+			repairs++
+		}
+		index = next
+	}
+	return out, repairs
 }
 
 func compactMessagesForPrompt(messages []schema.Message, prefixCount, recentLimit, messageBytes, toolBytes int) []schema.Message {
@@ -408,11 +557,23 @@ func compactMessagesForPrompt(messages []schema.Message, prefixCount, recentLimi
 	}
 	start := len(tail) - recentLimit
 	start = compactMessageValidSuffixStart(tail, start)
+	// Quantize the drop boundary: the retained window then stays
+	// byte-identical for several turns, so the provider prefix cache hits
+	// instead of missing on every single turn.
+	const historyBoundaryQuantum = 8
+	if start >= historyBoundaryQuantum {
+		if remainder := start % historyBoundaryQuantum; remainder != 0 {
+			start -= remainder
+			start = compactMessageValidSuffixStart(tail, start)
+		}
+	}
 	omitted := start
 	out := make([]schema.Message, 0, len(prefix)+recentLimit+1)
 	out = append(out, prefix...)
 	totalOmitted := existingOmitted + omitted
-	if totalOmitted > 0 {
+	// Keep an existing marker even when this pass drops nothing: the marker is
+	// part of the stable prefix and removing it would shift every later message.
+	if totalOmitted > 0 || strings.TrimSpace(existingMarker.Content) != "" {
 		role := "user"
 		if strings.TrimSpace(existingMarker.Role) != "" {
 			role = existingMarker.Role
@@ -440,8 +601,14 @@ func isGoFlowConversationCompactionMarker(content string) bool {
 	return strings.HasPrefix(strings.TrimSpace(content), "[GoFlow compacted ") && strings.Contains(content, "earlier conversation messages for LLM context;")
 }
 
+// conversationCompactionMarker must stay byte-identical across turns. The
+// marker sits at the front of the message list, so embedding per-turn counts
+// (omitted/retained) changed the prefix every request and defeated provider
+// context caching: measured runs cached only the first ~5.5k tokens while the
+// prompt grew past 17k. Counts are reported through prompt-budget events
+// instead of the cached prefix.
 func conversationCompactionMarker(omitted, retained int) string {
-	return fmt.Sprintf("[GoFlow compacted %d earlier conversation messages for LLM context; latest %d retained. Full run history remains in session artifacts.]", omitted, retained)
+	return "[GoFlow compacted earlier conversation messages for LLM context; the latest window is retained below. Full run history remains in session artifacts.]"
 }
 
 func compactMessageValidSuffixStart(messages []schema.Message, start int) int {

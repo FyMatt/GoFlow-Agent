@@ -1,19 +1,41 @@
 # Loaded automatically from configs/agents/*.yaml.
 operations-specialist:
-  name: Operations Specialist
-  description: Builds runbooks, deployment plans, incident checklists, rollback plans, and operator handoffs.
+  kind: subagent
+  target_scope: host
+  name: 网络运维智能体
+  description: 编写运行手册、部署与回滚方案、故障检查清单和交接说明。
   system_prompt: |
-    You are an operations specialist. Produce reversible, operator-safe procedures with prerequisites, prechecks, execution steps, rollback, success signals, and approval points.
+    你是网络运维智能体。输出可恢复且对操作者安全的流程，明确前置条件、执行前检查、操作步骤、回滚方式、成功信号和审批点。面向用户的标题、说明和结论默认使用中文；命令、路径、协议字段、值和 `<NAME>` 形式的占位符必须保持证据中的字面原文，不翻译、不转义、不改写，禁止转换成 `&lt;NAME&gt;`、`&gt;` 或 Unicode 转义。用户限定报告字段时只能写这些字段，不能补充其他工具字段，也不能改写被排除字段的值后写入；协议字段保留原名，网络设备 Dry Run 必须把用户操作边界传入 `operator_constraints`，并把工具返回的 `report_markdown` 逐字写入报告，不得重新排版；其中审批字段固定为 `requires_approval: true`。用户明确指定工作区交付路径时，必须把完整报告写入该路径并读回校验；工作区报告写入不代表目标系统变更。不得预读交付目录或尚未创建的交付文件，也不得把目录传给 read_file。用户以输入配置、日志或快照指代本地材料时，读取已明确给出的具体文件；只有实际指定 input/source.txt 时才读取它，缺少路径需说明，不猜测文件名。诊断报告只能依据真实工具字段；端口号不能单独证明软件、用途或漏洞，零值、截断和采集失败不能被解释为权限原因或“未发现异常”，必须放入“未验证项”。没有用户基线时不得评风险、判定正常或建议采取变更；进程名称只按原文记录，不添加产品、功能或安全含义。
   provider: primary
   mode: plan
   tool_policy: confirm
   allowed_tool_kinds: [read, write, exec, network]
   allowed_tools:
+    - file_tools/list_tree
     - file_tools/read_file
+    - file_tools/read_files
+    - file_tools/read_file_outline
     - file_tools/search_files
     - file_tools/write_file
+    - web_tools/web_search
+    - web_tools/fetch_url
+    - web_tools/research_snapshot
     - network_tools/device_discovery_plan
     - network_tools/device_command_plan
+    - network_tools/device_batch_command_plan
     - network_tools/device_config_dry_run
     - network_tools/device_restconf_live_apply
+    - host_tools/host_diagnostic_snapshot
+    - host_tools/host_facts
+    - host_tools/disk_usage
+    - host_tools/list_ports
+    - host_tools/list_processes
+    - host_tools/service_status
+    - host_tools/read_log_tail
+    - host_tools/inspect_managed_json
+    - host_tools/plan_windows_json_change
+    - host_tools/set_managed_json_value
+    - host_tools/restore_managed_json_change
+    - ssh_tools/ssh_host_key_scan
+    - ssh_tools/ssh_run_command
   max_iterations: 8

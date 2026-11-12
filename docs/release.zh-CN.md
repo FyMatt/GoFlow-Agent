@@ -1,174 +1,59 @@
-# 发布与校验
+# 发布
 
-[English](./release.md) | [简体中文](./release.zh-CN.md)
+GoFlow 只发布 Windows amd64 原生压缩包。Linux 兼容代码和历史测试可以保留，但 Linux 发布包与 Ubuntu 验收不再属于产品发布目标。
 
-GoFlow 的发布产物包括：
+## 必需产物
 
-- Windows/Linux 二进制压缩包。
-- HTTP/API 部署用 Docker 镜像。
+- Windows amd64 压缩包。
+- `SHA256SUMS`。
+- SBOM。
+- 依赖许可证报告。
+- 压缩包、校验和、SBOM 及依赖许可证报告的签名文件。
+- 数据迁移、能力、限制和恢复说明。
 
-## 本地构建 Release 产物
+## 发布硬门
 
-```bash
-python scripts/build_release_assets.py --clean --version v0.1.3
-```
+1. `go test ./...` 全部通过。
+2. JavaScript 和 Python 语法检查通过。
+3. 敏感信息、部署资源、资源链接、翻译和发布包校验通过。
+4. Windows amd64 原生构建通过。
+5. 原生安装、升级、卸载、崩溃恢复和回退通过。
+6. 六类复杂任务连续三次通过，产物可直接使用。
+7. 桌面/移动端、浅色/深色浏览器截图审查通过。
+8. Windows 原生沙箱恶意夹具通过，否则阻止发布。
+9. 真实视觉 Provider 完成截图识别、代码定位、修复、隐藏测试和交付写回闭环。
+10. 不存在未处理的高危依赖漏洞。
 
-默认目标：
-
-- `linux/amd64`
-- `linux/arm64`
-- `windows/amd64`
-- `windows/arm64`
-
-构建单个平台：
-
-```bash
-python scripts/build_release_assets.py --clean --version dev --target linux/amd64
-```
-
-校验完整产物：
+## 构建
 
 ```bash
-python scripts/generate_sbom.py --version v0.1.3 --output dist/SBOM.spdx.json --update-checksums
-python scripts/validate_release_archives.py --dist dist --version v0.1.3 --require-sbom
+python scripts/build_release_assets.py --target windows/amd64
+python scripts/generate_sbom.py --version dev --update-checksums
+python scripts/validate_release_archives.py --version dev --require-sbom --require-license-report
 ```
 
-校验单个平台的本地产物：
+正式 Release 还会使用 GitHub OIDC 身份逐个签名归档、SBOM、依赖许可证报告与 `SHA256SUMS`，签名后立即执行 `cosign verify-blob`。本地 `dev` 构建没有可信发布身份，不生成或伪造签名。
+
+发布工作流不得生成容器镜像或不支持架构的产物。
+
+Windows x64 发布包生成后执行：
+
+```powershell
+python scripts/windows_native_acceptance.py
+```
+
+该命令直接消费最终 ZIP 与 `SHA256SUMS`，验收安装、无 Key 首启、无效升级保护、升级备份、重启、回滚、回滚后启动、再次升级、卸载保留数据和显式清理数据，并在 `.artifacts/windows-native-acceptance/` 保存逐项证据。
+验收器从最终 ZIP 的外部解压目录运行安装器，与普通用户升级时的受支持路径一致；不得从正在被替换的 Windows 安装目录内部执行安装器。
+
+真实视觉 Provider 上架前必须执行：
 
 ```bash
-python scripts/build_release_assets.py --clean --version dev --target linux/amd64
-python scripts/validate_release_archives.py --dist dist --version dev --target linux/amd64
+python scripts/real_vision_acceptance.py --check-inputs
+python scripts/real_vision_acceptance.py --probe-provider
+python scripts/validate_external_acceptance.py vision-probe <probe-report.json>
+python scripts/real_vision_acceptance.py --require-external-inputs
 ```
 
-## GitHub Release
+第一条命令只检查仓库外文件、只读权限、非空密钥和 Provider 模块契约，不构建、不启动服务，也不发起网络请求。模块必须包含唯一的 `primary`，以及完整的 `provider`、绝对 HTTP(S) `base_url`、`model`、`vision: true` 和 `api_key: secret://providers/primary/api_key`；当前正式支持 `openai-compatible` 与 `anthropic`。第二条命令构建并启动隔离服务，只运行真实 Provider 能力探针，要求连接、视觉和工具调用全部通过；报告仍执行密钥扫描和临时状态清理。第三条命令使用纯标准库生成确定性 PNG，任务提示不包含图片中的文件名、函数名、端口边界或回退规则。只有 Provider 真实识图并完成代码修改、真实 Diff、工具证据、质量门、公开写回、隐藏测试、`go vet`、格式检查和持久化检查才通过。正式自托管 runner 使用仓库外非符号链接只读文件，并通过仓库变量 `GOFLOW_VISION_SECRET_FILE` 只传文件路径；POSIX 主机上的 Key 还必须禁止组和其他用户访问。脚本把密钥临时物化到独立数据根的 `secret://` 路径，结束后删除。支持视觉的仓库外 `primary` Provider 模块路径由 `GOFLOW_VISION_PROVIDER_MODULE` 提供，脚本只把它复制到本次隔离数据根的用户资源层。Key 不能通过命令参数、工作流输入、环境变量值或日志传递。
 
-推送 `v*` 标签会触发 `.github/workflows/release.yml`：
-
-```bash
-git tag v0.1.3
-git push origin v0.1.3
-```
-
-Release workflow 会：
-
-1. 先运行 release preflight：`go test ./...`、Python MCP 校验、资源引用校验、
-   Web Studio i18n/docs 校验、HTTP Studio 冒烟测试、强制真实浏览器 Studio 冒烟测试，
-   以及部署资源校验。
-2. 构建二进制压缩包。
-3. 生成 `SBOM.spdx.json`。
-4. 签名压缩包、`SHA256SUMS` 和 SBOM。
-5. 校验归档命名、校验和、SBOM 和签名。
-6. 上传 GitHub Actions artifacts。
-7. 附加文件到 GitHub Release。
-8. 构建主 Docker 镜像和 MCP Python 工具运行时镜像。
-9. 推送镜像到 GHCR。
-10. 签名 Docker image digest。
-
-压缩包和 Docker 镜像 job 都依赖 preflight。浏览器烟测、资源校验、文档校验或部署
-校验失败时，不会继续发布。
-
-这些脚本运行在 GitHub-hosted runner 上，不是在本地机器上运行。
-
-## 压缩包内容
-
-每个压缩包包含：
-
-- `bin/goflow`
-- `bin/file_tools`
-- `bin/web_tools`
-- `mcp_servers/python_notes.py`
-- `configs/goflow.binary.yaml`
-- `skills/`
-- `kits/`
-- `examples/`
-- `docs/`
-- 启动脚本：`run-goflow.sh` 或 `run-goflow.cmd`
-
-启动脚本默认启动 HTTP/Web Studio，地址为 `http://127.0.0.1:8080/console`，并自动设置内置 MCP 工具路径。需要交互式 CLI 时，直接运行 `bin/goflow` 或 `bin/goflow.exe`。
-
-启动脚本会设置 MCP 工具路径，并在备份 Provider 变量为空时复制主 Provider 变量。
-
-`kits/` 和 `examples/` 会随压缩包一起发布，确保下载包内也包含 README 和
-Web Studio 中提到的起步 Kit 目录和可复制二开示例。
-`scripts/validate_release_archives.py` 会校验产物命名、`SHA256SUMS`、可选
-SBOM、可选签名 bundle，以及压缩包内部布局，包括代表性的 Kit 和示例文件，
-避免发布包缺少启动脚本、配置、文档或二进制文件。
-
-## 签名验证
-
-验证压缩包：
-
-```bash
-cosign verify-blob \
-  --bundle goflow-agent_v0.1.3_linux_amd64.tar.gz.sigstore.json \
-  --certificate-identity-regexp "https://github.com/FyMatt/GoFlow-Agent/.github/workflows/release.yml@refs/tags/v.*" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  goflow-agent_v0.1.3_linux_amd64.tar.gz
-```
-
-验证 Docker 镜像：
-
-```bash
-cosign verify \
-  --certificate-identity-regexp "https://github.com/FyMatt/GoFlow-Agent/.github/workflows/release.yml@refs/tags/v.*" \
-  --certificate-oidc-issuer "https://token.actions.githubusercontent.com" \
-  ghcr.io/fymatt/goflow-agent:<tag>
-```
-
-## 发布镜像
-
-```text
-ghcr.io/fymatt/goflow-agent:<tag>
-ghcr.io/fymatt/goflow-agent:latest
-ghcr.io/fymatt/goflow-agent-mcp-python:<tag>
-ghcr.io/fymatt/goflow-agent-mcp-python:latest
-```
-
-主镜像默认启动 HTTP 模式：
-
-```text
-goflow --config /app/configs/goflow.docker.yaml --workspace /workspace --http :8080
-```
-
-## 发布前检查
-
-打 tag 前先做密钥检查。提交到仓库的 Provider 文件应保留 `${GOFLOW_API_KEY}` 这类
-环境变量引用，不要写入真实 API Key：
-
-```bash
-python scripts/validate_no_secrets.py
-```
-
-如需额外手动扫描，也可以运行：
-
-```bash
-rg --hidden --glob '!.git/**' --glob '!*.png' --glob '!*.jpg' --glob '!*.jpeg' --glob '!*.gif' --glob '!*.webp' --glob '!*.exe' --glob '!*.dll' --glob '!*.zip' --glob '!*.gz' --glob '!*.bin' 'sk-[A-Za-z0-9_-]{20,}' .
-```
-
-如果任一命令命中了真实密钥，先从文件中移除，再到模型服务商后台轮换或吊销该密钥，然后重新
-扫描。Web Studio 会把 Provider 资源保存到 `configs/providers/<name>.yaml`，因此
-页面里粘贴的密钥属于本地明文配置，不应进入发布提交。
-
-```bash
-python scripts/run_preflight.py --browser-required
-```
-
-如果希望同一条预检命令同时构建并校验本地发布压缩包，可以增加一个或多个发布目标：
-
-```bash
-python scripts/run_preflight.py --browser-required --release-target windows/amd64
-```
-
-如果本地没有 Chrome、Edge 或 Chromium，可以使用
-`python scripts/run_preflight.py --skip-browser` 跑非浏览器检查。
-
-`scripts/smoke_http_studio.py` 会临时构建 `goflow`，用占位模型配置启动 HTTP 模式，并检查嵌入式 Studio 页面、静态资源和 API 契约。它是轻量级 HTTP/静态资源/API 冒烟测试，不等同于完整浏览器交互测试。
-
-`scripts/smoke_http_browser.py` 是可选的真实浏览器执行冒烟测试。它会使用本机
-Chrome、Edge 或 Chromium 渲染 `/console`、`/workflows`、
-`/console#playground`、`/console#approvals`、`/console#catalog`、
-`/console#status`、`/console#workspace`、`/console#settings`，以及中文
-`?lang=zh` 深链，用于发现概览页、工作流编排、任务运行、审批、资源页、观测页、
-工作区页和设置页的 JavaScript 白屏、递归爆栈和中英文混排回归。默认没有浏览器时
-跳过；CI 和发布前检查应加 `--required`，这样缺少浏览器或浏览器无法执行时会直接
-失败，而不是静默跳过 Web Studio 执行覆盖。
+正式发布额外要求 Windows 自托管视觉 runner，标签为 `windows`、`x64`、`goflow-vision-acceptance`，并使用机器本地预配置密钥。runner 缺失、能力不可用或报告失败都会阻止发布，不得改用 Ubuntu runner 或跳过作业。

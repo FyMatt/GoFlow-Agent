@@ -103,8 +103,8 @@ func serve(ctx context.Context, in io.Reader, out io.Writer) error {
 func builtinTools() []tool {
 	return []tool{{
 		Name:        "run_script",
-		Description: "Run a deterministic helper script declared in a skill's SKILL.md scripts manifest. Execution is an exec tool and must pass normal agent policy, approval, audit, and MCP isolation.",
-		InputSchema: json.RawMessage(`{"type":"object","properties":{"skill":{"type":"string","minLength":1,"description":"Skill name or skill folder name."},"script":{"type":"string","minLength":1,"description":"Declared script name from the skill scripts manifest."},"args":{"type":"object","description":"JSON arguments passed to the script on stdin and in GOFLOW_SKILL_ARGS_JSON."}},"required":["skill","script"],"additionalProperties":false}`),
+		Description: "运行 Skill 的 SKILL.md 脚本清单中声明的确定性辅助脚本；执行仍受智能体策略、审批、审计和 MCP 隔离约束。",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"skill":{"type":"string","minLength":1,"description":"Skill 名称或目录名。"},"script":{"type":"string","minLength":1,"description":"Skill 脚本清单中声明的脚本名。"},"args":{"type":"object","description":"通过标准输入和 GOFLOW_SKILL_ARGS_JSON 传给脚本的 JSON 参数。"}},"required":["skill","script"],"additionalProperties":false}`),
 		Kind:        "exec",
 	}}
 }
@@ -220,7 +220,7 @@ func baseScriptPayload(loaded loadedSkillScript, args map[string]any) map[string
 		"workspace_mount":  loaded.Script.WorkspaceMount,
 		"approval":         loaded.Script.Approval,
 		"args":             args,
-		"sandbox_note":     "execution uses the MCP server's configured isolation; use isolation: container for a strong Docker/Podman boundary",
+		"sandbox_note":     "execution uses the MCP server's configured native isolation; use isolation: auto or native_strong for untrusted scripts",
 	}
 }
 

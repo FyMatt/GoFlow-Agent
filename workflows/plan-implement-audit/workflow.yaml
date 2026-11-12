@@ -15,7 +15,12 @@ stages:
       agent: planner
       skill: execution-plan
       params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
         output_contract: Emit sections named Objective, Scope, Constraints, Target Areas, Acceptance Criteria, Risks, and Assumptions.
+        clarification_policy: Resolve broad but low-risk requests with explicit safe defaults and continue. For Web beautification, assume all existing user-facing pages, desktop-first responsive behavior, preservation of business logic, and the current framework. Do not stop to ask optional preference questions; only request input when a missing choice would materially change authorization, data safety, or the requested product.
+        tools: file_tools/read_file,file_tools/read_file_range,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+        max_iterations: "3"
       outputs:
         clarified_request: result.output
         summary: result.summary
@@ -44,7 +49,16 @@ stages:
       agent: planner
       skill: execution-plan
       params:
-        output_contract: Emit sections named Implementation Plan, Files Or Modules, Change Steps, Verification Commands, Review Checklist, Rollback Plan, and Done Criteria.
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        change_slice_policy: "required"
+        tools: file_tools/list_tree,file_tools/search_files,file_tools/read_file,file_tools/read_file_range,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+        output_contract: Emit sections named Implementation Plan, Files Or Modules, Change Steps, Verification Commands, Review Checklist, Rollback Plan, and Done Criteria. End with a goflow-change-slices fenced JSON array; each item declares id, title, mode, depends_on, input_files, target_files and verification_commands from the request and observed repository evidence. mode must be read or write; creating or changing tests uses write.
+        max_iterations: "6"
+        max_read_calls: "8"
+        planning_policy: Turn the clarified request and bounded repository evidence into a concrete executable plan. Do not refuse or wait merely because visual preferences are broad; select conservative defaults, name the real target files found in the workspace, and proceed to implementation.
+      retry:
+        max_attempts: 2
       input:
         clarified_request: stages.clarify.outputs.clarified_request
         request: workflow.input
@@ -76,7 +90,12 @@ stages:
       agent: fixer
       skill: code-writing
       params:
+        require_workspace_mutation: "false"
+        use_change_slice_scheduler: "false"
         output_contract: Emit sections named Implementation Summary, Files Changed, Verification Attempted, Deviations, Remaining Work, and Risk Notes.
+        approved_plan_scope: "true"
+        max_iterations: "16"
+        web_delivery_rule: For HTML or Web UI changes, implement the requested desktop behavior, start or reuse the local application, and use browser_snapshot on the affected pages before reporting completion. For Flask applications whose app.py enables debug mode, start the managed verification server without the Werkzeug reloader (for example python -c "from app import app; app.run(debug=False, use_reloader=False)"); do not use python app.py when it spawns a reloader. Do not claim visual verification from source inspection alone.
       input:
         clarified_request: stages.clarify.outputs.clarified_request
         plan: stages.plan.outputs.plan
@@ -107,11 +126,17 @@ stages:
         "y": 270
     - name: verify
       node_type: skill
-      agent: auditor
+      agent: quality-engineer
       skill: code-audit
+      approval: true
       params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        use_change_slice_scheduler: "false"
+        completion_policy: Compare every original requirement with actual implementation and verification evidence. Existing smoke tests passing does not prove new styling, animation or content was delivered. Mark missing implementation or browser evidence blocked, not PASS. For Chinese requests write explanations in Simplified Chinese, retaining only the required section identifiers.
         output_contract: Emit sections named Verification Result, Commands Run, Coverage, Failures, Evidence, and Residual Risk.
-        verification_command: go test ./...
+        verification_scope: Use the verification commands selected by the approved plan and repository evidence. Run the smallest relevant project checks without assuming a language or framework. For Python on Windows, prefer the project .venv\Scripts\python.exe when present, identify the test framework from existing tests, and use unittest when the project uses only the standard library; do not assume pytest. For Web UI changes, start or reuse the local application, call browser_snapshot for every affected desktop page, check HTTP success and actual browser horizontal overflow, and preserve screenshot evidence. Do not report overflow based only on a missing CSS string or static pattern. For Flask applications, disable the Werkzeug reloader in managed verification processes (for example python -c "from app import app; app.run(debug=False, use_reloader=False)"). If a snapshot is empty or connection is refused, restart once without the reloader, confirm the process remains running, and retry the affected snapshots before failing verification. Do not modify product files.
+        approved_plan_scope: "true"
       input:
         implementation: stages.implement.outputs.implementation_report
         plan: stages.plan.outputs.plan
@@ -142,8 +167,15 @@ stages:
       node_type: skill
       agent: auditor
       skill: code-audit
+      approval: true
       params:
+        require_workspace_mutation: "false"
+        use_change_slice_scheduler: "false"
         output_contract: Emit sections named Audit Decision, Findings, Missed Requirements, Test Gaps, Safety Notes, Recommendation, and Release Readiness.
+        approved_plan_scope: "true"
+        tools: file_tools/read_file,file_tools/read_file_range
+        max_read_calls: "3"
+        review_scope: Review the actual implementation and verification evidence against the original request. Do not execute test commands or assume pytest. Treat unrelated unchanged pre-existing risks as advisory unless the requested change creates or worsens them. Missing requested features remain blocking. Use the user's language.
       input:
         implementation: stages.implement.outputs.implementation_report
         plan: stages.plan.outputs.plan
@@ -182,6 +214,8 @@ stages:
         require_acceptance: "true"
         require_evidence: "true"
         require_verification: "true"
+        verification_mode: command
+        allowed_infrastructure_failures: go_race_unavailable
         stages: implement,verify,audit
       routes:
         fail: revision-summary
@@ -206,6 +240,8 @@ stages:
       agent: planner
       skill: execution-plan
       params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
         output_contract: Emit sections named Revision Required, Blocking Issues, Missing Evidence, Recommended Fix, and Safe Next Step.
       input:
         audit: stages.audit.outputs.audit
@@ -221,21 +257,226 @@ stages:
           ref: result.output
           summary: Blocking issues, missing evidence, recommended fix, and safe next step.
       next:
-        - final-report
+        - repair
       position:
         x: 2320
+        "y": 410
+    - name: repair
+      node_type: agent
+      agent: fixer
+      skill: code-writing
+      params:
+        require_workspace_mutation: "false"
+        use_change_slice_scheduler: "false"
+        worker_contract: engineering_v1
+        output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, and next_actions.
+        repair_policy: Apply only blocking findings from the initial quality gate. Preserve user changes, use the existing project environment and test framework, and do not weaken acceptance criteria. This is the only automatic repair pass; report unresolved blockers instead of looping.
+        max_iterations: "12"
+        approved_plan_scope: "true"
+      input:
+        clarified_request: stages.clarify.outputs.clarified_request
+        plan: stages.plan.outputs.plan
+        implementation: stages.implement.outputs.implementation_report
+        revision_summary: stages.revision-summary.outputs.revision_summary
+        verification: stages.verify.outputs.verification
+        audit: stages.audit.outputs.audit
+        failures: stages.quality.outputs.failures
+      outputs:
+        repair_report: result.output
+        changed_files: result.changed_files
+        verification: result.verification
+        summary: result.summary
+      artifacts:
+        - name: repair-report
+          kind: repair
+          title: Bounded repair report
+          ref: result.output
+          summary: Blocking findings addressed, regression evidence, and unresolved items.
+      acceptance_criteria:
+        - name: has-repair-summary
+          ref: result.summary
+          exists: true
+          expected: repair explains the bounded corrective action
+        - name: has-repair-verification
+          ref: result.verification
+          exists: true
+          expected: repair records real verification evidence
+      approval: true
+      context:
+        include:
+          - stages.clarify.outputs.clarified_request
+          - stages.plan.outputs.plan
+          - stages.quality.outputs.failures
+          - stages.verify.outputs.verification
+          - stages.audit.outputs.audit
+          - files.changed
+        exclude:
+          - raw_tool_logs
+          - large_file_contents
+        max_tokens: 4200
+        prompt_max_tokens: 5200
+        request_max_tokens: 900
+        inputs_max_tokens: 1800
+        parameters_max_tokens: 700
+      next:
+        - recovery-verify
+      position:
+        x: 2630
+        "y": 410
+    - name: recovery-verify
+      node_type: skill
+      agent: quality-engineer
+      skill: code-audit
+      params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        verification_scope: Re-run the failed acceptance checks and the project's documented test command in its existing environment. For Web UI changes, verify affected pages over HTTP and use browser_snapshot at desktop and mobile widths. Do not modify product files. Report missing tools or dependencies precisely and never count a static-pattern mismatch as a runtime failure without corroborating evidence.
+        output_contract: Emit sections named Verification Result, Commands Run, Coverage, Failures, Evidence, and Residual Risk.
+        completion_policy: Check every original requirement and initial blocker, not just public smoke tests. Reuse the project virtual environment and discovered test runner; do not invent a pytest dependency. Do not declare PASS while requested content, animation or browser checks remain unverified. Write explanations in the user's language and stop only the preview processes started by this verification pass.
+      input:
+        clarified_request: stages.clarify.outputs.clarified_request
+        repair: stages.repair.outputs.repair_report
+        changed_files: stages.repair.outputs.changed_files
+        initial_verification: stages.verify.outputs.verification
+        plan: stages.plan.outputs.plan
+      outputs:
+        verification: result.output
+        summary: result.summary
+      artifacts:
+        - name: recovery-verification-report
+          kind: verification
+          title: Repair verification report
+          ref: result.output
+          summary: Re-run results for the initial blocking checks and remaining risks.
+      acceptance_criteria:
+        - name: has-recovery-verification-result
+          ref: result.output
+          contains: Verification Result
+          expected: verification declares its actual outcome
+        - name: has-recovery-commands
+          ref: result.output
+          contains: Commands Run
+          expected: verification lists commands actually executed
+      context:
+        include:
+          - workflow.input
+          - stages.clarify.outputs.clarified_request
+          - stages.plan.outputs.plan
+          - stages.repair.outputs.repair_report
+          - stages.repair.outputs.changed_files
+          - stages.verify.outputs.verification
+          - files.changed
+        exclude:
+          - raw_tool_logs
+          - large_file_contents
+        max_tokens: 3600
+        prompt_max_tokens: 4800
+        request_max_tokens: 800
+        inputs_max_tokens: 1500
+        parameters_max_tokens: 650
+      next:
+        - recovery-audit
+      position:
+        x: 2940
+        "y": 410
+    - name: recovery-audit
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        require_workspace_mutation: "false"
+        output_contract: Emit sections named Audit Decision, Findings, Missed Requirements, Test Gaps, Safety Notes, Recommendation, and Release Readiness.
+        review_scope: Independently compare the original request and initial blocking findings with the bounded repair and recovery verification. Do not repeat implementation work or infer checks that were not run.
+        tools: file_tools/read_file,file_tools/read_file_range
+        max_read_calls: "3"
+        review_policy: Audit supplied command results without running another test suite or inventing pytest. Use the real changed_files and verification evidence, not guessed paths in the model-authored report. Do not expand the task into unrelated pre-existing security remediation. Write explanations in the user's language.
+      input:
+        clarified_request: stages.clarify.outputs.clarified_request
+        plan: stages.plan.outputs.plan
+        repair: stages.repair.outputs.repair_report
+        changed_files: stages.repair.outputs.changed_files
+        repair_verification: stages.repair.outputs.verification
+        verification: stages.recovery-verify.outputs.verification
+        initial_audit: stages.audit.outputs.audit
+      outputs:
+        audit: result.output
+        findings: result.findings
+        summary: result.summary
+      artifacts:
+        - name: recovery-audit-report
+          kind: report
+          title: Repair audit report
+          ref: result.output
+          summary: Independent assessment of the bounded repair and its verification evidence.
+      acceptance_criteria:
+        - name: has-recovery-audit-decision
+          ref: result.output
+          contains: Audit Decision
+          expected: independent audit declares its decision
+        - name: has-recovery-release-readiness
+          ref: result.output
+          contains: Release Readiness
+          expected: audit identifies remaining delivery blockers
+      context:
+        include:
+          - stages.clarify.outputs.clarified_request
+          - stages.repair.outputs.repair_report
+          - stages.repair.outputs.changed_files
+          - stages.repair.outputs.verification
+          - stages.recovery-verify.outputs.verification
+          - stages.audit.outputs.audit
+        exclude:
+          - raw_tool_logs
+          - large_file_contents
+        max_tokens: 3600
+        prompt_max_tokens: 4800
+        request_max_tokens: 800
+        inputs_max_tokens: 1400
+        parameters_max_tokens: 650
+      next:
+        - final-quality
+      position:
+        x: 3250
+        "y": 410
+    - name: final-quality
+      node_type: quality_gate
+      params:
+        allow_unknown: "false"
+        min_score: "82"
+        reason: bounded repair did not resolve the original quality blockers
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "true"
+        verification_mode: command
+        allowed_infrastructure_failures: go_race_unavailable
+        stages: repair,recovery-verify,recovery-audit
+      routes:
+        fail: operator-review
+        warning: operator-review
+        pass: final-report
+      position:
+        x: 3560
         "y": 410
     - name: final-report
       node_type: skill
       agent: planner
       skill: execution-plan
       params:
+        require_workspace_mutation: "false"
+        disable_tools: "true"
+        max_iterations: "1"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
         output_contract: Emit sections named Final Status, Delivered Work, Files Changed, Verification Evidence, Audit Outcome, Remaining Risks, and Next Steps.
       input:
         audit: stages.audit.outputs.audit
         implementation: stages.implement.outputs.implementation_report
         quality_status: stages.quality.outputs.quality_status
+        final_quality_status: stages.final-quality.outputs.quality_status
         revision_summary: stages.revision-summary.outputs.revision_summary
+        repair: stages.repair.outputs.repair_report
+        repair_changed_files: stages.repair.outputs.changed_files
+        recovery_verification: stages.recovery-verify.outputs.verification
+        recovery_audit: stages.recovery-audit.outputs.audit
         verification: stages.verify.outputs.verification
       outputs:
         final_report: result.output

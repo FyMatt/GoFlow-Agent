@@ -2,8 +2,8 @@ kind: goflow.kit
 version: 1
 min_supported_version: 1
 name: customer-support-kit
-title: Customer Support Kit
-description: Triage user issues, gather factual context, draft customer-ready replies, and flag escalation or privacy risk.
+title: 用户支持资源包
+description: 分诊用户问题、收集事实上下文、起草可直接回复的内容，并标记升级或隐私风险。
 category: support
 tags:
     - support
@@ -37,15 +37,15 @@ policy_rules:
     - expression
     - team_approval_gate
 examples:
-    - title: Triage a customer issue
-      description: Classify priority, gather known facts, and draft a response with escalation notes.
-      request: Triage this customer issue and draft a clear response with missing information called out.
+    - title: 分诊用户问题
+      description: 判定优先级、收集已知事实，并起草带升级说明的答复。
+      request: 分诊这个用户问题，起草清晰答复，并指出仍缺少的信息。
       workflow: customer-support-triage
       agent: support-specialist
 vertical_pack:
     domain: customer-support
     maturity: production-ready
-    summary: Triage support tickets, structure product area, customer impact, SLA/priority, privacy flags, legal/billing/security escalation, customer-facing replies, internal notes, source attribution, and reviewer quorum diagnostics.
+    summary: 分诊支持工单，整理产品范围、用户影响、SLA 与优先级、隐私标记、法务/账单/安全升级、对外答复、内部说明、来源归属和复核状态。
     supported_tasks:
         - issue triage
         - ticket context extraction
@@ -85,9 +85,8 @@ vertical_pack:
         - internal notes
         - escalation decision
         - reviewer quorum decision
-    simple_mode:
+    presentation_guidance:
         - Show issue, product area, impact, SLA/priority, privacy flags, missing information, response draft, escalation status, and reviewer quorum.
-    expert_mode:
         - Show source attribution, policy assumptions, redaction findings, evidence refs, response variants, reviewer quorum, and routing diagnostics.
     token_strategy:
         - Keep customer context concise and redact irrelevant history.

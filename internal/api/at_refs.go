@@ -13,12 +13,19 @@ import (
 	"unicode/utf8"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/memory"
+	"github.com/FyMatt/GoFlow-Agent/internal/promptguard"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
 const maxHTTPAtReferenceBytes = 256 * 1024
 const maxHTTPAtReferenceTotalBytes = 768 * 1024
 const httpAtReferenceSummaryThresholdBytes = 64 * 1024
+
+func atReferenceArgumentsHash(key, value string) string {
+	payload, _ := json.Marshal(map[string]string{key: value})
+	sum := sha256.Sum256(payload)
+	return "sha256:" + hex.EncodeToString(sum[:])
+}
 
 type httpAtReference struct {
 	RawPath      string
@@ -84,6 +91,9 @@ func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string
 		if _, exists := seen[resolved]; exists {
 			continue
 		}
+		if promptguard.IsSensitivePath(rel) {
+			return "", fmt.Errorf("@%s: sensitive files cannot be attached to model context", rawPath)
+		}
 		seen[resolved] = struct{}{}
 		info, err := os.Stat(resolved)
 		if err != nil {
@@ -100,7 +110,7 @@ func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string
 		}
 		callID := fmt.Sprintf("http-at-ref-%d", index+1)
 		if handler != nil {
-			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolCall, ToolName: "read_file", ToolCallID: callID, Content: "read", ArgumentsSummary: "path=" + rawPath})
+			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolCall, ToolName: "read_file", ToolCallID: callID, Content: "read", ArgumentsSummary: "path=" + rawPath, ArgumentsHash: atReferenceArgumentsHash("path", rawPath)})
 		}
 		data, err := os.ReadFile(resolved)
 		if err != nil {
@@ -128,7 +138,7 @@ func expandHTTPAtFileReferences(ctx context.Context, input, workspaceRoot string
 				"path": rel,
 				"size": ref.Size,
 			})
-			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: "read_file", ToolCallID: callID, Content: string(payload), ArgumentsSummary: "path=" + rawPath})
+			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: "read_file", ToolCallID: callID, Content: string(payload), ArgumentsSummary: "path=" + rawPath, ArgumentsHash: atReferenceArgumentsHash("path", rawPath)})
 		}
 	}
 	return buildHTTPAtReferencePrompt(input, refs), nil
@@ -229,8 +239,9 @@ func (s *Server) expandSessionArtifactReferences(input string, refs []string, ha
 		}
 		callID := fmt.Sprintf("http-artifact-ref-%d", index+1)
 		if handler != nil {
-			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolCall, ToolName: "session_artifact", ToolCallID: callID, Content: "read", ArgumentsSummary: "ref=" + ref})
-			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: "session_artifact", ToolCallID: callID, Content: artifact.Summary, ArgumentsSummary: "ref=" + ref})
+			argumentHash := atReferenceArgumentsHash("ref", ref)
+			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolCall, ToolName: "session_artifact", ToolCallID: callID, Content: "read", ArgumentsSummary: "ref=" + ref, ArgumentsHash: argumentHash})
+			_ = handler(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: "session_artifact", ToolCallID: callID, Content: artifact.Summary, ArgumentsSummary: "ref=" + ref, ArgumentsHash: argumentHash})
 		}
 		fmt.Fprintf(&b, "\n--- %s (%s, %d bytes) ---\n", artifact.Ref, artifact.Title, artifact.ContentBytes)
 		b.WriteString(artifact.Content)

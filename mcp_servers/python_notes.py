@@ -12,6 +12,12 @@ from urllib.parse import unquote, urlparse
 from pathlib import Path
 
 
+if hasattr(sys.stdin, "reconfigure"):
+    sys.stdin.reconfigure(encoding="utf-8", errors="strict")
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="strict")
+
+
 MAX_TEXT_BYTES = 1024 * 1024
 MAX_BINARY_BYTES = 8 * 1024 * 1024
 MAX_EXTRACT_BYTES = 4096
@@ -30,7 +36,7 @@ ROOT = workspace_root()
 TOOLS = [
     {
         "name": "write_note",
-        "description": "Write a UTF-8 text note into the workspace.",
+        "description": "在工作区内写入 UTF-8 文本笔记。",
         "kind": "write",
         "input_schema": {
             "type": "object",
@@ -44,7 +50,7 @@ TOOLS = [
     },
     {
         "name": "read_note",
-        "description": "Read a UTF-8 text note from the workspace.",
+        "description": "读取工作区内的 UTF-8 文本笔记。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -55,7 +61,7 @@ TOOLS = [
     },
     {
         "name": "python_ast_summary",
-        "description": "Parse a Python source file and return imports, classes, functions, and top-level structure.",
+        "description": "解析 Python 源文件并返回导入、类、函数和顶层结构。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -66,7 +72,7 @@ TOOLS = [
     },
     {
         "name": "json_query",
-        "description": "Read a JSON file and optionally return a dotted path inside the JSON document.",
+        "description": "读取 JSON 文件，并可按点分路径返回文档中的指定内容。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -80,7 +86,7 @@ TOOLS = [
     },
     {
         "name": "binary_file_info",
-        "description": "Return binary metadata including size, SHA-256, magic bytes, and entropy sample.",
+        "description": "返回二进制文件大小、SHA-256、魔数和熵采样等元数据。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -91,7 +97,7 @@ TOOLS = [
     },
     {
         "name": "binary_strings",
-        "description": "Extract ASCII and UTF-16LE strings from a binary file inside the workspace.",
+        "description": "从工作区内的二进制文件提取 ASCII 和 UTF-16LE 字符串。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -106,7 +112,7 @@ TOOLS = [
     },
     {
         "name": "hex_preview",
-        "description": "Return a bounded hex/ascii preview of a binary file.",
+        "description": "返回二进制文件的受限十六进制和 ASCII 预览。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -121,7 +127,7 @@ TOOLS = [
     },
     {
         "name": "binary_format_summary",
-        "description": "Identify a binary format and return bounded header, section, import/export, and entry-point hints without executing the file.",
+        "description": "在不执行文件的前提下识别二进制格式，并返回受限的文件头、区段、导入导出和入口点提示。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -132,7 +138,7 @@ TOOLS = [
     },
     {
         "name": "binary_entropy_map",
-        "description": "Return a bounded per-block entropy map and packing/compression hints for static binary triage.",
+        "description": "返回受限的分块熵图和加壳或压缩提示，用于二进制静态初筛。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -147,7 +153,7 @@ TOOLS = [
     },
     {
         "name": "binary_symbol_hints",
-        "description": "Extract bounded symbol-like strings, import/export hints, suspicious API names, URLs, and credential markers from a binary without executing it.",
+        "description": "在不执行样本的前提下，从二进制提取受限的类符号字符串、导入导出提示、可疑 API、URL 和凭据标记。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -161,7 +167,7 @@ TOOLS = [
     },
     {
         "name": "binary_extract_window",
-        "description": "Return a bounded hex/base64 artifact window from a binary for offset-specific evidence capture.",
+        "description": "从二进制返回受限的十六进制或 Base64 片段，用于按偏移保存证据。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -177,7 +183,7 @@ TOOLS = [
     },
     {
         "name": "markdown_link_check",
-        "description": "Check local Markdown headings and links without network access, reporting missing files or anchors.",
+        "description": "在不访问网络的情况下检查本地 Markdown 标题和链接，并报告缺失文件或锚点。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -188,7 +194,7 @@ TOOLS = [
     },
     {
         "name": "support_case_summary",
-        "description": "Summarize a support case from a JSON or text file with priority, customer impact, escalation, privacy, and missing-information hints.",
+        "description": "从 JSON 或文本文件汇总支持案例，返回优先级、用户影响、升级、隐私和缺失信息提示。",
         "kind": "read",
         "input_schema": {
             "type": "object",
@@ -199,7 +205,7 @@ TOOLS = [
     },
     {
         "name": "redaction_check",
-        "description": "Detect common sensitive data patterns in a text, JSON, Markdown, or support-case file and return redacted evidence counts.",
+        "description": "检测文本、JSON、Markdown 或支持案例文件中的常见敏感数据模式，并返回脱敏后的证据计数。",
         "kind": "read",
         "input_schema": {
             "type": "object",

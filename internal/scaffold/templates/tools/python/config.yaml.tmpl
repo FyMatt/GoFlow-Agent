@@ -8,7 +8,7 @@ mcp_servers:
     timeout: 30s
     workdir: .
     env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
-    isolation: process_group
+    isolation: auto
     restart_limit: 3
     cooldown: 10s
     max_concurrent_calls: 1

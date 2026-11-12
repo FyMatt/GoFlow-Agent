@@ -58,7 +58,7 @@ nodes:
           description: Optional provider/model/max token override for this stage. Use it to run strong models for decomposition or review and cheaper models for bounded execution.
           examples:
             - 'provider: primary, model: strong-planner, max_tokens: 1600'
-            - 'provider: backup, model: small-coder, max_tokens: 900, temperature: 0.1'
+            - 'provider: primary, model: gpt-5.4-mini, max_tokens: 900, temperature: 0.1'
           hints:
             - The Agent still owns permissions, tool policy, and mode. This field only changes the LLM route and response budget for the stage.
             - Keep worker max_tokens small and pass only named upstream outputs through context/input contracts.
@@ -218,7 +218,7 @@ nodes:
           description: Optional provider/model/max token override for this stage. Use it to route expensive reasoning only to decomposition, arbitration, or audit nodes.
           examples:
             - 'provider: primary, model: strong-planner, max_tokens: 1600'
-            - 'provider: backup, model: small-worker, max_tokens: 900, temperature: 0.1'
+            - 'provider: primary, model: gpt-5.4-mini, max_tokens: 900, temperature: 0.1'
           hints:
             - Prefer small worker budgets plus explicit input/output contracts; use stronger routes only where they reduce rework.
         - name: input
@@ -354,25 +354,23 @@ nodes:
     - type: tool
       label: Tool
       category: execute
-      description: Tool-focused stage. Agent permissions and approval policy still apply.
+      description: Connected MCP tool handoff. The upstream LLM receives the tool schema, generates arguments, and the node publishes the result for downstream agents.
       source: built_in
       default_stage:
         name: tool
         node_type: tool
-        agent: fixer
-        skill: code-writing
         tool: file_tools/write_file
+        params:
+            tool_mode: connected
         outputs:
-            summary: result.summary
+            tool_result: result.output
             tool_results: result.tool_results
-        approval: true
       fields:
         - name: agent
           label: Agent
           type: agent
-          description: Configured agent profile that owns this stage.
+          description: Compatibility-only owner when tool_mode=assisted. Connected mode uses the upstream agent.
           default: planner
-          required: true
           examples:
             - planner
             - software-engineer
@@ -383,9 +381,8 @@ nodes:
         - name: skill
           label: Skill
           type: skill
-          description: Skill instructions applied to the stage.
+          description: Compatibility-only skill when tool_mode=assisted.
           default: execution-plan
-          required: true
           examples:
             - execution-plan
             - code-writing
@@ -469,7 +466,16 @@ nodes:
         - name: tool
           label: Tool
           type: tool
-          description: Preferred tool metadata for this stage. Executable workflow stages use this as a stage-scoped tool allowlist so only the relevant tool schema is exposed to the model.
+          description: Exact MCP tool connected to the upstream LLM. Its input schema is exposed to that LLM and its result is published by this node.
+          required: true
+        - name: params.tool_mode
+          label: Tool mode
+          type: select
+          default: connected
+          options:
+            - connected
+            - assisted
+          description: Connected lets the upstream LLM generate and execute the tool call. Assisted preserves the legacy behavior where this node runs its own LLM stage.
       outputs:
         - name: summary
           description: Bounded result summary
@@ -484,25 +490,24 @@ nodes:
         - name: verification
           description: Verification results as JSON
       hints:
-        - Use a Tool node only when the workflow needs to strongly prefer one MCP tool. The agent still decides the exact call arguments.
-        - Executable stages can also set params.tools or params.allowed_tools to a comma-separated exact tool list; the stage then exposes only those tool schemas to reduce token cost and accidental tool calls.
+        - In connected mode, place this node directly after an Agent or Skill node. The upstream model receives only the connected tool schema and generates concrete arguments.
+        - Downstream nodes can map stages.<tool-stage>.outputs.tool_result, tool_results, artifact_ref, or artifact_hash.
+        - Set tool_mode=assisted only for existing workflows that intentionally run a separate model stage around the tool.
         - Write, exec, network, and other risky tools still go through the active agent policy and approval gates.
       warnings:
-        - Do not use tool nodes to bypass agent permissions; they are metadata and prompt guidance, not an authorization override.
+        - Connected tools still use the upstream agent permission envelope, task workspace isolation, idempotency, and approval gates.
       examples:
         - title: Preferred write tool
-          description: Ask the fixer stage to produce a workspace file through the write tool path.
+          description: Let the directly connected upstream agent call one write tool and publish its result.
           stage:
             name: write-report
             node_type: tool
-            agent: fixer
-            skill: code-writing
             tool: file_tools/write_file
-            input:
-                report: stages.report.outputs.report
+            params:
+                tool_mode: connected
             outputs:
+                tool_result: result.output
                 tool_results: result.tool_results
-            approval: true
     - type: team
       label: Team
       category: execute

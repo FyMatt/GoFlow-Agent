@@ -1,166 +1,45 @@
-# 部署说明
+# 部署
 
-[English](./deployment.md) | [简体中文](./deployment.zh-CN.md)
+GoFlow V3 只以本地原生应用形式支持 Windows 10/11 x64。不提供 Linux、Docker、Podman、虚拟机和 arm64 产品路径。
 
-GoFlow 支持 Windows、Linux 和 Docker 部署。对于 MCP 工具沙箱，推荐使用 Docker/Podman `isolation: container` 作为跨平台强边界。
+## 运行目录
 
-发布版和共享部署建议使用环境变量引用 Provider 配置。如果在 Web Studio 里保存字面量
-API Key，密钥会以明文写入 `configs/providers/<name>.yaml`。
+- `goflow.exe`：主程序。
+- `configs/`：内置模型、智能体和 MCP 连接。
+- `mcp_servers/`：原生内置工具。
+- `skills/`：领域方法、脚本和模板。
+- `workflows/`：可执行工作流。
+- 用户选择的工作区：用户项目文件；默认源码运行还可能包含 `.goflow/session.json` 等会话数据。
+- 数据目录：会话、附件、工作区版本快照、备份、索引和恢复信息。
 
-## Windows 本地运行
+数据目录应位于工作区之外。如果发生路径重叠，GoFlow 会把工作区恢复快照迁移到独立临时目录。
 
-可以先设置模型凭据后运行，也可以启动后在 Web Studio 设置页填写：
+以当前配置的 `GOFLOW_DATA_ROOT` 和会话路径为准，不要把 `.goflow/`、`task-staging/`、密钥和版本数据当成缓存删除。安全清理与启停方法见[本机操作与维护](./local-operations.zh-CN.md)。
 
-```bat
-set GOFLOW_BASE_URL=https://api.deepseek.com/v1
-rem 可选：也可以启动后在 Web Studio 设置页填写
-set GOFLOW_API_KEY=your-key
-set GOFLOW_MODEL=deepseek-chat
-set GOFLOW_BACKUP_BASE_URL=%GOFLOW_BASE_URL%
-set GOFLOW_BACKUP_API_KEY=%GOFLOW_API_KEY%
-set GOFLOW_BACKUP_MODEL=%GOFLOW_MODEL%
+## Windows
 
-run-goflow.example.cmd D:\Projects\my-workspace
+从用户可写的安装目录启动发布包：
+
+```powershell
+.\goflow.exe --config .\configs\goflow.binary.yaml --workspace D:\Projects\example --http 127.0.0.1:8080
 ```
 
-这个脚本默认启动 HTTP/Web Studio，打开 `http://127.0.0.1:8080/console` 即可使用。第一个参数是 workspace 路径；如果想用 CLI，源码运行时直接执行 `go run ./cmd/goflow`，发布包中直接运行 `bin\goflow.exe`。
+Windows 受控执行按宿主能力使用 Job Object、受限令牌、低完整性进程、任务级 ACL 租约和 AppContainer。能力探针失败时，未知代码会被拒绝，不会降级成不受控进程。
 
-## Linux 本地运行
+## 网络暴露
 
-```bash
-export GOFLOW_BASE_URL=http://localhost:11434/v1
-export GOFLOW_API_KEY=local-dev-key
-export GOFLOW_MODEL=qwen2.5-coder:7b
-export GOFLOW_BACKUP_BASE_URL=$GOFLOW_BASE_URL
-export GOFLOW_BACKUP_API_KEY=$GOFLOW_API_KEY
-export GOFLOW_BACKUP_MODEL=$GOFLOW_MODEL
+默认只监听 `127.0.0.1`。绑定其他网卡前，必须放在有认证的本地反向代理后面，并使用系统防火墙限制来源。浏览器 API 面向本机用户，不应匿名暴露到公网。
 
-go run ./cmd/goflow --workspace /path/to/workspace
-```
+## 原生 MCP 执行
 
-启动 HTTP/Web Studio：
+普通用户不配置底层隔离参数。连接默认使用 `isolation: auto`；可信内置工具按能力使用最小原生适配器。获批的未知和第三方 MCP 仅能在已确认工作区边界内运行，不能访问工作区外路径；写入由任务权限、任务前快照和版本回退共同保护。
 
-```bash
-go run ./cmd/goflow --workspace /path/to/workspace --http :8080
-```
-
-浏览器访问：
-
-```text
-http://127.0.0.1:8080/console
-```
-
-## MCP 容器隔离
-
-当 MCP 工具具备写文件、执行命令、访问网络、处理不可信输入、由用户生成或来自第三方时，建议使用容器隔离：
-
-```yaml
-isolation: container
-network_disabled: true
-isolation_options:
-  image: ghcr.io/fymatt/goflow-agent-mcp-tools:latest
-  workspace_mount: ro
-  workspace_target: /workspace
-  network: disabled
-  memory: 256m
-  cpus: "0.5"
-  pids_limit: "64"
-```
-
-GoFlow 不会在 Docker/Podman 缺失时静默降级到宿主机执行。
-
-## Docker
-
-构建：
-
-```bash
-docker build -t goflow-agent:local .
-docker build -f docker/mcp-python/Dockerfile -t goflow-agent-mcp-python:local .
-```
-
-运行：
-
-```bash
-docker run --rm -it \
-  --env-file .env \
-  -p 8080:8080 \
-  -v "$PWD/workspace:/workspace" \
-  goflow-agent:local
-```
-
-Compose：
-
-```bash
-docker compose up --build
-```
-
-使用发布镜像：
-
-```bash
-docker run --rm -it \
-  --env-file .env \
-  -p 8080:8080 \
-  -v "$PWD/workspace:/workspace" \
-  ghcr.io/fymatt/goflow-agent:<version>
-```
-
-容器默认启动：
-
-```text
-goflow --config /app/configs/goflow.docker.yaml --workspace /workspace --http :8080
-```
-
-## 配置选择
-
-```bash
-goflow --config /app/configs/goflow.docker.yaml --workspace /workspace --http :8080
-```
-
-Release 压缩包使用 `configs/goflow.binary.yaml`。如果直接运行 `bin/goflow`，程序会识别上级压缩包根目录并读取该配置。
-
-## 数据卷
-
-目标项目应挂载到 `/workspace`：
-
-```text
-/workspace/.goflow/session.json
-/workspace/.goflow/session.full.json.gz
-```
-
-`session.json` 是轻量索引，`session.full.json.gz` 保存完整压缩运行详情，
-这样 HTTP 状态轮询不需要每次传输完整历史。
-
-runtime 文件保留在 `/app`，目标项目文件保留在 `/workspace`，这样工具边界更清楚。
-
-## CI 检查
-
-仓库的 CI 包含：
-
-- 共享预检入口：`python scripts/run_preflight.py --browser-required`
-- `go test ./...`
-- Python MCP smoke test
-- 内置 Agent、Skill、Tool、Kit、Team、Policy Rule、Workflow Template、Skill
-  交接、Team 角色和 Workflow 阶段引用校验
-- Web Studio 中英文静态翻译键校验
-- 公开 Markdown 链接、中英文配对和内部计划文件引用校验
-- 嵌入式 HTTP Studio 冒烟测试，覆盖 `/console`、`/workflows`、静态资源和关键 JSON API
-- CI 中强制执行真实浏览器 Studio 冒烟测试，会渲染
-  `/console`、`/workflows`、`/console#playground`、`/console#approvals`、
-  `/console#catalog`、`/console#status`、`/console#workspace`、
-  `/console#settings`，以及中文 `?lang=zh` 深链；本地可不加 `--required`，没有
-  Chrome、Edge 或 Chromium 时会跳过
-- 部署资源校验
-- Docker 镜像构建
-- 容器启动检查
-
-本地静态校验：
+## 校验
 
 ```bash
 python scripts/validate_deployment_assets.py
+python scripts/validate_release_archives.py --help
+go test ./...
 ```
 
-本地运行同一套共享预检：
-
-```bash
-python scripts/run_preflight.py --browser-required
-```
+最终部署验收必须在 Windows 上完成原生安装、升级、恢复、沙箱、浏览器和复杂任务检查。

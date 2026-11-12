@@ -2,56 +2,56 @@ kind: goflow.team_template_resource
 version: 2
 min_supported_version: 1
 name: customer-support-team
-title: Customer Support Team
+title: 用户支持团队
 category: support
-description: Triage, context gathering, response drafting, and customer-readiness review pattern.
-tags: [support, triage, response, handoff]
+description: 覆盖问题分诊、上下文收集、答复起草和对外发送复核的用户支持模板。
+tags: [support, triage, response, handoff, privacy, escalation]
 recommended_workflow: customer-support-triage
 recommended_entry_agent: chat
 role_templates:
   - name: triage-lead
-    label: Triage Lead
+    label: 分诊负责人
     agent: planner
     skill: execution-plan
     responsibilities:
-      - classify the customer request
-      - extract ticket context, product area, customer impact, and SLA signals
-      - identify priority and impact
-      - list missing context
+      - 对用户请求分类
+      - 提取工单上下文、产品范围、用户影响和 SLA 信号
+      - 判断优先级和影响
+      - 列出缺失上下文
     tools: [python_notes/support_case_summary]
     produces: [triage, priority, missing_context]
   - name: context-researcher
-    label: Context Researcher
+    label: 上下文研究者
     agent: chat
     skill: execution-plan
     responsibilities:
-      - collect workspace or knowledge-base context
-      - separate facts from assumptions
-      - summarize relevant constraints
-      - preserve source attribution for read-only lookup evidence
+      - 收集工作区或知识库上下文
+      - 区分事实与假设
+      - 汇总相关约束
+      - 为只读检索证据保留来源引用
     consumes: [triage, missing_context]
     produces: [known_facts, context_summary]
   - name: response-writer
-    label: Response Writer
+    label: 用户答复撰写者
     agent: chat
     skill: execution-plan
     responsibilities:
-      - draft a concise customer-facing response
-      - include next steps
-      - avoid unsupported promises
-      - separate customer-facing text from internal notes
+      - 起草简洁的用户答复
+      - 提供清晰的下一步
+      - 避免无依据承诺
+      - 区分对外文本和内部备注
     consumes: [triage, known_facts]
     produces: [customer_reply, internal_notes]
   - name: support-reviewer
-    label: Support Reviewer
+    label: 支持质量复核者
     agent: auditor
     skill: code-audit
     responsibilities:
-      - review clarity and accuracy
-      - flag privacy or escalation risk
-      - run redaction checks before customer-visible handoff
-      - enforce reviewer quorum for high-impact, SLA, legal, refund, privacy, or security cases
-      - approve or request revision
+      - 复核清晰度和准确性
+      - 标记隐私或升级风险
+      - 对外发送前执行脱敏检查
+      - 对高影响、SLA、法律、退款、隐私或安全问题执行多人复核
+      - 批准答复或要求修订
     tools: [python_notes/redaction_check]
     consumes: [customer_reply, internal_notes]
     produces: [review_decision, risk_notes]
@@ -59,63 +59,63 @@ handoffs:
   - from: triage-lead
     to: context-researcher
     kind: context_request
-    subject: Support context needed
+    subject: 待补充的支持上下文
     artifacts: [triage, missing_context]
     blackboard: [request, evidence]
   - from: context-researcher
     to: response-writer
     kind: response_context
-    subject: Known facts for response
+    subject: 用于答复的已知事实
     artifacts: [known_facts, context_summary]
     blackboard: [evidence, decision]
   - from: response-writer
     to: support-reviewer
     kind: review_request
-    subject: Customer reply ready for review
+    subject: 待复核的用户答复
     artifacts: [customer_reply, internal_notes]
     blackboard: [finding, decision]
 blackboard_templates:
   - kind: request
-    title: Original request and constraints
+    title: 原始请求与约束
     owner_role: triage-lead
     status: open
     tags: [scope]
-    description: The user request, allowed scope, and assumptions that should survive handoffs.
+    description: 在角色交接中持续保留用户请求、允许范围和关键假设。
   - kind: plan
-    title: Working plan
+    title: 当前处理计划
     owner_role: triage-lead
     status: open
     tags: [plan]
-    description: Current executable plan, stage ordering, and known blockers.
+    description: 当前可执行计划、阶段顺序和已知阻塞项。
   - kind: evidence
-    title: Evidence and observations
+    title: 证据与观察
     owner_role: triage-lead
     status: open
     tags: [evidence]
-    description: Tool observations, source references, test output, or collected artifacts.
+    description: 工具观察、知识来源、检查结果和已收集材料。
   - kind: decision
-    title: Decisions and approvals
+    title: 决策与审批
     owner_role: triage-lead
     status: open
     tags: [decision]
-    description: Decisions made by agents or the operator, including approval gates.
+    description: 智能体或操作者作出的决策，包括发送审批结果。
   - kind: finding
-    title: Findings and risks
+    title: 发现与风险
     owner_role: triage-lead
     status: open
     tags: [risk]
-    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+    description: 产品问题、隐私风险、升级事项和未解决问题。
 quorum_presets:
   - name: support-review
-    title: Support reviewer approval
-    description: Require reviewer approval before sending a customer-facing response.
+    title: 支持复核者批准
+    description: 对外发送用户答复前必须由支持复核者批准。
     required: 1
     roles: [support-reviewer]
     reject_blocks: true
     default: true
   - name: triage-and-review
-    title: Triage plus review approval
-    description: Require both triage and support review approval for high-impact issues.
+    title: 分诊与复核双重批准
+    description: 高影响问题必须同时获得分诊负责人和支持复核者批准。
     required: 2
     roles: [triage-lead, support-reviewer]
     reject_blocks: true

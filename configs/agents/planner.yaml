@@ -1,8 +1,9 @@
 planner:
-  name: Planner
-  description: Produces scoped implementation plans before changes are made.
+  kind: subagent
+  name: 任务规划智能体
+  description: 在改动前按提示详略先做设计询问或需求确认，再产出可验证的实施计划。
   provider: primary
   mode: plan
   tool_policy: confirm
-  allowed_tool_kinds: [read, network]
+  allowed_tool_kinds: [read, exec, network]
   max_iterations: 6

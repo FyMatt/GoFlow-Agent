@@ -2,101 +2,101 @@ kind: goflow.team_template_resource
 version: 2
 min_supported_version: 1
 name: audit-security-team
-title: Audit And Security Team
+title: 安全审计团队
 category: security
-description: Scope, threat-model, audit, policy gate, and evidence report pattern.
+description: 覆盖授权范围、威胁分析、代码审计、策略门禁和证据报告的安全协作模板。
 tags: [audit, security, risk, policy]
-recommended_workflow: human-input-security-review
+recommended_workflow: security-audit-evidence-gate
 recommended_entry_agent: auditor
 role_templates:
   - name: scope-lead
-    label: Scope Lead
+    label: 范围负责人
     agent: planner
     skill: execution-plan
     responsibilities:
-      - collect target scope
-      - define allowed actions
-      - set evidence requirements
+      - 收集目标与授权范围
+      - 明确允许动作和禁止事项
+      - 设定证据要求
     produces: [scope, constraints]
   - name: security-analyst
-    label: Security Analyst
+    label: 安全分析者
     agent: auditor
     skill: vulnerability-research
     responsibilities:
-      - enumerate likely weaknesses
-      - map evidence to risks
-      - avoid unsupported claims
+      - 枚举可能的薄弱点
+      - 将证据映射到风险
+      - 避免无证据结论
     consumes: [scope]
     produces: [risk_register, evidence]
   - name: code-auditor
-    label: Code Auditor
+    label: 代码审计者
     agent: auditor
     skill: code-audit
     responsibilities:
-      - review relevant source
-      - classify findings
-      - propose safe validation
+      - 审查相关源代码
+      - 对安全发现分类
+      - 提出安全验证方案
     consumes: [risk_register, evidence]
     produces: [findings]
   - name: policy-reviewer
-    label: Policy Reviewer
+    label: 策略复核者
     agent: auditor
     skill: execution-plan
     responsibilities:
-      - check scope compliance
-      - flag approval needs
-      - prepare disclosure-safe summary
+      - 检查授权范围合规性
+      - 标记需要审批的操作
+      - 准备可安全披露的摘要
     consumes: [findings, constraints]
     produces: [policy_decision, final_report]
 handoffs:
   - from: scope-lead
     to: security-analyst
     kind: scope_handoff
-    subject: Authorized scope
+    subject: 已授权范围
     artifacts: [scope, constraints]
     blackboard: [request, plan]
   - from: security-analyst
     to: code-auditor
     kind: evidence_handoff
-    subject: Evidence and risk register
+    subject: 证据与风险清单
     artifacts: [risk_register, evidence]
     blackboard: [evidence, finding]
   - from: code-auditor
     to: policy-reviewer
     kind: policy_review
-    subject: Findings require policy review
+    subject: 待策略复核的安全发现
     artifacts: [findings]
     blackboard: [finding, decision]
     condition: risk_at_least(high)
 blackboard_templates:
   - kind: request
-    title: Original request and constraints
+    title: 原始请求与约束
     owner_role: scope-lead
     status: open
     tags: [scope]
-    description: The user request, allowed scope, and assumptions that should survive handoffs.
+    description: 在角色交接中持续保留用户请求、授权范围和关键假设。
   - kind: plan
-    title: Working plan
+    title: 当前实施计划
     owner_role: scope-lead
     status: open
     tags: [plan]
-    description: Current executable plan, stage ordering, and known blockers.
+    description: 当前可执行计划、阶段顺序和已知阻塞项。
   - kind: evidence
-    title: Evidence and observations
+    title: 证据与观察
     owner_role: scope-lead
     status: open
     tags: [evidence]
-    description: Tool observations, source references, test output, or collected artifacts.
+    description: 工具观察、来源引用、测试输出和已收集产物。
   - kind: decision
-    title: Decisions and approvals
+    title: 决策与审批
     owner_role: scope-lead
     status: open
     tags: [decision]
-    description: Decisions made by agents or the operator, including approval gates.
+    description: 智能体或操作者作出的决策，包括审批门禁结果。
   - kind: finding
-    title: Findings and risks
+    title: 发现与风险
     owner_role: scope-lead
     status: open
     tags: [risk]
-    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+    description: 缺陷、漏洞、回归风险和未解决问题。
 output_contract: [scope, evidence, findings, policy_decision, final_report]

@@ -820,7 +820,7 @@ func createMaterializedKitScaffold(root, name string, preset kitScaffoldPresetDe
 		fmt.Println(formatCommandSuccess("kit", fmt.Sprintf("created %s at %s", file.kind, file.path)))
 	}
 	fmt.Println(styleMuted("  next: restart GoFlow so generated agent/tool modules are loaded, then run the generated workflow in Studio"))
-	fmt.Println(styleMuted("  sandbox: generated helper uses Docker/Podman container isolation with a read-only workspace mount"))
+	fmt.Println(styleMuted("  sandbox: generated helper uses GoFlow native isolation and workspace-scoped file access"))
 	return nil
 }
 

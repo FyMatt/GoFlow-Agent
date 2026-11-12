@@ -1,0 +1,64 @@
+name: field-notes-review
+description: 用户添加的田野笔记资源流程；不依赖核心中的领域枚举或业务产物补写。
+stages:
+  - name: organize
+    node_type: skill
+    agent: field-notes-reporter
+    skill: field-notes-review
+    params:
+      tools: file_tools/read_file,file_tools/write_file
+      max_iterations: "6"
+      max_read_calls: "3"
+      output_contract: 只依据源材料写入用户指定的 JSON 报告并读回，输出 summary、report_path、source、unknowns、evidence_refs；不得发明日期或观察值。
+    input:
+      request: workflow.input
+    outputs:
+      report: result.output
+      summary: result.summary
+    artifacts:
+      - name: source-backed-report
+        kind: report
+        title: 田野笔记整理与交付证据
+        ref: result.output
+    acceptance_criteria:
+      - name: result-produced
+        ref: result.output
+        exists: true
+    context:
+      include: [workflow.input]
+      exclude: [raw_tool_logs, unrelated_session_history]
+      max_tokens: 2400
+      prompt_max_tokens: 4200
+    next: [quality]
+  - name: quality
+    node_type: quality_gate
+    params:
+      stages: organize
+      require_evidence: "true"
+      require_acceptance: "true"
+      required_tools: file_tools/read_file,file_tools/write_file
+      min_score: "80"
+    routes:
+      pass: report
+      warning: report
+      fail: report
+  - name: report
+    node_type: agent
+    agent: field-notes-reporter
+    skill: field-notes-review
+    params:
+      disable_tools: "true"
+      max_iterations: "1"
+      purpose: 只根据已执行步骤和质量门禁总结真实报告路径、未确认信息和交付状态，不把门禁失败改写成成功。
+    input:
+      report: stages.organize.outputs.report
+      quality_status: stages.quality.outputs.quality_status
+      failures: stages.quality.outputs.failures
+    artifacts:
+      - name: final-report
+        kind: report
+        title: 自定义资源执行总结
+        ref: result.output
+    next: [end]
+  - name: end
+    node_type: end

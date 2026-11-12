@@ -2,9 +2,14 @@ kind: goflow.kit
 version: 1
 min_supported_version: 1
 name: operations-runbook-kit
-title: Operations Runbook Kit
-description: Create operator-safe runbooks with prechecks, rollback, risk review, approval gates, and execution handoff.
+title: 运维执行资源包
+description: 创建包含前置检查、回滚、风险复核、审批门禁和执行交接的安全运维手册。
 category: operations
+routing:
+    version: 1
+    match_terms: [运维诊断, 服务器状态, 运维手册, 服务故障, 只读主机, SSH 诊断, 分批发布, 灰度发布, 发布回滚, 部署计划, 服务部署, operations diagnostics, deployment runbook, rollout]
+    entry_workflow: operations-runbook
+    required_tools: [file_tools/read_file, host_tools/host_facts]
 tags:
     - operations
     - runbook
@@ -23,41 +28,53 @@ skills:
     - execution-plan
     - code-writing
     - code-audit
+    - controlled-operations
+    - local-host-diagnostics
+    - remote-host-diagnostics
 tools:
     - file_tools/read_file
     - file_tools/search_files
     - file_tools/write_file
+    - web_tools/web_search
+    - web_tools/fetch_url
+    - web_tools/research_snapshot
     - network_tools/device_discovery_plan
     - network_tools/device_command_plan
+    - network_tools/device_batch_command_plan
     - network_tools/device_config_dry_run
     - network_tools/device_restconf_live_apply
+    - host_tools/host_facts
+    - host_tools/host_diagnostic_snapshot
+    - host_tools/read_log_tail
+    - ssh_tools/ssh_host_key_scan
+    - ssh_tools/ssh_run_command
 workflows:
     - plan-fix-audit
+    - operations-runbook
 workflow_templates:
     - operations-runbook
     - docs-review-publish
 team_templates:
     - operations-runbook-team
     - documentation-team
-    - documentation-team
 policy_rules:
     - expression
     - team_approval_gate
 examples:
-    - title: Create a deployment runbook
-      description: Draft a runbook with prechecks, execution steps, rollback, success signals, and approval notes.
-      request: Create an operations runbook for this deployment with rollback guidance.
+    - title: 创建设部署运行手册
+      description: 编写包含前置检查、执行步骤、回滚、成功信号和审批说明的运行手册。
+      request: 为这次部署创建包含回滚指导的运维运行手册。
       workflow: operations-runbook
       agent: operations-specialist
-    - title: Plan network device discovery
-      description: Validate device scope, allowed hosts, credential references, and read-only command allowlists before any device connector is used.
-      request: Plan read-only discovery for router 192.0.2.10 using allowed host 192.0.2.0/24 and commands show version, show interfaces status.
+    - title: 规划网络设备发现
+      description: 使用设备连接器前校验设备范围、允许主机、凭据引用和只读命令白名单。
+      request: 为路由器 192.0.2.10 制定只读发现计划，允许网段为 192.0.2.0/24，命令为 show version 和 show interfaces status。
       workflow: operations-runbook
       agent: operations-specialist
 vertical_pack:
     domain: operations-runbook
     maturity: production-ready
-    summary: Builds operator-safe runbooks and network-device change plans with prerequisites, prechecks, read-only discovery plans, rollback, approval notes, and verification evidence.
+    summary: 构建包含前置条件、检查、只读发现计划、回滚、审批说明和验证证据的安全运维手册与网络设备变更计划。
     supported_tasks:
         - deployment runbook drafting
         - incident checklist drafting
@@ -97,9 +114,8 @@ vertical_pack:
         - network-device dry-run plan
         - controlled RESTCONF live apply audit record
         - final handoff
-    simple_mode:
+    presentation_guidance:
         - Show service or device, change goal, authorized scope, allowed hosts, prechecks, approval status, rollback, and final runbook.
-    expert_mode:
         - Show raw workflow graph, policy gates, network_tools allowlists, credential refs, live connector boundaries, and artifact refs.
     token_strategy:
         - Keep device or environment evidence as summaries and refs.
@@ -114,6 +130,12 @@ vertical_pack:
             - checklist generation
         verifier:
             - safety and completeness review
+acceptance:
+  sample_request: 在授权测试目标上按批执行 Backup、Apply、Healthy，健康失败时停止并只回滚该目标。
+  verify_commands: [go test ./...]
+  deliverables: [deliverables/rollout-result.json, docs/runbook.md]
+  min_quality_score: 80
+
 metadata:
     preset: operations-runbook
     recommended_agent: operations-specialist

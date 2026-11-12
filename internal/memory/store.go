@@ -8,14 +8,22 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
+	"os/exec"
+	pathpkg "path"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 	"unicode"
 	"unicode/utf8"
+
+	"github.com/FyMatt/GoFlow-Agent/internal/persistence"
+	"github.com/FyMatt/GoFlow-Agent/internal/promptguard"
 )
 
 const (
@@ -25,6 +33,7 @@ const (
 	solutionMemoryRelativePath = ".goflow/memory/solutions.json"
 	contextMemoryRelativePath  = ".goflow/memory/context.json"
 	fileIndexRelativePath      = ".goflow/index/files.json"
+	fileIndexDirtyRelativePath = ".goflow/index/dirty"
 
 	maxProjectPromptBytes = 2400
 	maxSearchSummaryBytes = 900
@@ -37,6 +46,9 @@ const (
 // Store manages workspace-scoped long-term memory and lightweight indexes.
 type Store struct {
 	workspaceRoot string
+	fileIndexMu   sync.Mutex
+	indexCacheMu  sync.Mutex
+	indexCache    *fileIndexCache
 }
 
 // NewStore returns a workspace-scoped memory store. An empty workspace root
@@ -91,7 +103,7 @@ func (s *Store) Ensure() error {
 	} else if !errors.Is(err, os.ErrNotExist) {
 		return err
 	}
-	return os.WriteFile(projectPath, []byte(defaultProjectMemory()), 0o644)
+	return persistence.WriteFileAtomic(projectPath, []byte(defaultProjectMemory()), 0o644)
 }
 
 // Project reads the workspace project memory.
@@ -137,7 +149,7 @@ func (s *Store) UpdateProject(content string) (ProjectMemory, error) {
 	if !strings.HasSuffix(content, "\n") {
 		content += "\n"
 	}
-	if err := os.WriteFile(s.ProjectPath(), []byte(content), 0o644); err != nil {
+	if err := persistence.WriteFileAtomic(s.ProjectPath(), []byte(content), 0o644); err != nil {
 		return ProjectMemory{}, err
 	}
 	return s.Project()
@@ -168,8 +180,25 @@ func (s *Store) EnsureProjectProfile(ctx context.Context) (ProjectMemory, bool, 
 	return updated, true, nil
 }
 
-// RebuildFiles scans workspace files and writes .goflow/index/files.json.
+// RebuildFiles explicitly refreshes the complete workspace file index.
 func (s *Store) RebuildFiles(ctx context.Context) (FileIndex, error) {
+	if s == nil {
+		return FileIndex{}, errors.New("memory store is nil")
+	}
+	s.fileIndexMu.Lock()
+	defer s.fileIndexMu.Unlock()
+	processing := s.takeDirtyMarker()
+	defer func() {
+		if processing != "" {
+			_ = os.Remove(processing)
+		}
+	}()
+	return s.rebuildFiles(ctx)
+}
+
+// rebuildFiles scans workspace files and writes .goflow/index/files.json.
+// Callers must hold fileIndexMu.
+func (s *Store) rebuildFiles(ctx context.Context) (FileIndex, error) {
 	if err := s.Ensure(); err != nil {
 		return FileIndex{}, err
 	}
@@ -178,43 +207,63 @@ func (s *Store) RebuildFiles(ctx context.Context) (FileIndex, error) {
 		return FileIndex{}, err
 	}
 	index := FileIndex{GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano)}
-	err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil {
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		default:
-		}
-		if path == root {
-			return nil
-		}
-		name := entry.Name()
-		if entry.IsDir() {
-			if skipIndexDir(name) {
-				return filepath.SkipDir
+	ignore := loadWorkspaceIgnoreRules(root)
+	if paths, ok := gitWorkspaceFiles(ctx, root); ok {
+		for _, rel := range paths {
+			if len(index.Files) >= maxIndexedFiles {
+				break
 			}
-			return nil
+			appendFileSummary(&index, root, rel)
 		}
-		if len(index.Files) >= maxIndexedFiles || skipIndexFile(name) {
+	} else {
+		err = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
+			if walkErr != nil {
+				return nil
+			}
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			if path == root {
+				return nil
+			}
+			name := entry.Name()
+			if entry.IsDir() {
+				if skipIndexDir(name) {
+					return filepath.SkipDir
+				}
+				rel, relErr := filepath.Rel(root, path)
+				if relErr == nil && ignore.ignored(filepath.ToSlash(rel), true) && !ignore.hasNegation {
+					return filepath.SkipDir
+				}
+				return nil
+			}
+			if len(index.Files) >= maxIndexedFiles || skipIndexFile(name) {
+				return nil
+			}
+			info, err := entry.Info()
+			if err != nil || info == nil || info.Mode()&os.ModeType != 0 {
+				return nil
+			}
+			rel, err := filepath.Rel(root, path)
+			if err != nil {
+				return nil
+			}
+			if promptguard.IsSensitivePath(filepath.ToSlash(rel)) {
+				return nil
+			}
+			if ignore.ignored(filepath.ToSlash(rel), false) {
+				return nil
+			}
+			item, err := summarizeFile(path, filepath.ToSlash(rel), info)
+			if err != nil {
+				return nil
+			}
+			index.Files = append(index.Files, item)
 			return nil
-		}
-		info, err := entry.Info()
-		if err != nil || info == nil || info.Mode()&os.ModeType != 0 {
-			return nil
-		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
-		}
-		item, err := summarizeFile(path, filepath.ToSlash(rel), info)
-		if err != nil {
-			return nil
-		}
-		index.Files = append(index.Files, item)
-		return nil
-	})
+		})
+	}
 	if err != nil {
 		return FileIndex{}, err
 	}
@@ -234,8 +283,8 @@ func (s *Store) FileIndex() (FileIndex, error) {
 	if err := s.ensureEnabled(); err != nil {
 		return FileIndex{}, err
 	}
-	var index FileIndex
-	if err := readJSONFile(filepath.Join(s.workspaceRoot, fileIndexRelativePath), &index); err != nil {
+	index, err := s.readFileIndex()
+	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
 			return FileIndex{}, nil
 		}
@@ -253,88 +302,328 @@ func (s *Store) FileSummaryForPath(ctx context.Context, path string) (FileSummar
 	return summary, ok, nil
 }
 
-// EnsureFreshFileIndex returns a file summary index that reflects current
-// workspace file size, mtime, and hash metadata. A missing, stale, or empty
-// index is rebuilt so prompt retrieval can use summaries instead of repeatedly
-// injecting unchanged file contents.
+// EnsureFreshFileIndex returns the current file summary index. A missing index
+// is built once; subsequent refreshes are driven by append-only invalidation
+// paths written by workspace file tools instead of scanning the whole tree.
 func (s *Store) EnsureFreshFileIndex(ctx context.Context) (FileIndex, bool, error) {
 	if err := s.Ensure(); err != nil {
 		return FileIndex{}, false, err
 	}
+	s.fileIndexMu.Lock()
+	defer s.fileIndexMu.Unlock()
 	index, err := s.FileIndex()
 	if err != nil {
 		return FileIndex{}, false, err
 	}
-	if strings.TrimSpace(index.GeneratedAt) == "" || s.fileIndexStale(index) {
-		rebuilt, rebuildErr := s.RebuildFiles(ctx)
+	if strings.TrimSpace(index.GeneratedAt) == "" {
+		rebuilt, rebuildErr := s.rebuildFiles(ctx)
 		return rebuilt, true, rebuildErr
 	}
-	return index, false, nil
+	processing := s.takeDirtyMarker()
+	if processing == "" {
+		return index, false, nil
+	}
+	paths, full, parseErr := readDirtyMarker(processing)
+	if parseErr != nil {
+		_ = os.Rename(processing, filepath.Join(s.workspaceRoot, fileIndexDirtyRelativePath))
+		return FileIndex{}, false, parseErr
+	}
+	var refreshed FileIndex
+	if full {
+		refreshed, err = s.rebuildFiles(ctx)
+	} else {
+		refreshed, err = s.applyDirtyFilePaths(ctx, index, paths)
+	}
+	if err != nil {
+		_ = os.Rename(processing, filepath.Join(s.workspaceRoot, fileIndexDirtyRelativePath))
+		return FileIndex{}, false, err
+	}
+	_ = os.Remove(processing)
+	return refreshed, true, nil
 }
 
-func (s *Store) fileIndexStale(index FileIndex) bool {
+func (s *Store) takeDirtyMarker() string {
 	if s == nil || strings.TrimSpace(s.workspaceRoot) == "" {
-		return true
+		return ""
 	}
+	dirty := filepath.Join(s.workspaceRoot, fileIndexDirtyRelativePath)
+	processing := dirty + ".processing"
+	_ = os.Remove(processing)
+	if err := os.Rename(dirty, processing); err != nil {
+		return ""
+	}
+	return processing
+}
+
+func readDirtyMarker(path string) ([]string, bool, error) {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, false, err
+	}
+	seen := make(map[string]struct{})
+	paths := make([]string, 0)
+	for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if line == "*" || line == "file_tools" {
+			return nil, true, nil
+		}
+		path := cleanRelativeFilePath(line)
+		if path == "" {
+			return nil, true, nil
+		}
+		if _, ok := seen[path]; ok {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	return paths, false, nil
+}
+
+func (s *Store) applyDirtyFilePaths(ctx context.Context, index FileIndex, paths []string) (FileIndex, error) {
 	root, err := filepath.Abs(filepath.Clean(s.workspaceRoot))
 	if err != nil {
-		return true
+		return FileIndex{}, err
 	}
-	seen := make(map[string]FileSummary, len(index.Files))
-	for _, file := range index.Files {
-		path := cleanRelativeFilePath(file.Path)
-		if path == "" {
-			return true
-		}
-		seen[path] = file
-		abs := filepath.Join(root, filepath.FromSlash(path))
-		info, err := os.Stat(abs)
-		if err != nil || info == nil || info.IsDir() || info.Mode()&os.ModeType != 0 {
-			return true
-		}
-		if info.Size() != file.Size || info.ModTime().UTC().Format(time.RFC3339Nano) != file.MTime {
-			return true
-		}
-		if info.Size() <= maxIndexedFileBytes && strings.TrimSpace(file.Hash) == "" {
-			return true
+	ignore := loadWorkspaceIgnoreRules(root)
+	byPath := make(map[string]FileSummary, len(index.Files))
+	for _, item := range index.Files {
+		if path := cleanRelativeFilePath(item.Path); path != "" {
+			byPath[path] = item
 		}
 	}
-	found := 0
-	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, walkErr error) error {
-		if walkErr != nil || found > len(seen) {
-			return nil
+	for _, relative := range paths {
+		select {
+		case <-ctx.Done():
+			return FileIndex{}, ctx.Err()
+		default:
 		}
-		if path == root {
-			return nil
+		_, wasIndexed := byPath[relative]
+		delete(byPath, relative)
+		if relative == ".gitignore" || relative == ".goflowignore" || skipIndexFile(filepath.Base(relative)) || promptguard.IsSensitivePath(relative) || ignore.ignored(relative, false) {
+			continue
 		}
-		name := entry.Name()
-		if entry.IsDir() {
-			if skipIndexDir(name) {
-				return filepath.SkipDir
-			}
-			return nil
+		absolute := filepath.Join(root, filepath.FromSlash(relative))
+		info, statErr := os.Stat(absolute)
+		if statErr != nil || info.IsDir() || info.Mode()&os.ModeType != 0 {
+			continue
 		}
-		if skipIndexFile(name) {
-			return nil
+		if len(byPath) >= maxIndexedFiles && !wasIndexed {
+			continue
 		}
-		info, err := entry.Info()
-		if err != nil || info == nil || info.Mode()&os.ModeType != 0 {
-			return nil
+		item, summaryErr := summarizeFile(absolute, relative, info)
+		if summaryErr != nil {
+			continue
 		}
-		rel, err := filepath.Rel(root, path)
-		if err != nil {
-			return nil
-		}
-		if _, ok := seen[filepath.ToSlash(rel)]; ok {
-			found++
-			return nil
-		}
-		if len(seen) < maxIndexedFiles {
-			found = len(seen) + 1
-		}
-		return nil
+		byPath[relative] = item
+	}
+	updated := FileIndex{GeneratedAt: time.Now().UTC().Format(time.RFC3339Nano), Files: make([]FileSummary, 0, len(byPath))}
+	for _, item := range byPath {
+		updated.Files = append(updated.Files, item)
+	}
+	sort.Slice(updated.Files, func(i, j int) bool {
+		return strings.ToLower(updated.Files[i].Path) < strings.ToLower(updated.Files[j].Path)
 	})
-	return found != len(seen)
+	updated.TotalFiles = len(updated.Files)
+	updated.IndexedBytes = indexedBytes(updated.Files)
+	if err := writeJSONFile(filepath.Join(s.workspaceRoot, fileIndexRelativePath), updated); err != nil {
+		return FileIndex{}, err
+	}
+	return updated, nil
+}
+
+// refreshQueriedFilePaths checks only indexed paths that can answer the
+// current query. This preserves fresh summaries for explicit path queries
+// without stat-ing or walking the entire workspace on every request.
+func (s *Store) refreshQueriedFilePaths(ctx context.Context, index FileIndex, query string) (FileIndex, bool, error) {
+	tokens := searchTokens(query)
+	if len(tokens) == 0 || len(index.Files) == 0 {
+		return index, false, nil
+	}
+	seen := make(map[string]struct{})
+	changed := make([]string, 0, 2)
+	root, err := filepath.Abs(filepath.Clean(s.workspaceRoot))
+	if err != nil {
+		return index, false, err
+	}
+	for _, file := range index.Files {
+		relative := cleanRelativeFilePath(file.Path)
+		if relative == "" {
+			continue
+		}
+		lowerPath := strings.ToLower(relative)
+		candidate := false
+		for _, token := range tokens {
+			if strings.Contains(lowerPath, strings.ToLower(token)) {
+				candidate = true
+				break
+			}
+		}
+		if !candidate {
+			continue
+		}
+		if _, ok := seen[relative]; ok {
+			continue
+		}
+		seen[relative] = struct{}{}
+		select {
+		case <-ctx.Done():
+			return index, false, ctx.Err()
+		default:
+		}
+		info, statErr := os.Stat(filepath.Join(root, filepath.FromSlash(relative)))
+		if statErr != nil || info.IsDir() || info.Mode()&os.ModeType != 0 {
+			changed = append(changed, relative)
+			continue
+		}
+		mtime := info.ModTime().UTC().Format(time.RFC3339Nano)
+		if info.Size() != file.Size || mtime != file.MTime {
+			changed = append(changed, relative)
+		}
+	}
+	if len(changed) == 0 {
+		return index, false, nil
+	}
+	updated, err := s.applyDirtyFilePaths(ctx, index, changed)
+	if err != nil {
+		return index, false, err
+	}
+	return updated, true, nil
+}
+
+func gitWorkspaceFiles(ctx context.Context, root string) ([]string, bool) {
+	args := []string{"-C", root, "ls-files", "--cached", "--others", "--exclude-standard"}
+	if path := filepath.Join(root, ".goflowignore"); regularFile(path) {
+		args = append(args, "--exclude-from="+path)
+	}
+	args = append(args, "-z")
+	command := exec.CommandContext(ctx, "git", args...)
+	output, err := command.Output()
+	if err != nil {
+		return nil, false
+	}
+	parts := strings.Split(string(output), "\x00")
+	paths := make([]string, 0, len(parts))
+	seen := make(map[string]struct{}, len(parts))
+	for _, part := range parts {
+		path := cleanRelativeFilePath(filepath.ToSlash(part))
+		if path == "" || filepath.IsAbs(part) || filepath.VolumeName(part) != "" {
+			continue
+		}
+		if _, exists := seen[path]; exists {
+			continue
+		}
+		seen[path] = struct{}{}
+		paths = append(paths, path)
+	}
+	if len(paths) == 0 {
+		// A workspace can be an ignored or untracked child directory of a
+		// larger repository. In that case git succeeds but reports no files;
+		// fall back to the workspace-scoped walker instead of publishing an
+		// empty index.
+		return nil, false
+	}
+	sort.Slice(paths, func(i, j int) bool { return strings.ToLower(paths[i]) < strings.ToLower(paths[j]) })
+	return paths, true
+}
+
+func appendFileSummary(index *FileIndex, root, rel string) {
+	if index == nil {
+		return
+	}
+	rel = cleanRelativeFilePath(rel)
+	if rel == "" || skipIndexFile(filepath.Base(rel)) || promptguard.IsSensitivePath(rel) {
+		return
+	}
+	path := filepath.Join(root, filepath.FromSlash(rel))
+	info, err := os.Stat(path)
+	if err != nil || info.IsDir() || info.Mode()&os.ModeType != 0 {
+		return
+	}
+	item, err := summarizeFile(path, rel, info)
+	if err == nil {
+		index.Files = append(index.Files, item)
+	}
+}
+
+type workspaceIgnoreRule struct {
+	pattern string
+	negated bool
+	dirOnly bool
+}
+
+type workspaceIgnoreRules struct {
+	rules       []workspaceIgnoreRule
+	hasNegation bool
+}
+
+func loadWorkspaceIgnoreRules(root string) workspaceIgnoreRules {
+	var out workspaceIgnoreRules
+	for _, name := range []string{".gitignore", ".goflowignore"} {
+		data, err := os.ReadFile(filepath.Join(root, name))
+		if err != nil {
+			continue
+		}
+		for _, line := range strings.Split(strings.ReplaceAll(string(data), "\r\n", "\n"), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			rule := workspaceIgnoreRule{}
+			if strings.HasPrefix(line, "!") {
+				rule.negated = true
+				out.hasNegation = true
+				line = strings.TrimPrefix(line, "!")
+			}
+			line = strings.TrimPrefix(filepath.ToSlash(line), "/")
+			rule.dirOnly = strings.HasSuffix(line, "/")
+			rule.pattern = strings.TrimSuffix(line, "/")
+			if rule.pattern != "" {
+				out.rules = append(out.rules, rule)
+			}
+		}
+	}
+	return out
+}
+
+func (rules workspaceIgnoreRules) ignored(relative string, directory bool) bool {
+	relative = strings.TrimPrefix(filepath.ToSlash(relative), "./")
+	ignored := false
+	for _, rule := range rules.rules {
+		if rule.dirOnly && !directory && relative != rule.pattern && !strings.HasPrefix(relative, rule.pattern+"/") {
+			continue
+		}
+		if workspaceIgnorePatternMatch(rule.pattern, relative) || rule.dirOnly && strings.HasPrefix(relative, rule.pattern+"/") {
+			ignored = !rule.negated
+		}
+	}
+	return ignored
+}
+
+func workspaceIgnorePatternMatch(pattern, relative string) bool {
+	if strings.Contains(pattern, "/") {
+		if matched, _ := pathpkg.Match(pattern, relative); matched {
+			return true
+		}
+		if strings.HasPrefix(pattern, "**/") {
+			return workspaceIgnorePatternMatch(strings.TrimPrefix(pattern, "**/"), relative)
+		}
+		return false
+	}
+	for _, segment := range strings.Split(relative, "/") {
+		if matched, _ := pathpkg.Match(pattern, segment); matched {
+			return true
+		}
+	}
+	return false
+}
+
+func regularFile(path string) bool {
+	info, err := os.Stat(path)
+	return err == nil && info.Mode().IsRegular()
 }
 
 // Errors reads the persistent error knowledge base.
@@ -729,16 +1018,26 @@ func (s *Store) Tasks(limit int) ([]TaskSummary, error) {
 		}
 		return nil, err
 	}
-	tasks := make([]TaskSummary, 0, len(entries))
+	files := entries[:0]
 	for _, entry := range entries {
-		if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
-			continue
+		if !entry.IsDir() && strings.EqualFold(filepath.Ext(entry.Name()), ".json") {
+			files = append(files, entry)
 		}
-		var task TaskSummary
-		if err := readJSONFile(filepath.Join(dir, entry.Name()), &task); err != nil {
-			continue
+	}
+	entries = files
+	var tasks []TaskSummary
+	// Avoid worker overhead for small directories and single-CPU runtimes.
+	if len(entries) > 32 && runtime.GOMAXPROCS(0) > 1 {
+		tasks = readTasksParallel(dir, entries)
+	} else {
+		tasks = make([]TaskSummary, 0, len(entries))
+		for _, entry := range entries {
+			var task TaskSummary
+			if err := readJSONFile(filepath.Join(dir, entry.Name()), &task); err != nil {
+				continue
+			}
+			tasks = append(tasks, task)
 		}
-		tasks = append(tasks, task)
 	}
 	sort.Slice(tasks, func(i, j int) bool {
 		return tasks[i].UpdatedAt > tasks[j].UpdatedAt
@@ -960,6 +1259,11 @@ func (s *Store) PromptContextFresh(ctx context.Context, query, taskID string) (P
 		ctx = context.Background()
 	}
 	index, rebuilt, indexErr := s.EnsureFreshFileIndex(ctx)
+	if indexErr == nil {
+		var refreshed bool
+		index, refreshed, indexErr = s.refreshQueriedFilePaths(ctx, index, query)
+		rebuilt = rebuilt || refreshed
+	}
 	project, _ := s.Project()
 	promptCtx := PromptContext{Project: project}
 	if strings.TrimSpace(project.Summary) != "" {
@@ -1751,16 +2055,26 @@ func summarizeFile(path, rel string, info os.FileInfo) (FileSummary, error) {
 		MTime:    info.ModTime().UTC().Format(time.RFC3339Nano),
 		Language: languageForPath(rel),
 	}
+	if info.Size() > maxIndexedFileBytes {
+		file, err := os.Open(path)
+		if err != nil {
+			return item, err
+		}
+		defer file.Close()
+		hash := sha256.New()
+		if _, err := io.Copy(hash, file); err != nil {
+			return item, err
+		}
+		item.Hash = hex.EncodeToString(hash.Sum(nil))
+		item.Summary = fmt.Sprintf("Large %s file (%d bytes); content summary skipped until explicitly read.", fallbackText(item.Language, "workspace"), info.Size())
+		return item, nil
+	}
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return item, err
 	}
 	sum := sha256.Sum256(data)
 	item.Hash = hex.EncodeToString(sum[:])
-	if info.Size() > maxIndexedFileBytes {
-		item.Summary = fmt.Sprintf("Large %s file (%d bytes); content summary skipped until explicitly read.", fallbackText(item.Language, "workspace"), info.Size())
-		return item, nil
-	}
 	if !utf8.Valid(data) {
 		item.Summary = fmt.Sprintf("Binary or non-UTF-8 file (%d bytes).", len(data))
 		return item, nil
@@ -2125,7 +2439,7 @@ func nonEmptyStrings(values ...string) []string {
 
 func skipIndexDir(name string) bool {
 	switch strings.ToLower(strings.TrimSpace(name)) {
-	case ".git", ".goflow", ".codex", ".claude", ".gocache", ".gotmp", ".gomodcache", ".venv", "venv", "node_modules", "vendor", "dist", "bin", "coverage", "__pycache__":
+	case ".git", ".goflow", ".codex", ".claude", ".gocache", ".gotmp", ".gomodcache", ".venv", "venv", "node_modules", "vendor", "dist", "bin", "coverage", "__pycache__", ".ssh", ".gnupg", ".secrets":
 		return true
 	default:
 		return false
@@ -2135,6 +2449,9 @@ func skipIndexDir(name string) bool {
 func skipIndexFile(name string) bool {
 	lower := strings.ToLower(strings.TrimSpace(name))
 	if lower == "" {
+		return true
+	}
+	if promptguard.IsSensitivePath(lower) {
 		return true
 	}
 	if strings.HasSuffix(lower, ".exe") || strings.HasSuffix(lower, ".test") || strings.HasSuffix(lower, ".out") || strings.HasSuffix(lower, ".pyc") {
@@ -2160,7 +2477,7 @@ func writeJSONFile(path string, value any) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(path, data, 0o644)
+	return persistence.WriteFileAtomic(path, data, 0o644)
 }
 
 func readJSONFile(path string, target any) error {

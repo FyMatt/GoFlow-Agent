@@ -43,6 +43,9 @@ type runDiffItem struct {
 	IsError       bool   `json:"is_error,omitempty"`
 	NeedsAction   bool   `json:"needs_action,omitempty"`
 	ArgumentsHint string `json:"arguments_hint,omitempty"`
+	ChangeID      string `json:"change_id,omitempty"`
+	Reversible    bool   `json:"reversible,omitempty"`
+	RecoveryScope string `json:"recovery_scope,omitempty"`
 }
 
 func (s *Server) agentRunDiffResponse(run session.AgentRunSnapshot, query agentRunQuery) runDiffResponse {
@@ -214,6 +217,15 @@ func workflowRunDiffs(run session.WorkflowRunSnapshot, query workflowRunQuery) [
 				add(item)
 			}
 		}
+		// Workflow stages also retain file-tool evidence in the audit trail.
+		// Some graph stages intentionally compact ToolResults, so recover the
+		// structured change payload from each audit detail as a durable diff.
+		for _, audit := range stage.Result.AuditTrail {
+			item, ok := runDiffFromToolPayload(run.ID, "workflow", stage.Stage, firstWorkflowRunQueryValue(stage.Result.AgentID, stage.AgentID), firstWorkflowRunQueryValue(stage.Result.Mode, ""), "audit", audit.ToolName, "", "", audit.Detail, auditOutcomeIsError(audit.Outcome), false)
+			if ok {
+				add(item)
+			}
+		}
 		for _, artifact := range stage.Artifacts {
 			item, ok := runDiffFromArtifact(run.ID, stage.Stage, artifact)
 			if ok {
@@ -231,6 +243,11 @@ func workflowRunDiffs(run session.WorkflowRunSnapshot, query workflowRunQuery) [
 		return append([]runDiffItem(nil), out[:query.Limit]...)
 	}
 	return out
+}
+
+func auditOutcomeIsError(outcome string) bool {
+	lower := strings.ToLower(strings.TrimSpace(outcome))
+	return strings.Contains(lower, "error") || strings.Contains(lower, "fail") || strings.Contains(lower, "denied")
 }
 
 func (s *Server) workflowRunDiffs(run session.WorkflowRunSnapshot, query workflowRunQuery) []runDiffItem {
@@ -266,6 +283,10 @@ func runDiffFromArtifact(runID, stage string, artifact session.WorkflowRunArtifa
 	if kind != "diff" && kind != "patch" && kind != "change" {
 		return runDiffItem{}, false
 	}
+	path := strings.TrimSpace(artifact.Metadata["path"])
+	if path == "" {
+		return runDiffItem{}, false
+	}
 	item := runDiffItem{
 		ID:          firstWorkflowRunQueryValue(artifact.ID, runID+"-"+stage+"-artifact"),
 		RunID:       runID,
@@ -274,16 +295,13 @@ func runDiffFromArtifact(runID, stage string, artifact session.WorkflowRunArtifa
 		Source:      "artifact",
 		ToolName:    artifact.ToolName,
 		ToolCallID:  artifact.ToolCallID,
-		Path:        artifact.Metadata["path"],
+		Path:        path,
 		Status:      firstWorkflowRunQueryValue(artifact.Metadata["status"], "artifact"),
 		StatusCode:  runDiffStatusCode(artifact.Metadata["status"]),
 		Summary:     firstWorkflowRunQueryValue(artifact.Summary, artifact.Title),
 		DiffPreview: artifact.Content,
 		Patch:       artifact.Content,
 		IsError:     artifact.IsError,
-	}
-	if strings.TrimSpace(item.Path) == "" {
-		item.Path = artifact.Title
 	}
 	return item, strings.TrimSpace(item.DiffPreview) != "" || strings.TrimSpace(item.Summary) != ""
 }
@@ -373,6 +391,9 @@ func runDiffFromToolPayload(runID, runKind, stage, agentID, mode, source, toolNa
 		IsError:       isError,
 		NeedsAction:   needsAction,
 		ArgumentsHint: argsHint,
+		ChangeID:      runDiffString(payload, "change_id"),
+		Reversible:    runDiffBool(payload, "reversible"),
+		RecoveryScope: runDiffString(payload, "recovery_scope"),
 	}
 	item.LineRange = runDiffLineRange(item.OldRange, item.NewRange)
 	item.Patch = runDiffPatch(item)
@@ -406,7 +427,7 @@ func runDiffToolName(toolName string) bool {
 		name = name[index+1:]
 	}
 	switch name {
-	case "write_file", "edit_file", "delete_file":
+	case "write_file", "edit_file", "apply_patch", "delete_file", "restore_file_change":
 		return true
 	default:
 		return false
@@ -430,6 +451,11 @@ func runDiffInt(payload map[string]any, key string) int {
 		}
 	}
 	return 0
+}
+
+func runDiffBool(payload map[string]any, key string) bool {
+	value, _ := payload[key].(bool)
+	return value
 }
 
 func runDiffStatusCode(status string) string {
@@ -489,13 +515,17 @@ func runDiffID(runID, stage, source, toolName, callID, path string) string {
 }
 
 func runDiffDedupKey(item runDiffItem) string {
+	if changeID := strings.TrimSpace(item.ChangeID); changeID != "" {
+		return strings.Join([]string{item.RunID, "change", changeID, item.Path}, "\x00")
+	}
+	if callID := strings.TrimSpace(item.ToolCallID); callID != "" {
+		return strings.Join([]string{item.RunID, "call", callID, item.Path}, "\x00")
+	}
 	return strings.Join([]string{
 		item.RunID,
 		item.Stage,
-		item.ToolCallID,
 		item.ToolName,
 		item.Path,
-		item.Status,
 		item.DiffPreview,
 	}, "\x00")
 }

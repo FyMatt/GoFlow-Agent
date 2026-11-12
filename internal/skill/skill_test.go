@@ -198,7 +198,7 @@ scripts:
     runtime: python
     output: json
     timeout: 30s
-    isolation: container
+    isolation: auto
     workspace_mount: ro
     network: disabled
     approval: required
@@ -230,11 +230,36 @@ Use the declared collector only through an approved tool path.
 	if script.Name != "collect-assets" || script.Path != "scripts/collect.py" || script.Runtime != "python" {
 		t.Fatalf("unexpected script: %#v", script)
 	}
-	if script.Approval != "required" || script.Isolation != "container" || script.Network != "disabled" {
+	if script.Approval != "required" || script.Isolation != "auto" || script.Network != "disabled" {
 		t.Fatalf("unexpected script safety fields: %#v", script)
 	}
 	if script.ArgsSchema["type"] != "object" {
 		t.Fatalf("expected args_schema object, got %#v", script.ArgsSchema)
+	}
+}
+
+func TestParseFileRejectsRemovedContainerScriptIsolation(t *testing.T) {
+	root := t.TempDir()
+	path := filepath.Join(root, "legacy", "SKILL.md")
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	content := `---
+name: legacy
+description: Legacy container script metadata.
+scripts:
+  - name: collect
+    path: scripts/collect.py
+    isolation: container
+---
+
+Legacy fixture.
+`
+	if err := os.WriteFile(path, []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	if _, err := ParseFile(path); err == nil || !strings.Contains(err.Error(), "removed container isolation") {
+		t.Fatalf("expected removed container isolation error, got %v", err)
 	}
 }
 
@@ -462,10 +487,12 @@ func TestBuiltInWebAndBinarySecuritySkillsDeclareExpectedTools(t *testing.T) {
 	if webSkill.Mode != "audit" || webSkill.PreferredAgent != "web-security-researcher" || webSkill.OutputKind != "findings" {
 		t.Fatalf("unexpected web skill execution metadata: %#v", webSkill)
 	}
-	if !stringSliceContains(webSkill.AllowedToolKinds, "network") || stringSliceContains(webSkill.AllowedToolKinds, "write") {
-		t.Fatalf("expected web skill to be network-only for tool kinds, got %#v", webSkill.AllowedToolKinds)
+	if !stringSliceContains(webSkill.AllowedToolKinds, "read") || !stringSliceContains(webSkill.AllowedToolKinds, "write") || !stringSliceContains(webSkill.AllowedToolKinds, "network") {
+		t.Fatalf("expected web skill to support bounded evidence reads, report writes, and network collection, got %#v", webSkill.AllowedToolKinds)
 	}
-	requireSkillTool(t, webSkill, "web_tools/fetch_page_assets", true)
+	requireSkillTool(t, webSkill, "file_tools/read_file", false)
+	requireSkillTool(t, webSkill, "file_tools/write_file", false)
+	requireSkillTool(t, webSkill, "web_tools/fetch_page_assets", false)
 	requireSkillTool(t, webSkill, "web_tools/fetch_url", false)
 	requireSkillTool(t, webSkill, "web_tools/web_search", false)
 
@@ -480,6 +507,38 @@ func TestBuiltInWebAndBinarySecuritySkillsDeclareExpectedTools(t *testing.T) {
 	requireSkillTool(t, binarySkill, "python_notes/binary_strings", true)
 	requireSkillTool(t, binarySkill, "python_notes/hex_preview", false)
 	requireSkillTool(t, binarySkill, "file_tools/file_info", false)
+}
+
+func TestLayeredManagerUserOverrideAndTombstone(t *testing.T) {
+	builtin := filepath.Join(t.TempDir(), "builtin")
+	user := filepath.Join(t.TempDir(), "user")
+	writeLayeredSkill(t, builtin, "review", "Built-in review")
+	writeLayeredSkill(t, user, "review", "User review")
+	hidden := false
+	manager, err := NewLayeredManager(builtin, user, func(string) (bool, error) { return hidden, nil })
+	if err != nil {
+		t.Fatalf("new layered manager: %v", err)
+	}
+	items := manager.List()
+	if len(items) != 1 || items[0].Description != "User review" {
+		t.Fatalf("expected user override, got %#v", items)
+	}
+	hidden = true
+	if err := manager.Reload(); err == nil || !strings.Contains(err.Error(), "no SKILL.md") {
+		t.Fatalf("expected tombstone to hide resource, got %v", err)
+	}
+}
+
+func writeLayeredSkill(t *testing.T, root, name, description string) {
+	t.Helper()
+	dir := filepath.Join(root, name)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatalf("mkdir skill: %v", err)
+	}
+	content := "---\nname: " + name + "\ndescription: " + description + "\n---\n\nUse this Skill.\n"
+	if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte(content), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
 }
 
 func requireBuiltInSkill(t *testing.T, manager *Manager, name string) schema.Skill {

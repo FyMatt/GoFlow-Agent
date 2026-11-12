@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 )
@@ -52,6 +53,8 @@ func TestBuiltInTeamTemplatesMeetDeliveryQualityBar(t *testing.T) {
 		if strings.TrimSpace(template.Description) == "" || strings.TrimSpace(template.Category) == "" || len(template.Tags) == 0 {
 			t.Fatalf("team template %s is missing user-facing metadata: %#v", row.Name, template.TeamTemplateSummary)
 		}
+		assertContainsChinese(t, row.Name+" title", template.Title)
+		assertContainsChinese(t, row.Name+" description", template.Description)
 		if strings.TrimSpace(template.RecommendedWorkflow) == "" || strings.TrimSpace(template.RecommendedEntryAgent) == "" {
 			t.Fatalf("team template %s should declare recommended workflow and entry agent", row.Name)
 		}
@@ -68,13 +71,36 @@ func TestBuiltInTeamTemplatesMeetDeliveryQualityBar(t *testing.T) {
 			if strings.TrimSpace(role.Label) == "" || strings.TrimSpace(role.Skill) == "" || len(role.Responsibilities) == 0 || len(role.Produces) == 0 {
 				t.Fatalf("team template %s role %s should define label, skill, responsibilities, and produced artifacts: %#v", row.Name, role.Name, role)
 			}
+			assertContainsChinese(t, row.Name+" role "+role.Name+" label", role.Label)
+			for _, responsibility := range role.Responsibilities {
+				assertContainsChinese(t, row.Name+" role "+role.Name+" responsibility", responsibility)
+			}
 		}
 		for _, handoff := range template.Handoffs {
 			if strings.TrimSpace(handoff.Subject) == "" || len(handoff.Artifacts) == 0 || len(handoff.Blackboard) == 0 {
 				t.Fatalf("team template %s handoff %s -> %s should define subject, artifacts, and blackboard references: %#v", row.Name, handoff.From, handoff.To, handoff)
 			}
+			assertContainsChinese(t, row.Name+" handoff "+handoff.From+" -> "+handoff.To, handoff.Subject)
+		}
+		for _, slot := range template.BlackboardTemplates {
+			assertContainsChinese(t, row.Name+" blackboard "+slot.Kind+" title", slot.Title)
+			assertContainsChinese(t, row.Name+" blackboard "+slot.Kind+" description", slot.Description)
+		}
+		for _, preset := range template.QuorumPresets {
+			assertContainsChinese(t, row.Name+" quorum "+preset.Name+" title", preset.Title)
+			assertContainsChinese(t, row.Name+" quorum "+preset.Name+" description", preset.Description)
 		}
 	}
+}
+
+func assertContainsChinese(t *testing.T, field, value string) {
+	t.Helper()
+	for _, r := range value {
+		if unicode.Is(unicode.Han, r) {
+			return
+		}
+	}
+	t.Fatalf("%s must contain Chinese text, got %q", field, value)
 }
 
 func TestBuiltInTeamTemplateDetailIsCloned(t *testing.T) {

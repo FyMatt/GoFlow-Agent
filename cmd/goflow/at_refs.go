@@ -13,6 +13,7 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/promptguard"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
@@ -42,6 +43,9 @@ func expandAtFileReferences(input, workspaceRoot string) (string, []atReference,
 		}
 		if _, exists := seen[resolved]; exists {
 			continue
+		}
+		if promptguard.IsSensitivePath(rel) {
+			return "", nil, fmt.Errorf("@%s: sensitive files cannot be attached to model context", rawPath)
 		}
 		seen[resolved] = struct{}{}
 		info, err := os.Stat(resolved)
@@ -99,6 +103,9 @@ func expandAtFileReferencesWithTools(ctx context.Context, input, workspaceRoot s
 		}
 		if _, exists := seen[resolved]; exists {
 			continue
+		}
+		if promptguard.IsSensitivePath(rel) {
+			return "", nil, fmt.Errorf("@%s: sensitive files cannot be attached to model context", rawPath)
 		}
 		seen[resolved] = struct{}{}
 		callID := fmt.Sprintf("at-ref-%d", index+1)
@@ -314,6 +321,12 @@ func suggestAtReferencePaths(prefix, workspaceRoot string, limit int) ([]string,
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+		if promptguard.IsSensitivePath(rel) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		candidate := rel
 		if entry.IsDir() {
 			candidate += "/"
@@ -333,6 +346,7 @@ func shouldSkipAtReferenceSuggestionDir(entry os.DirEntry) bool {
 	}
 	switch strings.ToLower(entry.Name()) {
 	case ".git", ".hg", ".svn", ".goflow",
+		".ssh", ".gnupg", ".secrets",
 		".venv", "venv", "env",
 		"node_modules", "__pycache__", "vendor",
 		"dist", "build", "target", "coverage",

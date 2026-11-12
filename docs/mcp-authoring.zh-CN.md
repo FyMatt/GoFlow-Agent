@@ -1,106 +1,27 @@
-# MCP 工具开发
+# MCP 开发
 
-[English](./mcp-authoring.md) | [简体中文](./mcp-authoring.zh-CN.md)
+MCP Server 使用标准 stdio 进程。GoFlow 兼容 Codex/Claude 的连接文档和标准 MCP 工具 Schema。
 
-这份文档说明如何向 GoFlow 添加自定义 MCP server。
+## 推荐的 Server 契约
 
-## CLI 脚手架
+- 工具名称稳定，并按连接命名空间组织；
+- 使用精确 JSON Schema，并设置 `additionalProperties: false`；
+- 将工具分类为只读、写入、执行、网络或未知；
+- 校验所有工作区路径，拒绝路径穿越和符号链接逃逸；
+- 返回有大小上限的 UTF-8 结果，并设置明确错误标志；
+- 生成代码可复现、可审查；
+- API Key 和私钥不得写入代码、参数、日志或产物。
 
-创建 Python MCP server：
+## 原生执行
 
-```text
-/new-tool python <name>
-```
+连接使用 `isolation: auto`。GoFlow 根据工具能力和宿主探针选择最小原生边界。未知或第三方 Server 只能在任务副本中运行；所需边界不可用时直接拒绝。
 
-生成文件：
+## 内置脚手架
 
-```text
-mcp_servers/<name>.py
-configs/mcp_servers/<name>.yaml
-```
+`GET /api/resources/tools/scaffolds` 提供本地 Python 和原生辅助工具模板。脚手架包含源码、配置、Schema、路径检查、有界输出和启用说明，不要求普通用户填写底层隔离参数。
 
-生成的 server 包含：
+内置 `network_tools` 连接是授权网络操作的参考实现：所有变更动作都需要明确审批，并输出可回放、可复核和可回退的结构化证据。
 
-- stdio JSON-RPC 处理。
-- `initialize`、`tools/list`、`tools/call`。
-- `ping`、`read_text`、`write_text` 示例工具。
-- `GOFLOW_WORKSPACE_ROOT` 路径边界检查。
-- 路径穿越和符号链接逃逸检查。
-- 严格 JSON schema。
+## 兼容性
 
-## HTTP/Web Studio 脚手架
-
-Web Studio 和 API 客户端可以使用：
-
-```text
-GET /api/resources/tools/scaffolds
-GET /api/resources/tools/scaffolds/{preset}?name=<tool-name>
-POST /api/resources/tools/scaffolds/{preset}
-```
-
-可用 preset：
-
-- `python-local`
-- `python-container-readonly`
-- `python-container-writer`
-- `python-container-network`
-
-容器 preset 会生成 Docker/Podman `isolation: container` 配置，并默认启用更安全的限制。
-
-## 推荐安全默认值
-
-对第三方、生成的、写文件、执行命令、访问网络或处理不可信输入的工具，优先使用：
-
-```yaml
-isolation: container
-network_disabled: true
-restart_limit: 3
-cooldown: 10s
-max_concurrent_calls: 1
-isolation_options:
-  image: ghcr.io/fymatt/goflow-agent-mcp-python:<version>
-  workspace_mount: ro
-  network: disabled
-  readonly_rootfs: true
-  no_new_privileges: true
-  cap_drop: all
-  memory: 256m
-  cpus: "0.5"
-  pids_limit: "64"
-```
-
-需要写 workspace 时，把 `workspace_mount` 改成 `rw`，但仍建议保留审批和风险提示。
-
-## 校验
-
-保存自定义工具前，后端会校验：
-
-- 启动命令白名单。
-- 不支持的隔离模式。
-- container 必填字段。
-- 网络、挂载、资源限制和 root 用户风险。
-- schema 是否严格。
-
-Web Studio 应把返回的 field-level issue 显示到对应表单字段上。
-
-## 内置参考实现
-
-可以参考这些内置 MCP server 的实现方式：
-
-- `mcp_servers/file_tools/main.go`
-- `mcp_servers/network_tools/main.go`
-- `mcp_servers/skill_runner/main.go`
-- `mcp_servers/python_notes.py`
-
-如果要扩展运维或网络设备类工具，优先参考 `network_tools` 的契约。它只返回设备发现、命令计划和配置干跑计划，不打开网络连接。真实 SSH/API 连接器应继续保留授权范围、主机白名单、命令白名单、干跑、回滚、审批和证据引用字段，这样工作流仍能保持可审计和节省 token。
-
-## 生效方式
-
-新 MCP server 作为资源保存后会立即出现在资源列表中，但实际 server 进程通常需要重启 runtime 或未来 MCP rebootstrap 后才会启动。
-
-CLI 可用：
-
-```text
-/reload-tools
-/tools
-```
+可以导入 Codex 或 Claude Code 的标准 MCP stdio 定义，然后查看中文能力摘要并启用连接。导出定义保持可移植且不包含密钥。

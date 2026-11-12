@@ -2,8 +2,8 @@ kind: goflow.kit
 version: 1
 min_supported_version: 1
 name: binary-analysis-kit
-title: Binary Analysis Kit
-description: Triage binary artifacts with built-in Python metadata, strings, hex preview, reverse-engineering, and vulnerability-research skills.
+title: 二进制分析资源包
+description: 使用内置元数据、字符串、十六进制预览、逆向工程和漏洞研究能力初筛二进制产物。
 category: security
 tags:
     - binary
@@ -40,20 +40,20 @@ policy_rules:
     - risk_at_least
     - team_approval_gate
 examples:
-    - title: Triage a binary artifact
-      description: Inspect metadata, strings, and suspicious offsets before producing an evidence-backed report.
-      request: Analyze sample.bin for risky imports, protocol strings, packed sections, and likely vulnerability surfaces.
+    - title: 初筛二进制产物
+      description: 检查元数据、字符串和可疑偏移后，输出有证据支撑的报告。
+      request: 分析 sample.bin 中的高风险导入、协议字符串、加壳区段和可能的漏洞面。
       workflow: skill-chain
       agent: binary-analyst
-    - title: Defensive binary workflow
-      description: Plan static analysis, collect evidence, branch on risk, and report next reversing actions.
-      request: Run static binary triage on sample.bin without executing it.
+    - title: 防御性二进制分析流程
+      description: 规划静态分析、收集证据、按风险分支并报告后续逆向步骤。
+      request: 在不执行 sample.bin 的前提下完成静态二进制初筛。
       workflow: binary-triage
       agent: binary-analyst
 vertical_pack:
     domain: binary-analysis
     maturity: production-ready
-    summary: Performs static binary and reverse-engineering triage using metadata, format/section summary, imports/exports, entropy/packing hints, symbol/function clues, bounded artifact extraction, and defensive vulnerability reasoning.
+    summary: 使用元数据、格式与区段摘要、导入导出、熵与加壳提示、符号与函数线索、受限产物提取和防御性漏洞推理完成二进制静态初筛。
     supported_tasks:
         - static binary metadata review
         - format/section summary
@@ -94,9 +94,8 @@ vertical_pack:
         - bounded artifact window
         - reverse notes
         - risk report
-    simple_mode:
+    presentation_guidance:
         - Show file path, format, entropy/packing status, suspicious indicators, offset refs, blockers, and next steps.
-    expert_mode:
         - Show offsets, imports/exports, symbol hints, entropy blocks, tool outputs, artifact refs, static-analysis limits, and sandbox gaps.
     token_strategy:
         - Return bounded strings and hex snippets instead of full binary content.

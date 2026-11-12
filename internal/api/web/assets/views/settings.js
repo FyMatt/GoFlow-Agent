@@ -1,64 +1,27 @@
-import { discoveryMetaSupported, escapeHTML, postJSON, request } from "../api.js";
+import { escapeHTML, postJSON, request } from "../api.js";
+import { icon } from "../icons.js";
 import { currentLanguage, localizedText, t } from "../i18n.js";
 
 export async function renderSettings(root, runtime, refreshRuntime) {
-  const [update, diagnostics, discovery, providerResources] = await Promise.all([
-    loadOptional("/api/update-policy"),
-    loadOptional("/api/config/diagnostics?include_optional=0"),
-    loadClientDiscovery(),
-    loadOptional("/api/resources/providers")
+  const [providerResources, workspaceVersions] = await Promise.all([
+    loadOptional("/api/resources/providers"),
+    loadOptional("/api/workspace-versions")
   ]);
-  const diagnosticCapabilities = configDiagnosticCapabilities(discovery);
-  if (diagnostics && typeof diagnostics === "object") {
-    window.dispatchEvent(new CustomEvent("goflow:config-diagnostics", { detail: diagnostics }));
-  }
 
   root.innerHTML = `
-    <div class="grid settings-grid">
-      ${renderSettingsHero(diagnostics, runtime)}
-      <section class="panel span-12 settings-essential-panel" data-settings-anchor="first-run" tabindex="-1">
-        <div class="panel-head">
-          <div>
-            <h2>${t("settings.essentialSetup")}</h2>
-            <p class="muted">${t("settings.essentialSetupHelp")}</p>
-          </div>
-        </div>
-        ${renderEssentialSetup(runtime, diagnostics, providerResources, update)}
+    <div class="settings-simple" data-settings-simple>
+      <section class="settings-simple-section settings-model-section" data-settings-anchor="first-run" tabindex="-1">
+        <header><h2 class="panel-title">${icon("sparkles")}<span>${escapeHTML(t("settings.simpleModelTitle"))}</span></h2></header>
+        ${renderProviderSetup(runtime, providerResources)}
       </section>
-      <section class="panel span-7 settings-health-panel" data-settings-focus="config-health" tabindex="-1">
-        <div class="panel-head">
-          <div>
-            <h2>${t("settings.configHealth")}</h2>
-            <p class="muted">${t("settings.configHealthHelp")}</p>
-          </div>
-          ${statusBadge(diagnostics?.status, diagnostics?.restart_required)}
-        </div>
-        ${renderSummaryGrid(diagnostics, diagnosticCapabilities)}
-        ${renderPrioritySummary(diagnostics, runtime, diagnosticCapabilities)}
-        ${renderDiagnosticsList(diagnostics, diagnosticCapabilities)}
-        ${renderAdvancedRuntimeDetails(runtime, diagnostics, diagnosticCapabilities)}
+      <section class="settings-simple-section settings-workspace-section" data-settings-anchor="workspace" tabindex="-1">
+        <header><h2 class="panel-title">${icon("monitor")}<span>${escapeHTML(t("settings.simpleWorkspaceTitle"))}</span></h2></header>
+        ${renderWorkspaceReadiness(runtime)}
+        ${renderWorkspaceVersions(workspaceVersions)}
       </section>
-      <section class="panel span-5 settings-tour-panel">
-        <div class="panel-head">
-          <div>
-            <h2>${t("settings.guidedTour")}</h2>
-            <p class="muted">${t("settings.guidedTourHelp")}</p>
-          </div>
-        </div>
-        ${renderTourPath()}
-      </section>
-      <section class="panel span-12 settings-update-panel">
-        <div class="panel-head">
-          <div>
-            <h2>${t("settings.updates")}</h2>
-            <p class="muted">${t("settings.updatesHelp")}</p>
-          </div>
-          <span class="badge info">${escapeHTML(update?.current_version || runtime.version || "dev")}</span>
-        </div>
-        ${renderUpdatePolicy(update)}
-      </section>
+      ${renderAppearanceSettings()}
     </div>`;
-  bindSettingsActions(root, refreshRuntime);
+  bindSettingsActions(root, refreshRuntime, runtime);
   focusSettingsTarget(root);
 }
 
@@ -111,7 +74,62 @@ function localizedSettingsErrorMessage(error, fallback = "") {
   return settingsDisplayText(text || fallback);
 }
 
-function bindSettingsActions(root, refreshRuntime) {
+function bindSettingsActions(root, refreshRuntime, runtime) {
+  root.querySelectorAll("[data-settings-workspace-pick]").forEach(button => {
+    button.addEventListener("click", async () => {
+      const form = button.closest("[data-settings-workspace-switch]");
+      const input = form?.querySelector("[data-settings-workspace-path]");
+      const output = root.querySelector("[data-settings-workspace-output]");
+      button.disabled = true;
+      if (output) output.textContent = t("settings.workspacePickerOpening");
+      try {
+        const result = await postJSON("/api/workspace/pick-folder", { path: String(input?.value || "").trim() });
+        if (result?.cancelled) {
+          if (output) output.textContent = t("settings.workspacePickerCancelled");
+          return;
+        }
+        const path = String(result?.normalized_path || result?.path || "").trim();
+        if (!path) throw new Error(t("settings.workspacePickerNoPath"));
+        if (input) input.value = path;
+        form?.requestSubmit();
+      } catch (error) {
+        if (output) output.textContent = localizedSettingsErrorMessage(error, t("settings.workspacePickerFailed"));
+      } finally {
+        button.disabled = false;
+      }
+    });
+  });
+  root.querySelectorAll("[data-settings-workspace-switch]").forEach(form => {
+    form.addEventListener("submit", async event => {
+      event.preventDefault();
+      const input = form.querySelector("[data-settings-workspace-path]");
+      const button = form.querySelector("button[type='submit']");
+      const output = root.querySelector("[data-settings-workspace-output]");
+      const path = String(input?.value || "").trim();
+      const current = String(form.dataset.currentWorkspace || "").trim();
+      if (!path) {
+        if (output) output.textContent = t("settings.workspaceSwitchPathRequired");
+        input?.focus();
+        return;
+      }
+      if (current && path.toLowerCase() !== current.toLowerCase() && !window.confirm(t("settings.workspaceSwitchConfirm", { path }))) return;
+      if (button) button.disabled = true;
+      if (output) output.textContent = t("settings.workspaceSwitching");
+      try {
+        await request("/api/workspace/select", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ path })
+        });
+        const nextRuntime = typeof refreshRuntime === "function" ? await refreshRuntime() : runtime;
+        await renderSettings(root, nextRuntime || runtime, refreshRuntime);
+      } catch (error) {
+        if (output) output.textContent = localizedSettingsErrorMessage(error, t("settings.workspaceSwitchFailed"));
+      } finally {
+        if (button) button.disabled = false;
+      }
+    });
+  });
   root.querySelectorAll("[data-settings-workspace-confirm]").forEach(button => {
     button.addEventListener("click", async () => {
       const output = root.querySelector("[data-settings-workspace-output]");
@@ -129,6 +147,46 @@ function bindSettingsActions(root, refreshRuntime) {
         if (output) output.textContent = localizedSettingsErrorMessage(error, t("workspace.actionFailedTitle"));
       } finally {
         setSettingsWorkspaceBusy(root, false);
+      }
+    });
+  });
+  root.querySelectorAll("[data-settings-workspace-clear]").forEach(button => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm(t("settings.workspaceReadinessRevokeConfirm"))) return;
+      const output = root.querySelector("[data-settings-workspace-output]");
+      setSettingsWorkspaceBusy(root, true);
+      if (output) output.textContent = t("workspace.clearingTitle");
+      try {
+        await settingsWorkspaceActionRequest(button.dataset.settingsWorkspaceClearPath || "/api/workspace/clear", "POST");
+        const nextRuntime = typeof refreshRuntime === "function" ? await refreshRuntime() : null;
+        if (nextRuntime) {
+          await renderSettings(root, nextRuntime, refreshRuntime);
+          return;
+        }
+        if (output) output.textContent = t("workspace.clearedBody");
+      } catch (error) {
+        if (output) output.textContent = localizedSettingsErrorMessage(error, t("workspace.actionFailedTitle"));
+      } finally {
+        setSettingsWorkspaceBusy(root, false);
+      }
+    });
+  });
+  root.querySelectorAll("[data-workspace-version-restore]").forEach(button => {
+    button.addEventListener("click", async () => {
+      if (!window.confirm(t("settings.workspaceVersionsRestoreConfirm"))) return;
+      const output = root.querySelector("[data-workspace-versions-output]");
+      button.disabled = true;
+      button.setAttribute("aria-busy", "true");
+      if (output) output.textContent = t("settings.workspaceVersionsRestoring");
+      try {
+        await postJSON(button.dataset.workspaceVersionRestore || "", {});
+        const nextRuntime = typeof refreshRuntime === "function" ? await refreshRuntime() : runtime;
+        await renderSettings(root, nextRuntime || runtime, refreshRuntime);
+      } catch (error) {
+        if (output) output.textContent = localizedSettingsErrorMessage(error, t("settings.workspaceVersionsRestoreFailed"));
+      } finally {
+        button.disabled = false;
+        button.setAttribute("aria-busy", "false");
       }
     });
   });
@@ -159,12 +217,17 @@ function bindSettingsActions(root, refreshRuntime) {
       if (!node) return;
       node.focus({ preventScroll: true });
       node.scrollIntoView({ block: "start", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+      const workspaceEntry = button.dataset.settingsWorkspaceEntry || "";
+      if (target === "workspace" && workspaceEntry === "open") {
+        root.querySelector(".settings-workspace-root")?.focus({ preventScroll: true });
+      }
+      if (target === "workspace" && workspaceEntry === "manage") {
+        root.querySelector("[data-settings-workspace-clear], [data-settings-workspace-confirm]")?.focus({ preventScroll: true });
+      }
     });
   });
   const providerForm = root.querySelector("[data-provider-setup-form]");
   if (providerForm) {
-    const typeSelect = providerForm.querySelector("[data-provider-setup-type]");
-    typeSelect?.addEventListener("change", () => applyProviderSetupPreset(providerForm, typeSelect.value));
     providerForm.addEventListener("submit", event => {
       event.preventDefault();
       providerForm.querySelector("[data-provider-setup-save]")?.click();
@@ -175,28 +238,68 @@ function bindSettingsActions(root, refreshRuntime) {
     providerForm.querySelector("[data-provider-setup-test]")?.addEventListener("click", async () => {
       await testProviderSetup(providerForm);
     });
+    providerForm.querySelector("[data-provider-setup-fetch-models]")?.addEventListener("click", async () => {
+      await fetchProviderSetupModels(providerForm);
+    });
   }
-  root.querySelectorAll("[data-settings-update-check]").forEach(button => {
-    button.addEventListener("click", async () => {
-      const output = button.closest(".settings-update-basic, .settings-update-layout")?.querySelector("[data-settings-update-output]")
-        || root.querySelector("[data-settings-update-output]");
-      const endpoint = button.dataset.settingsUpdateCheckPath || "/api/update-policy/check";
-      setSettingsUpdateBusy(button, true);
-      if (output) output.innerHTML = renderUpdateCheckLoading();
-      try {
-        const result = await postJSON(endpoint, {});
-        if (output) output.innerHTML = renderUpdateCheckResult(result);
-      } catch (error) {
-        if (output) output.innerHTML = renderUpdateCheckError(error);
-      } finally {
-        setSettingsUpdateBusy(button, false);
-      }
+  root.querySelectorAll("[data-settings-theme]").forEach(button => {
+    button.addEventListener("click", () => {
+      window.dispatchEvent(new CustomEvent("goflow:set-theme", { detail: { theme: button.dataset.settingsTheme } }));
+      updateAppearanceSelection(root, button.dataset.settingsTheme);
     });
   });
 }
 
+function renderAppearanceSettings() {
+  const current = document.documentElement.dataset.theme === "dark" ? "dark" : "light";
+  return `<section class="settings-simple-section settings-appearance-section">
+    <header><h2 class="panel-title">${icon("sun")}<span>${escapeHTML(t("settings.simpleAppearanceTitle"))}</span></h2></header>
+    <div class="settings-theme-switch" role="group" aria-label="${escapeHTML(t("settings.simpleAppearanceTitle"))}">
+      ${["light", "dark"].map(theme => `<button type="button" class="icon-text ${current === theme ? "active" : ""}" data-settings-theme="${theme}" aria-pressed="${current === theme}">${icon(theme === "dark" ? "moon" : "sun")}<span>${escapeHTML(t(`theme.${theme}`))}</span></button>`).join("")}
+    </div>
+  </section>`;
+}
+
+function updateAppearanceSelection(root, theme) {
+  root.querySelectorAll("[data-settings-theme]").forEach(button => {
+    const active = button.dataset.settingsTheme === theme;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", active ? "true" : "false");
+  });
+}
+
+function renderWorkspaceVersions(payload = {}) {
+  const versions = Array.isArray(payload?.versions) ? payload.versions : [];
+  const retention = Number(payload?.retention || 3);
+  const body = payload?.__error
+    ? `<p class="muted">${escapeHTML(payload.__error)}</p>`
+    : versions.length
+      ? `<div class="settings-workspace-version-list">${versions.map(version => {
+          const status = version.status === "restored" ? t("settings.workspaceVersionRestored") : t("settings.workspaceVersionSaved");
+          const created = workspaceVersionDate(version.created_at);
+          const runID = String(version.run_id || "");
+          const versionID = String(version.version_id || "");
+          return `<article class="settings-workspace-version">
+            <div><strong>${escapeHTML(created)}</strong><small>${escapeHTML(t("settings.workspaceVersionFiles", { count: Number(version.change_count || 0) }))} · ${escapeHTML(status)}</small><code title="${escapeHTML(versionID)}">${escapeHTML(versionID.slice(0, 12))}</code></div>
+            <button type="button" class="icon-text" data-workspace-version-restore="/api/workspace-versions/${encodeURIComponent(runID)}/restore"${version.can_restore ? "" : " disabled aria-disabled=\"true\""} title="${escapeHTML(version.reason || t("settings.workspaceVersionsRestore"))}">${icon("history")}<span>${escapeHTML(t("settings.workspaceVersionsRestore"))}</span></button>
+          </article>`;
+        }).join("")}</div>`
+      : `<p class="muted">${escapeHTML(t("settings.workspaceVersionsEmpty"))}</p>`;
+  return `<div class="settings-workspace-versions">
+    <div class="settings-workspace-versions-head"><div><strong>${escapeHTML(t("settings.workspaceVersionsTitle"))}</strong><p>${escapeHTML(t("settings.workspaceVersionsHelp", { count: retention }))}</p></div><span class="badge good">${escapeHTML(t("settings.workspaceVersionsLive"))}</span></div>
+    ${body}
+    <div class="settings-workspace-readiness-output" data-workspace-versions-output role="status" aria-live="polite"></div>
+  </div>`;
+}
+
+function workspaceVersionDate(value) {
+  const date = new Date(value || "");
+  if (Number.isNaN(date.getTime())) return t("common.none");
+  return date.toLocaleString(currentLanguage() === "zh-CN" ? "zh-CN" : "en-US", { hour12: false });
+}
+
 function setSettingsWorkspaceBusy(root, busy) {
-  root.querySelectorAll("[data-settings-workspace-confirm]").forEach(button => {
+  root.querySelectorAll("[data-settings-workspace-confirm], [data-settings-workspace-clear]").forEach(button => {
     if (busy) {
       if (!button.dataset.settingsBusyPreviousDisabled) {
         button.dataset.settingsBusyPreviousDisabled = button.disabled ? "true" : "false";
@@ -656,49 +759,236 @@ function renderDiagnosticItem(item = {}, capabilities = {}) {
   </article>`;
 }
 
-function renderEssentialSetup(runtime, diagnostics, providerResources, update) {
+function renderEssentialSetup(runtime, diagnostics, providerResources, executionTargets) {
   return `<div class="settings-essential-grid">
     <div class="settings-essential-main">
       ${renderProviderSetup(runtime, providerResources)}
     </div>
     <div class="settings-essential-side">
       ${renderWorkspaceReadiness(runtime)}
-      ${renderUpdateBasics(update)}
     </div>
-    ${renderSetupProgress(runtime, diagnostics)}
-  </div>`;
+  </div>
+  ${renderExecutionTargetManager(executionTargets)}`;
 }
 
-function renderSetupProgress(runtime = {}, diagnostics = {}) {
-  const modelSetup = settingsModelSetupState(runtime);
-  const workspaceReady = Boolean(runtime?.workspace?.confirmed);
-  const configReady = !diagnostics?.__error && diagnostics?.status !== "error" && !diagnostics?.restart_required;
-  const items = [
-    {
-      done: modelSetup.ready,
-      title: t("settings.setupStepModelTitle"),
-      body: modelSetup.ready ? t("settings.setupStepModelDone") : t("settings.setupStepModelTodo")
-    },
-    {
-      done: workspaceReady,
-      title: t("settings.setupStepWorkspaceTitle"),
-      body: workspaceReady ? t("settings.setupStepWorkspaceDone") : t("settings.setupStepWorkspaceTodo")
-    },
-    {
-      done: configReady,
-      title: t("settings.setupStepRunTitle"),
-      body: configReady ? t("settings.setupStepRunDone") : t("settings.setupStepRunTodo")
-    }
-  ];
-  return `<div class="settings-setup-progress">
-    ${items.map((item, index) => `<article class="${item.done ? "done" : "todo"}">
-      <span>${item.done ? "✓" : index + 1}</span>
+function renderExecutionTargetManager(payload) {
+  const failed = payload && typeof payload === "object" && !Array.isArray(payload) && payload.__error;
+  const targets = Array.isArray(payload) ? payload : [];
+  const rows = targets.length
+    ? targets.map(renderExecutionTargetRow).join("")
+    : `<div class="settings-target-empty">${escapeHTML(t("settings.targetsEmpty"))}</div>`;
+  return `<section class="settings-target-manager" data-target-manager>
+    <div class="settings-target-manager-head">
       <div>
-        <strong>${escapeHTML(item.title)}</strong>
-        <p>${escapeHTML(item.body)}</p>
+        <strong>${escapeHTML(t("settings.targetsTitle"))}</strong>
+        <span>${escapeHTML(t("settings.targetsHelp"))}</span>
       </div>
-    </article>`).join("")}
-  </div>`;
+      <button type="button" class="settings-target-add icon-text" data-target-add>
+        ${icon("plus")}
+        <span>${escapeHTML(t("settings.targetAdd"))}</span>
+      </button>
+    </div>
+    <div class="settings-target-list" data-target-list>
+      ${failed ? `<div class="settings-target-empty error">${escapeHTML(localizedSettingsErrorMessage(payload.__error))}</div>` : rows}
+    </div>
+    ${renderExecutionTargetForm()}
+  </section>`;
+}
+
+function renderExecutionTargetRow(target = {}) {
+  const local = target.id === "local" || target.kind === "local";
+  const host = local ? t("settings.targetLocalAddress") : executionTargetAddress(target.host, target.port);
+  const state = target.enabled !== false ? t("settings.targetEnabled") : t("settings.targetDisabled");
+  const displayName = local ? t("settings.targetLocalName") : target.display_name || target.id || t("settings.targetUnnamed");
+  return `<article class="settings-target-row" data-target-row="${escapeHTML(target.id || "")}">
+    <span class="settings-target-kind" aria-hidden="true">
+      ${icon("monitor")}
+    </span>
+    <div class="settings-target-row-copy">
+      <strong>${escapeHTML(displayName)}</strong>
+      <small>${escapeHTML(host)}${!local && target.user ? ` · ${escapeHTML(target.user)}` : ""}</small>
+    </div>
+    <span class="badge ${target.enabled !== false ? "good" : "neutral"}">${escapeHTML(local ? t("settings.targetBuiltIn") : state)}</span>
+    ${local ? "" : `<div class="settings-target-row-actions">
+      <button type="button" class="icon-button" data-target-edit="${escapeHTML(target.id || "")}" aria-label="${escapeHTML(t("settings.targetEdit"))}" title="${escapeHTML(t("settings.targetEdit"))}">${icon("pencil")}</button>
+      <button type="button" class="icon-button danger" data-target-delete="${escapeHTML(target.id || "")}" aria-label="${escapeHTML(t("settings.targetDelete"))}" title="${escapeHTML(t("settings.targetDelete"))}">${icon("trash-2")}</button>
+    </div>`}
+  </article>`;
+}
+
+function renderExecutionTargetForm() {
+  return `<form class="settings-target-form hidden" data-target-form data-target-id="">
+    <div class="settings-target-form-head">
+      <strong data-target-form-title>${escapeHTML(t("settings.targetAddTitle"))}</strong>
+      <button type="button" class="icon-button" data-target-cancel aria-label="${escapeHTML(t("common.close"))}" title="${escapeHTML(t("common.close"))}">${icon("x")}</button>
+    </div>
+    <div class="settings-target-form-grid">
+      <label><span>${escapeHTML(t("settings.targetName"))}</span><input data-target-name maxlength="100" required></label>
+      <label><span>${escapeHTML(t("settings.targetHost"))}</span><input data-target-host maxlength="253" required placeholder="192.0.2.10"></label>
+      <label><span>${escapeHTML(t("settings.targetPort"))}</span><input data-target-port type="number" min="1" max="65535" value="22" required></label>
+      <label><span>${escapeHTML(t("settings.targetUser"))}</span><input data-target-user maxlength="64" required placeholder="operator"></label>
+      <label class="wide"><span>${escapeHTML(t("settings.targetCredentialRef"))}</span><input data-target-credential required placeholder="secret://targets/server/private_key"></label>
+      <label class="wide"><span>${escapeHTML(t("settings.targetCommands"))}</span><textarea data-target-commands rows="4" required></textarea></label>
+    </div>
+    <div class="settings-target-scan">
+      <div class="settings-target-scan-head">
+        <button type="button" data-target-scan>${escapeHTML(t("settings.targetScan"))}</button>
+        <span data-target-scan-status role="status" aria-live="polite"></span>
+      </div>
+      <div class="settings-target-key-list" data-target-key-list></div>
+      <input type="hidden" data-target-fingerprint required>
+    </div>
+    <label class="settings-target-enabled"><input type="checkbox" data-target-enabled checked><span>${escapeHTML(t("settings.targetEnabledLabel"))}</span></label>
+    <div class="settings-target-form-actions">
+      <button type="submit" class="primary" data-target-save>${escapeHTML(t("common.save"))}</button>
+      <button type="button" data-target-cancel>${escapeHTML(t("common.cancel"))}</button>
+      <span data-target-form-status role="status" aria-live="polite"></span>
+    </div>
+  </form>`;
+}
+
+function bindExecutionTargetManager(root, refreshRuntime, payload) {
+  const manager = root.querySelector("[data-target-manager]");
+  const form = manager?.querySelector("[data-target-form]");
+  if (!manager || !form) return;
+  const targets = Array.isArray(payload) ? payload : [];
+  const field = name => form.querySelector(`[data-target-${name}]`);
+  const defaultCommands = ["uptime", "df -h", "free -m", "systemctl --failed --no-pager"].join("\n");
+  const setFormStatus = (message, error = false) => {
+    const output = field("form-status");
+    if (!output) return;
+    output.textContent = message || "";
+    output.classList.toggle("error", error);
+  };
+  const setScanStatus = (message, error = false) => {
+    const output = field("scan-status");
+    if (!output) return;
+    output.textContent = message || "";
+    output.classList.toggle("error", error);
+  };
+  const open = target => {
+    const editing = target && target.id && target.id !== "local" ? target : null;
+    form.dataset.targetId = editing?.id || "";
+    field("form-title").textContent = t(editing ? "settings.targetEditTitle" : "settings.targetAddTitle");
+    field("name").value = editing?.display_name || "";
+    field("host").value = editing?.host || "";
+    field("port").value = editing?.port || 22;
+    field("user").value = editing?.user || "";
+    field("credential").value = editing?.credential_ref || "";
+    field("commands").value = Array.isArray(editing?.allowed_commands) ? editing.allowed_commands.join("\n") : defaultCommands;
+    field("fingerprint").value = editing?.host_key_sha256 || "";
+    field("enabled").checked = editing ? editing.enabled !== false : true;
+    renderExecutionTargetKeys(field("key-list"), editing?.host_key_sha256 ? [{ key_type: t("settings.targetPinnedKey"), fingerprint: editing.host_key_sha256 }] : [], editing?.host_key_sha256 || "");
+    setFormStatus("");
+    setScanStatus(editing?.host_key_sha256 ? t("settings.targetFingerprintSaved") : "");
+    form.classList.remove("hidden");
+    field("name").focus();
+    form.scrollIntoView({ block: "nearest", behavior: prefersReducedMotion() ? "auto" : "smooth" });
+  };
+  const close = () => {
+    form.classList.add("hidden");
+    form.dataset.targetId = "";
+  };
+  manager.querySelector("[data-target-add]")?.addEventListener("click", () => open(null));
+  manager.querySelectorAll("[data-target-cancel]").forEach(button => button.addEventListener("click", close));
+  manager.querySelectorAll("[data-target-edit]").forEach(button => button.addEventListener("click", () => {
+    open(targets.find(item => item.id === button.dataset.targetEdit));
+  }));
+  manager.querySelectorAll("[data-target-delete]").forEach(button => button.addEventListener("click", async () => {
+    const target = targets.find(item => item.id === button.dataset.targetDelete);
+    if (!target || !window.confirm(t("settings.targetDeleteConfirm", { name: target.display_name || target.id }))) return;
+    button.disabled = true;
+    try {
+      await deleteExecutionTarget(target.id);
+      await rerenderSettingsAfterTargetChange(root, refreshRuntime);
+    } catch (error) {
+      button.disabled = false;
+      if (form.classList.contains("hidden")) open(target);
+      setFormStatus(localizedSettingsErrorMessage(error), true);
+    }
+  }));
+  field("scan")?.addEventListener("click", async () => {
+    const host = String(field("host")?.value || "").trim();
+    const port = Number(field("port")?.value || 22);
+    field("scan").disabled = true;
+    setScanStatus(t("settings.targetScanning"));
+    try {
+      const result = await scanExecutionTargetHostKey({ host, port, authorized_scope: true, timeout_seconds: 12 });
+      const keys = Array.isArray(result?.keys) ? result.keys : [];
+      const preferred = keys.find(item => item.key_type === "ssh-ed25519")?.fingerprint || keys[0]?.fingerprint || "";
+      field("fingerprint").value = preferred;
+      renderExecutionTargetKeys(field("key-list"), keys, preferred);
+      setScanStatus(t("settings.targetScanDone", { count: keys.length }));
+    } catch (error) {
+      field("fingerprint").value = "";
+      renderExecutionTargetKeys(field("key-list"), [], "");
+      setScanStatus(localizedSettingsErrorMessage(error), true);
+    } finally {
+      field("scan").disabled = false;
+    }
+  });
+  [field("host"), field("port")].forEach(input => input?.addEventListener("input", () => {
+    field("fingerprint").value = "";
+    renderExecutionTargetKeys(field("key-list"), [], "");
+    setScanStatus(t("settings.targetScanRequired"));
+  }));
+  field("key-list")?.addEventListener("change", event => {
+    const input = event.target instanceof HTMLInputElement ? event.target : null;
+    if (input?.name === "target-host-key") field("fingerprint").value = input.value;
+  });
+  form.addEventListener("submit", async event => {
+    event.preventDefault();
+    const fingerprint = String(field("fingerprint")?.value || "").trim();
+    if (!fingerprint) {
+      setFormStatus(t("settings.targetScanRequired"), true);
+      return;
+    }
+    const id = String(form.dataset.targetId || "").trim();
+    const body = {
+      kind: "ssh",
+      display_name: String(field("name")?.value || "").trim(),
+      host: String(field("host")?.value || "").trim(),
+      port: Number(field("port")?.value || 22),
+      user: String(field("user")?.value || "").trim(),
+      credential_ref: String(field("credential")?.value || "").trim(),
+      host_key_sha256: fingerprint,
+      allowed_commands: String(field("commands")?.value || "").split(/\r?\n/).map(value => value.trim()).filter(Boolean),
+      enabled: Boolean(field("enabled")?.checked)
+    };
+    field("save").disabled = true;
+    setFormStatus(t("settings.targetSaving"));
+    try {
+      if (id) await updateExecutionTarget(id, body); else await createExecutionTarget(body);
+      await rerenderSettingsAfterTargetChange(root, refreshRuntime);
+    } catch (error) {
+      field("save").disabled = false;
+      setFormStatus(localizedSettingsErrorMessage(error), true);
+    }
+  });
+}
+
+function renderExecutionTargetKeys(container, keys, selected) {
+  if (!container) return;
+  if (!Array.isArray(keys) || !keys.length) {
+    container.innerHTML = "";
+    return;
+  }
+  container.innerHTML = keys.map((key, index) => `<label class="settings-target-key">
+    <input type="radio" name="target-host-key" value="${escapeHTML(key.fingerprint || "")}" ${key.fingerprint === selected || (!selected && index === 0) ? "checked" : ""}>
+    <span><strong>${escapeHTML(key.key_type || t("settings.targetHostKey"))}</strong><small>${escapeHTML(key.fingerprint || "")}</small></span>
+  </label>`).join("");
+}
+
+async function rerenderSettingsAfterTargetChange(root, refreshRuntime) {
+  const runtime = typeof refreshRuntime === "function" ? await refreshRuntime() : await request("/api/runtime");
+  if (runtime) await renderSettings(root, runtime, refreshRuntime);
+}
+
+function executionTargetAddress(host, port) {
+  const value = String(host || "").trim();
+  if (!value) return t("common.none");
+  const displayHost = value.includes(":") && !value.startsWith("[") ? `[${value}]` : value;
+  return `${displayHost}:${Number(port || 22)}`;
 }
 
 function diagnosticBadgeLabel(item = {}) {
@@ -750,18 +1040,7 @@ function diagnosticTargetHTML(item = {}) {
 }
 
 function diagnosticDetailsHTML(item = {}) {
-  const details = item?.details || item?.detail || {};
-  if (!details || typeof details !== "object" || Array.isArray(details)) return "";
-  const chips = [
-    details.image ? [t("catalog.isolationImage"), details.image] : null,
-    details.image_reference_type ? [t("catalog.containerImageReference"), diagnosticContainerImageReferenceLabel(details.image_reference_type)] : null,
-    typeof details.digest_pinned === "boolean" ? [t("catalog.containerDigestState"), details.digest_pinned ? t("catalog.containerDigestPinned") : t("catalog.containerDigestNotPinned")] : null,
-    details.pull_policy ? [t("catalog.isolationPullPolicy"), diagnosticContainerPullPolicyLabel(details.pull_policy)] : null,
-    details.isolation_profile ? [t("catalog.isolationProfile"), diagnosticIsolationProfileLabel(details.isolation_profile)] : null
-  ].filter(Boolean);
-  if (!chips.length) return "";
-  return `<div class="settings-diagnostic-meta settings-diagnostic-details">${chips.map(([label, value]) => `
-    <span><small>${escapeHTML(label)}</small><strong>${escapeHTML(localizedText(value))}</strong></span>`).join("")}</div>`;
+  return "";
 }
 
 function diagnosticMetaLabel(item = {}) {
@@ -809,29 +1088,7 @@ function diagnosticFieldLabel(field) {
     allowed_command_paths: t("settings.field.allowedCommandPaths"),
     network_disabled: t("settings.field.networkDisabled"),
     isolation: t("catalog.toolIsolation"),
-    isolation_profile: t("settings.field.isolationProfile"),
     isolation_options: t("settings.field.isolationOptions"),
-    "isolation_options.image": t("settings.field.containerImage"),
-    "isolation_options.runtime": t("settings.field.containerRuntime"),
-    "isolation_options.pull_policy": t("settings.field.containerPullPolicy"),
-    "isolation_options.workspace_mount": t("settings.field.workspaceMount"),
-    "isolation_options.workspace_target": t("settings.field.workspaceTarget"),
-    "isolation_options.container_workdir": t("settings.field.containerWorkdir"),
-    "isolation_options.network": t("settings.field.containerNetwork"),
-    "isolation_options.memory": t("settings.field.containerMemory"),
-    "isolation_options.memory_swap": t("settings.field.containerMemorySwap"),
-    "isolation_options.cpus": t("settings.field.containerCpus"),
-    "isolation_options.pids_limit": t("settings.field.containerPids"),
-    "isolation_options.readonly_rootfs": t("settings.field.readonlyRootfs"),
-    "isolation_options.no_new_privileges": t("settings.field.noNewPrivileges"),
-    "isolation_options.cap_drop": t("settings.field.capDrop"),
-    "isolation_options.user": t("settings.field.containerUser"),
-    "isolation_options.userns": t("settings.field.userNamespace"),
-    "isolation_options.tmpfs": t("settings.field.containerTmpfs"),
-    "isolation_options.init": t("settings.field.containerInit"),
-    "isolation_options.tool_source": t("settings.field.containerToolSource"),
-    "isolation_options.tool_target": t("settings.field.containerToolTarget"),
-    "isolation_options.tool_mount": t("settings.field.containerToolMount"),
     workflow: t("workflow.workflow"),
     stages: t("workflow.stages"),
     node_type: t("workflow.nodeType"),
@@ -850,79 +1107,44 @@ function diagnosticFieldLabel(field) {
   return localizedText(raw.replaceAll("_", " "));
 }
 
-function diagnosticContainerImageReferenceLabel(value) {
-  const normalized = String(value || "").toLowerCase();
-  const translated = t(`catalog.containerImageRef.${normalized}`);
-  return translated === `catalog.containerImageRef.${normalized}` ? localizedText(value) : translated;
-}
-
-function diagnosticContainerPullPolicyLabel(value) {
-  const normalized = String(value || "").toLowerCase();
-  const translated = t(`catalog.pullPolicy.${normalized}`);
-  return translated === `catalog.pullPolicy.${normalized}` ? localizedText(value) : translated;
-}
-
-function diagnosticIsolationProfileLabel(value) {
-  const normalized = String(value || "").toLowerCase();
-  const translated = t(`catalog.isolationProfile.${normalized}`);
-  return translated === `catalog.isolationProfile.${normalized}` ? localizedText(value) : translated;
-}
-
 function renderProviderSetup(runtime, providerResources) {
   const provider = selectProviderSetup(runtime, providerResources);
   const status = providerSetupState(provider);
-  const preset = providerSetupPreset(provider.provider);
-  const missing = providerSetupMissing(provider);
-  return `<form class="settings-provider-setup ${status.tone}" data-provider-setup-form data-provider-setup-api-key-set="${provider.api_key_set ? "true" : "false"}" data-provider-setup-reusable-key="${provider.reusable_api_key ? "true" : "false"}" data-provider-setup-message-fields="${escapeHTML(JSON.stringify(provider.provider_message_fields || []))}">
+  const model = String(provider.model || "").trim();
+  return `<form class="settings-provider-setup ${status.tone}" data-provider-setup-form data-provider-setup-api-key-set="${provider.api_key_set ? "true" : "false"}" data-provider-setup-reusable-key="${provider.reusable_api_key ? "true" : "false"}" data-provider-setup-wire-api="${escapeHTML(provider.wire_api || "responses")}" data-provider-setup-reasoning-effort="${escapeHTML(provider.reasoning_effort || "mid")}" data-provider-setup-message-fields="${escapeHTML(JSON.stringify(provider.provider_message_fields || []))}">
     <div class="settings-provider-setup-head">
       <div>
-        <strong>${escapeHTML(t("settings.providerSetupTitle"))}</strong>
+        <strong>${escapeHTML(t("settings.providerSetupTitle", { model: model || t("settings.providerSetupModelPlaceholder") }))}</strong>
         <p>${escapeHTML(t(status.ready ? "settings.providerSetupReadyHelp" : "settings.providerSetupHelp"))}</p>
       </div>
       <span class="badge ${status.badge}">${escapeHTML(status.label)}</span>
     </div>
-    <div class="settings-provider-plain-steps" aria-label="${escapeHTML(t("settings.providerSetupStepsTitle"))}">
-      ${["settings.providerSetupStepProvider", "settings.providerSetupStepModel", "settings.providerSetupStepKey"].map((key, index) => `<span><b>${index + 1}</b>${escapeHTML(t(key))}</span>`).join("")}
-    </div>
-    ${missing.length ? `<div class="settings-provider-missing">${missing.map(field => `<span>${escapeHTML(providerSetupFieldLabel(field))}</span>`).join("")}</div>` : ""}
     <div class="settings-provider-form-grid">
-      <label>
-        <span>${escapeHTML(t("settings.providerSetupName"))}</span>
-        <input data-provider-setup-id value="${escapeHTML(provider.id)}" placeholder="primary" autocomplete="off">
-      </label>
-      <label>
-        <span>${escapeHTML(t("catalog.providerType"))}</span>
-        <select data-provider-setup-type>
-          ${renderProviderTypeOption("openai-compatible", provider.provider)}
-          ${renderProviderTypeOption("anthropic", provider.provider)}
-        </select>
-      </label>
       <label class="wide">
         <span>${escapeHTML(t("catalog.providerBaseURL"))}</span>
-        <input data-provider-setup-base-url value="${escapeHTML(provider.base_url)}" placeholder="${escapeHTML(preset.baseURL)}" autocomplete="url">
-      </label>
-      <label class="wide">
-        <span>${escapeHTML(t("catalog.providerDefaultModel"))}</span>
-        <input data-provider-setup-model value="${escapeHTML(provider.model)}" placeholder="${escapeHTML(preset.model)}" autocomplete="off">
+        <input data-provider-setup-base-url type="url" value="${escapeHTML(provider.base_url || "")}" placeholder="https://api.openai.com/v1" autocomplete="off">
       </label>
       <label class="wide">
         <span>${escapeHTML(t("catalog.providerAPIKey"))}</span>
         <input data-provider-setup-api-key type="password" value="" placeholder="${escapeHTML(provider.api_key_set ? t("settings.providerSetupKeyKept") : t("settings.providerSetupKeyPlaceholder"))}" autocomplete="off">
       </label>
+      <label class="wide">
+        <span>${escapeHTML(t("catalog.providerDefaultModel"))}</span>
+        <div class="settings-provider-model-controls">
+          <select data-provider-setup-model>
+            ${model ? `<option value="${escapeHTML(model)}" selected>${escapeHTML(model)}</option>` : `<option value="">${escapeHTML(t("settings.providerSetupModelPlaceholder"))}</option>`}
+          </select>
+          <button type="button" class="icon-text" data-provider-setup-fetch-models>${icon("refresh-cw")}<span>${escapeHTML(t("settings.providerSetupFetchModels"))}</span></button>
+        </div>
+      </label>
     </div>
     <div class="settings-provider-actions">
-      <button type="button" class="primary" data-provider-setup-save>${escapeHTML(t("settings.providerSetupSave"))}</button>
-      <button type="button" class="settings-provider-test-button" data-provider-setup-test>${escapeHTML(t("settings.providerSetupTest"))}</button>
-      <button type="button" data-settings-target="catalog" data-settings-resource-kind="provider" data-settings-resource-name="${escapeHTML(provider.id)}">${escapeHTML(t("settings.providerSetupAdvanced"))}</button>
+      <button type="button" class="primary icon-text" data-provider-setup-save>${icon("save")}<span>${escapeHTML(t("settings.providerSetupSave"))}</span></button>
+      <button type="button" class="settings-provider-test-button icon-text" data-provider-setup-test>${icon("play")}<span>${escapeHTML(t("settings.providerSetupTest"))}</span></button>
     </div>
     <div class="settings-provider-output" data-provider-setup-output role="status" aria-live="polite"></div>
     <p class="settings-provider-footnote">${escapeHTML(t("settings.providerSetupRestartHint"))}</p>
   </form>`;
-}
-
-function renderProviderTypeOption(value, selected) {
-  const current = String(selected || "").trim() || "openai-compatible";
-  return `<option value="${escapeHTML(value)}" ${current === value ? "selected" : ""}>${escapeHTML(providerTypeLabel(value))}</option>`;
 }
 
 function selectProviderSetup(runtime = {}, providerResources) {
@@ -931,18 +1153,17 @@ function selectProviderSetup(runtime = {}, providerResources) {
   const setupByID = runtimeProviderSetupByID(runtime);
   const mergedResources = resources.map(provider => mergeProviderRuntimeSetup(provider, setupByID));
   const mergedRuntime = runtimeProviders.map(provider => mergeProviderRuntimeSetup(provider, setupByID));
-  const incomplete = [...mergedResources, ...mergedRuntime].find(provider => provider && !providerSetupState(provider).ready);
-  const first = incomplete || mergedResources[0] || mergedRuntime[0] || {};
-  const id = normalizeProviderSetupID(first.id || first.name || first.provider_id || "primary");
-  const provider = String(first.provider || first.type || first.kind || "openai-compatible").trim() || "openai-compatible";
+  const first = [...mergedResources, ...mergedRuntime].find(provider => normalizeProviderSetupID(provider?.id || provider?.name || provider?.provider_id) === "primary") || {};
   return {
-    id,
-    provider,
-    base_url: String(first.base_url || first.baseURL || "").trim(),
-    model: String(first.model || first.default_model || first.defaultModel || "").trim(),
+    id: "primary",
+    provider: "openai-compatible",
+    base_url: first.base_url || first.baseUrl || "",
+    wire_api: first.wire_api || first.wireApi || "responses",
+    model: first.model || first.default_model || "",
+    reasoning_effort: first.reasoning_effort || first.reasoningEffort || "mid",
     provider_message_fields: Array.isArray(first.provider_message_fields) ? first.provider_message_fields : [],
-    api_key_set: Boolean(first.api_key_set || first.apiKeySet || String(first.api_key || "").trim()),
-    reusable_api_key: Boolean((first.apply_state || first.restart_required || first.api_key) && (first.api_key_set || first.apiKeySet || String(first.api_key || "").trim()))
+    api_key_set: Boolean(first.api_key_set || first.apiKeySet),
+    reusable_api_key: Boolean(first.api_key_set || first.apiKeySet)
   };
 }
 
@@ -978,14 +1199,19 @@ function providerSetupState(provider = {}) {
   };
 }
 
-function providerSetupMissing(provider = {}) {
+function providerSetupMissing(provider = {}, options = {}) {
+  const requireModel = options.requireModel !== false;
   if (Array.isArray(provider.runtime_missing) && provider.runtime_missing.length) {
-    return provider.runtime_missing.map(field => String(field || "").split(".").pop()).filter(Boolean);
+    return provider.runtime_missing.map(field => String(field || "").split(".").pop()).filter(field => {
+      if (field === "api_key") return true;
+      if (field === "base_url") return true;
+      return requireModel && field === "model";
+    });
   }
   const missing = [];
   if (!String(provider.base_url || "").trim()) missing.push("base_url");
-  if (!String(provider.model || "").trim()) missing.push("model");
   if (!Boolean(provider.api_key_set) && !String(provider.api_key || "").trim()) missing.push("api_key");
+  if (requireModel && !String(provider.model || "").trim()) missing.push("model");
   return missing;
 }
 
@@ -998,23 +1224,18 @@ function providerSetupFieldLabel(field) {
 
 function settingsModelSetupState(runtime = {}) {
   const setup = runtime.setup || {};
-  if (typeof setup.model_ready === "boolean") {
-    const missing = Array.isArray(setup.missing_provider_fields) ? setup.missing_provider_fields : [];
+  const primary = Array.isArray(setup.providers) ? setup.providers.find(provider => normalizeProviderSetupID(provider?.id) === "primary") : null;
+  if (primary) {
+    const missing = Array.isArray(primary.missing) ? primary.missing.filter(field => String(field || "").split(".").pop() === "api_key") : [];
     return {
-      ready: setup.model_ready,
+      ready: missing.length === 0,
       missing,
       missingLabel: settingsProviderMissingLabel(missing)
     };
   }
-  const providers = Array.isArray(runtime.providers) ? runtime.providers : [];
-  if (providers.length) {
-    const missing = [];
-    providers.forEach(provider => {
-      const id = normalizeProviderSetupID(provider?.id || "provider");
-      if (!String(provider?.base_url || "").trim()) missing.push(`${id}.base_url`);
-      if (!provider?.api_key_set) missing.push(`${id}.api_key`);
-      if (!String(provider?.model || "").trim()) missing.push(`${id}.model`);
-    });
+  const provider = Array.isArray(runtime.providers) ? runtime.providers.find(item => normalizeProviderSetupID(item?.id) === "primary") : null;
+  if (provider) {
+    const missing = provider.api_key_set ? [] : ["primary.api_key"];
     return {
       ready: missing.length === 0,
       missing,
@@ -1024,7 +1245,7 @@ function settingsModelSetupState(runtime = {}) {
   const env = Array.isArray(setup.env) ? setup.env : [];
   const missing = env.filter(item => item.required && !item.set).map(item => item.name);
   return {
-    ready: env.length > 0 && missing.length === 0,
+    ready: missing.length === 0,
     missing,
     missingLabel: settingsProviderMissingLabel(missing)
   };
@@ -1033,34 +1254,6 @@ function settingsModelSetupState(runtime = {}) {
 function settingsProviderMissingLabel(fields = []) {
   const labels = fields.map(field => providerSetupFieldLabel(String(field || "").split(".").pop())).filter(Boolean);
   return labels.slice(0, 3).join(", ");
-}
-
-function providerSetupPreset(provider) {
-  switch (String(provider || "").trim()) {
-    case "anthropic":
-      return { baseURL: "https://api.anthropic.com", model: "claude-3-5-sonnet-latest" };
-    case "openai-compatible":
-    default:
-      return { baseURL: "https://api.openai.com/v1", model: "gpt-4.1-mini" };
-  }
-}
-
-function providerTypeLabel(provider) {
-  switch (String(provider || "").trim()) {
-    case "anthropic":
-      return "Anthropic";
-    case "openai-compatible":
-    default:
-      return "OpenAI-compatible";
-  }
-}
-
-function applyProviderSetupPreset(form, provider) {
-  const preset = providerSetupPreset(provider);
-  const baseURL = form.querySelector("[data-provider-setup-base-url]");
-  const model = form.querySelector("[data-provider-setup-model]");
-  if (baseURL && !String(baseURL.value || "").trim()) baseURL.placeholder = preset.baseURL;
-  if (model && !String(model.value || "").trim()) model.placeholder = preset.model;
 }
 
 async function saveProviderSetup(form, refreshRuntime, root) {
@@ -1106,7 +1299,10 @@ async function testProviderSetup(form) {
   const output = form.querySelector("[data-provider-setup-output]");
   const button = form.querySelector("[data-provider-setup-test]");
   const doc = collectProviderSetupForm(form);
-  if (output) output.textContent = "";
+  if (output) {
+    output.textContent = "";
+    output.classList.remove("success", "error", "limited");
+  }
   const reusableKey = form.dataset.providerSetupReusableKey === "true";
   const missing = providerSetupMissing({ ...doc, api_key_set: reusableKey || Boolean(doc.api_key) });
   if (missing.length) {
@@ -1126,9 +1322,10 @@ async function testProviderSetup(form) {
       throw new Error(providerSetupTestError(result));
     }
     if (output) {
-      output.textContent = t("settings.providerSetupTestSucceeded", { ms: numberText(result.latency_ms || 0) });
+      output.innerHTML = renderProviderProbeResult(result);
       output.classList.remove("error");
-      output.classList.add("success");
+      output.classList.toggle("success", result.status !== "limited");
+      output.classList.toggle("limited", result.status === "limited");
     }
   } catch (error) {
     if (output) {
@@ -1141,22 +1338,138 @@ async function testProviderSetup(form) {
   }
 }
 
+function renderProviderProbeResult(result = {}) {
+  const capabilities = Array.isArray(result.capabilities) ? result.capabilities : [];
+  const limited = result.status === "limited" || capabilities.some(capability => !capability?.supported);
+  const summary = t(limited ? "settings.providerSetupTestLimited" : "settings.providerSetupTestSucceeded", {
+    ms: numberText(result.latency_ms || 0)
+  });
+  if (!capabilities.length) return escapeHTML(summary);
+  return `<div class="settings-provider-probe-summary">${escapeHTML(summary)}</div>
+    <div class="settings-provider-probe-list">
+      ${capabilities.map(capability => {
+        const supported = Boolean(capability?.supported);
+        const name = String(capability?.name || "unknown");
+        const message = String(capability?.message || "");
+        return `<span class="${supported ? "supported" : "unavailable"}" ${message ? `title="${escapeHTML(message)}"` : ""}>
+          <b>${escapeHTML(providerCapabilityLabel(name))}</b>
+          <small>${escapeHTML(t(supported ? "settings.providerCapabilitySupported" : "settings.providerCapabilityUnavailable"))}</small>
+        </span>`;
+      }).join("")}
+    </div>`;
+}
+
+function providerCapabilityLabel(name) {
+  const key = `settings.providerCapability.${String(name || "").trim()}`;
+  const translated = t(key);
+  return translated === key ? localizedText(name) : translated;
+}
+
 function providerSetupTestError(result = {}) {
   const issue = Array.isArray(result?.issues) ? result.issues.find(item => item?.message) : null;
   return issue?.message || result?.message || t("settings.providerSetupTestUnknown");
 }
 
 function collectProviderSetupForm(form) {
-  const provider = String(form.querySelector("[data-provider-setup-type]")?.value || "openai-compatible").trim() || "openai-compatible";
-  const id = normalizeProviderSetupID(form.querySelector("[data-provider-setup-id]")?.value || "primary");
   return {
-    id,
-    provider,
+    id: "primary",
+    provider: "openai-compatible",
     base_url: String(form.querySelector("[data-provider-setup-base-url]")?.value || "").trim(),
+    wire_api: String(form.dataset.providerSetupWireApi || "responses").trim() || "responses",
     model: String(form.querySelector("[data-provider-setup-model]")?.value || "").trim(),
+    reasoning_effort: String(form.dataset.providerSetupReasoningEffort || "mid").trim() || "mid",
     api_key: String(form.querySelector("[data-provider-setup-api-key]")?.value || "").trim(),
     provider_message_fields: providerSetupExistingMessageFields(form)
   };
+}
+
+function providerSetupReusableKey(form) {
+  return form?.dataset?.providerSetupReusableKey === "true" || form?.dataset?.providerSetupApiKeySet === "true";
+}
+
+function fillProviderSetupModels(form, models, selectedModel) {
+  const select = form.querySelector("[data-provider-setup-model]");
+  if (!select) return;
+  const ids = [];
+  const seen = {};
+  (Array.isArray(models) ? models : []).forEach(item => {
+    const id = String(item?.id || item?.name || "").trim();
+    if (!id || seen[id]) return;
+    seen[id] = true;
+    ids.push(id);
+  });
+  const selected = String(selectedModel || "").trim();
+  // The dropdown must list exactly what the provider returned. A previously
+  // saved model that the provider does not advertise is not added back, or the
+  // control shows a project-side name instead of provider data.
+  const options = [`<option value="">${escapeHTML(t("settings.providerSetupModelPlaceholder"))}</option>`];
+  ids.forEach(id => {
+    options.push(`<option value="${escapeHTML(id)}">${escapeHTML(id)}</option>`);
+  });
+  select.innerHTML = options.join("");
+  if (selected && seen[selected]) {
+    select.value = selected;
+  } else if (ids.length === 1) {
+    select.value = ids[0];
+  } else {
+    select.value = "";
+  }
+}
+
+async function fetchProviderSetupModels(form) {
+  const output = form.querySelector("[data-provider-setup-output]");
+  const button = form.querySelector("[data-provider-setup-fetch-models]");
+  const select = form.querySelector("[data-provider-setup-model]");
+  const doc = collectProviderSetupForm(form);
+  if (output) {
+    output.textContent = "";
+    output.classList.remove("success", "error", "limited");
+  }
+  const missing = providerSetupMissing({
+    ...doc,
+    api_key_set: providerSetupReusableKey(form) || Boolean(doc.api_key)
+  }, { requireModel: false });
+  if (missing.length) {
+    if (output) output.textContent = t("settings.providerSetupMissing", { fields: missing.map(providerSetupFieldLabel).join(", ") });
+    form.classList.add("warning");
+    return;
+  }
+  setProviderFetchBusy(button, true);
+  if (select) select.disabled = true;
+  if (output) output.textContent = t("settings.providerSetupFetchingModels");
+  try {
+    const result = await request(`/api/resources/providers/${encodeURIComponent(doc.id)}/models`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(doc)
+    });
+    if (!result || result.valid === false || result.status === "error") {
+      throw new Error(providerSetupTestError(result));
+    }
+    const models = Array.isArray(result.models) ? result.models : [];
+    fillProviderSetupModels(form, models, doc.model);
+    if (!models.length) {
+      if (output) {
+        output.textContent = t("settings.providerSetupFetchEmpty");
+        output.classList.add("error");
+      }
+      return;
+    }
+    if (output) {
+      output.textContent = t("settings.providerSetupFetchLoaded", { count: String(models.length) });
+      output.classList.add("success");
+    }
+    select?.focus();
+  } catch (error) {
+    if (output) {
+      output.textContent = t("settings.providerSetupFetchFailed", { message: localizedSettingsErrorMessage(error, t("common.failed")) });
+      output.classList.remove("success", "limited");
+      output.classList.add("error");
+    }
+  } finally {
+    setProviderFetchBusy(button, false);
+    if (select) select.disabled = false;
+  }
 }
 
 function providerSetupExistingMessageFields(form) {
@@ -1175,20 +1488,29 @@ function normalizeProviderSetupID(value) {
   return normalized || "primary";
 }
 
-function setProviderSetupBusy(button, busy) {
+function setIconTextButton(button, iconName, label) {
+  if (!button) return;
+  button.innerHTML = `${icon(iconName)}<span>${escapeHTML(label)}</span>`;
+}
+
+function setProviderButtonBusy(button, busy, iconName, busyLabel, idleLabel) {
   if (!button) return;
   button.disabled = Boolean(busy);
   button.setAttribute("aria-disabled", busy ? "true" : "false");
   button.setAttribute("aria-busy", busy ? "true" : "false");
-  button.textContent = busy ? t("settings.providerSetupSaving") : t("settings.providerSetupSave");
+  setIconTextButton(button, iconName, busy ? busyLabel : idleLabel);
+}
+
+function setProviderSetupBusy(button, busy) {
+  setProviderButtonBusy(button, busy, "save", t("settings.providerSetupSaving"), t("settings.providerSetupSave"));
 }
 
 function setProviderTestBusy(button, busy) {
-  if (!button) return;
-  button.disabled = Boolean(busy);
-  button.setAttribute("aria-disabled", busy ? "true" : "false");
-  button.setAttribute("aria-busy", busy ? "true" : "false");
-  button.textContent = busy ? t("settings.providerSetupTesting") : t("settings.providerSetupTest");
+  setProviderButtonBusy(button, busy, "play", t("settings.providerSetupTesting"), t("settings.providerSetupTest"));
+}
+
+function setProviderFetchBusy(button, busy) {
+  setProviderButtonBusy(button, busy, "refresh-cw", t("settings.providerSetupFetchingModels"), t("settings.providerSetupFetchModels"));
 }
 
 function providerSetupSaveMessage(saved = {}) {
@@ -1214,10 +1536,6 @@ function markProviderSetupSaved(form, saved = {}) {
     apiKey.value = "";
     apiKey.placeholder = t("settings.providerSetupKeyKept");
   }
-  if (saved?.id) {
-    const id = form.querySelector("[data-provider-setup-id]");
-    if (id) id.value = saved.id;
-  }
 }
 
 function renderDeveloperSetupChecks(runtime, diagnostics) {
@@ -1236,6 +1554,7 @@ function renderAdvancedRuntimeDetails(runtime, diagnostics, diagnosticCapabiliti
   const paths = [
     [t("settings.configPath"), diagnostics?.config_path],
     [t("settings.runtimeHome"), diagnostics?.runtime_home || runtime?.runtime_home],
+    [t("settings.dataRoot"), diagnostics?.data_root || runtime?.data_root],
     [t("settings.workspaceRoot"), diagnostics?.workspace_root || runtime?.workspace?.display]
   ].filter(([, value]) => String(value || "").trim());
   return `<details class="settings-advanced-runtime">
@@ -1247,6 +1566,10 @@ function renderAdvancedRuntimeDetails(runtime, diagnostics, diagnosticCapabiliti
     ${paths.length ? `<div class="settings-path-stack">
       ${paths.map(([label, value]) => `<div class="settings-path-row"><span>${escapeHTML(label)}</span><strong title="${escapeHTML(value)}">${escapeHTML(value)}</strong></div>`).join("")}
     </div>` : ""}
+    <div class="settings-inline-actions">
+      <button type="button" data-settings-data-backup>${escapeHTML(t("settings.dataBackupCreate"))}</button>
+      <span class="muted" data-settings-data-backup-output role="status" aria-live="polite"></span>
+    </div>
     <div class="settings-advanced-runtime-grid">
       <section>
         <div class="settings-section-label">
@@ -1290,15 +1613,10 @@ function renderWorkspaceReadiness(runtime = {}) {
   const capabilities = runtime.workspace_capabilities || workspace.capabilities || {};
   const actions = workspaceActionsFromRuntime(runtime, workspace, capabilities);
   const confirmed = Boolean(workspace.confirmed);
-  const confirmAction = actions.find(action => action?.name === "confirm");
   const clearAction = actions.find(action => action?.name === "clear");
-  const canConfirm = confirmAction ? confirmAction.available !== false : Boolean(workspace.root && !confirmed);
   const canClear = clearAction ? clearAction.available !== false : Boolean(workspace.root && confirmed);
-  const facts = [
-    [t("settings.workspaceReadinessRoot"), workspace.display || workspace.root || t("common.none")],
-    [t("settings.workspaceReadinessFileTasks"), capabilities.workspace_required_for_file_tasks ? t("settings.workspaceReadinessRequiresConfirm") : t("settings.workspaceReadinessNotRequired")],
-    [t("settings.workspaceReadinessSwitch"), capabilities.switch_requires_restart ? t("settings.workspaceReadinessRestart") : t("settings.workspaceReadinessHotSwitch")]
-  ];
+  const root = workspace.display || workspace.root || t("common.none");
+  const switchMode = String(capabilities.switch_mode || capabilities.switchMode || "");
   return `<article class="settings-workspace-readiness ${confirmed ? "good" : "warning"}">
     <div class="settings-workspace-readiness-head">
       <div>
@@ -1307,14 +1625,16 @@ function renderWorkspaceReadiness(runtime = {}) {
       </div>
       <span class="badge ${confirmed ? "good" : "warn"}">${confirmed ? t("workspace.confirmed") : t("workspace.needsConfirmation")}</span>
     </div>
-    <div class="settings-workspace-readiness-facts">
-      ${facts.map(([label, value]) => `<span><small>${escapeHTML(label)}</small><strong title="${escapeHTML(value)}">${escapeHTML(localizedText(value))}</strong></span>`).join("")}
-    </div>
+    <form class="settings-workspace-switch" data-settings-workspace-switch data-current-workspace="${escapeHTML(root)}">
+      <label><span>${escapeHTML(t("settings.workspaceReadinessRoot"))}</span><input type="text" value="${escapeHTML(root)}" data-settings-workspace-path autocomplete="off" spellcheck="false"></label>
+      ${capabilities.can_open_host_folder_picker ? `<button type="button" class="icon-text" data-settings-workspace-pick>${icon("folder")}<span>${escapeHTML(t("settings.workspacePickerChoose"))}</span></button>` : ""}
+      <button type="submit" class="primary icon-text">${icon("folder")}<span>${escapeHTML(t(confirmed ? "settings.workspaceSwitchApply" : "settings.workspaceSwitchConfirmCurrent"))}</span></button>
+    </form>
+    <p class="settings-workspace-switch-help">${escapeHTML(t(switchMode === "dynamic_rebind" ? "settings.workspaceSwitchLiveHelp" : "settings.workspaceSwitchRestartHelp"))}</p>
     <div class="settings-workspace-readiness-actions">
-      ${!confirmed && canConfirm ? `<button type="button" data-settings-workspace-confirm data-settings-workspace-confirm-path="${escapeHTML(confirmAction?.path || "/api/workspace/confirm")}" data-settings-workspace-confirm-method="${escapeHTML(confirmAction?.method || "POST")}">${escapeHTML(t("settings.workspaceReadinessConfirm"))}</button>` : ""}
-      ${confirmed && canClear ? `<button type="button" data-settings-target="workspace">${escapeHTML(t("settings.workspaceReadinessManage"))}</button>` : ""}
-      <button type="button" data-settings-target="workspace">${escapeHTML(t("settings.priorityOpenWorkspace"))}</button>
+      ${confirmed && canClear ? `<button type="button" class="icon-text danger" data-settings-workspace-clear data-settings-workspace-clear-path="${escapeHTML(clearAction?.path || "/api/workspace/clear")}" title="${escapeHTML(t("settings.workspaceReadinessRevokeHelp"))}">${icon("x")}<span>${escapeHTML(t("settings.workspaceReadinessClear"))}</span></button>` : ""}
     </div>
+    ${confirmed && canClear ? `<p class="settings-workspace-revoke-help">${escapeHTML(t("settings.workspaceReadinessRevokeHelp"))}</p>` : ""}
     <div class="settings-workspace-readiness-output" data-settings-workspace-output role="status" aria-live="polite"></div>
   </article>`;
 }
@@ -1367,23 +1687,6 @@ function isOptionalModule(module = {}, diagnostics = {}) {
     const path = String(item.path || item.target_name || item.name || "").trim();
     return (root && path && samePathText(root, path)) || (kind && String(item.target_kind || "").includes(kind));
   });
-}
-
-function renderTourPath() {
-  const steps = [
-    ["settings.tourWorkspace", "settings.tourWorkspaceHelp"],
-    ["settings.tourCatalog", "settings.tourCatalogHelp"],
-    ["settings.tourWorkflow", "settings.tourWorkflowHelp"],
-    ["settings.tourPlayground", "settings.tourPlaygroundHelp"],
-    ["settings.tourApprovals", "settings.tourApprovalsHelp"],
-    ["settings.tourObservability", "settings.tourObservabilityHelp"]
-  ];
-  return `<div class="settings-tour-path">
-    ${steps.map(([title, body], index) => `<div class="settings-tour-step">
-      <span>${index + 1}</span>
-      <div><strong>${t(title)}</strong><p>${t(body)}</p></div>
-    </div>`).join("")}
-  </div>`;
 }
 
 function renderUpdatePolicy(update) {
@@ -1730,6 +2033,10 @@ function diagnosticDisplayValue(value) {
 function settingsDisplayText(value) {
   const text = String(value || "").trim();
   if (!text) return "";
+  if (/context deadline exceeded|client\.timeout exceeded|i\/o timeout/i.test(text)) {
+    const protocol = /Responses request/i.test(text) ? "/responses" : "the selected API protocol";
+    return `${t("settings.providerSetupTimeoutHint", { protocol })} ${text}`;
+  }
   const translated = localizedText(text);
   if (translated !== text) return translated;
   if (settingsLooksTechnical(text)) return text;

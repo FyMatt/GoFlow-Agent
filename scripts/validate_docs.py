@@ -91,7 +91,14 @@ def validate_bilingual_pair(path: Path) -> list[str]:
 
 
 def validate_no_private_plan_refs(path: Path, text: str) -> list[str]:
-    return [f"{path.relative_to(ROOT)}: public docs must not reference {match.group(0)}" for match in PLAN_RE.finditer(text)]
+    allowed = {path.name}
+    if path.name.endswith(".zh-CN.md"):
+        allowed.add(path.name.replace(".zh-CN.md", ".md"))
+    return [
+        f"{path.relative_to(ROOT)}: public docs must not reference {match.group(0)}"
+        for match in PLAN_RE.finditer(text)
+        if match.group(0).lower() not in {name.lower() for name in allowed}
+    ]
 
 
 def main() -> int:

@@ -61,7 +61,7 @@ func (s *Server) handleWorkflowRunItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, s.runtime.HydrateWorkflowRun(run))
 	case len(parts) == 2 && parts[1] == "events":
-		writeJSON(w, s.workflowRunEventsForQuery(run.Events, workflowRunQueryFromRequest(r)))
+		writeJSON(w, s.workflowRunEventsForQuery(run.Events, workflowRunQueryWithDefaultWindow(r, run.Events, 100)))
 	case len(parts) == 2 && parts[1] == "context":
 		writeJSON(w, workflowRunContext(run))
 	case len(parts) == 3 && parts[1] == "events" && parts[2] == "stream":
@@ -73,7 +73,7 @@ func (s *Server) handleWorkflowRunItem(w http.ResponseWriter, r *http.Request) {
 		query := workflowRunQueryFromRequest(r)
 		writeJSON(w, s.workflowRunStagesForQuery(run.CompletedStages, query))
 	case len(parts) == 2 && parts[1] == "replay":
-		query := workflowRunQueryFromRequest(r)
+		query := workflowRunQueryWithDefaultWindow(r, run.Events, 100)
 		writeJSON(w, s.workflowRunReplay(run, query))
 	case len(parts) == 2 && parts[1] == "evidence":
 		writeJSON(w, workflowRunEvidenceView(run, workflowRunQueryFromRequest(r)))
@@ -84,7 +84,7 @@ func (s *Server) handleWorkflowRunItem(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 2 && parts[1] == "export":
 		s.handleWorkflowRunExport(w, r, run)
 	case len(parts) == 2 && parts[1] == "timeline":
-		writeJSON(w, s.workflowRunTimeline(run, workflowRunQueryFromRequest(r)))
+		writeJSON(w, s.workflowRunTimeline(run, workflowRunQueryWithDefaultWindow(r, run.Events, 100)))
 	case len(parts) == 2 && parts[1] == "actions":
 		actions := s.workflowRunActions(run)
 		if runActionsWantsEnvelope(r) {
@@ -100,7 +100,7 @@ func (s *Server) handleWorkflowRunItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, stageDetail)
 	case len(parts) == 4 && parts[1] == "stages" && parts[3] == "events":
-		writeJSON(w, s.workflowRunEventsForQuery(run.Events, workflowRunQueryFromRequest(r).withStage(parts[2])))
+		writeJSON(w, s.workflowRunEventsForQuery(run.Events, workflowRunQueryWithDefaultWindow(r, run.Events, 100).withStage(parts[2])))
 	case len(parts) == 4 && parts[1] == "stages" && parts[3] == "artifacts":
 		query := workflowRunArtifactQueryFromRequest(r).withStage(parts[2])
 		writeJSON(w, s.workflowRunArtifactsForQuery(run.Artifacts, query))
@@ -261,6 +261,9 @@ type workflowRunAction struct {
 	BodySchema         map[string]any          `json:"body_schema,omitempty"`
 	Destructive        bool                    `json:"destructive,omitempty"`
 	Reason             string                  `json:"reason,omitempty"`
+	ChangeCount        int                     `json:"change_count,omitempty"`
+	RecoveryID         string                  `json:"recovery_id,omitempty"`
+	WorkspaceMode      string                  `json:"workspace_mode,omitempty"`
 	Risk               *schema.ToolRiskProfile `json:"risk,omitempty"`
 }
 
@@ -518,7 +521,7 @@ func workflowRunCollectionRunActive(run session.WorkflowRunSnapshot) bool {
 
 func workflowRunCollectionRunTerminal(run session.WorkflowRunSnapshot) bool {
 	switch normalizeWorkflowRunQueryToken(run.Status) {
-	case "completed", "denied", "failed", "blocked", "cancelled", "canceled":
+	case "completed", "denied", "failed", "blocked", "cancelled", "canceled", "interrupted":
 		return true
 	default:
 		return false
@@ -526,6 +529,10 @@ func workflowRunCollectionRunTerminal(run session.WorkflowRunSnapshot) bool {
 }
 
 func workflowRunCollectionRunNeedsAction(run session.WorkflowRunSnapshot) bool {
+	switch normalizeWorkflowRunQueryToken(run.Status) {
+	case "running", "cancelling", "completed", "failed", "cancelled", "canceled", "denied":
+		return false
+	}
 	if workflowRunStatusNeedsAction(run.Status) {
 		return true
 	}
@@ -544,7 +551,7 @@ func workflowRunCollectionRunNeedsAction(run session.WorkflowRunSnapshot) bool {
 
 func workflowRunCollectionRunHasError(run session.WorkflowRunSnapshot) bool {
 	switch normalizeWorkflowRunQueryToken(run.Status) {
-	case "failed", "blocked", "denied":
+	case "failed", "blocked", "denied", "interrupted":
 		return true
 	}
 	return workflowRunErrorCount(run, workflowRunDiffs(run, workflowRunQuery{})) > 0
@@ -763,7 +770,7 @@ func workflowRunStageKey(stage string) string {
 
 func workflowRunStatusNeedsAction(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow", "paused_need_more_budget", "awaiting_budget_approval", "blocked":
+	case "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow", "paused_need_more_budget", "awaiting_budget_approval", "blocked", "interrupted":
 		return true
 	default:
 		return false
@@ -778,12 +785,12 @@ func workflowRunErrorCount(run session.WorkflowRunSnapshot, diffs []runDiffItem)
 		}
 	}
 	for _, event := range run.Events {
-		if event.IsError {
+		if workflowRunEventIsBlockingError(event) {
 			count++
 		}
 	}
 	for _, artifact := range run.Artifacts {
-		if artifact.IsError {
+		if workflowRunArtifactIsBlockingError(artifact) {
 			count++
 		}
 	}
@@ -793,6 +800,39 @@ func workflowRunErrorCount(run session.WorkflowRunSnapshot, diffs []runDiffItem)
 		}
 	}
 	return count
+}
+
+func workflowRunEventIsBlockingError(event session.WorkflowRunEventSnapshot) bool {
+	if !event.IsError || event.Suspended || event.NeedsAction {
+		return false
+	}
+	// Stage command/read limits are persisted as error-shaped events for
+	// observability, but they are runtime control interventions rather than
+	// failed task execution.
+	if runDeliveryExploratoryReadMiss(event.ToolName, event.Content) {
+		return false
+	}
+	return !runDeliveryPolicyInterventionText(event.Content)
+}
+
+func workflowRunArtifactIsBlockingError(artifact session.WorkflowRunArtifact) bool {
+	if !artifact.IsError {
+		return false
+	}
+	if runDeliveryPolicyInterventionText(artifact.Content + "\n" + artifact.Summary) {
+		return false
+	}
+	denied := workflowRunQueryBool(artifact.Metadata["denied"])
+	if denied {
+		return true
+	}
+	if workflowRunQueryBool(artifact.Metadata["suspended"]) {
+		return false
+	}
+	if runDeliveryExploratoryReadMiss(artifact.ToolName, artifact.Content+"\n"+artifact.Summary) {
+		return false
+	}
+	return true
 }
 
 func workflowRunNeedsActionCount(run session.WorkflowRunSnapshot) int {
@@ -842,6 +882,9 @@ func workflowRunQualitySummaryFor(run session.WorkflowRunSnapshot) workflowRunQu
 			}
 		}
 		for _, verification := range stage.Result.Verification {
+			if runDeliveryPolicyInterventionText(verification.Detail) {
+				continue
+			}
 			quality.VerificationTotal++
 			status := normalizeWorkflowRunQualityStatus(verification.Status)
 			switch {
@@ -881,12 +924,20 @@ func workflowRunArtifactHasQualityEvidence(artifact session.WorkflowRunArtifact)
 	if artifact.IsError {
 		return false
 	}
-	switch normalizeWorkflowRunQueryToken(artifact.Kind) {
-	case "acceptance", "verification", "output", "tool_result", "diff", "evidence", "report":
-		return strings.TrimSpace(firstWorkflowRunQueryValue(artifact.Content, artifact.Summary, artifact.Title)) != ""
-	default:
+	if strings.TrimSpace(firstWorkflowRunQueryValue(artifact.Content, artifact.Summary, artifact.Title)) == "" {
 		return false
 	}
+	kind := normalizeWorkflowRunQueryToken(artifact.Kind)
+	if kind == "tool_result" {
+		return strings.TrimSpace(artifact.ToolCallID) != ""
+	}
+	if !runDeliveryStrongArtifactKind(kind) && kind != "evidence" && kind != "source" {
+		return false
+	}
+	return strings.TrimSpace(artifact.ToolCallID) != "" ||
+		strings.TrimSpace(artifact.ArtifactRef) != "" ||
+		strings.TrimSpace(artifact.Hash) != "" ||
+		runDeliverySourceMetadata(artifact.Metadata)
 }
 
 func normalizeWorkflowRunQualityStatus(status string) string {
@@ -927,6 +978,10 @@ func workflowRunQualityStatusFor(run session.WorkflowRunSnapshot, quality workfl
 	switch runStatus {
 	case "cancelled", "canceled":
 		return "cancelled"
+	case "running", "cancelling":
+		return "running"
+	case "awaiting_approval", "awaiting_tool_approval", "awaiting_input", "awaiting_sub_workflow", "paused_need_more_budget", "awaiting_budget_approval":
+		return "needs_action"
 	}
 	if quality.ErrorCount > 0 || quality.AcceptanceFailed > 0 || quality.VerificationFailed > 0 || workflowRunQualityStatusFailed(runStatus) {
 		return "failed"
@@ -936,6 +991,9 @@ func workflowRunQualityStatusFor(run session.WorkflowRunSnapshot, quality workfl
 	}
 	if workflowRunStatusActive(run.Status) {
 		return "running"
+	}
+	if quality.EvidenceArtifacts == 0 && runStatus == "completed" {
+		return "unverified"
 	}
 	if quality.AcceptanceTotal == 0 && quality.VerificationTotal == 0 {
 		if runStatus == "completed" {
@@ -967,6 +1025,9 @@ func workflowRunQualityScoreFor(run session.WorkflowRunSnapshot, quality workflo
 	}
 	score -= workflowRunQualityPenalty(quality.ErrorCount, 15, 60)
 	score -= workflowRunQualityPenalty(quality.NeedsActionCount, 10, 40)
+	if quality.EvidenceArtifacts == 0 && score > 70 {
+		score = 70
+	}
 	if workflowRunQualityStatusFailed(run.Status) && score > 40 {
 		score = 40
 	}
@@ -1066,6 +1127,7 @@ func renderWorkflowRunMarkdownExport(replay workflowRunReplay, query workflowRun
 	if strings.TrimSpace(run.RetryOf) != "" {
 		workflowRunMarkdownKV(&builder, "Retry Of", run.RetryOf)
 	}
+	writeResourcePinsMarkdown(&builder, run.ResourcePins)
 	if strings.TrimSpace(run.Request) != "" {
 		builder.WriteString("\n## Request\n\n")
 		builder.WriteString(workflowRunMarkdownCode(run.Request, "text"))
@@ -1315,7 +1377,7 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 	case "awaiting_input":
 		actions = append(actions, workflowRunAction{
 			Name:       "submit_input",
-			Label:      "Submit input",
+			Label:      "提交输入",
 			Method:     http.MethodPost,
 			Path:       "/api/workflow-runs/" + id + "/input",
 			StreamPath: "/api/workflow-runs/" + id + "/input/stream",
@@ -1334,10 +1396,9 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 		if approveAvailable {
 			approveAvailable, approveReason = s.workflowRunToolApprovalAllowed(run, callID, approveReason)
 		}
-		rememberAvailable, rememberReason := s.workflowRunRememberToolApprovalAvailable(run, callID, approveAvailable, approveReason)
 		action := workflowRunAction{
 			Name:       "approve_tool",
-			Label:      "Approve tool",
+			Label:      "批准工具",
 			Method:     http.MethodPost,
 			Path:       "/api/workflow-runs/" + id + "/approve-tool",
 			StreamPath: "/api/workflow-runs/" + id + "/approve-tool/stream",
@@ -1351,7 +1412,7 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 		actions = append(actions, action)
 		deny := action
 		deny.Name = "deny_tool"
-		deny.Label = "Deny tool"
+		deny.Label = "拒绝工具"
 		deny.Destructive = true
 		deny.Path = "/api/workflow-runs/" + id + "/deny-tool"
 		deny.StreamPath = "/api/workflow-runs/" + id + "/deny-tool/stream"
@@ -1362,26 +1423,23 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 		actions = append(actions, deny)
 		approveAll := workflowRunAction{
 			Name:       "approve_all_tools",
-			Label:      "Approve matching workflow tools",
+			Label:      "批准本批工具",
 			Method:     http.MethodPost,
 			Path:       "/api/workflow-runs/" + id + "/approve-tools",
 			StreamPath: "/api/workflow-runs/" + id + "/approve-tools/stream",
 			EventsPath: eventsPath,
-			Available:  rememberAvailable,
-			Durable:    rememberAvailable,
-			Background: rememberAvailable,
-			Reason:     "approves this tool call and auto-approves later matching tool calls within the same workflow stage",
+			Available:  approveAvailable,
+			Durable:    approveAvailable,
+			Background: approveAvailable,
+			Reason:     "approves only the tool calls already presented in the current assistant turn; later calls require fresh approval",
 			Risk:       pendingRisk,
-		}
-		if !rememberAvailable {
-			approveAll.Reason = rememberReason
 		}
 		actions = append(actions, approveAll)
 	case "awaiting_approval":
 		resumable := s.workflowRunApprovalResumable(run)
 		actions = append(actions, workflowRunAction{
 			Name:       "approve_stage",
-			Label:      "Approve stage",
+			Label:      "批准阶段",
 			Method:     http.MethodPost,
 			Path:       "/api/workflow-runs/" + id + "/approve",
 			StreamPath: "/api/workflow-runs/" + id + "/approve/stream",
@@ -1395,7 +1453,7 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 		resumable := s.workflowRunSubWorkflowResumable(run)
 		actions = append(actions, workflowRunAction{
 			Name:       "resume_sub_workflow",
-			Label:      "Resume parent workflow",
+			Label:      "继续父工作流",
 			Method:     http.MethodPost,
 			Path:       "/api/workflow-runs/" + id + "/resume-sub-workflow",
 			StreamPath: "/api/workflow-runs/" + id + "/resume-sub-workflow/stream",
@@ -1405,25 +1463,27 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 			Background: resumable,
 			Reason:     workflowRunSubWorkflowActionReason(run, resumable),
 		})
-	case "paused_need_more_budget":
+	case "paused_need_more_budget", "action_failed":
 		resumable, resumeReason := s.workflowRunContinueOutputResumable(run)
-		actions = append(actions, workflowRunAction{
-			Name:       "continue_output",
-			Label:      "Continue output",
-			Method:     http.MethodPost,
-			Path:       "/api/workflow-runs/" + id + "/continue-output",
-			StreamPath: "/api/workflow-runs/" + id + "/continue-output/stream",
-			EventsPath: eventsPath,
-			Available:  resumable,
-			Durable:    resumable,
-			Background: resumable,
-			Reason:     resumeReason,
-		})
+		if status == "paused_need_more_budget" || resumable {
+			actions = append(actions, workflowRunAction{
+				Name:       "continue_output",
+				Label:      "继续生成",
+				Method:     http.MethodPost,
+				Path:       "/api/workflow-runs/" + id + "/continue-output",
+				StreamPath: "/api/workflow-runs/" + id + "/continue-output/stream",
+				EventsPath: eventsPath,
+				Available:  resumable,
+				Durable:    resumable,
+				Background: resumable,
+				Reason:     resumeReason,
+			})
+		}
 	case "awaiting_budget_approval":
 		resumable, resumeReason := s.workflowRunBudgetApprovalResumable(run)
 		actions = append(actions, workflowRunAction{
 			Name:       "approve_budget",
-			Label:      "Approve budget",
+			Label:      "批准追加预算",
 			Method:     http.MethodPost,
 			Path:       "/api/workflow-runs/" + id + "/approve-budget",
 			StreamPath: "/api/workflow-runs/" + id + "/approve-budget/stream",
@@ -1437,7 +1497,7 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 		resumable, resumeReason := s.workflowRunModelEscalationResumable(run)
 		actions = append(actions, workflowRunAction{
 			Name:       "escalate_model",
-			Label:      "Escalate model",
+			Label:      "提升模型能力",
 			Method:     http.MethodPost,
 			Path:       "/api/workflow-runs/" + id + "/escalate-model",
 			StreamPath: "/api/workflow-runs/" + id + "/escalate-model/stream",
@@ -1451,7 +1511,7 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 	if workflowRunStatusCancellable(status) {
 		actions = append(actions, workflowRunAction{
 			Name:        "cancel",
-			Label:       "Cancel",
+			Label:       "取消任务",
 			Method:      http.MethodPost,
 			Path:        "/api/workflow-runs/" + id + "/cancel",
 			EventsPath:  eventsPath,
@@ -1463,7 +1523,7 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 	if workflowRunStatusRetryable(status) && strings.TrimSpace(run.Name) != "" && strings.TrimSpace(run.Request) != "" {
 		actions = append(actions, workflowRunAction{
 			Name:       "retry",
-			Label:      "Retry",
+			Label:      "重新运行",
 			Method:     http.MethodPost,
 			Path:       "/api/workflow-runs/" + id + "/retry",
 			StreamPath: "/api/workflow-runs/" + id + "/retry/stream",
@@ -1473,6 +1533,12 @@ func (s *Server) workflowRunActions(run session.WorkflowRunSnapshot) []workflowR
 			Background: true,
 			Reason:     workflowRunRetryActionReason(status),
 		})
+	}
+	if action, ok := s.workflowRunStagedChangesAction(run); ok {
+		actions = append(actions, action)
+	}
+	if action, ok := s.workflowRunDiscardStagedChangesAction(run); ok {
+		actions = append(actions, action)
 	}
 	return normalizeWorkflowRunActions(actions)
 }
@@ -1506,6 +1572,10 @@ func workflowRunActionKind(name string) string {
 		return "lifecycle"
 	case "retry":
 		return "retry"
+	case "apply_staged_changes", "discard_staged_changes":
+		return "delivery"
+	case "restore_staged_changes":
+		return "recovery"
 	case "escalate_model":
 		return "model_escalation"
 	case "continue_output", "approve_budget":
@@ -1571,7 +1641,7 @@ func workflowRunActionDiscoveryFor(run session.WorkflowRunSnapshot, actions []wo
 		RunID:         id,
 		Name:          strings.TrimSpace(run.Name),
 		Status:        strings.TrimSpace(run.Status),
-		NeedsAction:   workflowRunCollectionRunNeedsAction(run),
+		NeedsAction:   workflowRunCollectionRunNeedsAction(run) || workflowRunActionAvailable(actions, "apply_staged_changes"),
 		NextStage:     strings.TrimSpace(run.NextStage),
 		EventsPath:    workflowRunEventsStreamPath(id),
 		TimelinePath:  "/api/workflow-runs/" + id + "/timeline",
@@ -1587,6 +1657,15 @@ func workflowRunActionDiscoveryFor(run session.WorkflowRunSnapshot, actions []wo
 func workflowRunActionExists(actions []workflowRunAction, name string) bool {
 	for _, action := range actions {
 		if action.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowRunActionAvailable(actions []workflowRunAction, name string) bool {
+	for _, action := range actions {
+		if action.Name == name && action.Available {
 			return true
 		}
 	}
@@ -1615,7 +1694,7 @@ func workflowRunActionCounts(actions []workflowRunAction) runActionCounts {
 }
 
 func recommendedWorkflowRunAction(actions []workflowRunAction) string {
-	for _, name := range []string{"submit_input", "approve_budget", "continue_output", "approve_stage", "approve_tool", "approve_all_tools", "resume_sub_workflow", "escalate_model", "deny_tool", "retry", "cancel"} {
+	for _, name := range []string{"submit_input", "approve_budget", "continue_output", "approve_stage", "approve_tool", "approve_all_tools", "apply_staged_changes", "resume_sub_workflow", "escalate_model", "deny_tool", "retry", "cancel"} {
 		for _, action := range actions {
 			if action.Name == name && action.Available {
 				return name
@@ -1647,11 +1726,11 @@ func workflowRunToolApprovalActionReason(resumable bool) string {
 	return "workflow tool approval context is not available in this process; retry or cancel the workflow run"
 }
 
-func workflowRunToolApprovalActionName(approve, remember bool) string {
+func workflowRunToolApprovalActionName(approve, batch bool) string {
 	if !approve {
 		return "deny-tool"
 	}
-	if remember {
+	if batch {
 		return "approve-tools"
 	}
 	return "approve-tool"
@@ -1713,7 +1792,7 @@ func (s *Server) workflowRunApprovalResumable(run session.WorkflowRunSnapshot) b
 	if workflowRunBuiltInApprovalResumable(run) {
 		return true
 	}
-	doc, err := s.runtime.WorkflowRunner().LoadWorkflowGraphDocument(run.Name)
+	doc, err := s.runtime.WorkflowRunner().LoadRunnableWorkflowGraphDocument(run.Name)
 	if err != nil {
 		return false
 	}
@@ -1736,34 +1815,6 @@ func (s *Server) workflowRunToolApprovalResumable(run session.WorkflowRunSnapsho
 		return false
 	}
 	return s.runtime.WorkflowRunner().CanResumeToolApproval(run)
-}
-
-func (s *Server) workflowRunRememberToolApprovalAvailable(run session.WorkflowRunSnapshot, callID string, resumable bool, fallbackReason string) (bool, string) {
-	if !resumable {
-		return false, fallbackReason
-	}
-	if s == nil || s.runtime == nil {
-		return false, fallbackReason
-	}
-	var (
-		ok     bool
-		reason string
-	)
-	if strings.TrimSpace(callID) != "" {
-		ok, reason = s.runtime.CanRememberPendingToolApproval(callID)
-	} else {
-		ok, reason = s.runtime.WorkflowRunner().CanRememberToolApproval(run)
-	}
-	if !ok && strings.Contains(reason, "pending approval not found") {
-		ok, reason = s.runtime.WorkflowRunner().CanRememberToolApproval(run)
-	}
-	if !ok {
-		if strings.TrimSpace(reason) == "" {
-			reason = fallbackReason
-		}
-		return false, reason
-	}
-	return true, "approves this tool call and auto-approves later matching tool calls within the same workflow stage"
 }
 
 func (s *Server) workflowRunToolApprovalAllowed(run session.WorkflowRunSnapshot, callID string, fallbackReason string) (bool, string) {
@@ -1811,6 +1862,12 @@ func (s *Server) workflowRunContinueOutputResumable(run session.WorkflowRunSnaps
 		return false, workflowRunContinueOutputActionReason(false)
 	}
 	status := strings.ToLower(strings.TrimSpace(run.Status))
+	if status == "action_failed" && strings.TrimSpace(run.ID) != "" && strings.TrimSpace(run.Name) != "" {
+		if err := s.runtime.WorkflowRunner().CanContinueOutput(run); err != nil {
+			return false, err.Error()
+		}
+		return true, workflowRunContinueOutputActionReason(true)
+	}
 	if status != "paused_need_more_budget" {
 		return false, workflowRunContinueOutputActionReason(false)
 	}
@@ -1924,6 +1981,14 @@ func workflowRunMatchesPendingSummary(run session.WorkflowRunSnapshot, pending s
 }
 
 func (s *Server) handleWorkflowRunAction(w http.ResponseWriter, r *http.Request, run session.WorkflowRunSnapshot, parts []string) {
+	if len(parts) > 1 {
+		switch parts[1] {
+		case "approve", "approve-tool", "approve-tools", "retry", "input", "resume-sub-workflow", "continue-output", "approve-budget", "escalate-model":
+			if !s.requireResourcePinsCurrent(w, run.ResourcePins) {
+				return
+			}
+		}
+	}
 	switch {
 	case len(parts) == 2 && parts[1] == "cancel":
 		s.handleWorkflowRunCancel(w, run)
@@ -1945,6 +2010,12 @@ func (s *Server) handleWorkflowRunAction(w http.ResponseWriter, r *http.Request,
 		s.handleWorkflowRunToolApproval(w, r, run, true, true, true)
 	case len(parts) == 2 && parts[1] == "retry":
 		s.handleWorkflowRunRetry(w, r, run, false)
+	case len(parts) == 2 && parts[1] == "apply-staged-changes":
+		s.handleWorkflowRunApplyStagedChanges(w, run)
+	case len(parts) == 2 && parts[1] == "restore-staged-changes":
+		s.handleWorkflowRunRestoreStagedChanges(w, run)
+	case len(parts) == 2 && parts[1] == "discard-staged-changes":
+		s.handleWorkflowRunDiscardStagedChanges(w, run)
 	case len(parts) == 3 && parts[1] == "retry" && parts[2] == "stream":
 		s.handleWorkflowRunRetry(w, r, run, true)
 	case len(parts) == 2 && parts[1] == "input":
@@ -2101,7 +2172,7 @@ func (s *Server) handleWorkflowRunApproval(w http.ResponseWriter, r *http.Reques
 	writeJSON(w, result)
 }
 
-func (s *Server) handleWorkflowRunToolApproval(w http.ResponseWriter, r *http.Request, run session.WorkflowRunSnapshot, stream, approve, remember bool) {
+func (s *Server) handleWorkflowRunToolApproval(w http.ResponseWriter, r *http.Request, run session.WorkflowRunSnapshot, stream, approve, batch bool) {
 	if !strings.EqualFold(strings.TrimSpace(run.Status), "awaiting_tool_approval") {
 		http.Error(w, "workflow run is not awaiting tool approval", http.StatusConflict)
 		return
@@ -2123,8 +2194,8 @@ func (s *Server) handleWorkflowRunToolApproval(w http.ResponseWriter, r *http.Re
 		if !s.ensureWorkspaceConfirmedForJSON(w, "workflow tool approval resume runs workspace-scoped stages") {
 			return
 		}
-		accepted, err := s.startWorkflowRunBackgroundAction(run.ID, run.Name, workflowRunToolApprovalActionName(approve, remember), func(ctx context.Context) (agent.WorkflowResult, error) {
-			return s.resumeWorkflowToolApprovalWithCancelLocked(ctx, run.ID, approve, remember, nil)
+		accepted, err := s.startWorkflowRunBackgroundAction(run.ID, run.Name, workflowRunToolApprovalActionName(approve, batch), func(ctx context.Context) (agent.WorkflowResult, error) {
+			return s.resumeWorkflowToolApprovalWithCancelLocked(ctx, run.ID, approve, batch, nil)
 		})
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusConflict)
@@ -2143,7 +2214,7 @@ func (s *Server) handleWorkflowRunToolApproval(w http.ResponseWriter, r *http.Re
 		if !ok {
 			return
 		}
-		result, err := s.resumeWorkflowToolApprovalWithCancel(r.Context(), run.ID, approve, remember, writer.write)
+		result, err := s.resumeWorkflowToolApprovalWithCancel(r.Context(), run.ID, approve, batch, writer.write)
 		if err != nil {
 			_ = writer.write(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), IsError: true})
 			return
@@ -2154,7 +2225,7 @@ func (s *Server) handleWorkflowRunToolApproval(w http.ResponseWriter, r *http.Re
 	if !s.ensureWorkspaceConfirmedForJSON(w, "workflow tool approval resume runs workspace-scoped stages") {
 		return
 	}
-	result, err := s.resumeWorkflowToolApprovalWithCancel(r.Context(), run.ID, approve, remember, nil)
+	result, err := s.resumeWorkflowToolApprovalWithCancel(r.Context(), run.ID, approve, batch, nil)
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, context.Canceled) {
@@ -2187,7 +2258,7 @@ func (s *Server) handleWorkflowRunRetry(w http.ResponseWriter, r *http.Request, 
 		if !s.ensureWorkspaceConfirmedForJSON(w, "workflow retry runs workspace-scoped stages") {
 			return
 		}
-		accepted, err := s.startWorkflowBackground(run.Name, run.Request, run.ID, true, "retry")
+		accepted, err := s.startWorkflowBackgroundWithTarget(run.Name, run.Request, run.TargetID, run.ID, true, "retry")
 		if err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
@@ -2205,7 +2276,8 @@ func (s *Server) handleWorkflowRunRetry(w http.ResponseWriter, r *http.Request, 
 		if !ok {
 			return
 		}
-		result, err := s.runWorkflowWithCancel(r.Context(), run.Name, run.Request, run.ID, true, writer.write)
+		ctx := agent.WithExecutionTarget(r.Context(), run.TargetID)
+		result, err := s.runWorkflowWithCancel(ctx, run.Name, run.Request, run.ID, true, writer.write)
 		if err != nil {
 			_ = writer.write(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), IsError: true})
 			return
@@ -2216,7 +2288,8 @@ func (s *Server) handleWorkflowRunRetry(w http.ResponseWriter, r *http.Request, 
 	if !s.ensureWorkspaceConfirmedForJSON(w, "workflow retry runs workspace-scoped stages") {
 		return
 	}
-	result, err := s.runWorkflowWithCancel(r.Context(), run.Name, run.Request, run.ID, true, nil)
+	ctx := agent.WithExecutionTarget(r.Context(), run.TargetID)
+	result, err := s.runWorkflowWithCancel(ctx, run.Name, run.Request, run.ID, true, nil)
 	if err != nil {
 		status := http.StatusBadRequest
 		if errors.Is(err, context.Canceled) {
@@ -2359,7 +2432,7 @@ func (s *Server) handleWorkflowRunSubWorkflowResume(w http.ResponseWriter, r *ht
 
 func (s *Server) handleWorkflowRunContinueOutput(w http.ResponseWriter, r *http.Request, run session.WorkflowRunSnapshot, stream bool) {
 	status := strings.ToLower(strings.TrimSpace(run.Status))
-	if status != "paused_need_more_budget" {
+	if status != "paused_need_more_budget" && status != "action_failed" {
 		http.Error(w, "workflow run is not paused for more output budget", http.StatusConflict)
 		return
 	}
@@ -2617,6 +2690,19 @@ func (s *Server) runWorkflowWithCancel(ctx context.Context, workflowName, input,
 func (s *Server) runWorkflowWithCancelHook(ctx context.Context, workflowName, input, retryOf string, approve bool, handler func(event schema.StreamEvent) error, onStart func(string)) (agent.WorkflowResult, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	runID := ""
+	pins := taskRoutingPins(ctx)
+	if len(pins) == 0 {
+		pins = s.workflowTaskResourcePins(workflowName)
+	}
+	if strings.TrimSpace(retryOf) != "" {
+		for _, previous := range s.runtime.SessionSnapshot().WorkflowRuns {
+			if previous.ID == strings.TrimSpace(retryOf) && len(previous.ResourcePins) > 0 {
+				pins = session.CopyResourcePins(previous.ResourcePins)
+				break
+			}
+		}
+	}
+	ctx = agent.WithWorkflowResourcePins(ctx, pins)
 	handler = s.streamHandlerWithApprovalRisk(handler)
 	ctx = agent.WithWorkflowRunStartHook(ctx, func(id string) {
 		runID = id
@@ -2736,23 +2822,39 @@ func (s *Server) resumeWorkflowApproveBudgetWithCancelLocked(ctx context.Context
 	return s.runtime.WorkflowRunner().ApproveBudget(ctx, runID, s.streamHandlerWithApprovalRisk(handler))
 }
 
-func (s *Server) resumeWorkflowToolApprovalWithCancel(ctx context.Context, runID string, approve, remember bool, handler func(event schema.StreamEvent) error) (agent.WorkflowResult, error) {
+func (s *Server) resumeWorkflowToolApprovalWithCancel(ctx context.Context, runID string, approve, batch bool, handler func(event schema.StreamEvent) error) (agent.WorkflowResult, error) {
 	s.workflowExecMu.Lock()
 	defer s.workflowExecMu.Unlock()
-	return s.resumeWorkflowToolApprovalWithCancelLocked(ctx, runID, approve, remember, handler)
+	return s.resumeWorkflowToolApprovalWithCancelLocked(ctx, runID, approve, batch, handler)
 }
 
-func (s *Server) resumeWorkflowToolApprovalWithCancelLocked(ctx context.Context, runID string, approve, remember bool, handler func(event schema.StreamEvent) error) (agent.WorkflowResult, error) {
+func (s *Server) resumeWorkflowToolApprovalWithCancelLocked(ctx context.Context, runID string, approve, batch bool, handler func(event schema.StreamEvent) error) (agent.WorkflowResult, error) {
 	ctx, cancel := context.WithCancel(ctx)
 	s.registerActiveWorkflowRun(runID, cancel)
 	defer func() {
 		s.unregisterActiveWorkflowRun(runID)
 		cancel()
 	}()
-	return s.runtime.WorkflowRunner().ResumeToolApproval(ctx, runID, approve, remember, s.streamHandlerWithApprovalRisk(handler))
+	wrapped := s.streamHandlerWithApprovalRisk(handler)
+	if approve && batch {
+		return s.runtime.WorkflowRunner().ResumeToolApprovalBatch(ctx, runID, wrapped)
+	}
+	return s.runtime.WorkflowRunner().ResumeToolApproval(ctx, runID, approve, false, wrapped)
 }
 
 func (s *Server) startWorkflowBackground(workflowName, input, retryOf string, approve bool, action string) (workflowRunBackgroundResponse, error) {
+	return s.startWorkflowBackgroundWithTarget(workflowName, input, "", retryOf, approve, action)
+}
+
+func (s *Server) startWorkflowBackgroundWithTarget(workflowName, input, targetID, retryOf string, approve bool, action string) (workflowRunBackgroundResponse, error) {
+	return s.startWorkflowBackgroundWithTargetAndAttachments(workflowName, input, targetID, retryOf, nil, approve, action)
+}
+
+func (s *Server) startWorkflowBackgroundWithTargetAndAttachments(workflowName, input, targetID, retryOf string, attachments []schema.AttachmentRef, approve bool, action string) (workflowRunBackgroundResponse, error) {
+	return s.startWorkflowBackgroundWithTargetAttachmentsAndControls(workflowName, input, targetID, retryOf, attachments, approve, agent.RunControls{}, action)
+}
+
+func (s *Server) startWorkflowBackgroundWithTargetAttachmentsAndControls(workflowName, input, targetID, retryOf string, attachments []schema.AttachmentRef, approve bool, controls agent.RunControls, action string, routingPins ...[]session.ResourcePin) (workflowRunBackgroundResponse, error) {
 	if !s.workflowExecMu.TryLock() {
 		return workflowRunBackgroundResponse{}, fmt.Errorf("another workflow run is already active")
 	}
@@ -2760,7 +2862,23 @@ func (s *Server) startWorkflowBackground(workflowName, input, retryOf string, ap
 	done := make(chan error, 1)
 	go func() {
 		defer s.workflowExecMu.Unlock()
-		_, err := s.runWorkflowWithCancelHook(context.Background(), workflowName, input, retryOf, approve, nil, func(runID string) {
+		ctx := agent.WithExecutionTarget(context.Background(), targetID)
+		if len(routingPins) > 0 {
+			ctx = context.WithValue(ctx, taskRoutingPinsKey{}, session.CopyResourcePins(routingPins[0]))
+		}
+		ctx = agent.WithTaskAttachments(ctx, attachments)
+		if strings.TrimSpace(retryOf) != "" {
+			if previous, ok := findWorkflowRunSnapshot(s.runtime.SessionSnapshot().WorkflowRuns, retryOf); ok {
+				if strings.TrimSpace(controls.ReasoningEffort) == "" {
+					controls.ReasoningEffort = previous.ReasoningEffort
+				}
+				if strings.TrimSpace(controls.PermissionMode) == "" {
+					controls.PermissionMode = previous.PermissionMode
+				}
+			}
+		}
+		ctx = agent.WithRunControls(ctx, controls)
+		_, err := s.runWorkflowWithCancelHook(ctx, workflowName, input, retryOf, approve, nil, func(runID string) {
 			select {
 			case started <- runID:
 			default:
@@ -2782,13 +2900,25 @@ func (s *Server) startWorkflowBackground(workflowName, input, retryOf string, ap
 	}
 }
 
+func findWorkflowRunSnapshot(runs []session.WorkflowRunSnapshot, runID string) (session.WorkflowRunSnapshot, bool) {
+	for _, run := range runs {
+		if run.ID == strings.TrimSpace(runID) {
+			return run, true
+		}
+	}
+	return session.WorkflowRunSnapshot{}, false
+}
+
 func (s *Server) startWorkflowRunBackgroundAction(runID, workflowName, action string, run func(context.Context) (agent.WorkflowResult, error)) (workflowRunBackgroundResponse, error) {
-	if !s.workflowExecMu.TryLock() {
+	if !s.tryLockSettlingWorkflowRun(runID, settlingRunActionTimeout) {
 		return workflowRunBackgroundResponse{}, fmt.Errorf("another workflow run is already active")
 	}
 	go func() {
 		defer s.workflowExecMu.Unlock()
 		if _, err := run(context.Background()); err != nil {
+			if errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
+				return
+			}
 			s.runtime.AppendWorkflowRunEvent(runID, session.WorkflowRunEventSnapshot{
 				Type:           string(schema.StreamEventError),
 				Content:        err.Error(),
@@ -2799,6 +2929,24 @@ func (s *Server) startWorkflowRunBackgroundAction(runID, workflowName, action st
 		}
 	}()
 	return s.workflowRunBackgroundResponse(runID, workflowName, action, ""), nil
+}
+
+func (s *Server) tryLockSettlingWorkflowRun(runID string, timeout time.Duration) bool {
+	if s.workflowExecMu.TryLock() {
+		return true
+	}
+	_, sameRunActive := s.workflowRunCancelFunc(runID)
+	if !sameRunActive {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		if s.workflowExecMu.TryLock() {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) workflowRunBackgroundResponse(runID, workflowName, action, retryOf string) workflowRunBackgroundResponse {
@@ -2964,6 +3112,18 @@ func workflowRunStageFromAnchor(anchor string) string {
 		}
 	}
 	return ""
+}
+
+func workflowRunQueryWithDefaultWindow(r *http.Request, events []session.WorkflowRunEventSnapshot, limit int) workflowRunQuery {
+	query := workflowRunQueryFromRequest(r)
+	if limit <= 0 || r == nil || r.URL == nil || strings.TrimSpace(r.URL.Query().Get("limit")) != "" || query.Since > 0 {
+		return query
+	}
+	query.Limit = limit
+	if len(events) > limit {
+		query.Since = events[len(events)-limit-1].Seq
+	}
+	return query
 }
 
 func workflowRunQueryHasFilters(query workflowRunQuery) bool {
@@ -3405,7 +3565,7 @@ func workflowRunStageIsError(stage session.WorkflowRunStageSnapshot) bool {
 		return true
 	}
 	for _, result := range stage.Result.ToolResults {
-		if result.IsError {
+		if agentRunToolResultIsBlockingError(result) {
 			return true
 		}
 	}
@@ -3629,6 +3789,8 @@ func workflowRunRetryActionReason(status string) string {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "paused_need_more_budget", "awaiting_budget_approval":
 		return "workflow paused because model output or budget was incomplete; retry starts a new run from the saved request"
+	case "interrupted":
+		return "the previous process stopped during execution; retry starts a new run from the saved request"
 	default:
 		return ""
 	}

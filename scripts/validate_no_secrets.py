@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import os
 import re
 from pathlib import Path
 
@@ -10,6 +11,7 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 
 EXCLUDED_DIRS = {
+    ".artifacts",
     ".git",
     ".goflow",
     ".codex",
@@ -18,12 +20,18 @@ EXCLUDED_DIRS = {
     ".gomodcache",
     ".gotmp",
     ".pytest_cache",
+    ".runtime-gocache",
+    ".runtime-mcp-bin",
+    ".smoke-tmp",
+    ".tmp",
+    ".tmp-go-cache",
     ".venv",
     "__pycache__",
     "bin",
     "build",
     "dist",
     "node_modules",
+    "secrets",
     "tmp",
     "venv",
     "workspace",
@@ -69,7 +77,15 @@ def should_skip(path: Path) -> bool:
 
 
 def text_files() -> list[Path]:
-    return sorted(path for path in ROOT.rglob("*") if path.is_file() and not should_skip(path))
+    files: list[Path] = []
+    for current, dirnames, filenames in os.walk(ROOT, topdown=True):
+        dirnames[:] = sorted(name for name in dirnames if name not in EXCLUDED_DIRS)
+        base = Path(current)
+        for name in filenames:
+            path = base / name
+            if not should_skip(path):
+                files.append(path)
+    return sorted(files)
 
 
 def scan_secret_patterns() -> list[str]:
@@ -107,9 +123,9 @@ def scan_provider_literals() -> list[str]:
             if not match:
                 continue
             value = unquote(match.group("value"))
-            if not value or value.startswith("${"):
+            if not value or value.startswith("${") or value.startswith("secret://"):
                 continue
-            findings.append(f"{rel}:{line_no}: provider api_key should use an environment reference")
+            findings.append(f"{rel}:{line_no}: provider api_key should use an environment or secret reference")
     return findings
 
 

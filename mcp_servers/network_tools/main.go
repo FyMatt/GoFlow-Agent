@@ -38,27 +38,28 @@ type tool struct {
 }
 
 type deviceInput struct {
-	DeviceID        string         `json:"device_id,omitempty"`
-	Host            string         `json:"host,omitempty"`
-	Platform        string         `json:"platform,omitempty"`
-	Connection      string         `json:"connection,omitempty"`
-	Endpoint        string         `json:"endpoint,omitempty"`
-	Method          string         `json:"method,omitempty"`
-	CredentialRef   string         `json:"credential_ref,omitempty"`
-	ApprovalRef     string         `json:"approval_ref,omitempty"`
-	ChangeTicket    string         `json:"change_ticket,omitempty"`
-	AuthorizedScope bool           `json:"authorized_scope,omitempty"`
-	AllowedHosts    []string       `json:"allowed_hosts,omitempty"`
-	AllowedCommands []string       `json:"allowed_commands,omitempty"`
-	AllowedMethods  []string       `json:"allowed_methods,omitempty"`
-	AllowedPaths    []string       `json:"allowed_paths,omitempty"`
-	Commands        []string       `json:"commands,omitempty"`
-	ChangeCommands  []string       `json:"change_commands,omitempty"`
-	Payload         map[string]any `json:"payload,omitempty"`
-	DryRun          bool           `json:"dry_run,omitempty"`
-	DryRunConfirmed bool           `json:"dry_run_confirmed,omitempty"`
-	ChangeApproved  bool           `json:"change_approved,omitempty"`
-	RollbackPlan    []string       `json:"rollback_plan,omitempty"`
+	DeviceID            string         `json:"device_id,omitempty"`
+	Host                string         `json:"host,omitempty"`
+	Platform            string         `json:"platform,omitempty"`
+	Connection          string         `json:"connection,omitempty"`
+	Endpoint            string         `json:"endpoint,omitempty"`
+	Method              string         `json:"method,omitempty"`
+	CredentialRef       string         `json:"credential_ref,omitempty"`
+	ApprovalRef         string         `json:"approval_ref,omitempty"`
+	ChangeTicket        string         `json:"change_ticket,omitempty"`
+	AuthorizedScope     bool           `json:"authorized_scope,omitempty"`
+	AllowedHosts        []string       `json:"allowed_hosts,omitempty"`
+	AllowedCommands     []string       `json:"allowed_commands,omitempty"`
+	AllowedMethods      []string       `json:"allowed_methods,omitempty"`
+	AllowedPaths        []string       `json:"allowed_paths,omitempty"`
+	Commands            []string       `json:"commands,omitempty"`
+	ChangeCommands      []string       `json:"change_commands,omitempty"`
+	Payload             map[string]any `json:"payload,omitempty"`
+	DryRun              bool           `json:"dry_run,omitempty"`
+	DryRunConfirmed     bool           `json:"dry_run_confirmed,omitempty"`
+	ChangeApproved      bool           `json:"change_approved,omitempty"`
+	RollbackPlan        []string       `json:"rollback_plan,omitempty"`
+	OperatorConstraints []string       `json:"operator_constraints,omitempty"`
 }
 
 var restconfHTTPClient = &http.Client{
@@ -101,25 +102,31 @@ func builtinTools() []tool {
 	return []tool{
 		{
 			Name:        "device_discovery_plan",
-			Description: "Validate an authorized network-device target and return a compact read-only discovery plan. This tool does not open a device connection.",
+			Description: "校验已授权的网络设备目标并返回精简的只读发现计划；此工具不会连接设备。",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"device_id":{"type":"string"},"host":{"type":"string","minLength":1},"platform":{"type":"string"},"connection":{"type":"string","enum":["ssh","api","console","unknown"]},"credential_ref":{"type":"string"},"authorized_scope":{"type":"boolean"},"allowed_hosts":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"allowed_commands":{"type":"array","items":{"type":"string","minLength":1},"maxItems":50}},"required":["host","authorized_scope","allowed_hosts"],"additionalProperties":false}`),
 			Kind:        "network",
 		},
 		{
 			Name:        "device_command_plan",
-			Description: "Validate read-only network-device commands against an allowlist and return an execution plan for operator approval. This tool does not run commands.",
+			Description: "依据命令白名单校验网络设备只读命令，并返回待操作者审批的执行计划；此工具不会运行命令。",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"device_id":{"type":"string"},"host":{"type":"string","minLength":1},"platform":{"type":"string"},"connection":{"type":"string","enum":["ssh","api","console","unknown"]},"credential_ref":{"type":"string"},"authorized_scope":{"type":"boolean"},"allowed_hosts":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"allowed_commands":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"commands":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":20}},"required":["host","authorized_scope","allowed_hosts","allowed_commands","commands"],"additionalProperties":false}`),
 			Kind:        "network",
 		},
 		{
+			Name:        "device_batch_command_plan",
+			Description: "逐台校验多个网络设备的只读命令计划，保留成功项，返回失败目标和仅重试失败项的恢复范围；此工具不会连接设备。",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"targets":{"type":"array","minItems":1,"maxItems":25,"items":{"type":"object","properties":{"device_id":{"type":"string"},"host":{"type":"string","minLength":1},"platform":{"type":"string"},"connection":{"type":"string","enum":["ssh","api","console","unknown"]},"credential_ref":{"type":"string"},"authorized_scope":{"type":"boolean"},"allowed_hosts":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"allowed_commands":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"commands":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":20}},"required":["host","authorized_scope","allowed_hosts","allowed_commands","commands"],"additionalProperties":false}}},"required":["targets"],"additionalProperties":false}`),
+			Kind:        "network",
+		},
+		{
 			Name:        "device_config_dry_run",
-			Description: "Validate a proposed network-device configuration change, rollback plan, and approval metadata. It only returns dry-run evidence and never applies changes.",
-			InputSchema: json.RawMessage(`{"type":"object","properties":{"device_id":{"type":"string"},"host":{"type":"string","minLength":1},"platform":{"type":"string"},"connection":{"type":"string","enum":["ssh","api","console","unknown"]},"credential_ref":{"type":"string"},"authorized_scope":{"type":"boolean"},"allowed_hosts":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"allowed_commands":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"change_commands":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"rollback_plan":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"dry_run":{"type":"boolean"},"change_approved":{"type":"boolean"}},"required":["host","authorized_scope","allowed_hosts","allowed_commands","change_commands","rollback_plan","dry_run","change_approved"],"additionalProperties":false}`),
+			Description: "校验网络设备配置变更、回滚计划和审批元数据，只返回干跑证据，绝不应用变更。",
+			InputSchema: json.RawMessage(`{"type":"object","properties":{"device_id":{"type":"string"},"host":{"type":"string","minLength":1},"platform":{"type":"string"},"connection":{"type":"string","enum":["ssh","api","console","unknown"]},"credential_ref":{"type":"string"},"authorized_scope":{"type":"boolean"},"allowed_hosts":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"allowed_commands":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"change_commands":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"rollback_plan":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"operator_constraints":{"type":"array","items":{"type":"string","minLength":1,"maxLength":200},"maxItems":10},"dry_run":{"type":"boolean"},"change_approved":{"type":"boolean"}},"required":["host","authorized_scope","allowed_hosts","allowed_commands","change_commands","rollback_plan","dry_run","change_approved"],"additionalProperties":false}`),
 			Kind:        "network",
 		},
 		{
 			Name:        "device_restconf_live_apply",
-			Description: "Apply one approved HTTPS RESTCONF/API change to an allowlisted network target. Requires live enablement, authorization, approval, credential ref, dry-run confirmation, rollback evidence, method/path allowlists, and a bounded JSON payload.",
+			Description: "向白名单网络目标应用一次已批准的 HTTPS RESTCONF/API 变更；必须具备实时执行开关、授权、审批、凭据引用、干跑确认、回滚证据、方法与路径白名单以及有大小限制的 JSON 载荷。",
 			InputSchema: json.RawMessage(`{"type":"object","properties":{"device_id":{"type":"string"},"host":{"type":"string","minLength":1},"platform":{"type":"string"},"connection":{"type":"string","enum":["api","restconf"]},"endpoint":{"type":"string","minLength":1},"method":{"type":"string","enum":["POST","PUT","PATCH"]},"credential_ref":{"type":"string","minLength":1},"approval_ref":{"type":"string","minLength":1},"change_ticket":{"type":"string","minLength":1},"authorized_scope":{"type":"boolean"},"allowed_hosts":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"allowed_methods":{"type":"array","items":{"type":"string","enum":["POST","PUT","PATCH"]},"minItems":1,"maxItems":3},"allowed_paths":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"payload":{"type":"object"},"rollback_plan":{"type":"array","items":{"type":"string","minLength":1},"minItems":1,"maxItems":50},"dry_run_confirmed":{"type":"boolean"},"change_approved":{"type":"boolean"}},"required":["host","endpoint","method","credential_ref","approval_ref","change_ticket","authorized_scope","allowed_hosts","allowed_methods","allowed_paths","payload","rollback_plan","dry_run_confirmed","change_approved"],"additionalProperties":false}`),
 			Kind:        "network",
 		},
@@ -144,6 +151,8 @@ func callTool(params json.RawMessage) map[string]any {
 		payload, err = deviceDiscoveryPlan(args)
 	case "device_command_plan":
 		payload, err = deviceCommandPlan(args)
+	case "device_batch_command_plan":
+		payload, err = deviceBatchCommandPlan(decodeDeviceTargets(input.Arguments))
 	case "device_config_dry_run":
 		payload, err = deviceConfigDryRun(args)
 	case "device_restconf_live_apply":
@@ -154,8 +163,71 @@ func callTool(params json.RawMessage) map[string]any {
 	if err != nil {
 		return map[string]any{"content": err.Error(), "is_error": true}
 	}
-	encoded, _ := json.Marshal(payload)
+	encoded, _ := marshalJSONWithoutHTMLEscaping(payload)
 	return map[string]any{"content": string(encoded), "is_error": false}
+}
+
+func marshalJSONWithoutHTMLEscaping(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte{'\n'}), nil
+}
+
+func deviceBatchCommandPlan(targets []deviceInput) (map[string]any, error) {
+	if len(targets) == 0 {
+		return nil, fmt.Errorf("targets are required")
+	}
+	results := make([]map[string]any, 0, len(targets))
+	retryTargets := make([]string, 0)
+	succeeded := 0
+	for index, target := range targets {
+		identity := strings.TrimSpace(target.DeviceID)
+		if identity == "" {
+			identity = strings.TrimSpace(target.Host)
+		}
+		item := map[string]any{
+			"index":     index,
+			"device_id": strings.TrimSpace(target.DeviceID),
+			"host":      strings.TrimSpace(target.Host),
+		}
+		plan, err := deviceCommandPlan(target)
+		if err != nil {
+			item["status"] = "blocked"
+			item["error"] = err.Error()
+			if identity != "" {
+				retryTargets = append(retryTargets, identity)
+			}
+			results = append(results, item)
+			continue
+		}
+		item["status"] = "planned"
+		item["plan"] = plan
+		results = append(results, item)
+		succeeded++
+	}
+	failed := len(results) - succeeded
+	status := "ready"
+	if succeeded == 0 {
+		status = "blocked"
+	} else if failed > 0 {
+		status = "partial"
+	}
+	return map[string]any{
+		"status":          status,
+		"mode":            "batch_read_only_commands",
+		"target_count":    len(results),
+		"success_count":   succeeded,
+		"failure_count":   failed,
+		"partial_failure": succeeded > 0 && failed > 0,
+		"results":         results,
+		"retry_targets":   retryTargets,
+		"recovery_scope":  "修正失败目标的授权范围或命令白名单后，仅重试 retry_targets；不得重复执行已成功目标。",
+		"audit_note":      "此批量工具只生成逐目标命令计划，没有连接设备或执行命令。",
+	}, nil
 }
 
 func deviceDiscoveryPlan(input deviceInput) (map[string]any, error) {
@@ -230,20 +302,71 @@ func deviceConfigDryRun(input deviceInput) (map[string]any, error) {
 	if len(denied) > 0 {
 		return nil, fmt.Errorf("change commands outside allowlist: %s", strings.Join(denied, "; "))
 	}
-	return map[string]any{
-		"status":             "dry_run_only",
-		"mode":               "config_change_plan",
-		"target":             target,
-		"credential_ref":     input.CredentialRef,
-		"change_commands":    allowed,
-		"rollback_plan":      rollback,
-		"precheck_commands":  defaultDiscoveryCommands(input.Platform),
-		"postcheck_commands": defaultDiscoveryCommands(input.Platform),
-		"requires_approval":  true,
-		"approval_reason":    "Real device configuration requires operator approval, a dedicated connector, rollback confirmation, and post-change verification.",
-		"risk_level":         "high",
-		"audit_note":         "No device configuration was applied. This is a dry-run plan and policy check only.",
-	}, nil
+	prechecks := defaultDiscoveryCommands(input.Platform)
+	constraints := normalizeOperatorConstraints(input.OperatorConstraints)
+	payload := map[string]any{
+		"status":               "dry_run_only",
+		"mode":                 "config_change_plan",
+		"target":               target,
+		"credential_ref":       input.CredentialRef,
+		"change_commands":      allowed,
+		"rollback_plan":        rollback,
+		"precheck_commands":    prechecks,
+		"postcheck_commands":   append([]string(nil), prechecks...),
+		"operator_constraints": constraints,
+		"requires_approval":    true,
+		"approval_reason":      "真实设备配置需要操作者审批、专用连接器、回滚确认和变更后检查。",
+		"risk_level":           "high",
+		"audit_note":           "未应用任何设备配置；本结果仅为干跑计划和策略检查。",
+	}
+	payload["report_markdown"] = deviceConfigDryRunReportMarkdown(target, allowed, prechecks, rollback, constraints)
+	return payload, nil
+}
+
+func deviceConfigDryRunReportMarkdown(target map[string]any, changes, checks, rollback, constraints []string) string {
+	var report strings.Builder
+	report.WriteString("# 设备配置干跑报告\n\n## 目标\n\n")
+	for _, field := range []string{"device_id", "host", "platform", "connection", "authorized_scope", "allowed_hosts"} {
+		value := target[field]
+		if field == "allowed_hosts" {
+			encoded, _ := marshalJSONWithoutHTMLEscaping(value)
+			value = string(encoded)
+		}
+		fmt.Fprintf(&report, "- %s: %v\n", field, value)
+	}
+	writeDeviceCommandSection(&report, "前置检查", checks)
+	writeDeviceCommandSection(&report, "变更命令", changes)
+	writeDeviceCommandSection(&report, "后置检查", checks)
+	writeDeviceCommandSection(&report, "回滚方案", rollback)
+	report.WriteString("\n## 未执行边界\n\n- requires_approval: true\n")
+	for _, constraint := range constraints {
+		fmt.Fprintf(&report, "- %s\n", constraint)
+	}
+	return report.String()
+}
+
+func writeDeviceCommandSection(report *strings.Builder, title string, commands []string) {
+	fmt.Fprintf(report, "\n## %s\n\n```text\n", title)
+	for _, command := range commands {
+		report.WriteString(command)
+		report.WriteByte('\n')
+	}
+	report.WriteString("```\n")
+}
+
+func normalizeOperatorConstraints(values []string) []string {
+	out := make([]string, 0, len(values))
+	for _, value := range values {
+		value = strings.Join(strings.Fields(value), " ")
+		if value == "" {
+			continue
+		}
+		out = append(out, limitString(value, 200))
+		if len(out) == 10 {
+			break
+		}
+	}
+	return out
 }
 
 func deviceRestconfLiveApply(input deviceInput) (map[string]any, error) {
@@ -507,28 +630,48 @@ func validateTarget(input deviceInput) (map[string]any, error) {
 
 func decodeDeviceInput(args map[string]any) deviceInput {
 	return deviceInput{
-		DeviceID:        stringArg(args, "device_id"),
-		Host:            stringArg(args, "host"),
-		Platform:        stringArg(args, "platform"),
-		Connection:      stringArg(args, "connection"),
-		Endpoint:        stringArg(args, "endpoint"),
-		Method:          stringArg(args, "method"),
-		CredentialRef:   stringArg(args, "credential_ref"),
-		ApprovalRef:     stringArg(args, "approval_ref"),
-		ChangeTicket:    stringArg(args, "change_ticket"),
-		AuthorizedScope: boolArg(args, "authorized_scope"),
-		AllowedHosts:    stringListArg(args, "allowed_hosts", 50),
-		AllowedCommands: stringListArg(args, "allowed_commands", 50),
-		AllowedMethods:  stringListArg(args, "allowed_methods", 3),
-		AllowedPaths:    stringListArg(args, "allowed_paths", 50),
-		Commands:        stringListArg(args, "commands", 20),
-		ChangeCommands:  stringListArg(args, "change_commands", 50),
-		Payload:         objectArg(args, "payload"),
-		DryRun:          boolArg(args, "dry_run"),
-		DryRunConfirmed: boolArg(args, "dry_run_confirmed"),
-		ChangeApproved:  boolArg(args, "change_approved"),
-		RollbackPlan:    stringListArg(args, "rollback_plan", 50),
+		DeviceID:            stringArg(args, "device_id"),
+		Host:                stringArg(args, "host"),
+		Platform:            stringArg(args, "platform"),
+		Connection:          stringArg(args, "connection"),
+		Endpoint:            stringArg(args, "endpoint"),
+		Method:              stringArg(args, "method"),
+		CredentialRef:       stringArg(args, "credential_ref"),
+		ApprovalRef:         stringArg(args, "approval_ref"),
+		ChangeTicket:        stringArg(args, "change_ticket"),
+		AuthorizedScope:     boolArg(args, "authorized_scope"),
+		AllowedHosts:        stringListArg(args, "allowed_hosts", 50),
+		AllowedCommands:     stringListArg(args, "allowed_commands", 50),
+		AllowedMethods:      stringListArg(args, "allowed_methods", 3),
+		AllowedPaths:        stringListArg(args, "allowed_paths", 50),
+		Commands:            stringListArg(args, "commands", 20),
+		ChangeCommands:      stringListArg(args, "change_commands", 50),
+		Payload:             objectArg(args, "payload"),
+		DryRun:              boolArg(args, "dry_run"),
+		DryRunConfirmed:     boolArg(args, "dry_run_confirmed"),
+		ChangeApproved:      boolArg(args, "change_approved"),
+		RollbackPlan:        stringListArg(args, "rollback_plan", 50),
+		OperatorConstraints: stringListArg(args, "operator_constraints", 10),
 	}
+}
+
+func decodeDeviceTargets(args map[string]any) []deviceInput {
+	raw, ok := args["targets"].([]any)
+	if !ok || len(raw) == 0 {
+		return nil
+	}
+	if len(raw) > 25 {
+		raw = raw[:25]
+	}
+	targets := make([]deviceInput, 0, len(raw))
+	for _, item := range raw {
+		value, ok := item.(map[string]any)
+		if !ok {
+			continue
+		}
+		targets = append(targets, decodeDeviceInput(value))
+	}
+	return targets
 }
 
 func splitAllowedCommands(commands, allowed []string) ([]string, []string) {
@@ -579,7 +722,6 @@ func normalizeCommands(values, fallback []string) []string {
 		seen[value] = struct{}{}
 		out = append(out, value)
 	}
-	sort.Strings(out)
 	return out
 }
 
@@ -715,7 +857,8 @@ func limitedStrings(values []string, limit int) []string {
 }
 
 func write(writer *bufio.Writer, resp response) {
-	data, _ := json.Marshal(resp)
-	_, _ = writer.Write(append(data, '\n'))
+	encoder := json.NewEncoder(writer)
+	encoder.SetEscapeHTML(false)
+	_ = encoder.Encode(resp)
 	_ = writer.Flush()
 }

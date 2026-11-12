@@ -2,129 +2,129 @@ kind: goflow.team_template_resource
 version: 2
 min_supported_version: 1
 name: framework-extension-team
-title: Framework Extension Team
+title: 平台扩展团队
 category: platform
-description: Product, platform, safety, and authoring roles for building linked Agent/Skill/Tool/Workflow/Team extensions.
+description: 由产品、平台、工作流、安全和交付角色协作构建相互关联的智能体、技能、工具、工作流和团队扩展。
 tags: [agent-framework, extension, kit, second-development]
 recommended_workflow: agent-framework-extension
 recommended_entry_agent: planner
 role_templates:
   - name: product-architect
-    label: Product Architect
+    label: 产品架构者
     agent: planner
     skill: execution-plan
     responsibilities:
-      - clarify vertical use case
-      - define user journey
-      - identify required resources and acceptance criteria
+      - 澄清垂直领域场景
+      - 定义用户操作路径
+      - 识别所需资源和验收标准
     produces: [extension_brief, acceptance_criteria]
   - name: platform-engineer
-    label: Platform Engineer
+    label: 平台工程师
     agent: fixer
     skill: code-writing
     responsibilities:
-      - map the brief to modular resource files
-      - create or update Agent/Skill/Tool/Workflow/Team definitions
-      - keep generated resources versionable
+      - 将需求映射为模块化资源文件
+      - 创建或更新智能体、技能、工具、工作流和团队定义
+      - 保证生成资源可版本管理
     consumes: [extension_brief]
     produces: [resource_changes, validation_notes]
   - name: workflow-designer
-    label: Workflow Designer
+    label: 工作流设计者
     agent: planner
     skill: execution-plan
     responsibilities:
-      - define workflow node contracts
-      - connect outputs to downstream inputs
-      - add quality gates and approval checkpoints
+      - 定义工作流节点契约
+      - 连接上游输出与下游输入
+      - 增加质量门禁和审批检查点
     consumes: [extension_brief]
     produces: [workflow_design, data_flow]
   - name: safety-reviewer
-    label: Safety Reviewer
+    label: 安全复核者
     agent: auditor
     skill: code-audit
     responsibilities:
-      - review tool permissions
-      - check sandbox and approval boundaries
-      - flag over-broad prompts or missing validation
+      - 复核工具权限
+      - 检查沙箱和审批边界
+      - 标记过宽提示或缺失验证
     consumes: [resource_changes, workflow_design]
     produces: [safety_review, required_changes]
   - name: handoff-writer
-    label: Handoff Writer
+    label: 交付说明编写者
     agent: chat
     skill: execution-plan
     responsibilities:
-      - summarize created resources
-      - state restart or reload steps
-      - prepare front-end/operator guidance
+      - 汇总已创建资源
+      - 说明重启或重新加载步骤
+      - 准备页面和操作者使用说明
     consumes: [safety_review, validation_notes]
     produces: [operator_handoff]
 handoffs:
   - from: product-architect
     to: workflow-designer
     kind: brief_handoff
-    subject: Extension brief and acceptance criteria
+    subject: 扩展需求与验收标准
     artifacts: [extension_brief, acceptance_criteria]
     blackboard: [request, plan]
   - from: workflow-designer
     to: platform-engineer
     kind: resource_plan
-    subject: Workflow data flow and resource map
+    subject: 工作流数据流与资源映射
     artifacts: [workflow_design, data_flow]
     blackboard: [plan, decision]
   - from: platform-engineer
     to: safety-reviewer
     kind: review_request
-    subject: Generated extension resources
+    subject: 已生成的扩展资源
     artifacts: [resource_changes, validation_notes]
     blackboard: [evidence, finding]
   - from: safety-reviewer
     to: handoff-writer
     kind: final_review
-    subject: Safety review and required operator steps
+    subject: 安全复核与操作者步骤
     artifacts: [safety_review, required_changes]
     blackboard: [decision, finding]
 blackboard_templates:
   - kind: request
-    title: Original request and constraints
+    title: 原始请求与约束
     owner_role: product-architect
     status: open
     tags: [scope]
-    description: The user request, allowed scope, and assumptions that should survive handoffs.
+    description: 在角色交接中持续保留用户请求、允许范围和关键假设。
   - kind: plan
-    title: Working plan
+    title: 当前扩展计划
     owner_role: product-architect
     status: open
     tags: [plan]
-    description: Current executable plan, stage ordering, and known blockers.
+    description: 当前可执行计划、阶段顺序和已知阻塞项。
   - kind: evidence
-    title: Evidence and observations
+    title: 证据与观察
     owner_role: product-architect
     status: open
     tags: [evidence]
-    description: Tool observations, source references, test output, or collected artifacts.
+    description: 工具观察、资源引用、验证输出和已生成产物。
   - kind: decision
-    title: Decisions and approvals
+    title: 决策与审批
     owner_role: product-architect
     status: open
     tags: [decision]
-    description: Decisions made by agents or the operator, including approval gates.
+    description: 智能体或操作者作出的决策，包括安全审批结果。
   - kind: finding
-    title: Findings and risks
+    title: 发现与风险
     owner_role: product-architect
     status: open
     tags: [risk]
-    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+    description: 配置缺陷、权限风险、验证缺口和未解决问题。
 quorum_presets:
   - name: extension-review
-    title: Extension safety review
-    description: Require workflow designer and safety reviewer approval before handoff.
+    title: 扩展安全复核
+    description: 交付前必须由工作流设计者和安全复核者共同批准。
     required: 2
     roles: [workflow-designer, safety-reviewer]
     reject_blocks: true
     default: true
   - name: full-extension-team
-    title: Full extension team approval
-    description: Require every extension role to approve high-impact framework changes.
+    title: 扩展团队全员批准
+    description: 高影响平台变更必须由扩展团队全部角色批准。
     required: 5
     roles: [product-architect, platform-engineer, workflow-designer, safety-reviewer, handoff-writer]
     reject_blocks: true

@@ -13,11 +13,20 @@ const (
 	maxAgentRuns      = 30
 	maxAgentRunEvents = 300
 	maxAgentRunText   = maxWorkflowRunText
+	LocalTargetID     = "local"
 )
 
 // AgentRunStartOptions carries metadata for a new ordinary agent run.
 type AgentRunStartOptions struct {
-	RetryOf string
+	RetryOf         string
+	AgentID         string
+	TargetID        string
+	ScheduleID      string
+	ScheduleJobID   string
+	ResourcePins    []ResourcePin
+	Attachments     []schema.AttachmentRef
+	ReasoningEffort string
+	PermissionMode  string
 }
 
 // AgentRunResumeContextSnapshot stores enough ordinary agent state to resume a
@@ -50,32 +59,102 @@ type AgentRunResumeContextSnapshot struct {
 	CollectedResultsExternalized bool                `json:"collected_results_externalized,omitempty"`
 }
 
+// AgentTaskApprovalScopeSnapshot records the bounded local capabilities an
+// operator granted to one ordinary agent run. The scope is valid only while
+// that exact run is active and its agent, workspace, and target still match.
+type AgentTaskApprovalScopeSnapshot struct {
+	Version                 int    `json:"version,omitempty"`
+	AgentID                 string `json:"agent_id,omitempty"`
+	WorkspaceRoot           string `json:"workspace_root,omitempty"`
+	TargetID                string `json:"target_id,omitempty"`
+	AllowWorkspaceWrites    bool   `json:"allow_workspace_writes,omitempty"`
+	AllowValidationCommands bool   `json:"allow_validation_commands,omitempty"`
+	GrantedByCallID         string `json:"granted_by_call_id,omitempty"`
+	GrantedAt               string `json:"granted_at,omitempty"`
+}
+
 // AgentRunSnapshot is a durable, replayable view of one ordinary agent turn.
 type AgentRunSnapshot struct {
-	ID               string                         `json:"id"`
-	Status           string                         `json:"status,omitempty"`
-	Request          string                         `json:"request,omitempty"`
-	Output           string                         `json:"output,omitempty"`
-	Error            string                         `json:"error,omitempty"`
-	AgentID          string                         `json:"agent_id,omitempty"`
-	Mode             string                         `json:"mode,omitempty"`
-	StartedAt        string                         `json:"started_at,omitempty"`
-	UpdatedAt        string                         `json:"updated_at,omitempty"`
-	CompletedAt      string                         `json:"completed_at,omitempty"`
-	CancelledAt      string                         `json:"cancelled_at,omitempty"`
-	RetryOf          string                         `json:"retry_of,omitempty"`
-	Attempt          int                            `json:"attempt,omitempty"`
-	PendingCallID    string                         `json:"pending_call_id,omitempty"`
-	PendingTool      string                         `json:"pending_tool_name,omitempty"`
-	PendingAgentID   string                         `json:"pending_agent_id,omitempty"`
-	PendingApprovals []PendingApprovalSnapshot      `json:"pending_approvals,omitempty"`
-	ResumeContext    *AgentRunResumeContextSnapshot `json:"resume_context,omitempty"`
-	Result           *schema.AgentResult            `json:"result,omitempty"`
-	Events           []AgentRunEventSnapshot        `json:"events,omitempty"`
-	Artifacts        []AgentRunArtifactSnapshot     `json:"artifacts,omitempty"`
-	EventsCount      int                            `json:"events_count,omitempty"`
-	ArtifactsCount   int                            `json:"artifacts_count,omitempty"`
-	DiffsCount       int                            `json:"diffs_count,omitempty"`
+	ID               string                          `json:"id"`
+	Status           string                          `json:"status,omitempty"`
+	Request          string                          `json:"request,omitempty"`
+	Output           string                          `json:"output,omitempty"`
+	Error            string                          `json:"error,omitempty"`
+	AgentID          string                          `json:"agent_id,omitempty"`
+	TargetID         string                          `json:"target_id,omitempty"`
+	Mode             string                          `json:"mode,omitempty"`
+	StartedAt        string                          `json:"started_at,omitempty"`
+	UpdatedAt        string                          `json:"updated_at,omitempty"`
+	CompletedAt      string                          `json:"completed_at,omitempty"`
+	CancelledAt      string                          `json:"cancelled_at,omitempty"`
+	RetryOf          string                          `json:"retry_of,omitempty"`
+	Attempt          int                             `json:"attempt,omitempty"`
+	ScheduleID       string                          `json:"schedule_id,omitempty"`
+	ScheduleJobID    string                          `json:"schedule_job_id,omitempty"`
+	ResourcePins     []ResourcePin                   `json:"resource_pins,omitempty"`
+	Attachments      []schema.AttachmentRef          `json:"attachments,omitempty"`
+	ReasoningEffort  string                          `json:"reasoning_effort,omitempty"`
+	PermissionMode   string                          `json:"permission_mode,omitempty"`
+	PendingCallID    string                          `json:"pending_call_id,omitempty"`
+	PendingTool      string                          `json:"pending_tool_name,omitempty"`
+	PendingAgentID   string                          `json:"pending_agent_id,omitempty"`
+	PendingApprovals []PendingApprovalSnapshot       `json:"pending_approvals,omitempty"`
+	ResumeContext    *AgentRunResumeContextSnapshot  `json:"resume_context,omitempty"`
+	TaskApproval     *AgentTaskApprovalScopeSnapshot `json:"task_approval,omitempty"`
+	Result           *schema.AgentResult             `json:"result,omitempty"`
+	Events           []AgentRunEventSnapshot         `json:"events,omitempty"`
+	UsageRecords     []UsageRecord                   `json:"usage_records,omitempty"`
+	Artifacts        []AgentRunArtifactSnapshot      `json:"artifacts,omitempty"`
+	EventsCount      int                             `json:"events_count,omitempty"`
+	ArtifactsCount   int                             `json:"artifacts_count,omitempty"`
+	DiffsCount       int                             `json:"diffs_count,omitempty"`
+}
+
+// SetAgentRunTaskApproval stores a bounded task authorization on an active
+// ordinary run. Callers remain responsible for validating the workspace and
+// tool capability before constructing the scope.
+func (s *State) SetAgentRunTaskApproval(runID string, scope AgentTaskApprovalScopeSnapshot) (AgentRunSnapshot, bool) {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return AgentRunSnapshot{}, false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := s.agentRunIndexLocked(runID)
+	if index < 0 || isTerminalAgentRunStatus(s.agentRuns[index].Status) {
+		return AgentRunSnapshot{}, false
+	}
+	scope.Version = 1
+	scope.AgentID = strings.TrimSpace(scope.AgentID)
+	scope.WorkspaceRoot = strings.TrimSpace(scope.WorkspaceRoot)
+	scope.TargetID = normalizeRunTargetID(scope.TargetID)
+	scope.GrantedByCallID = strings.TrimSpace(scope.GrantedByCallID)
+	if strings.TrimSpace(scope.GrantedAt) == "" {
+		scope.GrantedAt = workflowRunTimestamp(time.Now().UTC())
+	}
+	run := s.agentRuns[index]
+	run.TaskApproval = &scope
+	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
+	s.agentRuns[index] = run
+	return copyAgentRunSnapshot(run), true
+}
+
+// ClearAgentRunTaskApproval removes a task authorization that could not be
+// durably committed. Terminal runs keep their historical grant for auditing,
+// but execution code never treats a terminal grant as active.
+func (s *State) ClearAgentRunTaskApproval(runID string) {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := s.agentRunIndexLocked(runID)
+	if index < 0 {
+		return
+	}
+	run := s.agentRuns[index]
+	run.TaskApproval = nil
+	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
+	s.agentRuns[index] = run
 }
 
 // AgentRunEventSnapshot captures a replayable ordinary agent stream/status event.
@@ -91,7 +170,17 @@ type AgentRunEventSnapshot struct {
 	ContentExternalized bool                    `json:"content_externalized,omitempty"`
 	ToolName            string                  `json:"tool_name,omitempty"`
 	ToolCallID          string                  `json:"tool_call_id,omitempty"`
+	DurationMs          int64                   `json:"duration_ms,omitempty"`
+	ToolResultSummary   string                  `json:"tool_result_summary,omitempty"`
+	ArtifactRef         string                  `json:"artifact_ref,omitempty"`
+	ArtifactHash        string                  `json:"artifact_hash,omitempty"`
+	ToolResultBytes     int                     `json:"tool_result_content_bytes,omitempty"`
+	ToolResultStored    int                     `json:"tool_result_stored_bytes,omitempty"`
+	ToolResultTruncated bool                    `json:"tool_result_truncated,omitempty"`
+	ArtifactRetention   string                  `json:"artifact_retention,omitempty"`
+	Redaction           string                  `json:"redaction,omitempty"`
 	ArgumentsSummary    string                  `json:"arguments_summary,omitempty"`
+	ArgumentsHash       string                  `json:"arguments_hash,omitempty"`
 	AgentID             string                  `json:"agent_id,omitempty"`
 	Mode                string                  `json:"mode,omitempty"`
 	IsError             bool                    `json:"is_error,omitempty"`
@@ -101,6 +190,8 @@ type AgentRunEventSnapshot struct {
 	PromptTokens        int                     `json:"prompt_tokens,omitempty"`
 	OutputTokens        int                     `json:"output_tokens,omitempty"`
 	CachedTokens        int                     `json:"cached_tokens,omitempty"`
+	OutputKind          string                  `json:"output_kind,omitempty"`
+	CacheHitRate        float64                 `json:"cache_hit_rate,omitempty"`
 	Reason              string                  `json:"reason,omitempty"`
 	Severity            string                  `json:"severity,omitempty"`
 	BudgetScope         string                  `json:"budget_scope,omitempty"`
@@ -138,13 +229,21 @@ func (s *State) StartAgentRunWithOptions(request string, opts AgentRunStartOptio
 	}
 	id := uniqueAgentRunID(s.agentRuns, now)
 	run := AgentRunSnapshot{
-		ID:        id,
-		Status:    "running",
-		Request:   trimAgentRunText(request),
-		StartedAt: timestamp,
-		UpdatedAt: timestamp,
-		RetryOf:   retryOf,
-		Attempt:   attempt,
+		ID:              id,
+		Status:          "running",
+		Request:         trimAgentRunText(request),
+		AgentID:         strings.TrimSpace(opts.AgentID),
+		TargetID:        normalizeRunTargetID(opts.TargetID),
+		StartedAt:       timestamp,
+		UpdatedAt:       timestamp,
+		RetryOf:         retryOf,
+		Attempt:         attempt,
+		ScheduleID:      strings.TrimSpace(opts.ScheduleID),
+		ScheduleJobID:   strings.TrimSpace(opts.ScheduleJobID),
+		ResourcePins:    CopyResourcePins(opts.ResourcePins),
+		Attachments:     append([]schema.AttachmentRef(nil), opts.Attachments...),
+		ReasoningEffort: strings.TrimSpace(opts.ReasoningEffort),
+		PermissionMode:  strings.TrimSpace(opts.PermissionMode),
 		Events: []AgentRunEventSnapshot{{
 			Seq:     1,
 			At:      timestamp,
@@ -160,6 +259,21 @@ func (s *State) StartAgentRunWithOptions(request string, opts AgentRunStartOptio
 		s.agentRuns = append([]AgentRunSnapshot(nil), s.agentRuns[:maxAgentRuns]...)
 	}
 	return id
+}
+
+// StartAgentRunWithOptionsDurable persists a new ordinary run before exposing
+// its id to a background executor.
+func (s *State) StartAgentRunWithOptionsDurable(request string, opts AgentRunStartOptions) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	id := s.StartAgentRunWithOptions(request, opts)
+	if id == "" {
+		return "", nil
+	}
+	return id, s.PersistConfigured()
 }
 
 // RequestAgentRunCancel marks a running ordinary agent run as cancellation-requested.
@@ -188,6 +302,22 @@ func (s *State) RequestAgentRunCancel(runID, reason string) (AgentRunSnapshot, b
 	}))
 	s.agentRuns[index] = run
 	return copyAgentRunSnapshot(run), true
+}
+
+// RequestAgentRunCancelDurable keeps durable API readers behind the persisted
+// cancellation transition. This prevents shutdown from observing the new
+// in-memory state while session.json still contains the previous state.
+func (s *State) RequestAgentRunCancelDurable(runID, reason string) (AgentRunSnapshot, bool, error) {
+	if s == nil {
+		return AgentRunSnapshot{}, false, nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	run, ok := s.RequestAgentRunCancel(runID, reason)
+	if !ok {
+		return run, false, nil
+	}
+	return run, true, s.PersistConfigured()
 }
 
 // CancelAgentRun marks an ordinary agent run as cancelled.
@@ -226,6 +356,21 @@ func (s *State) CancelAgentRun(runID, reason string) (AgentRunSnapshot, bool) {
 	return copyAgentRunSnapshot(run), true
 }
 
+// CancelAgentRunDurable persists cancellation before durable API readers can
+// observe the terminal state.
+func (s *State) CancelAgentRunDurable(runID, reason string) (AgentRunSnapshot, bool, error) {
+	if s == nil {
+		return AgentRunSnapshot{}, false, nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	run, ok := s.CancelAgentRun(runID, reason)
+	if !ok {
+		return run, false, nil
+	}
+	return run, true, s.PersistConfigured()
+}
+
 // CompleteAgentRun records the final or suspended result returned by an ordinary agent run.
 func (s *State) CompleteAgentRun(runID, status string, result schema.AgentResult) (AgentRunSnapshot, bool) {
 	if s == nil || strings.TrimSpace(runID) == "" {
@@ -256,7 +401,6 @@ func (s *State) CompleteAgentRun(runID, status string, result schema.AgentResult
 	run.Mode = strings.TrimSpace(result.Mode)
 	copied := copyAgentResult(result)
 	run.Result = &copied
-	run.Artifacts = s.buildAgentRunArtifactsLocked(run, now)
 	if !strings.EqualFold(status, "awaiting_tool_approval") && !strings.EqualFold(status, "paused_need_more_budget") {
 		run.PendingCallID = ""
 		run.PendingTool = ""
@@ -264,6 +408,7 @@ func (s *State) CompleteAgentRun(runID, status string, result schema.AgentResult
 		run.PendingApprovals = nil
 		run.ResumeContext = nil
 	}
+	run.Artifacts = s.buildAgentRunArtifactsLocked(run, now)
 	eventType := "agent_run_completed"
 	if !isTerminalAgentRunStatus(status) {
 		eventType = "agent_run_paused"
@@ -284,6 +429,108 @@ func (s *State) CompleteAgentRun(runID, status string, result schema.AgentResult
 	}))
 	s.agentRuns[index] = run
 	return copyAgentRunSnapshot(run), true
+}
+
+// CompleteAgentRunDurable persists completion or suspension before durable API
+// readers can observe the transition.
+func (s *State) CompleteAgentRunDurable(runID, status string, result schema.AgentResult) (AgentRunSnapshot, bool, error) {
+	if s == nil {
+		return AgentRunSnapshot{}, false, nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	run, ok := s.CompleteAgentRun(runID, status, result)
+	if !ok {
+		return run, false, nil
+	}
+	return run, true, s.PersistConfigured()
+}
+
+func (s *State) ResumeAgentRunDurable(runID, reason string) (AgentRunSnapshot, bool, error) {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return AgentRunSnapshot{}, false, nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	now := workflowRunTimestamp(time.Now().UTC())
+	s.mu.Lock()
+	index := s.agentRunIndexLocked(runID)
+	if index < 0 || !strings.EqualFold(strings.TrimSpace(s.agentRuns[index].Status), "paused_need_more_budget") {
+		s.mu.Unlock()
+		return AgentRunSnapshot{}, false, nil
+	}
+	run := s.agentRuns[index]
+	run.Status = "running"
+	run.UpdatedAt = now
+	run.CompletedAt = ""
+	run.Events = appendAgentRunEventLocked(run.Events, s.normalizeAgentRunEventLocked(run.ID, AgentRunEventSnapshot{
+		At:          now,
+		Type:        "agent_run_continuation_started",
+		Content:     strings.TrimSpace(reason),
+		NeedsAction: false,
+		Reason:      "continue_output",
+	}))
+	s.agentRuns[index] = run
+	result := copyAgentRunSnapshot(run)
+	s.mu.Unlock()
+	return result, true, s.PersistConfigured()
+}
+
+// ReconcileInterruptedAgentRuns converts process-owned ordinary Agent work
+// into a durable state after restart. Runs with saved conversation state can
+// continue in place; runs without it must be retried from the original request.
+func (s *State) ReconcileInterruptedAgentRuns() (int, error) {
+	if s == nil {
+		return 0, nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	now := workflowRunTimestamp(time.Now().UTC())
+	count := 0
+	s.mu.Lock()
+	for i := range s.agentRuns {
+		run := s.agentRuns[i]
+		if !strings.EqualFold(strings.TrimSpace(run.Status), "running") {
+			continue
+		}
+		resumable := run.ResumeContext != nil &&
+			(run.ResumeContext.MessagesCount > 0 || len(run.ResumeContext.Messages) > 0) &&
+			(run.ResumeContext.CollectedResultCount > 0 || len(run.ResumeContext.CollectedResults) > 0)
+		content := "智能体运行因进程重启中断；请从原请求重新运行"
+		eventType := "agent_run_failed"
+		if resumable {
+			run.Status = "paused_need_more_budget"
+			run.CompletedAt = ""
+			content = "智能体运行因进程重启中断；已保留对话和工具结果，可继续生成"
+			eventType = "agent_run_paused"
+		} else {
+			run.Status = "failed"
+			run.CompletedAt = now
+			run.Error = content
+			run.ResumeContext = nil
+		}
+		run.UpdatedAt = now
+		run.Events = appendAgentRunEventLocked(run.Events, s.normalizeAgentRunEventLocked(run.ID, AgentRunEventSnapshot{
+			At:          now,
+			Type:        eventType,
+			Content:     content,
+			AgentID:     run.AgentID,
+			Mode:        run.Mode,
+			IsError:     !resumable,
+			NeedsAction: true,
+			Suspended:   resumable,
+			Reason:      "process_restart",
+			Severity:    "warning",
+			Incomplete:  true,
+		}))
+		s.agentRuns[i] = run
+		count++
+	}
+	s.mu.Unlock()
+	if count == 0 {
+		return 0, nil
+	}
+	return count, s.PersistConfigured()
 }
 
 // FailAgentRun marks an ordinary agent run as failed.
@@ -317,6 +564,21 @@ func (s *State) FailAgentRun(runID, message string) (AgentRunSnapshot, bool) {
 	return copyAgentRunSnapshot(run), true
 }
 
+// FailAgentRunDurable persists failure before durable API readers can observe
+// the terminal state.
+func (s *State) FailAgentRunDurable(runID, message string) (AgentRunSnapshot, bool, error) {
+	if s == nil {
+		return AgentRunSnapshot{}, false, nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	run, ok := s.FailAgentRun(runID, message)
+	if !ok {
+		return run, false, nil
+	}
+	return run, true, s.PersistConfigured()
+}
+
 // AppendAgentRunEvent adds a bounded replay event to an existing ordinary agent run record.
 func (s *State) AppendAgentRunEvent(runID string, event AgentRunEventSnapshot) {
 	if s == nil || strings.TrimSpace(runID) == "" {
@@ -341,13 +603,25 @@ func (s *State) AppendAgentRunEvent(runID string, event AgentRunEventSnapshot) {
 	if strings.TrimSpace(event.Mode) != "" {
 		run.Mode = strings.TrimSpace(event.Mode)
 	}
-	if event.Suspended || strings.EqualFold(event.Type, string(schema.StreamEventApproval)) {
-		run.Status = "awaiting_tool_approval"
-		run.PendingCallID = strings.TrimSpace(event.ToolCallID)
-		run.PendingTool = strings.TrimSpace(event.ToolName)
-		run.PendingAgentID = strings.TrimSpace(event.AgentID)
-	}
+	// Approval events are recorded immediately, but the actionable state is
+	// published by SetAgentRunResumeContext after the suspended conversation
+	// has been persisted. Exposing it here creates a retry/approval race.
 	event = s.normalizeAgentRunEventLocked(runID, event)
+	if strings.EqualFold(event.Type, "token_usage") {
+		if run.UsageRecords == nil {
+			run.UsageRecords = append([]UsageRecord(nil), AgentUsageRecords(run)...)
+		}
+		if event.Seq == 0 {
+			event.Seq = nextAgentRunEventSeq(run.Events)
+		}
+		agentID := event.AgentID
+		if strings.TrimSpace(agentID) == "" {
+			agentID = run.AgentID
+		}
+		record := UsageRecord{RunID: run.ID, RunType: "agent", Seq: event.Seq, At: event.At, AgentID: agentID, Stage: event.TaskStage, PromptTokens: event.PromptTokens, OutputTokens: event.OutputTokens, CachedTokens: event.CachedTokens}
+		run.UsageRecords = append(run.UsageRecords, record)
+		s.usageRecords = append(s.usageRecords, record)
+	}
 	run.Events = appendAgentRunEventLocked(run.Events, event)
 	run.UpdatedAt = now
 	s.agentRuns[index] = run
@@ -367,6 +641,9 @@ func (s *State) AppendAgentRunPendingApproval(runID string, approval PendingAppr
 		return
 	}
 	run := s.agentRuns[index]
+	if isTerminalAgentRunStatus(run.Status) {
+		return
+	}
 	run.Status = "awaiting_tool_approval"
 	run.PendingCallID = strings.TrimSpace(approval.CallID)
 	run.PendingTool = strings.TrimSpace(approval.ToolName)
@@ -399,11 +676,43 @@ func (s *State) SetAgentRunResumeContext(runID string, context AgentRunResumeCon
 		return AgentRunSnapshot{}, false
 	}
 	run := s.agentRuns[index]
+	if isTerminalAgentRunStatus(run.Status) {
+		return copyAgentRunSnapshot(run), false
+	}
 	copied := s.normalizeAgentRunResumeContextLocked(runID, context)
 	run.ResumeContext = &copied
+	if len(copied.SuspendedCalls) > 0 {
+		run.Status = "awaiting_tool_approval"
+	}
 	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
 	s.agentRuns[index] = run
 	return copyAgentRunSnapshot(run), true
+}
+
+// MarkAgentRunApprovalResuming hides the resolved approval while its saved
+// conversation is continuing. The resume context stays durable until the run
+// either publishes a new approval or reaches a terminal state.
+func (s *State) MarkAgentRunApprovalResuming(runID string) {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := s.agentRunIndexLocked(runID)
+	if index < 0 {
+		return
+	}
+	run := s.agentRuns[index]
+	if isTerminalAgentRunStatus(run.Status) {
+		return
+	}
+	run.Status = "running"
+	run.PendingCallID = ""
+	run.PendingTool = ""
+	run.PendingAgentID = ""
+	run.PendingApprovals = nil
+	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
+	s.agentRuns[index] = run
 }
 
 // ClearAgentRunPendingApproval removes one pending approval from an ordinary agent run.
@@ -446,8 +755,12 @@ func (s *State) AgentRuns() []AgentRunSnapshot {
 		return nil
 	}
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return copyAgentRunSnapshots(s.agentRuns)
+	runs := copyAgentRunSnapshots(s.agentRuns)
+	s.mu.RUnlock()
+	for i := range runs {
+		runs[i] = normalizeAgentRunApprovalState(s.HydrateAgentRun(runs[i]))
+	}
+	return runs
 }
 
 // AgentRun returns one ordinary agent run by id.
@@ -460,11 +773,54 @@ func (s *State) AgentRun(id string) (AgentRunSnapshot, bool) {
 		if run.ID == id {
 			copied := copyAgentRunSnapshot(run)
 			s.mu.RUnlock()
-			return s.HydrateAgentRun(copied), true
+			return normalizeAgentRunApprovalState(s.HydrateAgentRun(copied)), true
 		}
 	}
 	s.mu.RUnlock()
 	return AgentRunSnapshot{}, false
+}
+
+// normalizeAgentRunApprovalState repairs snapshots written between persisting
+// the ordinary resume context and persisting the matching approval metadata.
+// Suspended calls are the durable source of truth: retrying them as a new run
+// could duplicate workspace changes made earlier in the same turn.
+func normalizeAgentRunApprovalState(run AgentRunSnapshot) AgentRunSnapshot {
+	if run.ResumeContext == nil || len(run.ResumeContext.SuspendedCalls) == 0 || !strings.EqualFold(strings.TrimSpace(run.Status), "awaiting_tool_approval") {
+		return run
+	}
+	agentID := strings.TrimSpace(run.ResumeContext.AgentID)
+	if agentID == "" {
+		agentID = strings.TrimSpace(run.AgentID)
+	}
+	existing := make(map[string]struct{}, len(run.PendingApprovals))
+	for _, approval := range run.PendingApprovals {
+		if callID := strings.TrimSpace(approval.CallID); callID != "" {
+			existing[callID] = struct{}{}
+		}
+	}
+	for _, call := range run.ResumeContext.SuspendedCalls {
+		callID := strings.TrimSpace(call.ID)
+		if callID == "" {
+			continue
+		}
+		if _, ok := existing[callID]; !ok {
+			run.PendingApprovals = append(run.PendingApprovals, PendingApprovalSnapshot{
+				CallID:     callID,
+				ToolName:   strings.TrimSpace(call.Name),
+				AgentID:    agentID,
+				Arguments:  string(call.Arguments),
+				AgentRunID: strings.TrimSpace(run.ID),
+			})
+			existing[callID] = struct{}{}
+		}
+		run.PendingCallID = callID
+		run.PendingTool = strings.TrimSpace(call.Name)
+		run.PendingAgentID = agentID
+	}
+	if strings.TrimSpace(run.PendingCallID) != "" {
+		run.Status = "awaiting_tool_approval"
+	}
+	return run
 }
 
 func (s *State) agentRunIndexLocked(id string) int {
@@ -549,6 +905,10 @@ func copyAgentRunSnapshots(runs []AgentRunSnapshot) []AgentRunSnapshot {
 }
 
 func copyAgentRunSnapshot(run AgentRunSnapshot) AgentRunSnapshot {
+	run.UsageRecords = append([]UsageRecord(nil), AgentUsageRecords(run)...)
+	run.TargetID = normalizeRunTargetID(run.TargetID)
+	run.ResourcePins = CopyResourcePins(run.ResourcePins)
+	run.Attachments = append([]schema.AttachmentRef(nil), run.Attachments...)
 	if run.Result != nil {
 		copied := copyAgentResult(*run.Result)
 		run.Result = &copied
@@ -570,6 +930,10 @@ func copyAgentRunSnapshot(run AgentRunSnapshot) AgentRunSnapshot {
 	if run.ResumeContext != nil {
 		copied := copyAgentRunResumeContext(*run.ResumeContext)
 		run.ResumeContext = &copied
+	}
+	if run.TaskApproval != nil {
+		copied := *run.TaskApproval
+		run.TaskApproval = &copied
 	}
 	return run
 }
@@ -602,7 +966,7 @@ func deriveAgentRunArtifacts(run AgentRunSnapshot, createdAt string) []AgentRunA
 		items = append(items, AgentRunArtifactSnapshot{
 			ID:        agentRunArtifactID("final-output"),
 			Kind:      "output",
-			Title:     "Final output",
+			Title:     "最终输出",
 			Summary:   trimAgentRunText(run.Output),
 			Content:   run.Output,
 			Mime:      "text/markdown",
@@ -616,7 +980,7 @@ func deriveAgentRunArtifacts(run AgentRunSnapshot, createdAt string) []AgentRunA
 		items = append(items, AgentRunArtifactSnapshot{
 			ID:        agentRunArtifactID("error"),
 			Kind:      "error",
-			Title:     "Run error",
+			Title:     "运行错误",
 			Summary:   trimAgentRunText(run.Error),
 			Content:   run.Error,
 			Mime:      "text/plain",
@@ -631,7 +995,10 @@ func deriveAgentRunArtifacts(run AgentRunSnapshot, createdAt string) []AgentRunA
 	}
 	result := *run.Result
 	for i, toolResult := range result.ToolResults {
-		title := firstAgentRunArtifactValue(toolResult.ToolName, toolResult.CallID, "Tool result")
+		if !publishToolResultArtifact(toolResult) {
+			continue
+		}
+		title := firstAgentRunArtifactValue(toolResult.ToolName, toolResult.CallID, "工具结果")
 		metadata := agentRunArtifactMetadata(runID, "tool_result", map[string]string{
 			"is_error":  boolString(toolResult.IsError),
 			"denied":    boolString(toolResult.Denied),
@@ -654,12 +1021,15 @@ func deriveAgentRunArtifacts(run AgentRunSnapshot, createdAt string) []AgentRunA
 		})
 	}
 	for i, section := range result.Structured {
+		if !publishStructuredArtifact(section.Kind) {
+			continue
+		}
 		content := agentRunArtifactJSON(section)
 		summary := firstAgentRunArtifactValue(section.Summary, strings.Join(section.Items, "\n"), content)
 		items = append(items, AgentRunArtifactSnapshot{
 			ID:        agentRunArtifactIndexedID("structured", i+1, section.Title, section.Kind),
 			Kind:      firstAgentRunArtifactValue(section.Kind, "structured"),
-			Title:     firstAgentRunArtifactValue(section.Title, section.Kind, "Structured output"),
+			Title:     firstAgentRunArtifactValue(section.Title, section.Kind, "结构化输出"),
 			Summary:   trimAgentRunText(summary),
 			Content:   content,
 			Mime:      "application/json",
@@ -673,7 +1043,7 @@ func deriveAgentRunArtifacts(run AgentRunSnapshot, createdAt string) []AgentRunA
 		items = append(items, AgentRunArtifactSnapshot{
 			ID:        agentRunArtifactIndexedID("finding", i+1, finding.Summary, finding.Severity),
 			Kind:      "finding",
-			Title:     firstAgentRunArtifactValue(finding.Severity, "Finding"),
+			Title:     firstAgentRunArtifactValue(finding.Severity, "问题发现"),
 			Summary:   trimAgentRunText(finding.Summary),
 			Content:   agentRunArtifactJSON(finding),
 			Mime:      "application/json",
@@ -691,7 +1061,7 @@ func deriveAgentRunArtifacts(run AgentRunSnapshot, createdAt string) []AgentRunA
 		items = append(items, AgentRunArtifactSnapshot{
 			ID:        agentRunArtifactIndexedID("change", i+1, change.Summary),
 			Kind:      "change",
-			Title:     "Change",
+			Title:     "变更",
 			Summary:   trimAgentRunText(change.Summary),
 			Content:   agentRunArtifactJSON(change),
 			Mime:      "application/json",
@@ -704,11 +1074,14 @@ func deriveAgentRunArtifacts(run AgentRunSnapshot, createdAt string) []AgentRunA
 		})
 	}
 	for i, verification := range result.Verification {
+		if !publishVerificationArtifact(verification.Kind) {
+			continue
+		}
 		failed := strings.EqualFold(verification.Status, "failed") || strings.EqualFold(verification.Status, "fail")
 		items = append(items, AgentRunArtifactSnapshot{
 			ID:        agentRunArtifactIndexedID("verification", i+1, verification.Kind, verification.Status),
 			Kind:      "verification",
-			Title:     firstAgentRunArtifactValue(verification.Kind, "Verification"),
+			Title:     firstAgentRunArtifactValue(verification.Kind, "验证"),
 			Summary:   trimAgentRunText(firstAgentRunArtifactValue(verification.Detail, verification.Status)),
 			Content:   agentRunArtifactJSON(verification),
 			Mime:      "application/json",
@@ -722,7 +1095,10 @@ func deriveAgentRunArtifacts(run AgentRunSnapshot, createdAt string) []AgentRunA
 		})
 	}
 	for i, audit := range result.AuditTrail {
-		isError := strings.Contains(strings.ToLower(audit.Outcome), "error") || strings.Contains(strings.ToLower(audit.Outcome), "fail")
+		if !publishAuditArtifact(audit.Outcome) {
+			continue
+		}
+		isError := true
 		items = append(items, AgentRunArtifactSnapshot{
 			ID:        agentRunArtifactIndexedID("audit", i+1, audit.Type, audit.ToolName, audit.Outcome),
 			Kind:      "audit",

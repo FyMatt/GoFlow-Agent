@@ -2,6 +2,8 @@ package agent
 
 import (
 	"bytes"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,6 +11,15 @@ import (
 	"strings"
 	"unicode/utf8"
 )
+
+func toolArgumentsHash(arguments []byte) string {
+	canonical, err := canonicalToolArguments(arguments)
+	if err != nil {
+		canonical = bytes.TrimSpace(arguments)
+	}
+	digest := sha256.Sum256(canonical)
+	return "sha256:" + hex.EncodeToString(digest[:])
+}
 
 func summarizeToolArguments(arguments []byte) string {
 	trimmed := strings.TrimSpace(string(arguments))
@@ -39,7 +50,7 @@ func summarizeToolArguments(arguments []byte) string {
 		parts = append(parts, fmt.Sprintf("%s=%s", key, truncateToolSummaryValue(value)))
 	}
 
-	for _, key := range []string{"path", "file", "target", "command", "cmd", "name"} {
+	for _, key := range []string{"program", "cwd", "path", "file", "target", "command", "cmd", "name"} {
 		appendStringField(key)
 	}
 	if content, ok := args["content"].(string); ok {
@@ -104,5 +115,5 @@ func truncateToolSummaryValue(value string) string {
 	if len(value) <= 80 {
 		return value
 	}
-	return value[:77] + "..."
+	return trimWorkflowGraphContextValue(value, 77) + "..."
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/nativesandbox"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/internal/version"
 	"github.com/FyMatt/GoFlow-Agent/internal/workspace"
@@ -20,28 +21,38 @@ import (
 )
 
 type runtimeStatusResponse struct {
-	Version               string                `json:"version"`
-	ActiveAgent           string                `json:"active_agent"`
-	Mode                  string                `json:"mode"`
-	Trace                 bool                  `json:"trace"`
-	RuntimeHome           string                `json:"runtime_home,omitempty"`
-	Workspace             workspace.Snapshot    `json:"workspace"`
-	WorkspaceCapabilities workspaceCapabilities `json:"workspace_capabilities"`
-	WorkspaceActions      []workspaceActionHint `json:"workspace_actions,omitempty"`
-	Session               session.Snapshot      `json:"session"`
-	StatusLines           []string              `json:"status_lines"`
-	Providers             []providerSummary     `json:"providers"`
-	Agents                []agentSummary        `json:"agents"`
-	Skills                []skillSummary        `json:"skills"`
-	Tools                 []string              `json:"tools"`
-	MCPHealth             map[string]string     `json:"mcp_health"`
-	MCPServers            []mcpServerSummary    `json:"mcp_servers,omitempty"`
-	MCPIsolationModes     []mcpIsolationMode    `json:"mcp_isolation_modes,omitempty"`
-	Setup                 setupStatus           `json:"setup"`
-	Cost                  costDiagnostics       `json:"cost"`
-	Verifier              verifierSummary       `json:"verifier"`
-	Auxiliary             []auxiliarySummary    `json:"auxiliary_models,omitempty"`
-	ToolRiskPolicy        toolRiskPolicySummary `json:"tool_risk_policy"`
+	Version               string                   `json:"version"`
+	ActiveAgent           string                   `json:"active_agent"`
+	Mode                  string                   `json:"mode"`
+	Trace                 bool                     `json:"trace"`
+	RuntimeHome           string                   `json:"runtime_home,omitempty"`
+	DataRoot              string                   `json:"data_root,omitempty"`
+	Workspace             workspace.Snapshot       `json:"workspace"`
+	WorkspaceCapabilities workspaceCapabilities    `json:"workspace_capabilities"`
+	WorkspaceActions      []workspaceActionHint    `json:"workspace_actions,omitempty"`
+	Session               session.Snapshot         `json:"session"`
+	StatusLines           []string                 `json:"status_lines"`
+	Providers             []providerSummary        `json:"providers"`
+	Agents                []agentSummary           `json:"agents"`
+	Skills                []skillSummary           `json:"skills"`
+	Tools                 []string                 `json:"tools"`
+	MCPHealth             map[string]string        `json:"mcp_health"`
+	MCPServers            []mcpServerSummary       `json:"mcp_servers,omitempty"`
+	MCPIsolationModes     []mcpIsolationMode       `json:"mcp_isolation_modes,omitempty"`
+	NativeSandbox         nativesandbox.Report     `json:"native_sandbox"`
+	Setup                 setupStatus              `json:"setup"`
+	Cost                  costDiagnostics          `json:"cost"`
+	Verifier              verifierSummary          `json:"verifier"`
+	Auxiliary             []auxiliarySummary       `json:"auxiliary_models,omitempty"`
+	ToolRiskPolicy        toolRiskPolicySummary    `json:"tool_risk_policy"`
+	ExecutionTargets      []executionTargetSummary `json:"execution_targets"`
+}
+
+type executionTargetSummary struct {
+	ID          string `json:"id"`
+	Kind        string `json:"kind"`
+	DisplayName string `json:"display_name"`
+	Enabled     bool   `json:"enabled"`
 }
 
 type costDiagnostics struct {
@@ -228,6 +239,7 @@ type toolRiskPolicySandboxBoundary struct {
 
 type agentSummary struct {
 	ID               string            `json:"id"`
+	TargetScope      string            `json:"target_scope,omitempty"`
 	Name             string            `json:"name,omitempty"`
 	Description      string            `json:"description,omitempty"`
 	Mode             string            `json:"mode,omitempty"`
@@ -242,6 +254,7 @@ type providerSummary struct {
 	Provider              string   `json:"provider,omitempty"`
 	BaseURL               string   `json:"base_url,omitempty"`
 	Model                 string   `json:"model,omitempty"`
+	ReasoningEffort       string   `json:"reasoning_effort,omitempty"`
 	FallbackProvider      string   `json:"fallback_provider,omitempty"`
 	ProviderMessageFields []string `json:"provider_message_fields,omitempty"`
 	Timeout               string   `json:"timeout,omitempty"`
@@ -254,6 +267,7 @@ type providerSummary struct {
 
 type skillSummary struct {
 	Name             string   `json:"name"`
+	TargetScope      string   `json:"target_scope,omitempty"`
 	Description      string   `json:"description,omitempty"`
 	Mode             string   `json:"mode,omitempty"`
 	PreferredAgent   string   `json:"preferred_agent,omitempty"`
@@ -262,49 +276,44 @@ type skillSummary struct {
 }
 
 type mcpServerSummary struct {
-	Name                          string                          `json:"name"`
-	Enabled                       bool                            `json:"enabled"`
-	Health                        string                          `json:"health,omitempty"`
-	Command                       string                          `json:"command,omitempty"`
-	Args                          []string                        `json:"args,omitempty"`
-	WorkDir                       string                          `json:"workdir,omitempty"`
-	Isolation                     string                          `json:"isolation,omitempty"`
-	IsolationProfile              string                          `json:"isolation_profile,omitempty"`
-	IsolationLevel                string                          `json:"isolation_level"`
-	RiskLevel                     string                          `json:"risk_level"`
-	ContainerImage                string                          `json:"container_image,omitempty"`
-	ContainerImageReferenceType   string                          `json:"container_image_reference_type,omitempty"`
-	ContainerImageDigestPinned    *bool                           `json:"container_image_digest_pinned,omitempty"`
-	ContainerImageProductionReady *bool                           `json:"container_image_production_ready,omitempty"`
-	ContainerPullPolicy           string                          `json:"container_pull_policy,omitempty"`
-	Sandboxed                     bool                            `json:"sandboxed"`
-	NetworkDisabled               bool                            `json:"network_disabled,omitempty"`
-	NetworkEnforced               bool                            `json:"network_enforced"`
-	FilesystemSandboxed           bool                            `json:"filesystem_sandboxed"`
-	PrivilegeSandboxed            bool                            `json:"privilege_sandboxed"`
-	ResourceLimited               bool                            `json:"resource_limited"`
-	SandboxFeatures               []string                        `json:"sandbox_features,omitempty"`
-	MissingSandboxFeatures        []string                        `json:"missing_sandbox_features,omitempty"`
-	WindowsIsolation              *schema.WindowsIsolationProfile `json:"windows_isolation,omitempty"`
-	EnvAllowlistSet               bool                            `json:"env_allowlist_set"`
-	EnvAllowlist                  []string                        `json:"env_allowlist,omitempty"`
-	SensitiveEnv                  []string                        `json:"sensitive_env,omitempty"`
-	AllowedCommandsSet            bool                            `json:"allowed_commands_set"`
-	AllowedCommands               []string                        `json:"allowed_commands,omitempty"`
-	AllowedCommandPaths           []string                        `json:"allowed_command_paths,omitempty"`
-	MaxRequestBytes               int                             `json:"max_request_bytes,omitempty"`
-	MaxResponseBytes              int                             `json:"max_response_bytes,omitempty"`
-	MaxConcurrentCalls            int                             `json:"max_concurrent_calls,omitempty"`
-	ActiveCalls                   int                             `json:"active_calls,omitempty"`
-	QueuedCalls                   int                             `json:"queued_calls,omitempty"`
-	AvailableCallSlots            int                             `json:"available_call_slots,omitempty"`
-	RestartLimit                  int                             `json:"restart_limit,omitempty"`
-	Cooldown                      string                          `json:"cooldown,omitempty"`
-	SecurityBoundary              string                          `json:"security_boundary"`
-	Warnings                      []string                        `json:"warnings,omitempty"`
-	Recommendations               []string                        `json:"recommendations,omitempty"`
-	RequiresRealSandbox           bool                            `json:"requires_real_sandbox,omitempty"`
-	CanAccessHostOutside          bool                            `json:"can_access_host_outside_workspace"`
+	Name                   string                          `json:"name"`
+	TargetScope            string                          `json:"target_scope,omitempty"`
+	Enabled                bool                            `json:"enabled"`
+	Health                 string                          `json:"health,omitempty"`
+	Command                string                          `json:"command,omitempty"`
+	Args                   []string                        `json:"args,omitempty"`
+	WorkDir                string                          `json:"workdir,omitempty"`
+	Isolation              string                          `json:"isolation,omitempty"`
+	IsolationLevel         string                          `json:"isolation_level"`
+	RiskLevel              string                          `json:"risk_level"`
+	Sandboxed              bool                            `json:"sandboxed"`
+	NetworkDisabled        bool                            `json:"network_disabled,omitempty"`
+	NetworkEnforced        bool                            `json:"network_enforced"`
+	FilesystemSandboxed    bool                            `json:"filesystem_sandboxed"`
+	PrivilegeSandboxed     bool                            `json:"privilege_sandboxed"`
+	ResourceLimited        bool                            `json:"resource_limited"`
+	SandboxFeatures        []string                        `json:"sandbox_features,omitempty"`
+	MissingSandboxFeatures []string                        `json:"missing_sandbox_features,omitempty"`
+	WindowsIsolation       *schema.WindowsIsolationProfile `json:"windows_isolation,omitempty"`
+	EnvAllowlistSet        bool                            `json:"env_allowlist_set"`
+	EnvAllowlist           []string                        `json:"env_allowlist,omitempty"`
+	SensitiveEnv           []string                        `json:"sensitive_env,omitempty"`
+	AllowedCommandsSet     bool                            `json:"allowed_commands_set"`
+	AllowedCommands        []string                        `json:"allowed_commands,omitempty"`
+	AllowedCommandPaths    []string                        `json:"allowed_command_paths,omitempty"`
+	MaxRequestBytes        int                             `json:"max_request_bytes,omitempty"`
+	MaxResponseBytes       int                             `json:"max_response_bytes,omitempty"`
+	MaxConcurrentCalls     int                             `json:"max_concurrent_calls,omitempty"`
+	ActiveCalls            int                             `json:"active_calls,omitempty"`
+	QueuedCalls            int                             `json:"queued_calls,omitempty"`
+	AvailableCallSlots     int                             `json:"available_call_slots,omitempty"`
+	RestartLimit           int                             `json:"restart_limit,omitempty"`
+	Cooldown               string                          `json:"cooldown,omitempty"`
+	SecurityBoundary       string                          `json:"security_boundary"`
+	Warnings               []string                        `json:"warnings,omitempty"`
+	Recommendations        []string                        `json:"recommendations,omitempty"`
+	RequiresRealSandbox    bool                            `json:"requires_real_sandbox,omitempty"`
+	CanAccessHostOutside   bool                            `json:"can_access_host_outside_workspace"`
 }
 
 type mcpIsolationMode struct {
@@ -325,25 +334,11 @@ type mcpIsolationMode struct {
 	ResourceLimited        bool                     `json:"resource_limited"`
 	RequiresOptions        []string                 `json:"requires_options,omitempty"`
 	Options                []mcpIsolationModeOption `json:"options,omitempty"`
-	Profiles               []mcpIsolationProfile    `json:"profiles,omitempty"`
 	SandboxFeatures        []string                 `json:"sandbox_features,omitempty"`
 	MissingSandboxFeatures []string                 `json:"missing_sandbox_features,omitempty"`
 	Description            string                   `json:"description"`
 	Recommendation         string                   `json:"recommendation,omitempty"`
 	DisabledReason         string                   `json:"disabled_reason,omitempty"`
-}
-
-type mcpIsolationProfile struct {
-	Name           string            `json:"name"`
-	Label          string            `json:"label"`
-	Description    string            `json:"description"`
-	RecommendedFor []string          `json:"recommended_for,omitempty"`
-	DefaultOptions map[string]string `json:"default_options,omitempty"`
-	RiskLevel      string            `json:"risk_level,omitempty"`
-	RequiresDigest bool              `json:"requires_digest,omitempty"`
-	AllowsNetwork  bool              `json:"allows_network,omitempty"`
-	WorkspaceMount string            `json:"workspace_mount,omitempty"`
-	Recommendation string            `json:"recommendation,omitempty"`
 }
 
 type mcpIsolationModeOption struct {
@@ -496,17 +491,6 @@ func (s *Server) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 				},
 			},
 			{
-				InstallType: "docker",
-				PromptFlow: []string{
-					"compare the running image tag with the latest release tag",
-					"show docker pull and compose upgrade commands",
-				},
-				AutoUpdate: []string{
-					"do not self-update inside the container by default",
-					"let the host orchestrator pull and restart the container",
-				},
-			},
-			{
 				InstallType: "source-checkout",
 				PromptFlow: []string{
 					"check the upstream tag or branch status",
@@ -520,7 +504,7 @@ func (s *Server) handleUpdatePolicy(w http.ResponseWriter, r *http.Request) {
 		Notes: []string{
 			"update checks should be opt-in or clearly visible because they contact GitHub",
 			"offline deployments can disable checks and rely on manual release import",
-			"automatic replacement is safest for release archives; Docker and source installs should prefer prompted instructions",
+			"automatic replacement is safest for release archives; source installs should prefer prompted instructions",
 		},
 	})
 }
@@ -841,6 +825,7 @@ func (s *Server) runtimeStatus(r *http.Request) runtimeStatusResponse {
 		mode        string
 		trace       bool
 		runtimeHome string
+		dataRoot    string
 		statusLines []string
 		providers   []providerSummary
 		agents      []agentSummary
@@ -861,6 +846,7 @@ func (s *Server) runtimeStatus(r *http.Request) runtimeStatusResponse {
 		mode = s.runtime.Mode()
 		trace = s.runtime.TraceEnabled()
 		runtimeHome = s.runtime.RuntimeHome()
+		dataRoot = s.runtime.DataRoot()
 		fullSnapshot = s.sessionSnapshotWithApprovalRisk()
 		if fullDetails {
 			fullSnapshot = s.runtime.HydrateSnapshot(fullSnapshot)
@@ -883,6 +869,7 @@ func (s *Server) runtimeStatus(r *http.Request) runtimeStatusResponse {
 		Mode:                  mode,
 		Trace:                 trace,
 		RuntimeHome:           runtimeHome,
+		DataRoot:              dataRoot,
 		Workspace:             workspaceSnapshot,
 		WorkspaceCapabilities: workspaceCapabilitySummary(workspaceSnapshot, s.workspaceRebindSupported()),
 		WorkspaceActions:      workspaceActionHints(workspaceSnapshot, "", s.workspaceRebindSupported()),
@@ -895,11 +882,13 @@ func (s *Server) runtimeStatus(r *http.Request) runtimeStatusResponse {
 		MCPHealth:             mcpHealth,
 		MCPServers:            mcpServers,
 		MCPIsolationModes:     mcpIsolationModes(),
+		NativeSandbox:         nativesandbox.Probe(),
 		Setup:                 buildSetupStatus(providers),
 		Cost:                  s.runtimeCostDiagnostics(fullSnapshot),
 		Verifier:              verifier,
 		Auxiliary:             auxiliary,
 		ToolRiskPolicy:        s.toolRiskPolicySummary(),
+		ExecutionTargets:      s.executionTargetSummaries(),
 	}
 }
 
@@ -919,10 +908,22 @@ func (s *Server) toolRiskPolicySummary() toolRiskPolicySummary {
 		AppliesToKinds:                          []string{string(config.ToolKindWrite), string(config.ToolKindExec), string(config.ToolKindNetwork), string(config.ToolKindUnknown)},
 		RecognizedSandboxBoundaries: []toolRiskPolicySandboxBoundary{
 			{
-				Isolation:      "container",
+				Isolation:      "native_strong",
 				Scope:          "broad",
 				AppliesToKinds: []string{string(config.ToolKindWrite), string(config.ToolKindExec), string(config.ToolKindNetwork), string(config.ToolKindUnknown)},
-				Description:    "Container isolation is treated as the broad sandbox boundary for risky MCP tools when configured with an explicit runtime profile.",
+				Description:    "Native strong isolation is the broad sandbox boundary for risky MCP tools when the host reports it ready.",
+			},
+			{
+				Isolation:      "windows_restricted_token",
+				Scope:          "capability_specific",
+				AppliesToKinds: []string{string(config.ToolKindWrite), string(config.ToolKindExec), string(config.ToolKindUnknown)},
+				Description:    "Windows restricted tokens reduce privilege and constrain the process tree; filesystem and network policy still follow the host workspace and tool policy.",
+			},
+			{
+				Isolation:      "linux_landlock",
+				Scope:          "capability_specific",
+				AppliesToKinds: []string{string(config.ToolKindRead), string(config.ToolKindWrite), string(config.ToolKindExec)},
+				Description:    "Linux Landlock constrains filesystem access to the declared workspace and scratch paths.",
 			},
 			{
 				Isolation:      "linux_netns",
@@ -931,7 +932,7 @@ func (s *Server) toolRiskPolicySummary() toolRiskPolicySummary {
 				Description:    "Linux network namespaces satisfy this policy for network-kind tools only; they do not sandbox filesystem access, exec behavior, or privileges.",
 			},
 		},
-		UnsandboxedDefinition: "write, exec, network, or unknown tools that are not running through a real sandbox boundary; isolation: container covers risky tools broadly, while capability-specific enforced sandboxes such as isolation: linux_netns only cover matching network tools",
+		UnsandboxedDefinition: "write, exec, network, or unknown tools that are not running through a host-enforced native boundary; native_strong covers risky tools broadly, while capability-specific boundaries cover only their declared capability",
 		Recommendation:        "Enable these switches when untrusted MCP tools may be configured or when allow/remember policies should not bypass sandbox review.",
 	}
 	if policy.RequireApprovalForUnsandboxedRiskyTools {
@@ -945,7 +946,7 @@ func (s *Server) toolRiskPolicySummary() toolRiskPolicySummary {
 		summary.RememberBehavior = "remember/approve-all behavior follows the normal approval scope"
 	}
 	if policy.RejectUnsandboxedRiskyTools {
-		summary.RejectionBehavior = "unsandboxed risky tools are rejected before execution; run them with isolation: container or a capability-specific enforced sandbox such as isolation: linux_netns for network-only tools"
+		summary.RejectionBehavior = "unsandboxed risky tools are rejected before execution; run them with native_strong or a capability-specific native boundary"
 	} else {
 		summary.RejectionBehavior = "unsandboxed risky tools are not rejected solely by tool_risk_policy"
 	}
@@ -964,7 +965,7 @@ func mcpIsolationModes() []mcpIsolationMode {
 			IsolationLevel:  "none",
 			Sandboxed:       false,
 			Description:     "Starts the MCP server as a normal child process. Workspace-scoped tools and policy gates still apply, but there is no process sandbox.",
-			Recommendation:  "Use only for trusted local tools, or switch untrusted tools to container isolation.",
+			Recommendation:  "Use only for trusted local tools; untrusted tools require a native sandbox boundary.",
 		},
 		{
 			Name:                   "process_group",
@@ -977,7 +978,7 @@ func mcpIsolationModes() []mcpIsolationMode {
 			SandboxFeatures:        []string{"process_group_lifecycle"},
 			MissingSandboxFeatures: []string{"filesystem_policy", "network_policy", "privilege_reduction"},
 			Description:            "Starts the MCP server in a separate process group where supported, improving lifecycle cleanup without changing filesystem, network, or privilege access.",
-			Recommendation:         "Use as a lifecycle baseline for trusted local tools; use container isolation for a real security boundary.",
+			Recommendation:         "Use as a lifecycle baseline for trusted local tools; use native_strong for a real security boundary.",
 		},
 		{
 			Name:                   "windows_job",
@@ -991,7 +992,7 @@ func mcpIsolationModes() []mcpIsolationMode {
 			SandboxFeatures:        []string{"windows_job_object_lifecycle"},
 			MissingSandboxFeatures: []string{"windows_restricted_token", "filesystem_policy", "network_policy", "privilege_reduction"},
 			Description:            "Windows-only lifecycle adapter that attaches the MCP process to a kill-on-close Job Object. It does not restrict filesystem, network, or privileges.",
-			Recommendation:         "Use windows_restricted_token for privilege reduction, or container isolation when a filesystem or network boundary is required.",
+			Recommendation:         "Use windows_restricted_token for privilege reduction and host ACL policy for filesystem boundaries.",
 			DisabledReason:         mcpIsolationModePlatformDisabledReason("Windows-only isolation mode"),
 		},
 		{
@@ -1007,7 +1008,7 @@ func mcpIsolationModes() []mcpIsolationMode {
 			SandboxFeatures:        []string{"windows_restricted_token", "windows_low_integrity", "windows_job_object_lifecycle", "process_group_lifecycle"},
 			MissingSandboxFeatures: []string{"filesystem_policy", "network_policy"},
 			Description:            "Windows-only privilege-reduction adapter using a constrained restricted token, low integrity, and Job Object lifecycle cleanup.",
-			Recommendation:         "Treat this as privilege reduction only; use container isolation for filesystem and network policy.",
+			Recommendation:         "Treat this as privilege reduction; combine it with workspace ACL policy for filesystem boundaries.",
 			DisabledReason:         mcpIsolationModePlatformDisabledReason("Windows-only isolation mode"),
 		},
 		{
@@ -1024,7 +1025,7 @@ func mcpIsolationModes() []mcpIsolationMode {
 			SandboxFeatures:        []string{"linux_cgroup_resource_limits"},
 			MissingSandboxFeatures: []string{"filesystem_policy", "network_policy", "privilege_reduction"},
 			Description:            "Linux-only resource-control adapter for cgroup v2 CPU, memory, and process limits. It does not restrict filesystem, network, or privileges.",
-			Recommendation:         "Combine with container isolation or another filesystem/network boundary for untrusted tools.",
+			Recommendation:         "Combine with native_strong or Landlock when untrusted tools need filesystem and privilege boundaries.",
 			DisabledReason:         mcpIsolationModePlatformDisabledReason("Linux-only isolation mode"),
 		},
 		{
@@ -1041,31 +1042,8 @@ func mcpIsolationModes() []mcpIsolationMode {
 			SandboxFeatures:        []string{"linux_network_namespace"},
 			MissingSandboxFeatures: []string{"filesystem_policy", "privilege_reduction"},
 			Description:            "Linux-only network namespace adapter that starts the MCP process through unshare --net. It is network isolation only.",
-			Recommendation:         "Combine with container isolation or host sandboxing when filesystem or privilege boundaries are required.",
+			Recommendation:         "Combine with native_strong or Landlock when filesystem or privilege boundaries are required.",
 			DisabledReason:         mcpIsolationModePlatformDisabledReason("Linux-only isolation mode"),
-		},
-		{
-			Name:                   "container",
-			Label:                  "Container",
-			Platforms:              []string{"linux", "windows", "darwin"},
-			ConfigSupported:        goruntime.GOOS == "linux" || goruntime.GOOS == "windows" || goruntime.GOOS == "darwin",
-			Implemented:            true,
-			Recommended:            true,
-			RecommendedFor:         []string{"generated_tools", "third_party_tools", "write_tools", "exec_tools", "network_tools", "vulnerability_research_tools", "binary_analysis_tools", "untrusted_code"},
-			IsolationLevel:         "container_configured",
-			Sandboxed:              true,
-			NetworkEnforced:        true,
-			FilesystemSandboxed:    true,
-			PrivilegeSandboxed:     true,
-			ResourceLimited:        true,
-			RequiresOptions:        []string{"image"},
-			Options:                containerIsolationModeOptions(),
-			Profiles:               containerIsolationProfiles(),
-			SandboxFeatures:        []string{"container_runtime", "filesystem_mount_policy", "network_policy", "resource_limits", "privilege_controls"},
-			MissingSandboxFeatures: []string{},
-			Description:            "Runs the MCP server through Docker or Podman with explicit image, mounts, network mode, environment allowlist, and optional resource and privilege hardening.",
-			Recommendation:         "Use for untrusted third-party MCP servers and pin images, mounts, network, resource limits, and privilege hardening options.",
-			DisabledReason:         mcpIsolationModePlatformDisabledReason("Container isolation is supported on Linux, Windows, and macOS hosts with Docker or Podman"),
 		},
 	}
 }
@@ -1087,81 +1065,6 @@ func linuxNetworkNamespaceIsolationModeOptions() []mcpIsolationModeOption {
 	}
 }
 
-func containerIsolationModeOptions() []mcpIsolationModeOption {
-	return []mcpIsolationModeOption{
-		{Name: "image", Type: "string", Required: true, Description: "Container image used to run the MCP server.", Recommendation: "Use a trusted version tag or digest instead of a floating latest tag."},
-		{Name: "runtime", Type: "command", Default: "docker", AllowedValues: []string{"docker", "podman", "absolute_path"}, Description: "Container runtime command."},
-		{Name: "workspace_mount", Type: "enum", Default: "rw", AllowedValues: []string{"rw", "ro", "none"}, Description: "How the selected workspace is mounted into the container.", Recommendation: "Use ro for read-only tools and none when workspace access is unnecessary."},
-		{Name: "workspace_target", Type: "container_absolute_path", Default: "/workspace", Description: "Path exposed to the MCP server through GOFLOW_WORKSPACE_ROOT."},
-		{Name: "container_workdir", Type: "container_absolute_path", Description: "Optional container working directory."},
-		{Name: "network", Type: "enum_or_network_name", Default: "disabled when network_disabled is true", AllowedValues: []string{"default", "disabled", "none", "bridge", "host", "safe_network_name"}, Description: "Container network mode.", Recommendation: "Use disabled/none unless this MCP tool explicitly needs network access."},
-		{Name: "ipc", Type: "enum", Default: "private", AllowedValues: []string{"private", "none"}, Description: "Container IPC namespace mode.", Recommendation: "Use none for ordinary MCP tools that do not need shared memory or host IPC."},
-		{Name: "userns", Type: "enum", Default: "private", AllowedValues: []string{"private", "auto", "nomap", "keep-id"}, Description: "Container user namespace mode when supported by the runtime.", Recommendation: "Use auto or nomap on compatible runtimes to reduce host UID/GID exposure."},
-		{Name: "memory", Type: "size", Description: "Container memory limit, such as 256m."},
-		{Name: "memory_swap", Type: "size", Description: "Container memory plus swap limit. Set equal to memory to prevent extra swap allowance when supported."},
-		{Name: "cpus", Type: "positive_float", Description: "Container CPU limit, such as 0.5."},
-		{Name: "pids_limit", Type: "positive_integer", Description: "Maximum number of processes allowed in the container."},
-		{Name: "pull_policy", Type: "enum", Default: "runtime default", AllowedValues: []string{"always", "missing", "never"}, Description: "Container image pull policy passed to Docker/Podman.", Recommendation: "Use missing for normal use or never for production environments that pre-pull trusted images."},
-		{Name: "readonly_rootfs", Type: "boolean_string", Default: "false", Description: "Run the container with a read-only root filesystem.", Recommendation: "Enable when the image only needs declared mounts and tmpfs scratch paths."},
-		{Name: "no_new_privileges", Type: "boolean_string", Default: "false", Description: "Pass no-new-privileges to the container runtime.", Recommendation: "Enable unless the MCP server intentionally needs privilege transitions."},
-		{Name: "cap_drop", Type: "csv", AllowedValues: []string{"all", "capability_names"}, Description: "Linux capabilities to drop.", Recommendation: "Use all for ordinary MCP tools."},
-		{Name: "user", Type: "user_or_uid", Description: "Container user or UID/GID token.", Recommendation: "Use a non-root user when the image supports it."},
-		{Name: "security_opt", Type: "list", Description: "Semicolon, comma, or newline-separated container security options such as seccomp or AppArmor profiles."},
-		{Name: "tmpfs", Type: "list", Description: "Semicolon or newline-separated tmpfs mounts for intentional scratch paths, preserving commas inside each mount option."},
-		{Name: "init", Type: "boolean_string", Default: "false", Description: "Run a container init process for child-process reaping."},
-		{Name: "tool_source", Type: "host_absolute_path", Description: "Optional single generated tool file to mount into the container."},
-		{Name: "tool_target", Type: "container_absolute_path", Description: "Container path for the optional single generated tool file."},
-		{Name: "tool_mount", Type: "enum", Default: "ro", AllowedValues: []string{"ro", "rw", "none"}, Description: "Mount mode for the optional generated tool file.", Recommendation: "Keep ro unless the container must edit that tool file."},
-	}
-}
-
-func containerIsolationProfiles() []mcpIsolationProfile {
-	return []mcpIsolationProfile{
-		{
-			Name:           "readonly",
-			Label:          "Read-only helper",
-			Description:    "Hardened Docker/Podman defaults for tools that only need to inspect workspace files.",
-			RecommendedFor: []string{"read_tools", "static_analysis", "workspace_indexing", "untrusted_helpers"},
-			DefaultOptions: config.ContainerIsolationProfileDefaults("readonly"),
-			RiskLevel:      "low",
-			WorkspaceMount: "ro",
-			Recommendation: "Use this as the default for generated or third-party read-only MCP servers.",
-		},
-		{
-			Name:           "writer",
-			Label:          "Workspace writer",
-			Description:    "Hardened Docker/Podman defaults with read-write workspace access for tools that must create or edit files.",
-			RecommendedFor: []string{"write_tools", "code_generators", "formatters", "project_mutation"},
-			DefaultOptions: config.ContainerIsolationProfileDefaults("writer"),
-			RiskLevel:      "medium",
-			WorkspaceMount: "rw",
-			Recommendation: "Keep confirmation policy enabled and prefer exact allowed_tools for write-capable container MCP servers.",
-		},
-		{
-			Name:           "network",
-			Label:          "Network helper",
-			Description:    "Hardened Docker/Podman defaults with explicit bridge network egress and read-only workspace access.",
-			RecommendedFor: []string{"network_tools", "fetchers", "web_research", "asset_collection"},
-			DefaultOptions: config.ContainerIsolationProfileDefaults("network"),
-			RiskLevel:      "medium",
-			AllowsNetwork:  true,
-			WorkspaceMount: "ro",
-			Recommendation: "Use only for tools that need outbound network access and keep approval visible for network-capable agents.",
-		},
-		{
-			Name:           "production",
-			Label:          "Production locked-down",
-			Description:    "Read-only, network-disabled defaults with pull_policy=never for pre-pulled and digest-pinned production images.",
-			RecommendedFor: []string{"production", "pre_pulled_images", "immutable_image_references", "high_trust_deployments"},
-			DefaultOptions: config.ContainerIsolationProfileDefaults("production"),
-			RiskLevel:      "low",
-			RequiresDigest: true,
-			WorkspaceMount: "ro",
-			Recommendation: "Use image@sha256:... references and pre-pull trusted images before starting GoFlow in production.",
-		},
-	}
-}
-
 func mcpIsolationModePlatformDisabledReason(reason string) string {
 	if reason == "" {
 		return ""
@@ -1176,11 +1079,6 @@ func mcpIsolationModePlatformDisabledReason(reason string) string {
 			return ""
 		}
 	default:
-		if goruntime.GOOS == "linux" || goruntime.GOOS == "windows" || goruntime.GOOS == "darwin" {
-			if strings.HasPrefix(reason, "Container isolation") {
-				return ""
-			}
-		}
 	}
 	return reason + "; current platform is " + goruntime.GOOS + "."
 }
@@ -2111,6 +2009,7 @@ func (s *Server) providerSummaries() []providerSummary {
 			Provider:              provider.Provider,
 			BaseURL:               provider.BaseURL,
 			Model:                 provider.Model,
+			ReasoningEffort:       provider.ReasoningEffort,
 			FallbackProvider:      provider.FallbackProvider,
 			ProviderMessageFields: append([]string(nil), provider.ProviderMessageFields...),
 			Timeout:               provider.Timeout.String(),
@@ -2134,6 +2033,7 @@ func (s *Server) agentSummaries() []agentSummary {
 		}
 		out = append(out, agentSummary{
 			ID:               id,
+			TargetScope:      normalizeTargetScope(profile.TargetScope),
 			Name:             profile.Name,
 			Description:      profile.Description,
 			Mode:             profile.Mode,
@@ -2152,6 +2052,7 @@ func (s *Server) skillSummaries() []skillSummary {
 	for _, item := range items {
 		out = append(out, skillSummary{
 			Name:             item.Name,
+			TargetScope:      normalizeTargetScope(item.Metadata["target_scope"]),
 			Description:      item.Description,
 			Mode:             item.Mode,
 			PreferredAgent:   item.PreferredAgent,
@@ -2185,13 +2086,13 @@ func (s *Server) mcpServerSummaries(health map[string]string) []mcpServerSummary
 		}
 		summary := mcpServerSummary{
 			Name:                 name,
+			TargetScope:          normalizeTargetScope(server.TargetScope),
 			Enabled:              server.Enabled,
 			Health:               health[name],
 			Command:              server.Command,
 			Args:                 append([]string(nil), server.Args...),
 			WorkDir:              server.WorkDir,
 			Isolation:            isolation,
-			IsolationProfile:     strings.TrimSpace(server.IsolationProfile),
 			NetworkDisabled:      server.NetworkDisabled,
 			NetworkEnforced:      false,
 			FilesystemSandboxed:  false,
@@ -2238,7 +2139,7 @@ func (s *Server) mcpServerSummaries(health map[string]string) []mcpServerSummary
 			summary.SecurityBoundary = "Linux network namespace isolation is configured through unshare; network egress is isolated, but filesystem and privilege boundaries are not enforced."
 			summary.Warnings = append(summary.Warnings, "linux_netns requires host support and sufficient privileges for unshare --net; startup fails instead of falling back if unavailable")
 			summary.Warnings = append(summary.Warnings, "linux_netns is not a filesystem, mount, seccomp, or privilege sandbox")
-			summary.Recommendations = append(summary.Recommendations, "combine linux_netns with linux_cgroup, containers, or external sandboxing for broader isolation when running untrusted tools")
+			summary.Recommendations = append(summary.Recommendations, "use native_strong for broader filesystem, privilege, network, and resource isolation when running untrusted tools")
 		case "process_group":
 			summary.IsolationLevel = "lifecycle"
 			summary.SandboxFeatures = []string{"process_group_lifecycle"}
@@ -2274,139 +2175,18 @@ func (s *Server) mcpServerSummaries(health map[string]string) []mcpServerSummary
 			summary.RiskLevel = "medium"
 			summary.SecurityBoundary = "Windows restricted-token isolation lowers MCP process privileges and integrity level and attaches the process to a kill-on-close Job Object, but does not provide AppContainer, filesystem, or network policy."
 			summary.Warnings = append(summary.Warnings, "windows_restricted_token does not restrict filesystem paths or network egress by itself")
-			summary.Recommendations = append(summary.Recommendations, "use container isolation when untrusted tools need filesystem or network boundaries")
+			summary.Recommendations = append(summary.Recommendations, "use isolation: native_strong when untrusted tools need filesystem or network boundaries")
 		case "container":
-			options := normalizedIsolationOptions(server.IsolationOptions)
-			networkMode := containerSummaryNetworkMode(options["network"], server.NetworkDisabled)
-			workspaceMount := strings.ToLower(strings.TrimSpace(options["workspace_mount"]))
-			if workspaceMount == "" {
-				workspaceMount = "rw"
-			}
-			readOnlyRootFS := optionEnabled(options["readonly_rootfs"])
-			noNewPrivileges := optionEnabled(options["no_new_privileges"])
-			capDropAll := containerCapDropIncludesAll(options["cap_drop"])
-			tmpfsConfigured := strings.TrimSpace(options["tmpfs"]) != ""
-			securityOptConfigured := strings.TrimSpace(options["security_opt"]) != ""
-			initConfigured := optionEnabled(options["init"])
-			ipcIsolated := strings.EqualFold(strings.TrimSpace(options["ipc"]), "none")
-			userNamespaceConfigured := containerUserNamespaceConfigured(options["userns"])
-			containerUser := strings.TrimSpace(options["user"])
-			nonRootUser := containerUserLooksNonRoot(containerUser)
-			resourceLimitsComplete := containerResourceLimitsComplete(options)
-			summary.IsolationLevel = "container_configured"
-			summary.Sandboxed = true
-			summary.NetworkEnforced = networkMode == "none"
-			summary.FilesystemSandboxed = true
-			summary.PrivilegeSandboxed = true
-			summary.ResourceLimited = resourceLimitsComplete
-			summary.SandboxFeatures = []string{"container_runtime", "filesystem_mount_policy", "privilege_reduction"}
-			if summary.NetworkEnforced {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "network_policy")
-			} else {
-				summary.MissingSandboxFeatures = append(summary.MissingSandboxFeatures, "network_policy")
-			}
-			if summary.ResourceLimited {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "resource_limits")
-			} else {
-				summary.MissingSandboxFeatures = append(summary.MissingSandboxFeatures, "resource_limits")
-			}
-			if readOnlyRootFS {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "readonly_rootfs")
-			}
-			if noNewPrivileges {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "no_new_privileges")
-			}
-			if capDropAll {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "cap_drop_all")
-			}
-			if tmpfsConfigured {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "tmpfs_mounts")
-			}
-			if securityOptConfigured {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "custom_security_opts")
-			}
-			if ipcIsolated {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "ipc_namespace_none")
-			}
-			if userNamespaceConfigured {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "user_namespace")
-			}
-			if initConfigured {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "container_init")
-			}
-			if nonRootUser {
-				summary.SandboxFeatures = append(summary.SandboxFeatures, "non_root_user")
-			}
-			summary.RiskLevel = "medium"
-			image := strings.TrimSpace(options["image"])
-			imageReferenceType := containerImageReferenceType(image)
-			imageDigestPinned := imageReferenceType == "digest"
-			pullPolicy := strings.ToLower(strings.TrimSpace(options["pull_policy"]))
-			productionReadyImage := imageDigestPinned && pullPolicy == "never"
-			summary.ContainerImage = image
-			summary.ContainerImageReferenceType = imageReferenceType
-			summary.ContainerImageDigestPinned = boolPtr(imageDigestPinned)
-			summary.ContainerImageProductionReady = boolPtr(productionReadyImage)
-			summary.ContainerPullPolicy = pullPolicy
-			if summary.NetworkEnforced && summary.ResourceLimited && nonRootUser && !containerHasWritableMounts(options) && imageDigestPinned {
-				summary.RiskLevel = "low"
-			}
-			summary.SecurityBoundary = "Container isolation is configured; host access is limited to declared mounts, network mode, and container runtime policy."
-			summary.CanAccessHostOutside = false
-			summary.RequiresRealSandbox = false
-			if !summary.NetworkEnforced {
-				summary.Warnings = append(summary.Warnings, "container network is not disabled; configure isolation_options.network=disabled for network egress isolation")
-			}
-			if image != "" && !imageDigestPinned {
-				summary.Warnings = append(summary.Warnings, "container image is not pinned by digest; production deployments should prefer an immutable image@sha256:... reference")
-				summary.Recommendations = append(summary.Recommendations, "pin the container image to an immutable digest for production environments")
-			}
-			if strings.EqualFold(strings.TrimSpace(server.IsolationProfile), "production") {
-				if image != "" && !imageDigestPinned {
-					summary.Warnings = append(summary.Warnings, "production container profile requires an immutable image@sha256:... reference")
-				}
-				if pullPolicy != "never" {
-					summary.Warnings = append(summary.Warnings, "production container profile should use pull_policy=never with pre-pulled trusted images")
-					summary.Recommendations = append(summary.Recommendations, "set isolation_options.pull_policy=never after pre-pulling trusted digest-pinned MCP images")
-				}
-			}
-			if !summary.ResourceLimited {
-				summary.Warnings = append(summary.Warnings, "container CPU, memory, and process-count resource limits are incomplete")
-			}
-			if workspaceMount == "rw" || workspaceMount == "readwrite" {
-				summary.Warnings = append(summary.Warnings, "container can modify the mounted workspace")
-			}
-			if containerUser != "" && !nonRootUser {
-				summary.Warnings = append(summary.Warnings, "container explicitly runs as root; configure a non-root isolation_options.user unless writable bind mounts require host-compatible permissions")
-			}
-			if !noNewPrivileges {
-				summary.Recommendations = append(summary.Recommendations, "set isolation_options.no_new_privileges=true for stronger container privilege hardening")
-			}
-			if !capDropAll {
-				summary.Recommendations = append(summary.Recommendations, "set isolation_options.cap_drop=all when the MCP server does not need Linux capabilities")
-			}
-			if !readOnlyRootFS {
-				summary.Recommendations = append(summary.Recommendations, "set isolation_options.readonly_rootfs=true when the MCP server can run without writing to the image filesystem")
-			} else if !tmpfsConfigured {
-				summary.Recommendations = append(summary.Recommendations, "add isolation_options.tmpfs for intentional scratch paths such as /tmp when readonly_rootfs is enabled")
-			}
-			if !ipcIsolated {
-				summary.Recommendations = append(summary.Recommendations, "set isolation_options.ipc=none for ordinary MCP tools that do not need shared memory or host IPC")
-			}
-			if !userNamespaceConfigured {
-				summary.Recommendations = append(summary.Recommendations, "set isolation_options.userns=auto or nomap on compatible runtimes to reduce host UID/GID exposure")
-			}
-			if !initConfigured {
-				summary.Recommendations = append(summary.Recommendations, "set isolation_options.init=true for MCP servers that may spawn child processes")
-			}
-			if !nonRootUser && !containerHasWritableMounts(options) {
-				summary.Recommendations = append(summary.Recommendations, "set isolation_options.user to a non-root UID:GID when the MCP server does not need root")
-			}
+			summary.IsolationLevel = "removed"
+			summary.RiskLevel = "high"
+			summary.SecurityBoundary = "Container isolation has been removed; this configuration cannot be started."
+			summary.Warnings = append(summary.Warnings, "replace isolation: container with isolation: auto or native_strong")
+
 		default:
 			summary.IsolationLevel = "none"
 			summary.MissingSandboxFeatures = []string{"process_lifecycle_isolation", "filesystem_policy", "network_policy", "privilege_reduction"}
 			summary.RiskLevel = "high"
-			summary.SecurityBoundary = "No OS/container sandbox is configured; only GoFlow tool policy, command allowlists, and workspace-aware tool behavior apply."
+			summary.SecurityBoundary = "No OS sandbox is configured; only GoFlow tool policy, command allowlists, and workspace-aware tool behavior apply."
 			summary.Warnings = append(summary.Warnings, "no process, filesystem, network, or privilege sandbox is enforced for this MCP server")
 		}
 		if server.NetworkDisabled && !summary.NetworkEnforced {
@@ -2422,7 +2202,7 @@ func (s *Server) mcpServerSummaries(health map[string]string) []mcpServerSummary
 			summary.Recommendations = append(summary.Recommendations, "remove API keys, tokens, passwords, and cloud credentials from env_allowlist unless the MCP server absolutely requires them")
 		}
 		if !summary.Sandboxed {
-			summary.Recommendations = append(summary.Recommendations, "use container isolation before running untrusted MCP servers")
+			summary.Recommendations = append(summary.Recommendations, "use isolation: auto or native_strong before running untrusted MCP servers")
 		}
 		out = append(out, summary)
 	}
@@ -2493,10 +2273,6 @@ func firstPositive(values ...int) int {
 	return 0
 }
 
-func boolPtr(value bool) *bool {
-	return &value
-}
-
 func sensitiveEnvAllowlistEntries(values []string) []string {
 	var sensitive []string
 	for _, name := range sanitizedEnvAllowlist(values) {
@@ -2538,50 +2314,20 @@ func isSensitiveEnvName(name string) bool {
 		strings.HasSuffix(upper, "_PASSWORD")
 }
 
-func normalizedIsolationOptions(options map[string]string) map[string]string {
-	out := make(map[string]string, len(options))
-	for key, value := range options {
-		key = strings.ToLower(strings.TrimSpace(key))
-		if key == "" {
-			continue
-		}
-		out[key] = strings.TrimSpace(value)
-	}
-	return out
-}
-
-func containerSummaryNetworkMode(value string, networkDisabled bool) string {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" || value == "default" {
-		if networkDisabled {
-			return "none"
-		}
-		return ""
-	}
-	if value == "disabled" {
-		return "none"
-	}
-	return value
-}
-
-func containerUserNamespaceConfigured(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "auto", "nomap", "keep-id":
-		return true
-	default:
-		return false
-	}
-}
-
-func optionEnabled(value string) bool {
-	return strings.EqualFold(strings.TrimSpace(value), "true")
-}
-
 func buildSetupStatus(providers []providerSummary) setupStatus {
 	env := providerEnvStatus(providers)
 	providerStatuses := providerSetupStatuses(providers)
-	missing := make([]string, 0)
+	primaryStatuses := make([]providerSetupStatus, 0, 1)
 	for _, provider := range providerStatuses {
+		if strings.EqualFold(strings.TrimSpace(provider.ID), "primary") {
+			primaryStatuses = append(primaryStatuses, provider)
+		}
+	}
+	if len(primaryStatuses) == 0 && len(providerStatuses) > 0 {
+		primaryStatuses = providerStatuses[:1]
+	}
+	missing := make([]string, 0)
+	for _, provider := range primaryStatuses {
 		for _, field := range provider.Missing {
 			missing = append(missing, provider.ID+"."+field)
 		}
@@ -2589,7 +2335,7 @@ func buildSetupStatus(providers []providerSummary) setupStatus {
 	return setupStatus{
 		Env:                   env,
 		Providers:             providerStatuses,
-		ModelReady:            len(providers) > 0 && len(missing) == 0,
+		ModelReady:            len(primaryStatuses) > 0 && len(missing) == 0,
 		MissingProviderFields: missing,
 	}
 }

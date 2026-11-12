@@ -6,6 +6,8 @@
 
 Skills are stored as folders under `skills/`, each containing a `SKILL.md` file.
 
+Explicit tool lists on the agent, skill and workflow stage intersect. A connected MCP tool may therefore be unavailable to a particular skill. Include the installed tools the skill needs in its `tools` list; `required: false` permits loading when a dependency is absent and does not bypass other permission layers. Inspect injected tools and filtering reasons in the run context when diagnosing visibility.
+
 A skill has two parts:
 1. YAML frontmatter for structured metadata
 2. Markdown instructions for runtime guidance
@@ -144,9 +146,9 @@ isolated. The script receives JSON arguments on stdin and in
 code, duration, timeout status, declared metadata, and JSON-output validation
 when requested.
 
-Use `isolation: container` in the `skill_runner` MCP server configuration when
-script execution needs a real Docker/Podman sandbox. Script metadata documents
-intent, but enforcement comes from the MCP server configuration.
+Use `isolation: auto` or `native_strong` in the `skill_runner` MCP connection
+for third-party scripts. Script metadata documents intent; enforcement comes
+from the native MCP execution boundary.
 
 ## Matching
 

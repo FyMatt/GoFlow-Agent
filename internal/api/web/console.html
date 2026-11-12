@@ -1,124 +1,65 @@
 <!doctype html>
-<html lang="en">
+<html lang="zh-CN">
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>GoFlow Console</title>
+  <title>本地智能体工作流平台</title>
+  <link rel="icon" type="image/svg+xml" href="/assets/brand-mark.svg">
   <script>
     (function () {
       try {
         var stored = localStorage.getItem("goflow.theme");
         var theme = stored === "dark" ? "dark" : "light";
-        var mode = localStorage.getItem("goflow.experienceMode") === "expert" ? "expert" : "simple";
         document.documentElement.dataset.theme = theme;
-        document.documentElement.dataset.experience = mode;
       } catch (error) {
         document.documentElement.dataset.theme = "light";
-        document.documentElement.dataset.experience = "simple";
       }
     }());
   </script>
   <link rel="stylesheet" href="/assets/styles.css">
-  <link rel="stylesheet" href="/assets/styles-enhanced.css">
+  <link rel="stylesheet" href="/assets/styles-workbench.css">
 </head>
 <body>
-  <a class="skip-link" href="#mainContent" data-i18n="common.skipToMain">Skip to main content</a>
+  <a class="skip-link" href="#mainContent" data-i18n="common.skipToMain">跳到主要内容</a>
   <div class="shell" data-app-shell>
-    <aside class="sidebar" data-tour-id="shell-sidebar">
-      <div class="brand" data-tour-id="shell-brand">
-        <div class="brand-mark">GF</div>
+    <aside class="sidebar">
+      <div class="brand">
+        <img class="brand-mark" src="/assets/brand-mark.svg" alt="" width="32" height="32">
         <div class="brand-copy">
           <strong>GoFlow</strong>
-          <span data-i18n="brand.subtitle">Agent Workbench</span>
+          <span data-i18n="brand.subtitle">本地智能体工作流平台</span>
         </div>
-        <button id="sidebarToggle" class="ghost-button sidebar-toggle" type="button" aria-label="Collapse sidebar" title="Collapse sidebar">
+        <button id="sidebarToggle" class="ghost-button sidebar-toggle" type="button" aria-label="收起侧栏" title="收起侧栏">
           <span class="sidebar-toggle-icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round">
-              <path d="M15 6l-6 6 6 6"></path>
+            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round">
+              <rect width="18" height="18" x="3" y="3" rx="2"></rect>
+              <path d="M9 3v18"></path>
             </svg>
           </span>
         </button>
       </div>
 
-      <div class="nav-group">
-        <p class="nav-group-label" data-i18n="nav.group.discover">Start</p>
-        <nav class="nav" aria-label="Console sections" data-i18n-aria-label="nav.sections.console">
-          <button data-view="overview" data-label-key="nav.overview" data-icon="overview" class="active" data-tour-id="nav-overview">Overview</button>
+      <div class="nav-group nav-primary" data-primary-nav>
+        <nav class="nav" aria-label="主导航" data-i18n-aria-label="nav.sections.primary">
+          <button data-view="playground" data-label-key="nav.playground" data-icon="playground" class="active">任务</button>
+          <button data-view="workflows" data-label-key="nav.workflows" data-icon="workflows">工作流</button>
+          <button data-view="catalog" data-label-key="nav.catalog" data-icon="catalog">资源</button>
+          <button data-view="usage" data-label-key="nav.usage" data-icon="usage">用量</button>
+          <button data-view="settings" data-label-key="nav.settings" data-icon="settings">设置</button>
         </nav>
       </div>
 
-      <div class="nav-group">
-        <p class="nav-group-label" data-i18n="nav.group.build">Build</p>
-        <nav class="nav" aria-label="Build sections" data-i18n-aria-label="nav.sections.build">
-          <button data-view="workflows" data-label-key="nav.workflows" data-icon="workflows" data-tour-id="nav-workflows">Workflows</button>
-          <button data-view="catalog" data-label-key="nav.catalog" data-icon="catalog" data-tour-id="nav-catalog">Resources</button>
-        </nav>
-      </div>
-
-      <div class="nav-group">
-        <p class="nav-group-label" data-i18n="nav.group.run">Run</p>
-        <nav class="nav" aria-label="Run sections" data-i18n-aria-label="nav.sections.run">
-          <button data-view="playground" data-label-key="nav.playground" data-icon="playground" data-tour-id="nav-playground">Run</button>
-          <button data-view="approvals" data-label-key="nav.approvals" data-icon="approvals" data-tour-id="nav-approvals">Approvals</button>
-        </nav>
-      </div>
-
-      <div class="nav-group">
-        <p class="nav-group-label" data-i18n="nav.group.observe">Manage</p>
-        <nav class="nav" aria-label="Observe and setup sections" data-i18n-aria-label="nav.sections.observe">
-          <button data-view="status" data-label-key="nav.status" data-icon="status" data-tour-id="nav-status">Status</button>
-          <button data-view="memory" data-label-key="nav.memory" data-icon="memory" data-tour-id="nav-memory">Memory</button>
-          <button data-view="workspace" data-label-key="nav.workspace" data-icon="workspace" data-tour-id="nav-workspace">Workspace</button>
-          <button data-view="settings" data-label-key="nav.settings" data-icon="settings" data-tour-id="nav-settings">Settings</button>
-        </nav>
-      </div>
-
-      <div class="sidebar-footer">
-        <div class="side-status" id="sideStatus" data-i18n="common.loading">Loading...</div>
-      </div>
     </aside>
 
     <main id="mainContent" class="main" tabindex="-1">
-      <header class="topbar" data-tour-id="shell-topbar">
+      <header class="topbar">
         <div class="topbar-copy">
-          <p class="eyebrow" id="sectionEyebrow">Build reusable flows</p>
-          <h1 id="sectionTitle">Workflows</h1>
-        </div>
-        <div class="top-actions">
-          <button id="tourToggle" class="ghost-button" data-tour-id="tour-toggle" data-i18n="tour.start">Start tour</button>
-          <div id="experienceToggle" class="experience-toggle" role="group" aria-label="Experience mode" data-i18n-aria-label="experience.aria">
-            <button type="button" data-experience-mode="simple" aria-pressed="true" data-i18n="experience.simple">Normal</button>
-            <button type="button" data-experience-mode="expert" aria-pressed="false" data-i18n="experience.expert">Expert</button>
-          </div>
-          <button id="themeToggle" class="ghost-button theme-toggle" type="button" aria-live="polite">Theme</button>
-          <select id="languageSelect" aria-label="Language" data-i18n-aria-label="common.language">
-            <option value="en">English</option>
-            <option value="zh">中文</option>
-          </select>
-          <div class="runtime-pill" id="runtimePill">runtime</div>
+          <p class="eyebrow" id="sectionEyebrow">构建可复用流程</p>
+          <h1 id="sectionTitle">工作流</h1>
         </div>
       </header>
       <section id="app" class="view"></section>
     </main>
-  </div>
-
-  <div id="tourOverlay" class="tour-overlay hidden" aria-hidden="true">
-    <div class="tour-backdrop"></div>
-    <div class="tour-hole"></div>
-    <aside class="tour-popover" role="dialog" aria-live="polite" aria-label="Guided tour" data-i18n-aria-label="tour.dialogLabel">
-      <div class="tour-popover-head">
-        <span id="tourBadge" class="badge badge-tour" data-i18n="settings.guidedTour">Guided tour</span>
-        <strong id="tourStepCounter">1 / 1</strong>
-      </div>
-      <h2 id="tourTitle">Title</h2>
-      <p id="tourBody"></p>
-      <div id="tourMeta" class="tour-meta"></div>
-      <div class="tour-actions">
-        <button id="tourSkip" class="ghost-button" data-i18n="tour.skip">Skip</button>
-        <button id="tourPrev" data-i18n="tour.back">Back</button>
-        <button id="tourNext" class="primary" data-i18n="tour.next">Next</button>
-      </div>
-    </aside>
   </div>
 
   <script type="module" src="/assets/app.js"></script>

@@ -16,6 +16,7 @@ import (
 var embeddedKitPresetFS embed.FS
 
 type KitPreset struct {
+	Routing             *KitRouting       `json:"routing,omitempty" yaml:"routing,omitempty"`
 	Name                string            `json:"name" yaml:"name"`
 	DefaultKitName      string            `json:"default_kit_name,omitempty" yaml:"default_kit_name,omitempty"`
 	Title               string            `json:"title" yaml:"title"`
@@ -47,19 +48,18 @@ type KitExample struct {
 }
 
 type KitVerticalPack struct {
-	Domain            string                     `json:"domain,omitempty" yaml:"domain,omitempty"`
-	Maturity          string                     `json:"maturity,omitempty" yaml:"maturity,omitempty"`
-	Summary           string                     `json:"summary,omitempty" yaml:"summary,omitempty"`
-	SupportedTasks    []string                   `json:"supported_tasks,omitempty" yaml:"supported_tasks,omitempty"`
-	RequiredInputs    []string                   `json:"required_inputs,omitempty" yaml:"required_inputs,omitempty"`
-	ToolBoundaries    []string                   `json:"tool_boundaries,omitempty" yaml:"tool_boundaries,omitempty"`
-	SafetyGates       []string                   `json:"safety_gates,omitempty" yaml:"safety_gates,omitempty"`
-	QualityGates      []string                   `json:"quality_gates,omitempty" yaml:"quality_gates,omitempty"`
-	EvidenceArtifacts []string                   `json:"evidence_artifacts,omitempty" yaml:"evidence_artifacts,omitempty"`
-	SimpleMode        []string                   `json:"simple_mode,omitempty" yaml:"simple_mode,omitempty"`
-	ExpertMode        []string                   `json:"expert_mode,omitempty" yaml:"expert_mode,omitempty"`
-	TokenStrategy     []string                   `json:"token_strategy,omitempty" yaml:"token_strategy,omitempty"`
-	ModelRoutes       KitVerticalPackModelRoutes `json:"model_routes,omitempty" yaml:"model_routes,omitempty"`
+	Domain               string                     `json:"domain,omitempty" yaml:"domain,omitempty"`
+	Maturity             string                     `json:"maturity,omitempty" yaml:"maturity,omitempty"`
+	Summary              string                     `json:"summary,omitempty" yaml:"summary,omitempty"`
+	SupportedTasks       []string                   `json:"supported_tasks,omitempty" yaml:"supported_tasks,omitempty"`
+	RequiredInputs       []string                   `json:"required_inputs,omitempty" yaml:"required_inputs,omitempty"`
+	ToolBoundaries       []string                   `json:"tool_boundaries,omitempty" yaml:"tool_boundaries,omitempty"`
+	SafetyGates          []string                   `json:"safety_gates,omitempty" yaml:"safety_gates,omitempty"`
+	QualityGates         []string                   `json:"quality_gates,omitempty" yaml:"quality_gates,omitempty"`
+	EvidenceArtifacts    []string                   `json:"evidence_artifacts,omitempty" yaml:"evidence_artifacts,omitempty"`
+	PresentationGuidance []string                   `json:"presentation_guidance,omitempty" yaml:"presentation_guidance,omitempty"`
+	TokenStrategy        []string                   `json:"token_strategy,omitempty" yaml:"token_strategy,omitempty"`
+	ModelRoutes          KitVerticalPackModelRoutes `json:"model_routes,omitempty" yaml:"model_routes,omitempty"`
 }
 
 type KitVerticalPackModelRoutes struct {
@@ -257,6 +257,7 @@ func normalizeKitPreset(preset KitPreset) KitPreset {
 		}
 		preset.Metadata = meta
 	}
+	preset.Routing = NormalizeKitRouting(preset.Routing)
 	preset.VerticalPack = normalizeKitVerticalPack(preset.VerticalPack)
 	return preset
 }
@@ -288,6 +289,7 @@ func cloneKitPreset(preset KitPreset) KitPreset {
 		}
 		preset.Metadata = meta
 	}
+	preset.Routing = NormalizeKitRouting(preset.Routing)
 	preset.VerticalPack = cloneKitVerticalPack(preset.VerticalPack)
 	return preset
 }
@@ -306,8 +308,7 @@ func normalizeKitVerticalPack(pack *KitVerticalPack) *KitVerticalPack {
 	normalized.SafetyGates = normalizeStringList(normalized.SafetyGates, true)
 	normalized.QualityGates = normalizeStringList(normalized.QualityGates, true)
 	normalized.EvidenceArtifacts = normalizeStringList(normalized.EvidenceArtifacts, true)
-	normalized.SimpleMode = normalizeStringList(normalized.SimpleMode, true)
-	normalized.ExpertMode = normalizeStringList(normalized.ExpertMode, true)
+	normalized.PresentationGuidance = normalizeStringList(normalized.PresentationGuidance, true)
 	normalized.TokenStrategy = normalizeStringList(normalized.TokenStrategy, true)
 	normalized.ModelRoutes.Strong = normalizeStringList(normalized.ModelRoutes.Strong, true)
 	normalized.ModelRoutes.Worker = normalizeStringList(normalized.ModelRoutes.Worker, true)
@@ -316,7 +317,7 @@ func normalizeKitVerticalPack(pack *KitVerticalPack) *KitVerticalPack {
 		len(normalized.SupportedTasks) == 0 && len(normalized.RequiredInputs) == 0 &&
 		len(normalized.ToolBoundaries) == 0 && len(normalized.SafetyGates) == 0 &&
 		len(normalized.QualityGates) == 0 && len(normalized.EvidenceArtifacts) == 0 &&
-		len(normalized.SimpleMode) == 0 && len(normalized.ExpertMode) == 0 &&
+		len(normalized.PresentationGuidance) == 0 &&
 		len(normalized.TokenStrategy) == 0 && len(normalized.ModelRoutes.Strong) == 0 &&
 		len(normalized.ModelRoutes.Worker) == 0 && len(normalized.ModelRoutes.Verifier) == 0 {
 		return nil
@@ -335,8 +336,7 @@ func cloneKitVerticalPack(pack *KitVerticalPack) *KitVerticalPack {
 	clone.SafetyGates = append([]string(nil), pack.SafetyGates...)
 	clone.QualityGates = append([]string(nil), pack.QualityGates...)
 	clone.EvidenceArtifacts = append([]string(nil), pack.EvidenceArtifacts...)
-	clone.SimpleMode = append([]string(nil), pack.SimpleMode...)
-	clone.ExpertMode = append([]string(nil), pack.ExpertMode...)
+	clone.PresentationGuidance = append([]string(nil), pack.PresentationGuidance...)
 	clone.TokenStrategy = append([]string(nil), pack.TokenStrategy...)
 	clone.ModelRoutes.Strong = append([]string(nil), pack.ModelRoutes.Strong...)
 	clone.ModelRoutes.Worker = append([]string(nil), pack.ModelRoutes.Worker...)

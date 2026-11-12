@@ -4,18 +4,33 @@ import (
 	"encoding/json"
 	"fmt"
 	"strings"
+	"sync/atomic"
 
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
+var fallbackToolCallSequence atomic.Uint64
+
 type openAIRequest struct {
-	Model         string               `json:"model"`
-	Messages      []openAIMessage      `json:"messages"`
-	Tools         []openAITool         `json:"tools,omitempty"`
-	Temperature   float64              `json:"temperature,omitempty"`
-	MaxTokens     int                  `json:"max_tokens,omitempty"`
-	Stream        bool                 `json:"stream,omitempty"`
-	StreamOptions *openAIStreamOptions `json:"stream_options,omitempty"`
+	Model           string                `json:"model"`
+	Messages        []openAIMessage       `json:"messages"`
+	Tools           []openAITool          `json:"tools,omitempty"`
+	ToolChoice      string                `json:"tool_choice,omitempty"`
+	ResponseFormat  *openAIResponseFormat `json:"response_format,omitempty"`
+	Temperature     float64               `json:"temperature,omitempty"`
+	MaxTokens       int                   `json:"max_tokens,omitempty"`
+	ReasoningEffort string                `json:"reasoning_effort,omitempty"`
+	Thinking        *openAIThinking       `json:"thinking,omitempty"`
+	Stream          bool                  `json:"stream,omitempty"`
+	StreamOptions   *openAIStreamOptions  `json:"stream_options,omitempty"`
+}
+
+type openAIThinking struct {
+	Type string `json:"type"`
+}
+
+type openAIResponseFormat struct {
+	Type string `json:"type"`
 }
 
 type openAIStreamOptions struct {
@@ -23,20 +38,42 @@ type openAIStreamOptions struct {
 }
 
 type openAIMessage struct {
-	Role           string           `json:"role"`
-	Content        string           `json:"content,omitempty"`
-	Name           string           `json:"name,omitempty"`
-	ToolCalls      []openAIToolCall `json:"tool_calls,omitempty"`
-	ToolCallID     string           `json:"tool_call_id,omitempty"`
-	ProviderFields providerFields   `json:"-"`
+	Role           string              `json:"role"`
+	Content        string              `json:"-"`
+	ContentParts   []openAIContentPart `json:"-"`
+	Name           string              `json:"name,omitempty"`
+	ToolCalls      []openAIToolCall    `json:"tool_calls,omitempty"`
+	ToolCallID     string              `json:"tool_call_id,omitempty"`
+	ProviderFields providerFields      `json:"-"`
+}
+
+type openAIContentPart struct {
+	Type     string          `json:"type"`
+	Text     string          `json:"text,omitempty"`
+	ImageURL *openAIImageURL `json:"image_url,omitempty"`
+}
+
+type openAIImageURL struct {
+	URL string `json:"url"`
 }
 
 func (m openAIMessage) MarshalJSON() ([]byte, error) {
-	type alias openAIMessage
-	payload := struct {
-		alias
-		ProviderFields providerFields `json:"-"`
-	}{alias: alias(m)}
+	payload := make(map[string]any)
+	payload["role"] = m.Role
+	if len(m.ContentParts) > 0 {
+		payload["content"] = m.ContentParts
+	} else if m.Content != "" {
+		payload["content"] = m.Content
+	}
+	if m.Name != "" {
+		payload["name"] = m.Name
+	}
+	if len(m.ToolCalls) > 0 {
+		payload["tool_calls"] = m.ToolCalls
+	}
+	if m.ToolCallID != "" {
+		payload["tool_call_id"] = m.ToolCallID
+	}
 	data, err := json.Marshal(payload)
 	if err != nil {
 		return nil, err
@@ -45,12 +82,34 @@ func (m openAIMessage) MarshalJSON() ([]byte, error) {
 }
 
 func (m *openAIMessage) UnmarshalJSON(data []byte) error {
-	type alias openAIMessage
-	var decoded alias
+	var decoded struct {
+		Role       string           `json:"role"`
+		Content    json.RawMessage  `json:"content"`
+		Name       string           `json:"name,omitempty"`
+		ToolCalls  []openAIToolCall `json:"tool_calls,omitempty"`
+		ToolCallID string           `json:"tool_call_id,omitempty"`
+	}
 	if err := json.Unmarshal(data, &decoded); err != nil {
 		return err
 	}
-	*m = openAIMessage(decoded)
+	m.Role = decoded.Role
+	m.Name = decoded.Name
+	m.ToolCalls = decoded.ToolCalls
+	m.ToolCallID = decoded.ToolCallID
+	if len(decoded.Content) > 0 && string(decoded.Content) != "null" {
+		if err := json.Unmarshal(decoded.Content, &m.Content); err != nil {
+			var parts []openAIContentPart
+			if partsErr := json.Unmarshal(decoded.Content, &parts); partsErr != nil {
+				return err
+			}
+			m.ContentParts = parts
+			for _, part := range parts {
+				if part.Type == "text" {
+					m.Content += part.Text
+				}
+			}
+		}
+	}
 	m.ProviderFields = extractProviderFields(data, nil)
 	return nil
 }
@@ -213,9 +272,11 @@ func newOpenAIRequest(req schema.ChatRequest, allowedProviderFields map[string]s
 		messages = append(messages, openAIMessage{Role: "system", Content: req.System})
 	}
 	for _, msg := range req.Messages {
+		contentParts := toOpenAIContentParts(msg)
 		messages = append(messages, openAIMessage{
 			Role:           msg.Role,
 			Content:        msg.Content,
+			ContentParts:   contentParts,
 			Name:           msg.Name,
 			ToolCallID:     msg.ToolCallID,
 			ToolCalls:      toOpenAIToolCalls(msg.ToolCalls),
@@ -235,13 +296,42 @@ func newOpenAIRequest(req schema.ChatRequest, allowedProviderFields map[string]s
 		})
 	}
 
-	return openAIRequest{
-		Model:       req.Model,
-		Messages:    messages,
-		Tools:       tools,
-		Temperature: req.Temperature,
-		MaxTokens:   req.MaxTokens,
+	var responseFormat *openAIResponseFormat
+	if req.ResponseFormat != nil {
+		responseFormat = &openAIResponseFormat{Type: req.ResponseFormat.Type}
 	}
+	return openAIRequest{
+		Model:          req.Model,
+		Messages:       messages,
+		Tools:          tools,
+		ToolChoice:     req.ToolChoice,
+		ResponseFormat: responseFormat,
+		Temperature:    req.Temperature,
+		MaxTokens:      req.MaxTokens,
+	}
+}
+
+func toOpenAIContentParts(message schema.Message) []openAIContentPart {
+	if len(message.ContentParts) == 0 {
+		return nil
+	}
+	parts := make([]openAIContentPart, 0, len(message.ContentParts)+1)
+	if strings.TrimSpace(message.Content) != "" {
+		parts = append(parts, openAIContentPart{Type: "text", Text: message.Content})
+	}
+	for _, part := range message.ContentParts {
+		switch strings.ToLower(strings.TrimSpace(part.Type)) {
+		case "text":
+			if part.Text != "" {
+				parts = append(parts, openAIContentPart{Type: "text", Text: part.Text})
+			}
+		case "image", "image_url":
+			if strings.TrimSpace(part.DataURL) != "" {
+				parts = append(parts, openAIContentPart{Type: "image_url", ImageURL: &openAIImageURL{URL: part.DataURL}})
+			}
+		}
+	}
+	return parts
 }
 
 func toOpenAIToolCalls(calls []schema.ToolCall) []openAIToolCall {
@@ -272,17 +362,25 @@ func normalizeResponse(resp openAIResponse, allowedProviderFields map[string]str
 			Arguments: json.RawMessage(call.Function.Arguments),
 		})
 	}
+	content := choice.Message.Content
+	if len(toolCalls) == 0 {
+		if parsed, cleaned, ok := parseDSMLToolCalls(content); ok {
+			toolCalls = parsed
+			content = cleaned
+		}
+	}
+	ensureToolCallIDs(toolCalls)
 	if err := validateToolCalls(toolCalls); err != nil {
 		return schema.ChatResponse{}, fmt.Errorf("invalid tool arguments: %w", err)
 	}
 	return schema.ChatResponse{
 		Message: schema.Message{
 			Role:           choice.Message.Role,
-			Content:        choice.Message.Content,
+			Content:        content,
 			ToolCalls:      toolCalls,
 			ProviderFields: providerFieldsForSchema(choice.Message.ProviderFields, allowedProviderFields),
 		},
-		StopReason: normalizeOpenAIStopReason(choice.FinishReason),
+		StopReason: normalizedStopReason(choice.FinishReason, toolCalls),
 		ToolCalls:  toolCalls,
 		Usage:      resp.Usage.tokenUsage(),
 	}, nil
@@ -306,6 +404,13 @@ func normalizeOpenAIStopReason(reason string) string {
 	}
 }
 
+func normalizedStopReason(reason string, toolCalls []schema.ToolCall) string {
+	if len(toolCalls) > 0 {
+		return schema.StopReasonToolCalls
+	}
+	return normalizeOpenAIStopReason(reason)
+}
+
 func newStreamAssembler(allowedProviderFields map[string]struct{}) *streamAssembler {
 	return &streamAssembler{allowedProviderFields: allowedProviderFields}
 }
@@ -325,6 +430,9 @@ func (a *streamAssembler) ingest(chunk openAIStreamChunk) ([]schema.StreamEvent,
 	if choice.Delta.Content != "" {
 		a.content.WriteString(choice.Delta.Content)
 		events = append(events, schema.StreamEvent{Type: schema.StreamEventText, Content: choice.Delta.Content})
+	}
+	if delta := reasoningDeltaFromFields(choice.Delta.ProviderFields); delta != "" {
+		events = append(events, schema.StreamEvent{Type: schema.StreamEventReasoning, Content: delta})
 	}
 	a.appendProviderFields(choice.Delta.ProviderFields)
 	for _, call := range choice.Delta.ToolCalls {
@@ -393,16 +501,33 @@ func (a *streamAssembler) response() schema.ChatResponse {
 			Arguments: json.RawMessage(args),
 		})
 	}
+	content := a.content.String()
+	if len(toolCalls) == 0 {
+		if parsed, cleaned, ok := parseDSMLToolCalls(content); ok {
+			toolCalls = parsed
+			content = cleaned
+		}
+	}
+	ensureToolCallIDs(toolCalls)
 	return schema.ChatResponse{
 		Message: schema.Message{
 			Role:           defaultString(a.role, "assistant"),
-			Content:        a.content.String(),
+			Content:        content,
 			ToolCalls:      toolCalls,
 			ProviderFields: streamProviderFieldsForSchema(a.providerFields, a.allowedProviderFields),
 		},
-		StopReason: normalizeOpenAIStopReason(a.finishReason),
+		StopReason: normalizedStopReason(a.finishReason, toolCalls),
 		ToolCalls:  toolCalls,
 		Usage:      a.usage.tokenUsage(),
+	}
+}
+
+func ensureToolCallIDs(calls []schema.ToolCall) {
+	for index := range calls {
+		if strings.TrimSpace(calls[index].ID) != "" {
+			continue
+		}
+		calls[index].ID = fmt.Sprintf("goflow-call-%d", fallbackToolCallSequence.Add(1))
 	}
 }
 
@@ -483,6 +608,35 @@ func streamProviderFieldsForSchema(fields map[string]*strings.Builder, allowed m
 		return nil
 	}
 	return out
+}
+
+func reasoningDeltaFromFields(fields providerFields) string {
+	if len(fields) == 0 {
+		return ""
+	}
+	for _, key := range []string{"reasoning_content", "reasoning", "thinking", "reasoning_text"} {
+		raw, ok := fields[key]
+		if !ok || len(raw) == 0 {
+			continue
+		}
+		var value string
+		if err := json.Unmarshal(raw, &value); err == nil && value != "" {
+			return value
+		}
+		var object struct {
+			Content string `json:"content"`
+			Text    string `json:"text"`
+		}
+		if err := json.Unmarshal(raw, &object); err == nil {
+			if object.Content != "" {
+				return object.Content
+			}
+			if object.Text != "" {
+				return object.Text
+			}
+		}
+	}
+	return ""
 }
 
 func extractProviderFields(data []byte, allowed map[string]struct{}) providerFields {

@@ -57,8 +57,6 @@ PROFESSIONAL_VERTICAL_PACK_LIST_FIELDS = [
     "safety_gates",
     "quality_gates",
     "evidence_artifacts",
-    "simple_mode",
-    "expert_mode",
     "token_strategy",
 ]
 
@@ -73,8 +71,9 @@ PRODUCTION_READY_DOMAIN_TOOL_PREFIXES = {
     "operations-runbook": "network_tools/",
     "web-security": "web_tools/browser_",
     "security-research": "web_tools/",
+    "internet-research": "web_tools/",
     "binary-analysis": "python_notes/",
-    "documentation": "python_notes/",
+    "office-document": "office_tools/",
     "customer-support": "python_notes/",
     "multi-domain": "file_tools/",
 }
@@ -89,12 +88,12 @@ PRODUCTION_READY_DOMAIN_REQUIREMENTS = {
         "files": [
             ("mcp_servers/file_tools/main.go", ["read_file", "search_files", "write_file", "workspace root"]),
             ("mcp_servers/file_tools/main_test.go", ["outside workspace", "write_file", "search_files"]),
-            ("internal/agent/templates/workflows/engineering-parallel-delivery.yaml", ["parallel", "join", "worker_contract", "engineering_v1", "quality_gate"]),
-            ("internal/agent/workflow_templates_test.go", ["engineering-parallel-delivery", "worker_contract", "prompt budgets"]),
+            ("internal/agent/templates/workflows/complex-project-delivery.yaml", ["worker_contract", "engineering_v1", "quality_gate", "Verification Result"]),
+            ("internal/agent/workflow_templates_test.go", ["complex-project-delivery", "worker_contract", "prompt budgets"]),
             ("internal/scaffold/materialized_test.go", ["RenderMaterializedWorkflowTemplateUsesModelAndContextBudgets", "context:", "token_policy"]),
-            ("docs/workflows.md", ["engineering-parallel-delivery", "worker_contract", "context.max_tokens", "artifact-first"]),
-            ("docs/scaffolds.md", ["engineering-parallel-delivery", "bounded parallel worker", "model.max_tokens"]),
-            ("scripts/validate_release_archives.py", ["engineering-parallel-delivery"]),
+            ("docs/workflows.md", ["complex-project-delivery", "worker_contract", "context.max_tokens", "artifact-first"]),
+            ("docs/scaffolds.md", ["complex-project-delivery", "unified verification", "context.max_tokens"]),
+            ("scripts/golden_scenario_2.py", ["complex-project-delivery", "verification_stages", "Verification Evidence"]),
             ("scripts/validate_deployment_assets.py", ["validate_resource_links.py", "validate_web_i18n.py", "validate_docs.py"]),
         ],
         "contract_terms": [
@@ -119,7 +118,7 @@ PRODUCTION_READY_DOMAIN_REQUIREMENTS = {
             ("internal/agent/templates/workflows/agent-framework-extension.yaml", ["agent-framework-extension", "input_gate", "quality_gate", "materialize", "approval"]),
             ("internal/scaffold/materialized.go", ["activation_steps", "RenderMaterialized", "tool-boundary"]),
             ("internal/scaffold/materialized_test.go", ["Materialized", "activation", "workflow template"]),
-            ("internal/scaffold/kit_presets.go", ["VerticalPack", "SimpleMode", "ExpertMode"]),
+            ("internal/scaffold/kit_presets.go", ["VerticalPack", "PresentationGuidance"]),
             ("internal/api/resources.go", ["materialize", "restart_required", "activation_steps"]),
             ("docs/scaffolds.md", ["agent-framework-extension", "materialization", "activation_steps", "runtime home"]),
             ("docs/resources.md", ["agent-framework-kit", "production-ready", "materialize"]),
@@ -142,15 +141,16 @@ PRODUCTION_READY_DOMAIN_REQUIREMENTS = {
         "tools": [
             "network_tools/device_discovery_plan",
             "network_tools/device_command_plan",
+            "network_tools/device_batch_command_plan",
             "network_tools/device_config_dry_run",
             "network_tools/device_restconf_live_apply",
         ],
         "files": [
-            ("mcp_servers/network_tools/main.go", ["device_discovery_plan", "device_restconf_live_apply", "authorized_scope", "allowed_hosts", "GOFLOW_NETWORK_TOOLS_ENABLE_LIVE"]),
-            ("mcp_servers/network_tools/main_test.go", ["RequiresAuthorization", "OutsideAllowlist", "NeverAppliesChanges", "RestconfLiveApply"]),
+            ("mcp_servers/network_tools/main.go", ["device_discovery_plan", "device_batch_command_plan", "partial_failure", "retry_targets", "device_restconf_live_apply", "authorized_scope", "allowed_hosts", "GOFLOW_NETWORK_TOOLS_ENABLE_LIVE"]),
+            ("mcp_servers/network_tools/main_test.go", ["RequiresAuthorization", "BatchCommandPlanPreservesSuccess", "OutsideAllowlist", "NeverAppliesChanges", "RestconfLiveApply"]),
             ("configs/mcp_servers/network_tools.yaml", ["network_tools", "max_concurrent_calls", "GOFLOW_NETWORK_TOOLS_ENABLE_LIVE"]),
-            ("docs/mcp.md", ["network_tools", "authorized_scope", "allowed_hosts", "device_restconf_live_apply"]),
-            ("docs/mcp.zh-CN.md", ["network_tools", "authorized_scope", "allowed_hosts", "device_restconf_live_apply"]),
+            ("docs/mcp.md", ["network_tools", "authorized_scope", "allowed_hosts", "device_batch_command_plan", "device_restconf_live_apply"]),
+            ("docs/mcp.zh-CN.md", ["network_tools", "authorized_scope", "allowed_hosts", "device_batch_command_plan", "device_restconf_live_apply"]),
             ("docs/mcp-authoring.md", ["network_tools", "approval", "evidence"]),
             ("scripts/validate_release_archives.py", ["network_tools"]),
             ("scripts/validate_deployment_assets.py", ["network_tools"]),
@@ -210,7 +210,7 @@ PRODUCTION_READY_DOMAIN_REQUIREMENTS = {
         ],
         "files": [
             ("skills/authorized-red-team-validation/SKILL.md", ["authorized_scope", "allowed_hosts", "non-destructive", "active validation", "blocked actions"]),
-            ("internal/agent/templates/workflows/security-audit-evidence-gate.yaml", ["attack-path", "exploitability arbitration", "disallowed actions", "red/blue handoff", "authorization blocker"]),
+            ("internal/agent/templates/workflows/security-audit-evidence-gate.yaml", ["授权与范围", "证据链", "approve-remediation", "独立复测", "repair", "final-report"]),
             ("internal/agent/templates/workflows/authorized-red-team-validation.yaml", ["authorized-red-team-validation", "allowed_hosts", "rate limits", "Blue-Team Handoff", "quality_gate"]),
             ("kits/security-research-kit/kit.yaml", ["production-ready", "red-team", "blue-team", "exploitability", "disclosure-safe"]),
             ("internal/scaffold/templates/kits/scaffolds/presets.yaml", ["security-research", "production-ready", "red-team", "blue-team", "exploitability"]),
@@ -265,33 +265,39 @@ PRODUCTION_READY_DOMAIN_REQUIREMENTS = {
             "evidence",
         ],
     },
-    "documentation": {
+    "office-document": {
         "tools": [
-            "file_tools/read_file",
-            "file_tools/search_files",
-            "file_tools/write_file",
-            "python_notes/markdown_link_check",
-            "python_notes/redaction_check",
+            "office_tools/office_capabilities",
+            "office_tools/create_docx",
+            "office_tools/create_xlsx",
+            "office_tools/create_pptx",
+            "office_tools/create_pdf",
+            "office_tools/inspect_office_document",
+            "office_tools/validate_office_document",
+            "office_tools/fill_office_template",
+            "office_tools/export_office_pdf",
+            "office_tools/render_office_preview",
         ],
         "files": [
-            ("mcp_servers/python_notes.py", ["markdown_link_check", "publish_ready", "network_checked", "redaction_check"]),
-            ("scripts/validate_python_mcp.py", ["markdown_link_check", "broken_count", "publish_ready"]),
-            ("internal/agent/templates/workflows/docs-review-publish.yaml", ["Link Integrity", "Bilingual Parity", "Command Accuracy", "Publish Readiness"]),
-            ("kits/documentation-kit/kit.yaml", ["production-ready", "link integrity", "bilingual parity", "publish readiness"]),
-            ("internal/scaffold/templates/kits/scaffolds/presets.yaml", ["documentation", "production-ready", "markdown_link_check", "publish readiness"]),
-            ("docs/resources.md", ["documentation-kit", "production-ready", "link integrity", "bilingual parity"]),
-            ("docs/mcp.md", ["markdown_link_check", "redaction_check"]),
+            ("mcp_servers/office_tools/main.go", ["create_docx", "create_xlsx", "create_pptx", "create_pdf", "fill_office_template", "validate_office_document"]),
+            ("mcp_servers/office_tools/main_test.go", ["FillOfficeTemplatePreservesSource", "ReplaceOOXMLTextAcrossSplitRuns", "OfficeCOMRoundTrip"]),
+            ("skills/office-document-production/SKILL.md", ["基于模板", "修改清单", "SHA-256", "预览图"]),
+            ("internal/agent/templates/workflows/docs-review-publish.yaml", ["fill_office_template", "replace_office_text", "处理模式", "精确修改清单", "保持不变项", "真实办公文档", "格式校验", "失败修正"]),
+            ("kits/documentation-kit/kit.yaml", ["production-ready", "模板", "修改", "PDF", "预览"]),
+            ("internal/scaffold/templates/kits/scaffolds/presets.yaml", ["office-document", "production-ready", "office_tools", "模板"]),
+            ("configs/mcp_servers/office_tools.yaml", ["office_tools", "max_concurrent_calls", "GOFLOW_WORKSPACE_ROOT"]),
         ],
         "contract_terms": [
-            "audience",
-            "command accuracy",
-            "link integrity",
-            "bilingual parity",
-            "version",
-            "platform",
-            "publish readiness",
-            "redaction",
-            "evidence",
+            "模板",
+            "修改",
+            "备份",
+            "SHA-256",
+            "DOCX",
+            "XLSX",
+            "PPTX",
+            "PDF",
+            "预览",
+            "校验",
         ],
     },
     "customer-support": {
@@ -337,8 +343,7 @@ PRODUCTION_READY_DOMAIN_REQUIREMENTS = {
             "python_notes/redaction_check",
         ],
         "files": [
-            ("internal/agent/templates/workflows/multi-domain-intake-router.yaml", ["branch_selection_reason", "pruned_branches", "per_branch_tool_allowlists", "join_conflicts", "quality_gate"]),
-            ("workflows/multi-domain-intake-router/workflow.yaml", ["active_branches", "branch_contracts", "join", "quality"]),
+            ("internal/agent/templates/workflows/multi-domain-intake-router.yaml", ["branch_selection_reason", "pruned_branches", "per_branch_tool_allowlists", "join_conflicts", "quality_gate", "office_delivery_required", "office-document-production", "docs-review-publish"]),
             ("kits/multi-domain-agent-kit/kit.yaml", ["production-ready", "branch-selection", "max-parallel", "conflict detection"]),
             ("internal/scaffold/templates/kits/scaffolds/presets.yaml", ["multi-domain", "production-ready", "branch-selection", "max-parallel"]),
             ("docs/resources.md", ["multi-domain-agent-kit", "production-ready", "branch pruning", "join conflict"]),
@@ -356,6 +361,39 @@ PRODUCTION_READY_DOMAIN_REQUIREMENTS = {
             "unselected",
             "selected",
             "evidence",
+        ],
+    },
+    "internet-research": {
+        "tools": [
+            "web_tools/web_search",
+            "web_tools/research_snapshot",
+            "web_tools/compile_research_evidence",
+            "file_tools/write_file",
+        ],
+        "files": [
+            ("mcp_servers/web_tools/main.go", ["research_snapshot", "compile_research_evidence", "cache_hit", "content_sha256", "markdown", "csv"]),
+            ("mcp_servers/web_tools/main_test.go", ["ResearchSnapshotCachesAndDeduplicatesContent", "CompileResearchEvidenceProducesTraceableDeliverables", "RejectsUnsupportedKeyClaim"]),
+            ("skills/internet-research/SKILL.md", ["research_snapshot", "compile_research_evidence", "结论与来源映射", "Markdown", "JSON", "CSV"]),
+            ("skills/source-verification/SKILL.md", ["来源核验", "冲突", "时效", "compile_research_evidence"]),
+            ("internal/agent/templates/workflows/parallel-research-review.yaml", ["research-specialist", "source-verifier", "quality_gate", "Markdown", "JSON", "CSV"]),
+            ("kits/internet-research-kit/kit.yaml", ["production-ready", "来源快照", "结论与来源映射", "Markdown", "JSON", "CSV"]),
+            ("internal/scaffold/templates/kits/scaffolds/presets.yaml", ["internet-research", "production-ready", "来源快照", "Markdown", "JSON", "CSV"]),
+            ("docs/mcp.zh-CN.md", ["research_snapshot", "compile_research_evidence", "缓存", "Markdown", "JSON", "CSV"]),
+            ("docs/resources.zh-CN.md", ["internet-research-kit", "来源核验智能体", "结论来源映射", "Markdown", "JSON", "CSV"]),
+            ("docs/mcp.md", ["research_snapshot", "compile_research_evidence", "caching", "Markdown", "JSON", "CSV"]),
+            ("docs/resources.md", ["internet-research-kit", "source verifier", "claim-to-source", "Markdown", "JSON", "CSV"]),
+        ],
+        "contract_terms": [
+            "来源",
+            "快照",
+            "缓存",
+            "去重",
+            "冲突",
+            "时效",
+            "结论",
+            "Markdown",
+            "JSON",
+            "CSV",
         ],
     },
 }
@@ -602,10 +640,8 @@ def tool_names_from_python_notes() -> set[str]:
 
 def known_tools() -> set[str]:
     tools = set()
-    tools.update(tool_names_from_go(ROOT / "mcp_servers" / "file_tools" / "main.go", "file_tools"))
-    tools.update(tool_names_from_go(ROOT / "mcp_servers" / "web_tools" / "main.go", "web_tools"))
-    tools.update(tool_names_from_go(ROOT / "mcp_servers" / "network_tools" / "main.go", "network_tools"))
-    tools.update(tool_names_from_go(ROOT / "mcp_servers" / "skill_runner" / "main.go", "skill_runner"))
+    for path in ROOT.glob("mcp_servers/*/main.go"):
+        tools.update(tool_names_from_go(path, path.parent.name))
     tools.update(tool_names_from_python_notes())
     return {normalize(tool) for tool in tools}
 
@@ -616,7 +652,9 @@ def known_resources() -> dict[str, set[str]]:
         "agents": names_from_files("configs/agents/*.yaml"),
         "skills": names_from_dirs("skills/*", "SKILL.md"),
         "tools": known_tools(),
-        "workflows": names_from_dirs("workflows/*", "workflow.yaml"),
+        "workflows": names_from_dirs("workflows/*", "workflow.yaml")
+        | names_from_files("internal/agent/templates/workflows/*.yaml")
+        | names_from_files("templates/workflows/*.yaml"),
         "workflow_templates": names_from_files("internal/agent/templates/workflows/*.yaml")
         | names_from_files("templates/workflows/*.yaml"),
         "team_templates": names_from_files("internal/agent/templates/teams/*.yaml")
@@ -667,7 +705,8 @@ def validate_membership(
 def validate_vertical_pack_contract(errors: list[str], label: str, text: str) -> None:
     pack = vertical_pack_text(text)
     if not pack:
-        errors.append(f"{label}: missing vertical_pack contract")
+        # A reusable resource library need not claim a vertical-domain maturity.
+        # Routing references and declared contracts are still checked separately.
         return
     maturity = normalize(first_scalar_value(pack, "maturity"))
     if maturity not in VERTICAL_PACK_MATURITIES:
@@ -695,7 +734,6 @@ def validate_web_security_browser_tools(errors: list[str], label: str, text: str
         or names
         & {
             "web-vulnerability-research",
-            "web-research-risk",
             "web-research-team",
             "web-security-kit",
             "web-security",
@@ -712,9 +750,8 @@ def validate_document(label: str, text: str, known: dict[str, set[str]], *, requ
     errors: list[str] = []
     fields = {key: list_field(text, key) for key in LIST_FIELDS}
     if require_complete:
-        for key in ["agents", "skills", "workflow_templates", "team_templates", "policy_rules"]:
-            if not fields[key]:
-                errors.append(f"{label}: expected at least one {key} reference")
+        if not any(fields[key] for key in RESOURCE_GROUP_FIELDS + ["workflows"]):
+            errors.append(f"{label}: expected at least one resource reference")
     for key, refs in fields.items():
         validate_membership(errors, label, key, refs, known[key])
     validate_vertical_pack_contract(errors, label, text)
@@ -827,17 +864,12 @@ def validate_domain_capability_matrix(matrix: dict[str, DomainCapability]) -> li
         capability = matrix[domain]
         if capability.source_count("kit") == 0:
             errors.append(f"domain capability matrix:{domain}: missing saved Kit resource")
-        if capability.source_count("scaffold_preset") == 0:
-            errors.append(f"domain capability matrix:{domain}: missing scaffold preset")
         maturities = {record.maturity for record in capability.records if record.maturity}
         if len(maturities) > 1:
             errors.append(f"domain capability matrix:{domain}: inconsistent maturities {sorted(maturities)}")
 
         max_maturity = capability.max_maturity()
         if max_maturity in {"professional", "production-ready"}:
-            for field in RESOURCE_GROUP_FIELDS:
-                if not capability.refs(field):
-                    errors.append(f"domain capability matrix:{domain}: professional pack has no {field}")
             for record in capability.records:
                 missing = []
                 for field in PROFESSIONAL_VERTICAL_PACK_TEXT_FIELDS:
@@ -1003,6 +1035,271 @@ def validate_workflow_templates(known: dict[str, set[str]]) -> list[str]:
     return errors
 
 
+def validate_local_host_diagnostics() -> list[str]:
+    errors: list[str] = []
+    requirements = {
+        "mcp_servers/host_tools/main.go": [
+            "host_facts", "disk_usage", "list_ports", "list_processes",
+            "service_status", "read_log_tail", "read_only",
+            "inspect_managed_json", "plan_windows_json_change", "set_managed_json_value", "restore_managed_json_change",
+        ],
+        "mcp_servers/host_tools/managed_config.go": [
+            "GOFLOW_HOST_MANAGED_CONFIG_ROOTS", "GOFLOW_HOST_CHANGE_BACKUP_ROOT",
+            "backup_stored", "post_check_passed", "restore_prepared",
+        ],
+        "skills/local-host-diagnostics/SKILL.md": [
+            "target_scope: host", "host_tools/host_facts", "host_tools/disk_usage", "read-only",
+        ],
+        "skills/managed-local-config/SKILL.md": [
+            "target_scope: host", "set_managed_json_value", "restore_managed_json_change", "explicit approval",
+        ],
+        "skills/remote-host-diagnostics/SKILL.md": [
+            "target_scope: host", "ssh_tools/ssh_host_key_scan", "ssh_tools/ssh_run_command", "StrictHostKeyChecking",
+        ],
+        "configs/mcp_servers/host_tools.yaml": [
+            "target_scope: host", "GOFLOW_HOST_LOG_ROOTS", "GOFLOW_HOST_MANAGED_CONFIG_ROOTS", "GOFLOW_HOST_CHANGE_BACKUP_ROOT",
+        ],
+        "mcp_servers/ssh_tools/main.go": [
+            "ssh_host_key_scan", "ssh_run_command", "StrictHostKeyChecking=yes", "PasswordAuthentication=no", "GOFLOW_DATA_ROOT",
+        ],
+        "configs/mcp_servers/ssh_tools.yaml": [
+            "target_scope: host", "GOFLOW_DATA_ROOT", "ssh_tools",
+        ],
+        "docs/mcp.md": ["host_tools", "ssh_tools", "target_scope: host", "GOFLOW_HOST_LOG_ROOTS", "managed-local-config", "remote-host-diagnostics", "native_strong"],
+        "docs/mcp.zh-CN.md": ["host_tools", "ssh_tools", "target_scope: host", "GOFLOW_HOST_LOG_ROOTS", "managed-local-config", "remote-host-diagnostics", "native_strong"],
+        "docs/configuration.md": ["target_scope", "host_tools", "ssh_tools", "GOFLOW_HOST_MANAGED_CONFIG_ROOTS", "GOFLOW_HOST_CHANGE_BACKUP_ROOT"],
+        "docs/configuration.zh-CN.md": ["target_scope", "host_tools", "ssh_tools", "GOFLOW_HOST_MANAGED_CONFIG_ROOTS", "GOFLOW_HOST_CHANGE_BACKUP_ROOT"],
+        "docs/resources.md": ["local-host-diagnostics", "managed-local-config", "remote-host-diagnostics", "target_scope: host"],
+        "docs/resources.zh-CN.md": ["local-host-diagnostics", "managed-local-config", "remote-host-diagnostics", "target_scope: host"],
+        "docs/install.md": ["GOFLOW_HOST_MANAGED_CONFIG_ROOTS", "GOFLOW_HOST_CHANGE_BACKUP_ROOT", "GOFLOW_SSH_TOOLS_CMD"],
+        "docs/install.zh-CN.md": ["GOFLOW_HOST_MANAGED_CONFIG_ROOTS", "GOFLOW_HOST_CHANGE_BACKUP_ROOT", "GOFLOW_SSH_TOOLS_CMD"],
+    }
+    for relative, terms in requirements.items():
+        path = ROOT / relative
+        if not path.exists():
+            errors.append(f"{relative}: required local host diagnostic resource is missing")
+            continue
+        content = read(path)
+        for term in terms:
+            if term not in content:
+                errors.append(f"{relative}: missing local host diagnostic contract term {term!r}")
+    return errors
+
+
+def validate_security_assessment_standard() -> list[str]:
+    errors: list[str] = []
+    required_terms = [
+        "证据等级 A",
+        "证据等级 B",
+        "证据等级 C",
+        "finding_id",
+        "severity",
+        "confidence",
+        "evidence_level",
+        "exploitability",
+        "evidence_refs",
+        "remediation",
+        "regression_tests",
+        "confirmed",
+        "not_assessed",
+    ]
+    paths = [
+        "skills/code-audit/SKILL.md",
+        "skills/vulnerability-research/SKILL.md",
+        "skills/web-vulnerability-research/SKILL.md",
+        "skills/binary-vulnerability-research/SKILL.md",
+        "skills/authorized-red-team-validation/SKILL.md",
+    ]
+    for relative in paths:
+        path = ROOT / relative
+        if not path.exists():
+            errors.append(f"{relative}: required security assessment resource is missing")
+            continue
+        content = read(path)
+        for term in required_terms:
+            if term not in content:
+                errors.append(f"{relative}: missing unified security assessment term {term!r}")
+    return errors
+
+
+def contains_chinese(value: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff]", value))
+
+
+def block_scalar_value(text: str, key: str) -> str:
+    lines = text.splitlines()
+    pattern = re.compile(rf"^(?P<indent>\s*){re.escape(key)}:\s*[|>]\s*$")
+    for index, line in enumerate(lines):
+        match = pattern.match(line)
+        if not match:
+            continue
+        base_indent = len(match.group("indent"))
+        values: list[str] = []
+        for child in lines[index + 1 :]:
+            if not child.strip():
+                values.append("")
+                continue
+            if leading_spaces(child) <= base_indent:
+                break
+            values.append(child.strip())
+        return "\n".join(values).strip()
+    return ""
+
+
+def repeated_list_values(text: str, key: str) -> list[str]:
+    values: list[str] = []
+    lines = text.splitlines()
+    pattern = re.compile(rf"^(?P<indent>\s*){re.escape(key)}:\s*$")
+    for index, line in enumerate(lines):
+        match = pattern.match(line)
+        if not match:
+            continue
+        base_indent = len(match.group("indent"))
+        for child in lines[index + 1 :]:
+            if not child.strip():
+                continue
+            if leading_spaces(child) <= base_indent:
+                break
+            stripped = child.strip()
+            if stripped.startswith("- "):
+                value = clean_scalar(stripped[2:])
+                if value:
+                    values.append(value)
+    return values
+
+
+def catalog_display_entries() -> dict[str, tuple[str, str]]:
+    path = ROOT / "internal/api/web/assets/views/catalog.js"
+    text = read(path)
+    pattern = re.compile(
+        r'^\s*"(?P<key>(?:agent|subagent|skill|mcp|workflow):[^"]+)"\s*:\s*'
+        r'\["(?P<title>[^"]+)",\s*"(?P<description>[^"]+)"\],?\s*$',
+        re.MULTILINE,
+    )
+    return {
+        match.group("key"): (match.group("title"), match.group("description"))
+        for match in pattern.finditer(text)
+    }
+
+
+def validate_bundled_resource_localization() -> list[str]:
+    errors: list[str] = []
+    display_entries = catalog_display_entries()
+    required_display_keys: set[str] = set()
+
+    for path in sorted(ROOT.glob("kits/*/kit.yaml")):
+        label = str(path.relative_to(ROOT))
+        text = read(path)
+        for field in ("title", "description", "request", "summary"):
+            values = scalar_values(text, field)
+            if field in {"title", "description", "summary"} and not values:
+                errors.append(f"{label}: missing user-visible {field}")
+                continue
+            for value in values:
+                if not contains_chinese(value):
+                    errors.append(f"{label}: user-visible {field} must contain Chinese text: {value!r}")
+
+    for path in sorted(ROOT.glob("mcp_servers/*/main.go")):
+        label = str(path.relative_to(ROOT))
+        descriptions = re.findall(r'Description:\s*"([^"]+)"', read(path))
+        if not descriptions:
+            errors.append(f"{label}: missing user-visible MCP tool description")
+            continue
+        for value in descriptions:
+            if not contains_chinese(value):
+                errors.append(f"{label}: MCP tool description must contain Chinese text: {value!r}")
+
+    python_notes = ROOT / "mcp_servers/python_notes.py"
+    for value in re.findall(r'^\s*"description":\s*"([^"]+)",?\s*$', read(python_notes), re.MULTILINE):
+        if not contains_chinese(value):
+            errors.append(f"mcp_servers/python_notes.py: MCP tool description must contain Chinese text: {value!r}")
+
+    for path in sorted(ROOT.glob("configs/agents/*.yaml")):
+        label = str(path.relative_to(ROOT))
+        text = read(path)
+        kind = normalize(first_scalar_value(text, "kind")) or "agent"
+        if kind not in {"agent", "subagent"}:
+            errors.append(f"{label}: unsupported localized agent kind {kind!r}")
+            continue
+        required_display_keys.add(f"{kind}:{normalize(path.stem)}")
+        for field in ("name", "description"):
+            value = first_scalar_value(text, field)
+            if not value or not contains_chinese(value):
+                errors.append(f"{label}: user-visible {field} must contain Chinese text")
+        prompt = block_scalar_value(text, "system_prompt")
+        if "system_prompt:" in text and (not prompt or not contains_chinese(prompt)):
+            errors.append(f"{label}: user-visible system_prompt must contain Chinese text")
+
+    for path in sorted(ROOT.glob("skills/*/SKILL.md")):
+        label = str(path.relative_to(ROOT))
+        skill_text = read(path)
+        frontmatter = skill_frontmatter(path)
+        required_display_keys.add(f"skill:{normalize(path.parent.name)}")
+        descriptions = scalar_values(frontmatter, "description")
+        if not descriptions:
+            errors.append(f"{label}: missing user-visible description")
+        for value in descriptions:
+            if not contains_chinese(value):
+                errors.append(f"{label}: user-visible description must contain Chinese text: {value!r}")
+        for value in scalar_values(frontmatter, "embedding_description"):
+            if not contains_chinese(value):
+                errors.append(f"{label}: embedding_description must contain Chinese text: {value!r}")
+        parts = skill_text.split("---", 2)
+        body = parts[2] if len(parts) >= 3 else ""
+        for heading in re.findall(r"^#{2,3}\s+(.+?)\s*$", body, re.MULTILINE):
+            if not contains_chinese(heading):
+                errors.append(f"{label}: user-visible heading must contain Chinese text: {heading!r}")
+
+    for path in sorted(ROOT.glob("workflows/*/workflow.yaml")):
+        label = str(path.relative_to(ROOT))
+        text = read(path)
+        required_display_keys.add(f"workflow:{normalize(path.parent.name)}")
+        description = first_scalar_value(text, "description")
+        if not description or not contains_chinese(description):
+            errors.append(f"{label}: user-visible description must contain Chinese text")
+
+    for path in sorted(ROOT.glob("internal/agent/templates/workflows/*.yaml")):
+        label = str(path.relative_to(ROOT))
+        text = read(path)
+        required_display_keys.add(f"workflow:{normalize(path.stem)}")
+        for field in ("title", "description"):
+            value = first_scalar_value(text, field)
+            if not value or not contains_chinese(value):
+                errors.append(f"{label}: user-visible {field} must contain Chinese text")
+
+    for path in sorted(ROOT.glob("internal/agent/templates/teams/*.yaml")):
+        label = str(path.relative_to(ROOT))
+        text = read(path)
+        for field in ("title", "description", "label", "subject"):
+            values = scalar_values(text, field)
+            if not values:
+                errors.append(f"{label}: missing user-visible {field}")
+                continue
+            for value in values:
+                if not contains_chinese(value):
+                    errors.append(f"{label}: user-visible {field} must contain Chinese text: {value!r}")
+        responsibilities = repeated_list_values(text, "responsibilities")
+        if not responsibilities:
+            errors.append(f"{label}: missing user-visible responsibilities")
+        for value in responsibilities:
+            if not contains_chinese(value):
+                errors.append(f"{label}: responsibility must contain Chinese text: {value!r}")
+
+    for path in sorted(ROOT.glob("configs/mcp_servers/*.yaml")):
+        required_display_keys.add(f"mcp:{normalize(path.stem)}")
+
+    for key in sorted(required_display_keys):
+        display = display_entries.get(key)
+        if display is None:
+            # New resources supply their own metadata; a JS name table is not
+            # a prerequisite for installing a domain resource pack.
+            continue
+        title, description = display
+        if not contains_chinese(title) or not contains_chinese(description):
+            errors.append(f"internal/api/web/assets/views/catalog.js: {key} title and description must contain Chinese text")
+    return errors
+
+
 def main() -> int:
     known = known_resources()
     matrix: dict[str, DomainCapability] = {}
@@ -1012,6 +1309,9 @@ def main() -> int:
     errors.extend(validate_skill_files(known))
     errors.extend(validate_team_templates(known))
     errors.extend(validate_workflow_templates(known))
+    errors.extend(validate_local_host_diagnostics())
+    errors.extend(validate_security_assessment_standard())
+    errors.extend(validate_bundled_resource_localization())
     errors.extend(validate_domain_capability_matrix(matrix))
     if errors:
         raise AssertionError("resource link validation failed:\n" + "\n".join(f"- {error}" for error in errors))

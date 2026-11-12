@@ -27,6 +27,30 @@ export function postJSON(path, body) {
   });
 }
 
+export function fetchExecutionTargets() {
+  return request("/api/targets");
+}
+
+export function scanExecutionTargetHostKey(payload = {}) {
+  return postJSON("/api/targets/scan-host-key", payload);
+}
+
+export function createExecutionTarget(payload = {}) {
+  return postJSON("/api/targets", payload);
+}
+
+export function updateExecutionTarget(id, payload = {}) {
+  return request(`/api/targets/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(payload || {})
+  });
+}
+
+export function deleteExecutionTarget(id) {
+  return request(`/api/targets/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
 export function checkWorkspaceRequirement(payload = {}) {
   return postJSON("/api/workspace/requirement", payload);
 }
@@ -202,34 +226,6 @@ export function fetchTeamState(filters = {}) {
   return request(`/api/team-state${buildQuery(filters)}`);
 }
 
-export function fetchMemoryDashboard(filters = {}) {
-  return request(`/api/memory${buildQuery(filters)}`);
-}
-
-export function fetchMemoryProject() {
-  return request("/api/memory/project");
-}
-
-export function updateMemoryProject(content) {
-  return request("/api/memory/project", {
-    method: "PUT",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ content: content || "" })
-  });
-}
-
-export function searchMemory(query, filters = {}) {
-  return request(`/api/memory/search${buildQuery({ ...filters, q: query })}`);
-}
-
-export function rebuildMemoryIndex() {
-  return postJSON("/api/memory/rebuild", {});
-}
-
-export function updateMemorySolutionLifecycle(id, action, body = {}) {
-  return postJSON(`/api/memory/solutions/${encodeURIComponent(id)}/${encodeURIComponent(action)}`, body);
-}
-
 export function compactSessionContext(reason = "") {
   return postJSON("/api/session/compact", { reason });
 }
@@ -249,6 +245,67 @@ export function fetchWorkflowRuns() {
 
 export function fetchRuns(filters = {}) {
   return request(`/api/runs${buildQuery(filters)}`);
+}
+
+function unifiedRunEndpoint(runOrID, suffix = "", params = {}) {
+  const id = runIDValue(runOrID);
+  if (!id) throw new Error("missing run id");
+  const tail = String(suffix || "").replace(/^\/+/, "");
+  const path = `/api/runs/${encodeURIComponent(id)}${tail ? `/${tail}` : ""}`;
+  return appendQuery(path, params);
+}
+
+export function fetchRun(runOrID, filters = {}) {
+  return request(unifiedRunEndpoint(runOrID, "", filters));
+}
+
+export function fetchRunWorkbench(runOrID) {
+  return fetchRun(runOrID, { view: "workbench" });
+}
+
+export function fetchRunActionDiscovery(runOrID) {
+  return request(unifiedRunEndpoint(runOrID, "actions", { envelope: true }))
+    .then(normalizeRunActionDiscovery);
+}
+
+export function fetchRunActions(runOrID) {
+  return fetchRunActionDiscovery(runOrID).then(payload => payload.actions);
+}
+
+export function fetchRunReplay(runOrID, filters = {}) {
+  return request(unifiedRunEndpoint(runOrID, "replay", filters));
+}
+
+export function fetchRunTimeline(runOrID, filters = {}) {
+  return request(unifiedRunEndpoint(runOrID, "timeline", filters));
+}
+
+export function fetchRunContext(runOrID) {
+  return request(unifiedRunEndpoint(runOrID, "context"));
+}
+
+export function fetchRunDiffs(runOrID, filters = {}) {
+  return request(unifiedRunEndpoint(runOrID, "diffs", filters));
+}
+
+export function fetchRunEvidence(runOrID, filters = {}) {
+  return request(unifiedRunEndpoint(runOrID, "evidence", filters));
+}
+
+export function fetchRunDelivery(runOrID) {
+  return request(unifiedRunEndpoint(runOrID, "delivery"));
+}
+
+export function fetchRunStages(runOrID, filters = {}) {
+  return request(unifiedRunEndpoint(runOrID, "stages", filters));
+}
+
+export function runEventsURL(runOrID, filters = {}) {
+  return unifiedRunEndpoint(runOrID, "events/stream", filters);
+}
+
+export function runExportURL(runOrID, filters = {}) {
+  return unifiedRunEndpoint(runOrID, "export", filters);
 }
 
 export function fetchWorkflowRun(runID, filters = {}) {
@@ -286,7 +343,7 @@ export function fetchWorkflowRunArtifacts(run, filters = {}) {
 }
 
 export function fetchRunArtifacts(run, filters = {}) {
-  return request(runEndpoint(run, ["artifacts_url", "artifactsURL", "artifacts_path", "artifactsPath"], id => `/api/runs/${encodeURIComponent(id)}/artifacts`, filters));
+  return request(unifiedRunEndpoint(run, "artifacts", filters));
 }
 
 export function fetchWorkflowRunEvidence(run, filters = {}) {
@@ -398,15 +455,27 @@ export function normalizeRunActionDiscovery(payload) {
 }
 
 export function startAgentRun(input, payload = {}) {
-  return postJSON("/api/run", {
+  return postJSON("/api/runs", {
     ...payload,
     input,
     background: true
   });
 }
 
+export function uploadAttachments(files = []) {
+  const form = new FormData();
+  for (const file of Array.from(files || [])) {
+    if (file) form.append("files", file, file.name || "attachment");
+  }
+  return request("/api/attachments", { method: "POST", body: form });
+}
+
+export function preflightTask(payload = {}) {
+  return postJSON("/api/runs/preflight", payload);
+}
+
 export function startWorkflowRun(name, payload = {}) {
-  return postJSON(`/api/workflows/${encodeURIComponent(name)}`, payload);
+  return postJSON(payload.type === "auto" ? "/api/runs" : `/api/workflows/${encodeURIComponent(name)}`, payload);
 }
 
 export function submitWorkflowRunInput(runID, inputs, options = {}) {

@@ -6,12 +6,12 @@ presets:
     category: starter
     tags: [starter, multi-domain, workflow, team, quality]
     providers: [primary]
-    agents: [chat, planner, fixer, auditor, software-engineer, security-researcher, web-security-researcher, binary-analyst, documentation-specialist, operations-specialist, support-specialist, framework-extension-architect]
-    skills: [execution-plan, code-writing, code-audit, vulnerability-research, web-vulnerability-research, authorized-red-team-validation, binary-vulnerability-research, reverse-engineering]
-    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points, network_tools/device_discovery_plan, network_tools/device_command_plan, network_tools/device_config_dry_run, network_tools/device_restconf_live_apply, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview, python_notes/binary_format_summary, python_notes/binary_entropy_map, python_notes/binary_symbol_hints, python_notes/binary_extract_window, python_notes/markdown_link_check, python_notes/support_case_summary, python_notes/redaction_check]
+    agents: [chat, planner, fixer, auditor, software-engineer, security-researcher, web-security-researcher, binary-analyst, documentation-specialist, research-specialist, source-verifier, operations-specialist, support-specialist, framework-extension-architect]
+    skills: [execution-plan, code-writing, code-audit, vulnerability-research, web-vulnerability-research, authorized-red-team-validation, binary-vulnerability-research, internet-research, source-verification, office-document-production, reverse-engineering]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, web_tools/web_search, web_tools/fetch_url, web_tools/research_snapshot, web_tools/compile_research_evidence, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points, office_tools/office_capabilities, office_tools/create_docx, office_tools/create_xlsx, office_tools/create_pptx, office_tools/create_pdf, office_tools/inspect_office_document, office_tools/validate_office_document, office_tools/replace_office_text, office_tools/fill_office_template, office_tools/export_office_pdf, office_tools/render_office_preview, network_tools/device_discovery_plan, network_tools/device_command_plan, network_tools/device_batch_command_plan, network_tools/device_config_dry_run, network_tools/device_restconf_live_apply, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview, python_notes/binary_format_summary, python_notes/binary_entropy_map, python_notes/binary_symbol_hints, python_notes/binary_extract_window, python_notes/markdown_link_check, python_notes/support_case_summary, python_notes/redaction_check]
     workflows: [plan-fix-audit, skill-chain]
-    workflow_templates: [multi-domain-intake-router, engineering-parallel-delivery, task-decomposition-plan, plan-fix-audit, software-quality-gate, software-team-review-gate, web-research-risk, security-audit-evidence-gate, authorized-red-team-validation, binary-triage, docs-review-publish, operations-runbook, customer-support-triage, agent-framework-extension]
-    team_templates: [software-task-team, audit-security-team, web-research-team, binary-triage-team, documentation-team, operations-runbook-team, customer-support-team, framework-extension-team]
+    workflow_templates: [multi-domain-intake-router, complex-project-delivery, task-decomposition-plan, plan-fix-audit, software-quality-gate, software-team-review-gate, web-research-risk, parallel-research-review, security-audit-evidence-gate, authorized-red-team-validation, binary-triage, docs-review-publish, operations-runbook, customer-support-triage, agent-framework-extension]
+    team_templates: [software-task-team, audit-security-team, web-research-team, internet-research-team, binary-triage-team, documentation-team, operations-runbook-team, customer-support-team, framework-extension-team]
     policy_rules: [expression, contains, risk_at_least, ref_truthy, team_approval_gate]
     required_env: [GOFLOW_API_KEY]
     recommended_workflow: multi-domain-intake-router
@@ -47,9 +47,8 @@ presets:
         - Requires selected worker summaries or explicit blockers.
         - Requires artifact handoff, join conflict diagnostics, integrated report, audit decision, token and cost discipline, and risk handoff.
       evidence_artifacts: [intake summary, multi-domain task graph, branch-selection reason, pruned branches, per-branch tool allowlists, selected domain worker reports, authorized red-team validation report, integrated multi-domain report, join conflict report, audit report, device plan refs, live connector audit refs, final handoff report]
-      simple_mode:
+      presentation_guidance:
         - Show goal, target, desired output, risk tolerance, selected and pruned domains, branch blockers, approvals, quality status, join conflicts, and final handoff.
-      expert_mode:
         - Show active_branches, branch_selection_reason, pruned_branches, per_branch_tool_allowlists, branch contracts, team refs, policy refs, model routes, context budgets, cost attribution, artifact refs, conflicts, and audit evidence.
       token_strategy:
         - Route with compact intake fields.
@@ -68,16 +67,21 @@ presets:
 
   - name: software-engineering
     default_kit_name: software-engineering-kit
+    routing:
+      version: 1
+      match_terms: [软件开发, 编写代码, 开发脚本, 修复代码, 实现功能, 美化页面, 页面样式, software development, implement feature, write script]
+      entry_workflow: plan-implement-audit
+      required_tools: [file_tools/read_file, file_tools/apply_patch, command_tools/run_command]
     title: Software Engineering Kit
     description: Plan, implement, review, and hand off scoped software changes.
     category: software
     tags: [coding, review, planning]
     providers: [primary]
-    agents: [chat, planner, fixer, auditor, software-engineer]
+    agents: [chat, planner, fixer, auditor, software-engineer, quality-engineer]
     skills: [execution-plan, code-writing, code-audit]
-    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file]
-    workflows: [plan-fix-audit]
-    workflow_templates: [engineering-parallel-delivery, plan-fix-audit, software-quality-gate, software-team-review-gate, parallel-research-review]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, file_tools/read_file_range, file_tools/apply_patch, command_tools/run_command, command_tools/start_process, command_tools/process_status, command_tools/stop_process, web_tools/web_search, web_tools/fetch_url, web_tools/research_snapshot, web_tools/browser_snapshot]
+    workflows: [plan-fix-audit, plan-implement-audit]
+    workflow_templates: [complex-project-delivery, plan-fix-audit, software-quality-gate, software-team-review-gate, parallel-research-review]
     team_templates: [software-task-team]
     policy_rules: [expression, team_approval_gate]
     recommended_workflow: plan-fix-audit
@@ -110,9 +114,8 @@ presets:
         - Requires audit findings or clean review rationale.
         - Requires artifact refs or compact evidence for worker outputs.
       evidence_artifacts: [implementation plan, changed file summary, verification output, audit report, worker artifact refs, final handoff]
-      simple_mode:
+      presentation_guidance:
         - Show task, target area, approval prompts, verification result, and final handoff.
-      expert_mode:
         - Show workflow graph, stage models, allowed tools, context budgets, artifact refs, and retry state.
       token_strategy:
         - Use file summaries and hashes before full file reads.
@@ -137,9 +140,9 @@ presets:
     providers: [primary]
     agents: [chat, planner, fixer, auditor, framework-extension-architect, software-engineer]
     skills: [execution-plan, code-writing, code-audit]
-    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, network_tools/device_discovery_plan, network_tools/device_command_plan, network_tools/device_config_dry_run, network_tools/device_restconf_live_apply]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, network_tools/device_discovery_plan, network_tools/device_command_plan, network_tools/device_batch_command_plan, network_tools/device_config_dry_run, network_tools/device_restconf_live_apply]
     workflows: [skill-chain]
-    workflow_templates: [agent-framework-extension, multi-domain-intake-router, engineering-parallel-delivery, task-decomposition-plan, software-quality-gate]
+    workflow_templates: [agent-framework-extension, multi-domain-intake-router, complex-project-delivery, task-decomposition-plan, software-quality-gate]
     team_templates: [framework-extension-team, software-task-team]
     policy_rules: [ref_truthy, team_approval_gate, expression]
     recommended_workflow: agent-framework-extension
@@ -168,14 +171,13 @@ presets:
         - Keep generated MCP tools behind explicit config, isolation, and approval notes.
       quality_gates:
         - Requires complete resource graph.
-        - Requires Simple mode and Expert mode behavior.
+        - Requires one focused task view with low-frequency evidence available on demand.
         - Requires validation and reload instructions.
         - Requires release/deployment validation evidence for generated-resource paths.
       evidence_artifacts: [resource design, generated path list, validation report, activation steps, rollback notes]
-      simple_mode:
+      presentation_guidance:
         - Ask for domain, users, tasks, tools, and desired output.
         - Show generated resources and next activation steps.
-      expert_mode:
         - Show raw manifests, model routes, context budgets, policy rules, tool isolation, and scaffold overrides.
       token_strategy:
         - Reuse scaffold contracts instead of regenerating long boilerplate.
@@ -190,6 +192,67 @@ presets:
       recommended_team: framework-extension-team
       primary_skill: execution-plan
 
+  - name: internet-research
+    default_kit_name: internet-research-kit
+    routing:
+      version: 1
+      priority: -10
+      match_terms: [查询最新文档, 查询官方文档, 查找最新资料, 互联网资料, 最新技术资料, 查最新版本, latest documentation, official documentation, internet research]
+      entry_workflow: parallel-research-review
+      required_tools: [web_tools/web_search, web_tools/research_snapshot]
+    title: 互联网资料研究资源包
+    description: 搜索、快照、核验并交付带来源映射的互联网研究报告和结构化数据。
+    category: research
+    tags: [research, sources, verification, report]
+    providers: [primary]
+    agents: [research-specialist, source-verifier]
+    skills: [internet-research, source-verification]
+    tools: [web_tools/web_search, web_tools/research_snapshot, web_tools/compile_research_evidence, file_tools/write_file]
+    workflows: [parallel-research-review]
+    workflow_templates: [parallel-research-review]
+    team_templates: [internet-research-team]
+    policy_rules: [expression, ref_truthy]
+    recommended_workflow: parallel-research-review
+    recommended_agent: research-specialist
+    examples:
+      - title: 核验公开信息
+        description: 使用原始来源核验公开说法，并明确冲突和证据缺口。
+        request: 核验指定产品最近一次正式发布的日期和主要变化，优先引用官方来源。
+        workflow: parallel-research-review
+        agent: research-specialist
+    vertical_pack:
+      domain: internet-research
+      maturity: production-ready
+      summary: 面向互联网资料搜索、事实核验和多来源对比，交付结论可追溯、冲突可见的多格式研究产物。
+      supported_tasks: [公开资料搜索与事实核验, 官方公告和版本信息追踪, 多方案对比研究, 来源冲突和时效检查, 中文多格式研究交付]
+      required_inputs: [研究主题, 时间范围, 地域或版本边界, 交付目录]
+      tool_boundaries:
+        - 搜索结果只用于发现候选来源，不能直接作为结论证据。
+        - 批量来源快照最多处理十二个 URL，并自动缓存和去重。
+        - 文件工具只写入工作区内的研究交付目录。
+      safety_gates:
+        - 不登录账户、不绕过付费墙，也不执行主动安全探测。
+        - 不把无法访问的页面或未知转载当作已确认事实。
+      quality_gates:
+        - 每条关键结论必须有直接来源映射。
+        - 来源冲突、过期信息和证据缺口不得隐藏。
+        - 最终交付必须包含中文 Markdown、JSON 和 CSV 内容。
+      evidence_artifacts: [研究范围, 来源快照, 结论来源映射, 来源核验报告, 多格式研究交付包]
+      presentation_guidance:
+        - 只显示研究主题、时间范围、来源数量、冲突状态、质量结论和产物路径。
+        - 在产物详情中按需查看规范 URL、正文哈希、抓取时间和结论来源映射。
+      token_strategy:
+        - 后续阶段只传递来源摘要、必要摘录、URL、哈希和结论映射。
+        - 使用缓存和内容哈希避免重复抓取和重复模型输入。
+      model_routes:
+        strong: [复杂问题拆解, 冲突裁决, 最终结论表达]
+        worker: [搜索, 批量快照, 来源整理, 多格式产物生成]
+        verifier: [来源映射核验, 时效和独立性检查]
+    metadata:
+      preset: internet-research
+      recommended_team: internet-research-team
+      primary_skill: internet-research
+
   - name: web-security
     default_kit_name: web-security-kit
     title: Web Security Research Kit
@@ -201,7 +264,7 @@ presets:
     skills: [execution-plan, web-vulnerability-research, vulnerability-research, authorized-red-team-validation, code-audit]
     tools: [web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points, file_tools/read_file, file_tools/search_files]
     workflows: [skill-chain]
-    workflow_templates: [web-research-risk, security-audit-evidence-gate, authorized-red-team-validation, human-input-security-review]
+    workflow_templates: [web-research-risk, security-audit-evidence-gate, authorized-red-team-validation]
     team_templates: [web-research-team, audit-security-team]
     policy_rules: [contains, risk_at_least, ref_truthy, expression]
     required_env: [GOFLOW_API_KEY]
@@ -236,10 +299,9 @@ presets:
         - Requires confirmed vs hypothetical finding separation.
         - Requires remediation and residual uncertainty.
       evidence_artifacts: [target scope, page asset inventory, browser snapshot summary, browser probe-point summary, security signal list, risk report, red-team validation plan, red-team validation evidence, blue-team handoff]
-      simple_mode:
+      presentation_guidance:
         - Show target URL, allowed hosts, authorization checkbox, evidence status, risk level, and final report.
         - Show whether red-team validation is approved, blocked, or complete.
-      expert_mode:
         - Show tool allowlists, browser evidence refs, context budgets, approval gates, route conditions, and raw workflow graph.
         - Show authorization boundary, allowed actions, blocked actions, canary evidence, and red/blue handoff refs.
       token_strategy:
@@ -257,19 +319,24 @@ presets:
 
   - name: security-research
     default_kit_name: security-research-kit
+    routing:
+      version: 1
+      match_terms: [安全评估, 漏洞误报复核, 漏洞扫描, 无损漏洞验证, 安全证据评估, 渗透测试, 漏扫, authorized assessment, vulnerability review, penetration test]
+      entry_workflow: security-assessment
+      required_tools: [file_tools/read_file]
     title: Security Research Kit
     description: Plan authorized security reviews, collect evidence, classify risk, and prepare defensive reports.
     category: security
     tags: [security, audit, evidence, red-team]
     providers: [primary]
     agents: [planner, auditor, security-researcher, web-security-researcher, binary-analyst]
-    skills: [execution-plan, vulnerability-research, web-vulnerability-research, authorized-red-team-validation, binary-vulnerability-research, reverse-engineering, code-audit]
-    tools: [file_tools/read_file, file_tools/search_files, web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview, python_notes/binary_format_summary, python_notes/binary_entropy_map, python_notes/binary_symbol_hints, python_notes/binary_extract_window, python_notes/redaction_check]
-    workflows: [skill-chain]
-    workflow_templates: [web-research-risk, security-audit-evidence-gate, authorized-red-team-validation, binary-triage, human-input-security-review]
+    skills: [execution-plan, vulnerability-research, web-vulnerability-research, authorized-red-team-validation, binary-vulnerability-research, reverse-engineering, code-audit, security-assessment, security-evidence-review, event-notification]
+    tools: [file_tools/read_file, file_tools/search_files, web_tools/web_search, web_tools/fetch_url, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points, python_notes/binary_file_info, python_notes/binary_strings, python_notes/hex_preview, python_notes/binary_format_summary, python_notes/binary_entropy_map, python_notes/binary_symbol_hints, python_notes/binary_extract_window, python_notes/redaction_check, notification_tools/publish_event]
+    workflows: [skill-chain, security-assessment]
+    workflow_templates: [web-research-risk, security-audit-evidence-gate, authorized-red-team-validation, binary-triage]
     team_templates: [audit-security-team, web-research-team, binary-triage-team]
     policy_rules: [contains, risk_at_least, team_approval_gate, expression]
-    recommended_workflow: human-input-security-review
+    recommended_workflow: security-assessment
     recommended_agent: security-researcher
     examples:
       - title: Authorized review
@@ -301,10 +368,9 @@ presets:
         - Requires remediation and follow-up tests.
         - Requires disclosure-safe wording and red/blue handoff evidence before final reporting.
       evidence_artifacts: [scope note, evidence inventory, finding list, authorized red-team validation plan, red-team evidence and blocked-action log, risk decision, disclosure-safe report, remediation report]
-      simple_mode:
+      presentation_guidance:
         - Show scope, target type, allowed actions, evidence status, and risk summary.
         - Show whether offensive validation is authorized, blocked, or complete.
-      expert_mode:
         - Show tool allowlists, approval decisions, evidence refs, severity policy, and route diagnostics.
         - Show red-team scope, exclusions, allowed payload classes, rate limits, and blue-team handoff refs.
         - Show authorization blockers, disallowed actions, weak evidence, unresolved exploitability, and disclosure-safe report checks.
@@ -363,9 +429,8 @@ presets:
         - Requires evidence for suspicious indicators.
         - Requires offset/string references, confidence, next reversing steps, and unsafe-action blockers.
       evidence_artifacts: [binary metadata, format summary, entropy map, import/export hints, string indicators, hex evidence, bounded artifact window, reverse notes, risk report]
-      simple_mode:
+      presentation_guidance:
         - Show file path, format, entropy/packing status, suspicious indicators, offset refs, blockers, and next steps.
-      expert_mode:
         - Show offsets, imports/exports, symbol hints, entropy blocks, tool outputs, artifact refs, static-analysis limits, and sandbox gaps.
       token_strategy:
         - Return bounded strings and hex snippets instead of full binary content.
@@ -381,74 +446,70 @@ presets:
 
   - name: documentation
     default_kit_name: documentation-kit
-    title: Documentation Kit
-    description: Plan, update, review, and hand off technical documentation changes.
+    title: 办公文档资源包
+    description: 制作、编辑、转换和校验 Word、Excel、PPT 与 PDF，交付真实文件和预览证据。
     category: documentation
-    tags: [docs, writing, review]
+    tags: [office, document, delivery]
     providers: [primary]
-    agents: [chat, planner, fixer, auditor, documentation-specialist]
-    skills: [execution-plan, code-writing, code-audit]
-    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, python_notes/markdown_link_check, python_notes/redaction_check]
-    workflows: [plan-fix-audit]
+    agents: [planner, auditor, documentation-specialist]
+    skills: [office-document-production, execution-plan, code-audit]
+    tools: [office_tools/office_capabilities, office_tools/create_docx, office_tools/create_xlsx, office_tools/create_pptx, office_tools/create_pdf, office_tools/inspect_office_document, office_tools/validate_office_document, office_tools/replace_office_text, office_tools/fill_office_template, office_tools/export_office_pdf, office_tools/render_office_preview]
+    workflows: []
     workflow_templates: [docs-review-publish]
     team_templates: [documentation-team]
     policy_rules: [expression, team_approval_gate]
     recommended_workflow: docs-review-publish
     recommended_agent: documentation-specialist
     examples:
-      - title: Refresh docs
-        description: Update docs and review for accuracy.
-        request: Update the setup documentation and verify commands are accurate.
+      - title: 制作项目汇报材料
+        description: 生成可编辑办公文档并完成真实格式校验。
+        request: 根据项目资料制作中文 Word 报告、带公式的 Excel 数据表和 16:9 PPT，导出 PDF 并生成预览图。
         workflow: docs-review-publish
         agent: documentation-specialist
     vertical_pack:
-      domain: documentation
+      domain: office-document
       maturity: production-ready
-      summary: Plans, edits, reviews, and prepares publish-ready technical documentation with audience fit, command accuracy, link integrity, bilingual parity, version/platform notes, redaction, and publish readiness checks.
-      supported_tasks: [documentation planning, guide updates, command verification notes, local Markdown link integrity review, bilingual parity review, version and platform note review, publish checklist creation]
-      required_inputs: [target document, audience, desired change, verification expectations, version or platform scope]
+      summary: 制作、编辑、转换和校验 Word、Excel、PPT 与 PDF，交付真实可打开文件、PDF 和预览证据。
+      supported_tasks: [中文报告制作, 多工作表数据分析, 16:9 演示文稿制作, PDF 导出, 预览图生成, 已有文档精确修改]
+      required_inputs: [文档目标和读者, 输入资料或数据, 交付格式, 模板或品牌要求]
       tool_boundaries:
-        - Read existing docs before edits.
-        - Write only scoped documentation files.
-        - Use markdown_link_check for local link and anchor integrity without network access.
-        - Run commands only when command accuracy verification is needed and approved.
-        - Use redaction_check before publishing docs that include logs, tokens, customer examples, or incident evidence.
+        - 只处理工作区内的输入和交付文件。
+        - 覆盖已有文件前必须校验 SHA-256 并保留备份。
+        - 转换器和预览器由能力探针自动选择。
       safety_gates:
-        - Preserve existing bilingual conventions.
-        - Do not invent commands or behavior without source evidence.
-        - Flag stale version/platform references and missing publish approval.
+        - 不执行宏、嵌入脚本或文档外部链接。
+        - 不覆盖并发修改，不伪造转换或预览成功。
       quality_gates:
-        - Requires changed document summary.
-        - Requires audience fit, command accuracy, link integrity, bilingual parity, and redaction review.
-        - Requires publish checklist or residual gaps.
-      evidence_artifacts: [documentation plan, changed file summary, link integrity report, bilingual parity notes, verification notes, publish checklist]
-      simple_mode:
-        - Show document target, audience, link integrity, command accuracy, bilingual parity, redaction status, and publish readiness.
-      expert_mode:
-        - Show raw diffs, validation commands, markdown_link_check output, redaction findings, version/platform notes, style constraints, and artifact refs.
+        - 每个要求格式都有真实非空文件、结构检查和 SHA-256。
+        - 要求 PDF 或预览时提供实际产物路径。
+      evidence_artifacts: [文档需求与交付清单, 可编辑源文件, PDF 文件, 预览图, 结构和格式校验结果]
       token_strategy:
-        - Use document summaries before full reads.
-        - Pass section-level summaries into review.
+        - 只传递文档结构摘要、产物路径、哈希和校验结论。
       model_routes:
-        strong: [structure planning, final accuracy review]
-        worker: [scoped doc edits, link integrity scan, checklist drafting]
-        verifier: [command and link review, bilingual parity and publish readiness review]
+        strong: [复杂内容组织, 跨格式一致性, 最终质量判断]
+        worker: [文件创建, 转换, 精确修改]
+        verifier: [结构检查, 格式校验, 预览复核]
     metadata:
       preset: documentation
       recommended_team: documentation-team
-      primary_skill: code-writing
+      primary_skill: office-document-production
 
   - name: operations-runbook
     default_kit_name: operations-runbook-kit
+    routing:
+      version: 1
+      match_terms: [运维诊断, 服务器状态, 运维手册, 服务故障, 只读主机, SSH 诊断, operations diagnostics, deployment runbook]
+      entry_workflow: operations-runbook
+      required_tools: [file_tools/read_file, host_tools/host_facts]
     title: Operations Runbook Kit
     description: Create and review runbooks with rollback and approval guidance.
     category: operations
     tags: [operations, runbook, rollback]
     providers: [primary]
     agents: [chat, planner, fixer, auditor, operations-specialist, documentation-specialist]
-    skills: [execution-plan, code-writing, code-audit]
-    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, network_tools/device_discovery_plan, network_tools/device_command_plan, network_tools/device_config_dry_run, network_tools/device_restconf_live_apply]
-    workflows: [plan-fix-audit]
+    skills: [execution-plan, code-writing, code-audit, controlled-operations, local-host-diagnostics, remote-host-diagnostics]
+    tools: [file_tools/read_file, file_tools/search_files, file_tools/write_file, web_tools/web_search, web_tools/fetch_url, web_tools/research_snapshot, network_tools/device_discovery_plan, network_tools/device_command_plan, network_tools/device_batch_command_plan, network_tools/device_config_dry_run, network_tools/device_restconf_live_apply, host_tools/host_facts, host_tools/host_diagnostic_snapshot, host_tools/read_log_tail, ssh_tools/ssh_host_key_scan, ssh_tools/ssh_run_command]
+    workflows: [plan-fix-audit, operations-runbook]
     workflow_templates: [operations-runbook, docs-review-publish]
     team_templates: [operations-runbook-team, documentation-team]
     policy_rules: [expression, team_approval_gate]
@@ -481,9 +542,8 @@ presets:
         - Requires rollback and success signals.
         - Requires device evidence contract or a stated blocker for network-device work.
       evidence_artifacts: [runbook draft, risk review, approval notes, rollback plan, network-device discovery plan, network-device dry-run plan, controlled RESTCONF live apply audit record, final handoff]
-      simple_mode:
+      presentation_guidance:
         - Show service or device, change goal, authorized scope, allowed hosts, prechecks, approval status, rollback, and final runbook.
-      expert_mode:
         - Show raw workflow graph, policy gates, network_tools allowlists, credential refs, live connector boundaries, and artifact refs.
       token_strategy:
         - Keep device or environment evidence as summaries and refs.
@@ -541,9 +601,8 @@ presets:
         - Requires missing information list.
         - Requires privacy check, escalation decision, customer/internal note separation, and reviewer quorum status.
       evidence_artifacts: [triage summary, ticket context summary, privacy flags, customer response draft, internal notes, escalation decision, reviewer quorum decision]
-      simple_mode:
+      presentation_guidance:
         - Show issue, product area, impact, SLA/priority, privacy flags, missing information, response draft, escalation status, and reviewer quorum.
-      expert_mode:
         - Show source attribution, policy assumptions, redaction findings, evidence refs, response variants, reviewer quorum, and routing diagnostics.
       token_strategy:
         - Keep customer context concise and redact irrelevant history.

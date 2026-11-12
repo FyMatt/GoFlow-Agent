@@ -5,20 +5,26 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/url"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"regexp"
 	"sort"
 	"strconv"
 	"strings"
 	"sync"
+	"time"
+	"unicode"
 	"unicode/utf8"
 
+	"github.com/FyMatt/GoFlow-Agent/internal/commandpolicy"
 	"github.com/FyMatt/GoFlow-Agent/internal/memory"
+	"github.com/FyMatt/GoFlow-Agent/internal/policy"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
+	"github.com/FyMatt/GoFlow-Agent/internal/slicescheduler"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
-	"gopkg.in/yaml.v3"
 )
 
 type workflowGraph struct {
@@ -153,18 +159,11 @@ func (w *WorkflowRunner) workflowFromGraph(name string) (workflowDefinition, boo
 }
 
 func (w *WorkflowRunner) loadWorkflowGraph(name string) (workflowGraph, error) {
-	path, err := w.workflowGraphPath(name)
+	doc, err := w.LoadRunnableWorkflowGraphDocument(name)
 	if err != nil {
 		return workflowGraph{}, err
 	}
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return workflowGraph{}, err
-	}
-	var graph workflowGraph
-	if err := yaml.Unmarshal(data, &graph); err != nil {
-		return workflowGraph{}, fmt.Errorf("parse workflow graph: %w", err)
-	}
+	graph := doc.toInternalGraph()
 	graph = w.expandWorkflowGraphExecutableTeams(graph)
 	if err := w.validateWorkflowGraph(normalizePersistedWorkflowName(name), graph); err != nil {
 		return workflowGraph{}, err
@@ -337,6 +336,9 @@ func validateWorkflowGraphWithTeamLookup(invokedName string, graph workflowGraph
 		if err := validateWorkflowGraphExecutionContract(graph.Name, stage); err != nil {
 			return err
 		}
+		if err := validateWorkflowGraphStageCapabilities(graph.Name, stage); err != nil {
+			return err
+		}
 		key := normalizeWorkflowSkillName(stage.Name)
 		if _, ok := seen[key]; ok {
 			return fmt.Errorf("workflow graph %s has duplicate stage %q", graph.Name, stage.Name)
@@ -371,11 +373,15 @@ func validateWorkflowGraphWithTeamLookup(invokedName string, graph workflowGraph
 		if isVisualOnlyWorkflowNode(stage) || isControlWorkflowNode(stage) {
 			continue
 		}
-		if strings.TrimSpace(stage.Agent) == "" {
+		connectedTool := isConnectedWorkflowToolNode(stage)
+		if !connectedTool && strings.TrimSpace(stage.Agent) == "" {
 			return fmt.Errorf("workflow graph %s stage %s missing agent", graph.Name, stage.Name)
 		}
-		if strings.TrimSpace(stage.Skill) == "" {
+		if !connectedTool && strings.TrimSpace(stage.Skill) == "" {
 			return fmt.Errorf("workflow graph %s stage %s missing skill", graph.Name, stage.Name)
+		}
+		if connectedTool && strings.TrimSpace(stage.Tool) == "" {
+			return fmt.Errorf("workflow graph %s stage %s connected tool node requires an MCP tool", graph.Name, stage.Name)
 		}
 		if stage.Retry.MaxAttempts < 0 {
 			return fmt.Errorf("workflow graph %s stage %s retry.max_attempts must not be negative", graph.Name, stage.Name)
@@ -396,6 +402,49 @@ func validateWorkflowGraphWithTeamLookup(invokedName string, graph workflowGraph
 				return fmt.Errorf("workflow graph %s stage %s references unknown next stage %q", graph.Name, stage.Name, next)
 			}
 		}
+	}
+	return nil
+}
+
+func validateWorkflowGraphStageCapabilities(graphName string, stage workflowGraphStage) error {
+	if raw := strings.TrimSpace(stage.Params["output_schema_json"]); raw != "" {
+		var definition map[string]any
+		if err := json.Unmarshal([]byte(raw), &definition); err != nil || definition == nil {
+			return fmt.Errorf("工作流 %s 阶段 %s 的 output_schema_json 必须是 JSON 对象", graphName, stage.Name)
+		}
+	}
+	for _, key := range []string{"require_workspace_mutation", "seed_plan_intake", "use_change_slice_scheduler", "approved_plan_scope"} {
+		if value, ok := stage.Params[key]; ok && value != "true" && value != "false" {
+			return fmt.Errorf("workflow graph %s stage %s params.%s must be true or false", graphName, stage.Name, key)
+		}
+	}
+	if value, ok := stage.Params["change_slice_policy"]; ok && value != "off" && value != "required" && value != "if_missing" {
+		return fmt.Errorf("workflow graph %s stage %s params.change_slice_policy must be off, required or if_missing", graphName, stage.Name)
+	}
+	if stage.Params["approved_plan_scope"] == "true" && !stage.Approval {
+		return fmt.Errorf("workflow graph %s stage %s params.approved_plan_scope requires approval: true", graphName, stage.Name)
+	}
+	if stage.Params["use_change_slice_scheduler"] == "true" && !workflowGraphStageApprovedPlanScope(workflowGraph{}, stage) {
+		return fmt.Errorf("workflow graph %s stage %s params.use_change_slice_scheduler requires approved_plan_scope and approval: true", graphName, stage.Name)
+	}
+	mode := stage.Params["verification_mode"]
+	if mode != "" && mode != "command" && mode != "tool" {
+		return fmt.Errorf("workflow graph %s stage %s params.verification_mode must be command or tool", graphName, stage.Name)
+	}
+	anyTools := workflowGraphQualityToolList(stage.Params["verification_any_tools"])
+	if _, declared := stage.Params["verification_any_tools"]; declared {
+		if mode != "tool" || len(anyTools) == 0 {
+			return fmt.Errorf("workflow graph %s stage %s params.verification_any_tools requires verification_mode: tool and a nonempty tool list", graphName, stage.Name)
+		}
+		for _, name := range anyTools {
+			parts := strings.Split(name, "/")
+			if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+				return fmt.Errorf("workflow graph %s stage %s params.verification_any_tools requires qualified server/tool names", graphName, stage.Name)
+			}
+		}
+	}
+	if mode == "tool" && len(workflowGraphQualityRequiredTools(stage))+len(anyTools) == 0 {
+		return fmt.Errorf("workflow graph %s stage %s tool verification requires params.verification_tools, verification_any_tools or required_tools", graphName, stage.Name)
 	}
 	return nil
 }
@@ -581,6 +630,9 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 		if _, ok := seen[stageKey]; ok {
 			continue
 		}
+		if err := w.runtime.session.CheckpointWorkflowRunStages(w.runID, workflowRunStageSnapshots(completed)); err != nil {
+			return WorkflowResult{}, fmt.Errorf("checkpoint completed workflow stages: %w", err)
+		}
 		if isVisualOnlyWorkflowNode(stage) {
 			seen[stageKey] = struct{}{}
 			queue = append(w.nextWorkflowGraphStageIndices(graph, index, request, "", completed), queue...)
@@ -592,9 +644,23 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 			return WorkflowResult{Name: graph.Name, Status: "awaiting_approval", PendingApproval: true, ApprovalPrompt: prompt, CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
 		}
 		if w.requiresWorkflowGraphManualInput(stage, request, completed, manualInputs) {
-			prompt := w.workflowGraphManualInputPrompt(stage, request, completed)
-			w.persistWorkflowState(graph.Name, "awaiting_input", WorkflowStage(stage.Name), request, summarizeWorkflow(completed), prompt)
-			return WorkflowResult{Name: graph.Name, Status: "awaiting_input", PendingInput: true, PendingFields: w.workflowGraphManualInputFields(stage, completed), ApprovalPrompt: prompt, CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
+			key := normalizeWorkflowSkillName(stage.Name)
+			if approve && strings.EqualFold(strings.TrimSpace(stage.Name), "approve-plan") {
+				if manualInputs == nil {
+					manualInputs = map[string]map[string]string{}
+				}
+				if len(manualInputs[key]) == 0 {
+					scope := parseDeliveryScope(request)
+					if scope == "" {
+						scope = "mvp"
+					}
+					manualInputs[key] = map[string]string{"delivery_scope": displayDeliveryScope(scope)}
+				}
+			} else {
+				prompt := w.workflowGraphManualInputPrompt(stage, request, completed)
+				w.persistWorkflowState(graph.Name, "awaiting_input", WorkflowStage(stage.Name), request, summarizeWorkflow(completed), prompt)
+				return WorkflowResult{Name: graph.Name, Status: "awaiting_input", PendingInput: true, PendingFields: w.workflowGraphManualInputFields(stage, completed), ApprovalPrompt: prompt, CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
+			}
 		}
 		if isJoinWorkflowNode(stage) {
 			missing := workflowGraphJoinMissingStages(graph, stage, completed)
@@ -644,7 +710,7 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 			completed = append(completed, controlResult)
 			seen[stageKey] = struct{}{}
 			if decision.Halt {
-				finalSummary := summarizeWorkflow(completed)
+				finalSummary := workflowFinalSummary(completed)
 				status := fallbackWorkflowGraphValue(decision.Status, "blocked")
 				w.runtime.DisableWorkflowAutoApproval(graph.Name)
 				if err := w.runtime.RestoreDefaultAgent(); err != nil {
@@ -675,12 +741,54 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 			queue = append(targets, queue...)
 			continue
 		}
+		stage = w.workflowGraphStageWithConnectedTools(graph, index, stage)
 		if stage.Approval && !approve {
 			w.persistWorkflowState(graph.Name, "awaiting_approval", WorkflowStage(stage.Name), request, summarizeWorkflow(completed), fmt.Sprintf("Workflow requires approval before running stage %s.", stage.Name))
 			return WorkflowResult{Name: graph.Name, Status: "awaiting_approval", PendingApproval: true, ApprovalPrompt: fmt.Sprintf("Workflow requires approval before running stage %s.", stage.Name), CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
 		}
 		if readiness := workflowGraphStageExecutionReadiness(stage, approve); readiness.Blocked {
 			return w.blockWorkflowGraphExecutionReadiness(graph, stage, request, completed, readiness, handler), nil
+		}
+		if isConnectedWorkflowToolNode(stage) {
+			inputs := resolveWorkflowGraphStageInputs(stage, request, completed)
+			inputValues := resolveWorkflowGraphStageInputValues(stage, request, completed)
+			w.persistWorkflowState(graph.Name, "running", WorkflowStage(stage.Name), request, summarizeWorkflow(completed), "")
+			result, sourceStage, err := w.runWorkflowGraphConnectedToolStage(graph, index, stage, completed, handler)
+			if err != nil {
+				errorTargets := w.workflowGraphNamedStageIndices(graph, stage.OnError, completed)
+				if len(errorTargets) > 0 {
+					completed = append(completed, workflowGraphErrorStageResult(stage, err, inputs, inputValues, 1))
+					seen[stageKey] = struct{}{}
+					queue = append(errorTargets, queue...)
+					continue
+				}
+				return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", stage.Name, err)
+			}
+			stageResult := workflowGraphStageResult(stage, result, inputs, inputValues, 1)
+			if stageResult.Metadata == nil {
+				stageResult.Metadata = make(map[string]string)
+			}
+			stageResult.Metadata["tool.mode"] = "connected"
+			stageResult.Metadata["tool.source_stage"] = sourceStage
+			if len(result.ToolResults) > 0 {
+				toolResult := result.ToolResults[len(result.ToolResults)-1]
+				workflowStageSetOutputValue(&stageResult.Output, "tool_name", toolResult.ToolName)
+				workflowStageSetOutputValue(&stageResult.Output, "tool_result", toolResult.Content)
+				if toolResult.ArtifactRef != "" {
+					workflowStageSetOutputValue(&stageResult.Output, "artifact_ref", toolResult.ArtifactRef)
+				}
+				if toolResult.ArtifactHash != "" {
+					workflowStageSetOutputValue(&stageResult.Output, "artifact_hash", toolResult.ArtifactHash)
+				}
+			}
+			applyWorkflowStageCanonicalOutputFields(&stageResult.Output)
+			if outcome, handled, err := w.handleWorkflowGraphStageContractFailure(ctx, graph, index, request, completed, stageResult, handler); handled || err != nil {
+				return outcome, err
+			}
+			completed = append(completed, stageResult)
+			seen[stageKey] = struct{}{}
+			queue = append(w.nextWorkflowGraphStageIndices(graph, index, request, result.Output, completed), queue...)
+			continue
 		}
 		if hit := w.workflowGraphHardBudgetLimitHit(graph, stage, 1); hit.Hit {
 			return w.pauseWorkflowGraphForHardBudget(graph, stage, request, completed, hit, handler), nil
@@ -697,6 +805,10 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 		inputs := resolveWorkflowGraphStageInputs(stage, request, completed)
 		inputValues := resolveWorkflowGraphStageInputValues(stage, request, completed)
 		prompt := w.buildWorkflowGraphStagePrompt(ctx, graph, stage, request, completed)
+		changeSlices := w.workflowChangeSlicesForRun(completed)
+		if workflowGraphStageUsesChangeSliceScheduler(graph, stage) && len(changeSlices) > 0 {
+			prompt = workflowGraphChangeSlicePrompt(prompt, changeSlices)
+		}
 		w.persistWorkflowState(graph.Name, "running", WorkflowStage(stage.Name), request, summarizeWorkflow(completed), "")
 		if err := w.runtime.SetActiveAgent(stage.Agent); err != nil {
 			return WorkflowResult{}, err
@@ -704,6 +816,16 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 		beforeBudgetUsage := w.workflowGraphBudgetUsage()
 		result, attempts, err := w.runWorkflowGraphExecutableStage(ctx, graph, stage, prompt, skill, handler)
 		if err != nil {
+			if strings.Contains(err.Error(), "workflow tool operation limit reached") {
+				// The run used its entire tool budget. The work already on disk is
+				// usually complete; report a resumable pause instead of a failed
+				// delivery so the operator can continue the same run.
+				budgetResult := workflowGraphStageResult(stage, schema.AgentResult{
+					Incomplete:       true,
+					IncompleteReason: "workflow tool operation budget exhausted; 继续执行 resumes this stage",
+				}, inputs, inputValues, attempts)
+				return w.pauseWorkflowForIncompleteStage(graph.Name, request, completed, budgetResult), nil
+			}
 			errorTargets := w.workflowGraphNamedStageIndices(graph, stage.OnError, completed)
 			if len(errorTargets) > 0 {
 				errorResult := workflowGraphErrorStageResult(stage, err, inputs, inputValues, attempts)
@@ -721,6 +843,7 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 			return WorkflowResult{Name: graph.Name, Status: "awaiting_tool_approval", PendingApproval: true, ApprovalPrompt: approvalPrompt, CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
 		}
 		stageResult := workflowGraphStageResult(stage, result, inputs, inputValues, attempts)
+		w.attachDiscoveredWorkspaceVerification(&stageResult, stage)
 		w.applyWorkflowGraphStageBudgetDelta(&stageResult, beforeBudgetUsage)
 		w.emitWorkflowGraphSoftBudgetWarning(ctx, graph, stage, 0, handler)
 		if result.Incomplete {
@@ -732,18 +855,120 @@ func (w *WorkflowRunner) runWorkflowGraphQueue(ctx context.Context, graph workfl
 		}
 		w.applyWorkflowGraphFinalQualityHandoff(graph, stage, completed, &stageResult, handler)
 		completed = append(completed, stageResult)
+		w.persistWorkflowChangeSliceStage(stageResult)
 		seen[stageKey] = struct{}{}
 		queue = append(w.nextWorkflowGraphStageIndices(graph, index, request, result.Output, completed), queue...)
 	}
-	finalSummary := summarizeWorkflow(completed)
+	finalSummary := workflowFinalSummary(completed)
+	finalStatus := workflowFinalDecisionStatus(finalSummary)
+	if len(completed) > 0 {
+		unresolved, _ := strconv.Atoi(completed[len(completed)-1].Metadata["unresolved_quality_failed"])
+		if unresolved > 0 {
+			finalStatus = "blocked"
+		}
+	}
 	w.runtime.DisableWorkflowAutoApproval(graph.Name)
 	if err := w.runtime.RestoreDefaultAgent(); err != nil {
 		return WorkflowResult{}, err
 	}
-	w.persistWorkflowState(graph.Name, "completed", "", request, finalSummary, "")
-	result := WorkflowResult{Name: graph.Name, Status: "completed", CompletedStages: completed, FinalSummary: finalSummary}
+	w.persistWorkflowState(graph.Name, finalStatus, "", request, finalSummary, "")
+	result := WorkflowResult{Name: graph.Name, Status: finalStatus, CompletedStages: completed, FinalSummary: finalSummary}
 	w.applyWorkflowGraphBudgetSummary(graph, &result)
 	return result, nil
+}
+
+func (w *WorkflowRunner) workflowChangeSlicesForRun(completed []WorkflowStageResult) []session.WorkflowChangeSliceSnapshot {
+	if w != nil && w.runtime != nil && w.runtime.session != nil && strings.TrimSpace(w.runID) != "" {
+		if run, ok := w.runtime.session.WorkflowRun(w.runID); ok {
+			if len(run.ChangeSlices) > 0 {
+				return run.ChangeSlices
+			}
+			// A compacted plan string is not the approved contract. Recover the
+			// validated stage snapshot instead of parsing display text again.
+			for _, stage := range run.CompletedStages {
+				if !strings.EqualFold(stage.Status, "completed") || stage.Result.Incomplete || len(stage.ChangeSlices) == 0 {
+					continue
+				}
+				if _, err := slicescheduler.New(stage.ChangeSlices); err != nil {
+					continue
+				}
+				if err := w.runtime.session.AdvanceWorkflowRunChangeSlicesDurable(w.runID, stage); err != nil {
+					return nil
+				}
+				if restored, ok := w.runtime.session.WorkflowRun(w.runID); ok {
+					return restored.ChangeSlices
+				}
+			}
+		}
+	}
+	for index := len(completed) - 1; index >= 0; index-- {
+		if len(completed[index].Result.ToolResults) == 0 && len(completed[index].Result.Output) == 0 {
+			continue
+		}
+		if snapshots := workflowRunStageSnapshots([]WorkflowStageResult{completed[index]}); len(snapshots) > 0 && len(snapshots[0].ChangeSlices) > 0 {
+			return snapshots[0].ChangeSlices
+		}
+	}
+	return nil
+}
+
+func workflowGraphStageUsesChangeSliceScheduler(graph workflowGraph, stage workflowGraphStage) bool {
+	return stage.Params["use_change_slice_scheduler"] == "true" && workflowGraphStageApprovedPlanScope(graph, stage)
+}
+
+func workflowGraphChangeSlicePrompt(prompt string, slices []session.WorkflowChangeSliceSnapshot) string {
+	plan, err := slicescheduler.New(slices)
+	if err != nil {
+		return prompt
+	}
+	batches, err := plan.ReadyBatches()
+	if err != nil || len(batches) == 0 {
+		return prompt + "\n\nChange-slice scheduler: no slice is currently ready. Do not emit a write tool call until its dependencies are complete."
+	}
+	lines := make([]string, 0, len(batches))
+	for _, batch := range batches {
+		mode := "write"
+		if batch.Parallel {
+			mode = "parallel read-only"
+		}
+		targets := make([]string, 0)
+		for _, id := range batch.IDs {
+			for _, item := range slices {
+				if item.ID == id {
+					targets = append(targets, item.TargetFiles...)
+					break
+				}
+			}
+		}
+		line := fmt.Sprintf("- %s: %s", mode, strings.Join(batch.IDs, ", "))
+		if len(targets) > 0 {
+			line += " (targets: " + strings.Join(targets, ", ") + ")"
+		}
+		lines = append(lines, line)
+	}
+	return prompt + "\n\nDurable change-slice schedule (hard gate):\n" + strings.Join(lines, "\n") + "\nOnly read or write files listed by the currently ready slice. Tool calls in one response share the same pre-call dependency state, so do not include a dependent slice in the same tool-call batch. Complete all targets of the ready slice, wait for the next model turn, and then continue with newly ready dependencies."
+}
+
+func (w *WorkflowRunner) persistWorkflowChangeSliceStage(stage WorkflowStageResult) {
+	if w == nil || w.runtime == nil || w.runtime.session == nil || strings.TrimSpace(w.runID) == "" {
+		return
+	}
+	snapshots := workflowRunStageSnapshots([]WorkflowStageResult{stage})
+	if len(snapshots) == 0 {
+		return
+	}
+	if err := w.runtime.session.AdvanceWorkflowRunChangeSlicesDurable(w.runID, snapshots[0]); err != nil {
+		return
+	}
+	w.runtime.session.AppendWorkflowRunEvent(w.runID, session.WorkflowRunEventSnapshot{
+		Type:           "change_slice_stage_evidence",
+		Stage:          string(stage.Stage),
+		Content:        fmt.Sprintf("change-slice evidence recorded for stage %s", stage.Stage),
+		WorkflowName:   w.runtime.SessionSnapshot().Workflow.Name,
+		WorkflowStatus: "running",
+		NextStage:      string(stage.Stage),
+		Reason:         "change_slice_stage_evidence",
+	})
 }
 
 func (w *WorkflowRunner) resumeWorkflowGraph(ctx context.Context, graph workflowGraph, pending pendingApproval, approve bool, handler func(event schema.StreamEvent) error) (WorkflowResult, error) {
@@ -755,7 +980,8 @@ func (w *WorkflowRunner) resumeWorkflowGraph(ctx context.Context, graph workflow
 		return w.resumeWorkflowGraphRepeatStage(ctx, graph, pending, approve, handler)
 	}
 	stage := graph.Stages[pending.skillIndex]
-	if !approve {
+	approvalGroupSize := w.runtime.WorkflowApprovalGroupSize(pending.call.ID)
+	if !approve && approvalGroupSize <= 1 {
 		decision := w.runtime.ResolvePendingApproval(pending.call.ID, false)
 		_ = decision
 		result := schema.ToolResult{CallID: pending.call.ID, ToolName: pending.tool.Name, Content: fmt.Sprintf("tool %s denied by operator", pending.tool.Name), IsError: true, Denied: true}
@@ -769,9 +995,31 @@ func (w *WorkflowRunner) resumeWorkflowGraph(ctx context.Context, graph workflow
 		w.persistWorkflowState(graph.Name, "denied", WorkflowStage(stage.Name), pending.request, summarizeWorkflow(completed), result.Content)
 		return WorkflowResult{Name: graph.Name, Status: "denied", CompletedStages: completed, NextStage: WorkflowStage(stage.Name), ApprovalPrompt: result.Content}, nil
 	}
-	toolResult, err := w.approveWorkflowGraphTool(ctx, pending)
-	if err != nil {
-		return WorkflowResult{}, err
+	var toolResult schema.ToolResult
+	var err error
+	if approve {
+		toolResult, err = w.approveWorkflowGraphTool(ctx, pending)
+		if err != nil {
+			return WorkflowResult{}, err
+		}
+	} else {
+		decision := w.runtime.ResolvePendingApproval(pending.call.ID, false)
+		if decision.Found {
+			pending = decision.Pending
+		}
+		toolResult = schema.ToolResult{CallID: pending.call.ID, ToolName: pending.tool.Name, Content: fmt.Sprintf("tool %s denied by operator", pending.tool.Name), IsError: true, Denied: true}
+		if decision.Found && w.runtime.audit != nil {
+			w.runtime.audit.Record(schema.AuditEntry{Type: "tool_call", AgentID: pending.agent, ToolName: pending.tool.Name, Outcome: "denied", Detail: toolResult.Content})
+		}
+	}
+	approvedResults, approvalTurnReady := w.runtime.RecordWorkflowApprovalResult(pending, toolResult)
+	if approvalGroupSize > 1 && !approvalTurnReady {
+		approvalPrompt := fmt.Sprintf("Workflow is waiting for the remaining tool approvals by agent %s.", stage.Agent)
+		w.persistWorkflowState(graph.Name, "awaiting_tool_approval", WorkflowStage(stage.Name), pending.request, summarizeWorkflow(completed), approvalPrompt)
+		return WorkflowResult{Name: graph.Name, Status: "awaiting_tool_approval", PendingApproval: true, ApprovalPrompt: approvalPrompt, CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
+	}
+	if len(approvedResults) == 0 {
+		approvedResults = []schema.ToolResult{toolResult}
 	}
 	skill, err := w.graphStageSkill(stage)
 	if err != nil {
@@ -792,19 +1040,38 @@ func (w *WorkflowRunner) resumeWorkflowGraph(ctx context.Context, graph workflow
 		return WorkflowResult{}, err
 	}
 	beforeBudgetUsage := w.workflowGraphBudgetUsage()
-	result, err := continueAgentRunWithModelSkillAndOptions(ctx, w.runtime, stage.Agent, prompt, stage.Model, &skill, workflowStageRunOptions{AllowedTools: workflowGraphStageAllowedTools(stage)}, pending.call, pending.responseContent, pending.responseMessage, toolResult, handler)
+	result, err := continueAgentRunWithModelSkillOptionsAndResults(ctx, w.runtime, stage.Agent, prompt, stage.Model, &skill, workflowStageRunOptions{
+		AllowedTools:           workflowGraphStageAllowedTools(stage),
+		MaxModelCalls:          workflowGraphStageMaxModelCalls(stage),
+		MaxStageTotalCalls:     workflowGraphStageMaxTotalModelCalls(stage),
+		ToolOperationRunID:     w.runID,
+		ToolOperationWorkflow:  graph.Name,
+		ToolOperationStage:     stage.Name,
+		IdempotentToolCalls:    true,
+		IsolatePromptContext:   true,
+		ChangeSliceEnforcement: workflowGraphStageUsesChangeSliceScheduler(graph, stage),
+		ChangeSlices:           w.workflowChangeSlicesForRun(completed),
+		ApprovedPlanScope:      workflowGraphStageApprovedPlanScope(graph, stage),
+		StageToolPolicy:        workflowGraphStageToolPolicy(stage),
+	}, pending.call, pending.responseContent, pending.responseMessage, approvedResults, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", stage.Name, err)
 	}
+	w.runtime.ClearWorkflowApprovalResume(pending.call.ID)
 	if hasSuspendedToolResult(result.ToolResults) {
 		w.captureWorkflowGraphApprovalContext(graph, pending.skillIndex, pending.request, result.Output, result.ResponseMessage, completed, result.ToolResults, prompt)
 		approvalPrompt := fmt.Sprintf("Workflow is waiting for approval of tool call %s by agent %s.", firstSuspendedToolCallID(result.ToolResults), stage.Agent)
 		w.persistWorkflowState(graph.Name, "awaiting_tool_approval", WorkflowStage(stage.Name), pending.request, summarizeWorkflow(completed), approvalPrompt)
 		return WorkflowResult{Name: graph.Name, Status: "awaiting_tool_approval", PendingApproval: true, ApprovalPrompt: approvalPrompt, CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
 	}
+	if err := w.workflowGraphStageCompletionError(graph, stage, result); err != nil {
+		return WorkflowResult{}, err
+	}
+	w.refreshTaskStagingManifest()
 	inputs := resolveWorkflowGraphStageInputs(stage, pending.request, completed)
 	inputValues := resolveWorkflowGraphStageInputValues(stage, pending.request, completed)
 	stageResult := workflowGraphStageResult(stage, result, inputs, inputValues, 1)
+	w.attachDiscoveredWorkspaceVerification(&stageResult, stage)
 	w.applyWorkflowGraphStageBudgetDelta(&stageResult, beforeBudgetUsage)
 	w.emitWorkflowGraphSoftBudgetWarning(ctx, graph, stage, 0, handler)
 	if result.Incomplete {
@@ -815,8 +1082,29 @@ func (w *WorkflowRunner) resumeWorkflowGraph(ctx context.Context, graph workflow
 	}
 	w.applyWorkflowGraphFinalQualityHandoff(graph, stage, completed, &stageResult, handler)
 	completed = append(completed, stageResult)
-	queue := w.nextWorkflowGraphStageIndices(graph, pending.skillIndex, pending.request, result.Output, completed)
+	queue := w.workflowGraphResumeQueue(graph, pending.skillIndex, pending.request, result.Output, completed)
 	return w.runWorkflowGraphQueue(ctx, graph, pending.request, true, queue, completed, nil, nil, handler)
+}
+
+func (w *WorkflowRunner) workflowGraphResumeQueue(graph workflowGraph, stageIndex int, request, output string, completed []WorkflowStageResult) []int {
+	queue := w.nextWorkflowGraphStageIndices(graph, stageIndex, request, output, completed)
+	if len(queue) == 0 {
+		return nil
+	}
+	expanded := make([]int, 0, len(queue))
+	for _, index := range queue {
+		if index < 0 || index >= len(graph.Stages) || !isJoinWorkflowNode(graph.Stages[index]) {
+			expanded = append(expanded, index)
+			continue
+		}
+		missing := workflowGraphJoinMissingStages(graph, graph.Stages[index], completed)
+		if len(missing) > 0 {
+			missingIndices := w.workflowGraphNamedStageIndices(graph, missing, completed)
+			expanded = append(expanded, w.workflowGraphQueueTargetsUntilJoin(graph, missingIndices, completed)...)
+		}
+		expanded = append(expanded, index)
+	}
+	return uniqueWorkflowGraphStageIndices(expanded)
 }
 
 func (w *WorkflowRunner) handleWorkflowGraphStageContractFailure(ctx context.Context, graph workflowGraph, index int, request string, completed []WorkflowStageResult, stageResult WorkflowStageResult, handler func(event schema.StreamEvent) error) (WorkflowResult, bool, error) {
@@ -950,6 +1238,7 @@ func (w *WorkflowRunner) runWorkflowGraphEscalatedStageAndContinue(ctx context.C
 		return WorkflowResult{Name: graph.Name, Status: "awaiting_tool_approval", PendingApproval: true, ApprovalPrompt: approvalPrompt, CompletedStages: completed, NextStage: WorkflowStage(stage.Name)}, nil
 	}
 	stageResult := workflowGraphStageResult(stage, result, inputs, inputValues, attempts)
+	w.attachDiscoveredWorkspaceVerification(&stageResult, stage)
 	w.applyWorkflowGraphStageBudgetDelta(&stageResult, beforeBudgetUsage)
 	w.emitWorkflowGraphSoftBudgetWarning(ctx, graph, stage, 0, handler)
 	if result.Incomplete {
@@ -976,6 +1265,10 @@ func (w *WorkflowRunner) emitWorkflowGraphQualityGateFailureEvent(graph workflow
 		reason = "quality gate failed"
 	}
 	sourceRef := workflowGraphQualityGateFailureSourceRef(stageResult)
+	workflowStatus := "running"
+	if decision.Halt {
+		workflowStatus = fallbackWorkflowGraphValue(decision.Status, "blocked")
+	}
 	_ = handler(schema.StreamEvent{
 		Type:           schema.StreamEventStatus,
 		TaskStage:      stage.Name,
@@ -984,7 +1277,7 @@ func (w *WorkflowRunner) emitWorkflowGraphQualityGateFailureEvent(graph workflow
 		Mode:           "workflow",
 		NeedsAction:    decision.Halt,
 		WorkflowName:   graph.Name,
-		WorkflowStatus: fallbackWorkflowGraphValue(decision.Status, "blocked"),
+		WorkflowStatus: workflowStatus,
 		NextStage:      stage.Name,
 		Reason:         "quality_gate_failed",
 		Severity:       "error",
@@ -2079,7 +2372,20 @@ func (w *WorkflowRunner) workflowGraphBudgetUsage() workflowGraphBudgetUsage {
 		CostCurrency:          run.BudgetCostCurrency,
 		PricingSource:         run.BudgetPricingSource,
 	}
-	fallback := workflowGraphBudgetUsageFromSession(snapshot)
+	// Session histories span unrelated runs. Only this run's request events
+	// and durable usage ledger may contribute to its execution limits.
+	var scoped session.Snapshot
+	for _, event := range run.Events {
+		if event.Type == "prompt_budget" && event.PromptBudget != nil {
+			scoped.PromptBudgets = append(scoped.PromptBudgets, *event.PromptBudget)
+		}
+	}
+	for _, record := range session.WorkflowUsageRecords(run) {
+		scoped.TokenUsages = append(scoped.TokenUsages, schema.TokenUsageSample{
+			PromptTokens: record.PromptTokens, OutputTokens: record.OutputTokens, CachedTokens: record.CachedTokens,
+		})
+	}
+	fallback := workflowGraphBudgetUsageFromSession(scoped)
 	if fallback.EstimatedPromptTokens > usage.EstimatedPromptTokens {
 		usage.EstimatedPromptTokens = fallback.EstimatedPromptTokens
 	}
@@ -2359,6 +2665,7 @@ func workflowGraphApplyQualityGateFailureMetadata(stageResult *WorkflowStageResu
 }
 
 func (w *WorkflowRunner) applyWorkflowGraphFinalQualityHandoff(graph workflowGraph, stage workflowGraphStage, completed []WorkflowStageResult, stageResult *WorkflowStageResult, handler func(event schema.StreamEvent) error) {
+	applyWorkflowVerificationPrerequisite(stage, completed, stageResult)
 	if stageResult == nil || !workflowGraphStageLooksFinal(stage) {
 		return
 	}
@@ -2378,7 +2685,7 @@ func (w *WorkflowRunner) applyWorkflowGraphFinalQualityHandoff(graph workflowGra
 		Mode:           stageResult.Result.Mode,
 		NeedsAction:    handoff.FailedCount > 0,
 		WorkflowName:   graph.Name,
-		WorkflowStatus: "completed",
+		WorkflowStatus: "running",
 		NextStage:      string(stageResult.Stage),
 		Reason:         "final_quality_handoff",
 		Severity:       handoff.Severity,
@@ -2435,6 +2742,7 @@ func (w *WorkflowRunner) resumeInput(ctx context.Context, runID string, inputs m
 	previousRunID := w.runID
 	w.runID = run.ID
 	defer func() { w.runID = previousRunID }()
+	w.refreshWorkflowPlanChangeSlices(graph, completed)
 	handler = w.recordWorkflowRunEvents(run.ID, handler)
 	w.runtime.session.SetWorkflow(session.WorkflowSnapshot{
 		RunID:     run.ID,
@@ -2465,14 +2773,34 @@ func (w *WorkflowRunner) resumeInput(ctx context.Context, runID string, inputs m
 
 // CanContinueOutput reports whether a paused graph workflow run has enough
 // persisted state to rerun the incomplete stage and continue downstream.
+func workflowGraphOutputContinuationTarget(run session.WorkflowRunSnapshot) (string, bool) {
+	target := strings.TrimSpace(run.NextStage)
+	if strings.EqualFold(run.Status, "paused_need_more_budget") {
+		return target, true
+	}
+	if !strings.EqualFold(run.Status, "action_failed") || !strings.Contains(strings.ToLower(run.Summary), "llm chat:") || !workflowGraphStageErrorIsRetryable(context.Background(), errors.New(run.Summary)) {
+		return "", false
+	}
+	if target == "" {
+		for index := len(run.CompletedStages) - 1; index >= 0; index-- {
+			stage := run.CompletedStages[index]
+			if stage.Result.Incomplete || strings.EqualFold(stage.Status, "incomplete") || workflowTruthy(stage.Metadata["incomplete"]) {
+				return strings.TrimSpace(stage.Stage), true
+			}
+		}
+	}
+	return target, true
+}
+
 func (w *WorkflowRunner) CanContinueOutput(run session.WorkflowRunSnapshot) error {
 	if w == nil || w.runtime == nil || w.runtime.session == nil {
 		return fmt.Errorf("workflow runtime not configured")
 	}
-	status := strings.ToLower(strings.TrimSpace(run.Status))
-	if status != "paused_need_more_budget" {
+	target, allowed := workflowGraphOutputContinuationTarget(run)
+	if !allowed {
 		return fmt.Errorf("workflow run %s is not paused for output continuation", run.ID)
 	}
+	run.NextStage = target
 	graph, err := w.loadWorkflowGraph(run.Name)
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -2584,6 +2912,7 @@ func (w *WorkflowRunner) ContinueOutput(ctx context.Context, runID string, handl
 	if err := w.CanContinueOutput(run); err != nil {
 		return WorkflowResult{}, err
 	}
+	run.NextStage, _ = workflowGraphOutputContinuationTarget(run)
 	graph, err := w.loadWorkflowGraph(run.Name)
 	if err != nil {
 		return WorkflowResult{}, err
@@ -2597,11 +2926,27 @@ func (w *WorkflowRunner) ContinueOutput(ctx context.Context, runID string, handl
 	if index < 0 {
 		return WorkflowResult{}, fmt.Errorf("workflow run %s references unknown next stage %q", runID, run.NextStage)
 	}
-	stage := graph.Stages[index]
-	priorCompleted := workflowGraphRemoveStageResult(completed, run.NextStage)
 	previousRunID := w.runID
 	w.runID = run.ID
 	defer func() { w.runID = previousRunID }()
+	w.refreshWorkflowPlanChangeSlices(graph, completed)
+	priorCompleted := workflowGraphRemoveStageResult(completed, run.NextStage)
+	if planIndex, planStage, beforePlan, ok := workflowGraphContinuationReplan(graph, completed, incomplete, w.workflowChangeSlicesForRun(completed)); ok {
+		index, incomplete, priorCompleted = planIndex, planStage, beforePlan
+	} else if remediationIndex, remediationStage, remediationCompleted, ok := workflowGraphContinuationRemediation(graph, completed, incomplete, w.workflowChangeSlicesForRun(completed)); ok {
+		index = remediationIndex
+		incomplete = remediationStage
+		priorCompleted = remediationCompleted
+		checkpoint := incomplete.Result
+		checkpoint.Incomplete = false
+		if err := w.holdIncompleteChangeSlices(graph, graph.Stages[index], &checkpoint); err != nil {
+			return WorkflowResult{}, err
+		}
+		if checkpoint.Incomplete {
+			incomplete.Result.IncompleteReason = checkpoint.IncompleteReason
+		}
+	}
+	stage := graph.Stages[index]
 	handler = w.recordWorkflowRunEvents(run.ID, handler)
 	w.runtime.session.SetWorkflow(session.WorkflowSnapshot{
 		RunID:     run.ID,
@@ -2648,6 +2993,97 @@ func (w *WorkflowRunner) ContinueOutput(ctx context.Context, runID string, handl
 	result.RunID = run.ID
 	w.completeWorkflowRun(run.ID, result)
 	return result, nil
+}
+
+func workflowGraphContinuationRemediation(graph workflowGraph, completed []WorkflowStageResult, incomplete WorkflowStageResult, approvedSlices ...[]session.WorkflowChangeSliceSnapshot) (int, WorkflowStageResult, []WorkflowStageResult, bool) {
+	if !strings.EqualFold(strings.TrimSpace(string(incomplete.Stage)), "verify") {
+		return 0, WorkflowStageResult{}, nil, false
+	}
+	implementationIndex := workflowGraphStageIndexByName(graph, "implement")
+	if implementationIndex < 0 {
+		return 0, WorkflowStageResult{}, nil, false
+	}
+	implementation, ok := workflowGraphLatestStageResultByName(completed, "implement")
+	pendingSlices := false
+	if len(approvedSlices) > 0 && workflowGraphStageUsesChangeSliceScheduler(graph, graph.Stages[implementationIndex]) {
+		for _, slice := range approvedSlices[0] {
+			if slice.ExecutionMode == "write" && slice.Status != "implemented" && slice.Status != "verified" {
+				pendingSlices = true
+			}
+		}
+	}
+	if !ok || (!pendingSlices && !workflowGraphResultHasApprovedScopeWriteBlock(implementation.Result)) {
+		return 0, WorkflowStageResult{}, nil, false
+	}
+	implementation.Status = "incomplete"
+	implementation.Result.Incomplete = true
+	implementation.Result.IncompleteReason = "implementation writes were blocked by an incorrect approved file scope; rebuild the scope from the saved plan and continue implementation"
+	implementation.Result.StopReason = schema.StopReasonError
+	if pendingSlices {
+		implementation.Result.IncompleteReason = "已批准的变更分片尚未全部实施，返回原实施阶段继续剩余工作，保留已有改动和工具记录。"
+		implementation.Result.StopReason = schema.StopReasonStop
+	}
+	if implementation.Metadata == nil {
+		implementation.Metadata = map[string]string{}
+	}
+	implementation.Metadata["incomplete"] = "true"
+	implementation.Metadata["incomplete_reason"] = implementation.Result.IncompleteReason
+	implementation.Metadata["remediation_from_stage"] = string(incomplete.Stage)
+	prior := make([]WorkflowStageResult, 0, implementationIndex)
+	for _, result := range completed {
+		stageIndex := workflowGraphStageIndexByName(graph, string(result.Stage))
+		if stageIndex >= 0 && stageIndex < implementationIndex {
+			prior = append(prior, result)
+		}
+	}
+	return implementationIndex, implementation, prior, true
+}
+
+func workflowGraphResultHasApprovedScopeWriteBlock(result schema.AgentResult) bool {
+	for _, toolResult := range result.ToolResults {
+		if !toolResult.IsError && !toolResult.Denied {
+			continue
+		}
+		text := strings.ToLower(toolResult.Content)
+		if strings.Contains(text, "outside the approved change slices") || strings.Contains(text, "outside the approved plan") {
+			return true
+		}
+	}
+	for _, verification := range result.Verification {
+		text := strings.ToLower(verification.Detail)
+		if strings.Contains(text, "outside the approved change slices") || strings.Contains(text, "outside the approved plan") {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *WorkflowRunner) refreshWorkflowPlanChangeSlices(graph workflowGraph, completed []WorkflowStageResult) {
+	for index := len(completed) - 1; index >= 0; index-- {
+		stage := completed[index]
+		stageIndex := workflowGraphStageIndexByName(graph, string(stage.Stage))
+		if stageIndex < 0 || graph.Stages[stageIndex].Params["change_slice_policy"] == "" || graph.Stages[stageIndex].Params["change_slice_policy"] == "off" || stage.Result.Incomplete || strings.EqualFold(strings.TrimSpace(stage.Status), "incomplete") {
+			continue
+		}
+		if slices := compileWorkflowChangeSlices(stage.Result.Output, stage.Result.ToolResults); len(slices) > 0 {
+			if run, ok := w.runtime.session.WorkflowRun(w.runID); ok && len(run.ChangeSlices) > 0 {
+				if workflowGraphJSON(slicesToPlannedChangeSlices(run.ChangeSlices)) != workflowGraphJSON(slicesToPlannedChangeSlices(slices)) {
+					_ = w.runtime.session.ReplaceWorkflowRunChangeSlicesDurable(w.runID, slices)
+					return
+				}
+				// A refresh reuses approved contracts and recorded progress. Only
+				// replay the plan's read evidence; never replace states with planned.
+				snapshots := workflowRunStageSnapshots([]WorkflowStageResult{stage})
+				if len(snapshots) > 0 {
+					snapshots[0].ChangeSlices = run.ChangeSlices
+					_ = w.runtime.session.AdvanceWorkflowRunChangeSlicesDurable(w.runID, snapshots[0])
+				}
+				return
+			}
+			_ = w.runtime.session.ReplaceWorkflowRunChangeSlicesDurable(w.runID, slices)
+		}
+		return
+	}
 }
 
 // EscalateModel reruns a blocked executable stage with its configured
@@ -3055,6 +3491,47 @@ func (w *WorkflowRunner) continueWorkflowGraphExecutableStage(ctx context.Contex
 	if index < 0 || index >= len(graph.Stages) {
 		return WorkflowStageResult{}, nil, fmt.Errorf("workflow %s continue context is missing graph stage %s", graph.Name, incomplete.Stage)
 	}
+	if hit := w.workflowGraphHardBudgetLimitHit(graph, stage, 1); hit.Hit {
+		// An "incomplete" stage is re-entered here with a fresh iteration
+		// budget. The stage queue checks the workflow budget before every
+		// stage, but this path skipped it, so a stage that never finished
+		// could keep consuming model calls past every declared limit.
+		paused := w.pauseWorkflowGraphForHardBudget(graph, stage, request, completed, hit, handler)
+		return WorkflowStageResult{}, &paused, nil
+	}
+	// Bounded stage continuations: one stage that keeps reporting incomplete
+	// re-enters with a fresh budget each time. A run once reached 733 model
+	// calls that way, so the count is capped independently of token budgets.
+	const maxStageContinuations = 3
+	continuations := 0
+	if w != nil && w.runtime != nil && w.runtime.session != nil && strings.TrimSpace(w.runID) != "" {
+		if run, ok := w.runtime.session.WorkflowRun(w.runID); ok {
+			for _, event := range run.Events {
+				if event.Reason == "stage_continuation" && event.Stage == stage.Name {
+					continuations++
+				}
+			}
+		}
+	}
+	if continuations >= maxStageContinuations {
+		budgetResult := workflowGraphStageResult(stage, schema.AgentResult{
+			Incomplete:       true,
+			IncompleteReason: fmt.Sprintf("stage %s was continued %d times without finishing; 继续执行 resumes this stage", stage.Name, continuations),
+		}, inputs, inputValues, 1)
+		paused := w.pauseWorkflowForIncompleteStage(graph.Name, request, completed, budgetResult)
+		return WorkflowStageResult{}, &paused, nil
+	}
+	if w != nil && w.runtime != nil && w.runtime.session != nil && strings.TrimSpace(w.runID) != "" {
+		w.runtime.session.AppendWorkflowRunEvent(w.runID, session.WorkflowRunEventSnapshot{
+			Type:           "workflow_state",
+			Stage:          stage.Name,
+			Content:        fmt.Sprintf("stage %s continued (%d/%d)", stage.Name, continuations+1, maxStageContinuations),
+			WorkflowName:   graph.Name,
+			WorkflowStatus: "running",
+			NextStage:      stage.Name,
+			Reason:         "stage_continuation",
+		})
+	}
 	skill, err := w.graphStageSkill(stage)
 	if err != nil {
 		return WorkflowStageResult{}, nil, err
@@ -3074,10 +3551,22 @@ func (w *WorkflowRunner) continueWorkflowGraphExecutableStage(ctx context.Contex
 	if err := w.runtime.SetActiveAgent(stage.Agent); err != nil {
 		return WorkflowStageResult{}, nil, err
 	}
-	result, attempts, err := w.runWorkflowGraphExecutableStage(ctx, graph, stage, prompt, skill, handler)
+	result, attempts, err := w.runWorkflowGraphExecutableStageWithInitialResults(ctx, graph, stage, prompt, skill, incomplete.Result.ToolResults, handler)
 	if err != nil {
+		if strings.Contains(err.Error(), "workflow tool operation limit reached") {
+			// The run used its entire tool budget inside a continuation. Keep the
+			// work and report a resumable pause; wrapping this as a stage error
+			// used to end long deliveries with action_failed.
+			budgetResult := workflowGraphStageResult(stage, schema.AgentResult{
+				Incomplete:       true,
+				IncompleteReason: "workflow tool operation budget exhausted; 继续执行 resumes this stage",
+			}, inputs, inputValues, attempts)
+			paused := w.pauseWorkflowForIncompleteStage(graph.Name, request, completed, budgetResult)
+			return WorkflowStageResult{}, &paused, nil
+		}
 		return WorkflowStageResult{}, nil, fmt.Errorf("workflow stage %s: %w", stage.Name, err)
 	}
+	result.ToolResults = mergeWorkflowGraphContinuationToolResults(incomplete.Result.ToolResults, result.ToolResults)
 	if hasSuspendedToolResult(result.ToolResults) {
 		if strings.TrimSpace(incomplete.Metadata["repeat_control"]) != "" {
 			if context, iteration, ok := w.workflowGraphRepeatContextForIncomplete(graph, request, completed, incomplete); ok {
@@ -3107,6 +3596,33 @@ func (w *WorkflowRunner) continueWorkflowGraphExecutableStage(ctx context.Contex
 		return WorkflowStageResult{}, &paused, nil
 	}
 	return stageResult, nil, nil
+}
+
+func mergeWorkflowGraphContinuationToolResults(previous, current []schema.ToolResult) []schema.ToolResult {
+	if len(previous) == 0 {
+		return append([]schema.ToolResult(nil), current...)
+	}
+	merged := make([]schema.ToolResult, 0, len(previous)+len(current))
+	indices := make(map[string]int, len(previous)+len(current))
+	appendResult := func(result schema.ToolResult) {
+		key := strings.TrimSpace(result.CallID)
+		if key == "" {
+			key = strings.TrimSpace(result.ToolName) + "\x00" + strings.TrimSpace(result.ArtifactHash) + "\x00" + strings.TrimSpace(result.Content)
+		}
+		if index, ok := indices[key]; ok {
+			merged[index] = result
+			return
+		}
+		indices[key] = len(merged)
+		merged = append(merged, result)
+	}
+	for _, result := range previous {
+		appendResult(result)
+	}
+	for _, result := range current {
+		appendResult(result)
+	}
+	return merged
 }
 
 func workflowGraphRenamePausedStage(stages []WorkflowStageResult, from, to WorkflowStage) []WorkflowStageResult {
@@ -4046,10 +4562,10 @@ func workflowGraphStageChangedFilePaths(stage WorkflowStageResult) []string {
 		}
 	}
 	for _, result := range stage.Output.ToolResults {
-		add(workflowGraphChangedFilePathFromToolResult(result))
+		add(workflowGraphChangedFilePathFromWriteToolResult(result))
 	}
 	for _, result := range stage.Result.ToolResults {
-		add(workflowGraphChangedFilePathFromToolResult(result))
+		add(workflowGraphChangedFilePathFromWriteToolResult(result))
 	}
 	sort.Strings(paths)
 	return paths
@@ -4708,6 +5224,19 @@ func (w *WorkflowRunner) controlWorkflowGraphStageDecision(graph workflowGraph, 
 		} else if evaluation.Passed {
 			routeKey = "pass"
 		}
+		// Bound repair rounds: after N attempts the gate stops reopening repair,
+		// which measured runs entered with nothing left to fix, and delivers with
+		// a warning instead of looping until the run budget is exhausted.
+		if !evaluation.Passed {
+			if limit := workflowGraphQualityMaxRepairRounds(stage); limit > 0 {
+				if rounds := workflowGraphCompletedRepairRounds(completed); rounds >= limit {
+					evaluation.Warnings = append(evaluation.Warnings, fmt.Sprintf("repair rounds reached %d; delivering with unresolved findings", rounds))
+					evaluation.Status = "warning"
+					evaluation.Passed = true
+					routeKey = "warning"
+				}
+			}
+		}
 		decision := workflowGraphControlDecision{
 			Kind:   "quality_gate",
 			Route:  routeKey,
@@ -4716,36 +5245,42 @@ func (w *WorkflowRunner) controlWorkflowGraphStageDecision(graph workflowGraph, 
 			Status: "completed",
 			Reason: evaluation.Reason,
 			Variables: workflowStageMetadata(map[string]string{
-				"quality_status":       evaluation.Status,
-				"score":                strconv.Itoa(evaluation.Score),
-				"acceptance_total":     strconv.Itoa(evaluation.AcceptanceTotal),
-				"acceptance_passed":    strconv.Itoa(evaluation.AcceptancePassed),
-				"acceptance_failed":    strconv.Itoa(evaluation.AcceptanceFailed),
-				"verification_total":   strconv.Itoa(evaluation.VerificationTotal),
-				"verification_passed":  strconv.Itoa(evaluation.VerificationPassed),
-				"verification_failed":  strconv.Itoa(evaluation.VerificationFailed),
-				"verification_unknown": strconv.Itoa(evaluation.VerificationUnknown),
-				"evidence_artifacts":   strconv.Itoa(evaluation.EvidenceArtifacts),
-				"tool_errors":          strconv.Itoa(evaluation.ToolErrors),
-				"stage_errors":         strconv.Itoa(evaluation.StageErrors),
-				"warnings":             strings.Join(evaluation.Warnings, "; "),
-				"failures":             strings.Join(evaluation.Failures, "; "),
+				"quality_status":        evaluation.Status,
+				"score":                 strconv.Itoa(evaluation.Score),
+				"acceptance_total":      strconv.Itoa(evaluation.AcceptanceTotal),
+				"acceptance_passed":     strconv.Itoa(evaluation.AcceptancePassed),
+				"acceptance_failed":     strconv.Itoa(evaluation.AcceptanceFailed),
+				"verification_total":    strconv.Itoa(evaluation.VerificationTotal),
+				"verification_passed":   strconv.Itoa(evaluation.VerificationPassed),
+				"verification_failed":   strconv.Itoa(evaluation.VerificationFailed),
+				"verification_unknown":  strconv.Itoa(evaluation.VerificationUnknown),
+				"evidence_artifacts":    strconv.Itoa(evaluation.EvidenceArtifacts),
+				"tool_errors":           strconv.Itoa(evaluation.ToolErrors),
+				"recovered_tool_errors": strconv.Itoa(evaluation.RecoveredToolErrors),
+				"policy_interventions":  strconv.Itoa(evaluation.PolicyInterventions),
+				"stage_errors":          strconv.Itoa(evaluation.StageErrors),
+				"infrastructure_limits": strconv.Itoa(evaluation.InfrastructureLimits),
+				"warnings":              strings.Join(evaluation.Warnings, "; "),
+				"failures":              strings.Join(evaluation.Failures, "; "),
 			}),
 			ValueVariables: map[string]any{
-				"quality_status":       evaluation.Status,
-				"score":                evaluation.Score,
-				"acceptance_total":     evaluation.AcceptanceTotal,
-				"acceptance_passed":    evaluation.AcceptancePassed,
-				"acceptance_failed":    evaluation.AcceptanceFailed,
-				"verification_total":   evaluation.VerificationTotal,
-				"verification_passed":  evaluation.VerificationPassed,
-				"verification_failed":  evaluation.VerificationFailed,
-				"verification_unknown": evaluation.VerificationUnknown,
-				"evidence_artifacts":   evaluation.EvidenceArtifacts,
-				"tool_errors":          evaluation.ToolErrors,
-				"stage_errors":         evaluation.StageErrors,
-				"failures":             append([]string(nil), evaluation.Failures...),
-				"warnings":             append([]string(nil), evaluation.Warnings...),
+				"quality_status":        evaluation.Status,
+				"score":                 evaluation.Score,
+				"acceptance_total":      evaluation.AcceptanceTotal,
+				"acceptance_passed":     evaluation.AcceptancePassed,
+				"acceptance_failed":     evaluation.AcceptanceFailed,
+				"verification_total":    evaluation.VerificationTotal,
+				"verification_passed":   evaluation.VerificationPassed,
+				"verification_failed":   evaluation.VerificationFailed,
+				"verification_unknown":  evaluation.VerificationUnknown,
+				"evidence_artifacts":    evaluation.EvidenceArtifacts,
+				"tool_errors":           evaluation.ToolErrors,
+				"recovered_tool_errors": evaluation.RecoveredToolErrors,
+				"policy_interventions":  evaluation.PolicyInterventions,
+				"stage_errors":          evaluation.StageErrors,
+				"infrastructure_limits": evaluation.InfrastructureLimits,
+				"failures":              append([]string(nil), evaluation.Failures...),
+				"warnings":              append([]string(nil), evaluation.Warnings...),
 			},
 		}
 		if target := workflowGraphQualityGateTarget(stage, routeKey); target != "" {
@@ -4853,7 +5388,17 @@ func (w *WorkflowRunner) resumeWorkflowGraphRepeatStage(ctx context.Context, gra
 	if err := w.runtime.SetActiveAgent(iterationStage.Agent); err != nil {
 		return WorkflowResult{}, err
 	}
-	result, err := continueAgentRunWithModelSkillAndOptions(ctx, w.runtime, iterationStage.Agent, prompt, iterationStage.Model, &skill, workflowStageRunOptions{AllowedTools: workflowGraphStageAllowedTools(iterationStage)}, pending.call, pending.responseContent, pending.responseMessage, toolResult, handler)
+	result, err := continueAgentRunWithModelSkillAndOptions(ctx, w.runtime, iterationStage.Agent, prompt, iterationStage.Model, &skill, workflowStageRunOptions{
+		AllowedTools:           workflowGraphStageAllowedTools(iterationStage),
+		ToolOperationRunID:     w.runID,
+		ToolOperationWorkflow:  graph.Name,
+		ToolOperationStage:     iterationStage.Name,
+		IdempotentToolCalls:    true,
+		IsolatePromptContext:   true,
+		ChangeSliceEnforcement: workflowGraphStageUsesChangeSliceScheduler(graph, iterationStage),
+		ChangeSlices:           w.workflowChangeSlicesForRun(completed),
+		StageToolPolicy:        workflowGraphStageToolPolicy(iterationStage),
+	}, pending.call, pending.responseContent, pending.responseMessage, toolResult, handler)
 	if err != nil {
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", iterationStage.Name, err)
 	}
@@ -6805,22 +7350,26 @@ type workflowGraphPolicyEvaluation struct {
 }
 
 type workflowGraphQualityEvaluation struct {
-	Status              string
-	Score               int
-	Passed              bool
-	Reason              string
-	AcceptanceTotal     int
-	AcceptancePassed    int
-	AcceptanceFailed    int
-	VerificationTotal   int
-	VerificationPassed  int
-	VerificationFailed  int
-	VerificationUnknown int
-	EvidenceArtifacts   int
-	ToolErrors          int
-	StageErrors         int
-	Failures            []string
-	Warnings            []string
+	Status               string
+	Score                int
+	Passed               bool
+	Reason               string
+	AcceptanceTotal      int
+	AcceptancePassed     int
+	AcceptanceFailed     int
+	VerificationTotal    int
+	VerificationPassed   int
+	VerificationFailed   int
+	VerificationUnknown  int
+	EvidenceArtifacts    int
+	ToolErrors           int
+	RecoveredToolErrors  int
+	ExplorationErrors    int
+	PolicyInterventions  int
+	StageErrors          int
+	InfrastructureLimits int
+	Failures             []string
+	Warnings             []string
 }
 
 type workflowGraphContractFailure struct {
@@ -6865,21 +7414,82 @@ func (h workflowGraphFinalQualityHandoff) HasIssues() bool {
 
 func evaluateWorkflowGraphQualityGate(stage workflowGraphStage, completed []WorkflowStageResult) workflowGraphQualityEvaluation {
 	evaluation := workflowGraphQualityEvaluation{Status: "passed", Passed: true}
+	verificationMode := workflowGraphQualityVerificationMode(stage)
+	requiredTools := workflowGraphQualityRequiredTools(stage)
+	anyTools := workflowGraphQualityToolList(stage.Params["verification_any_tools"])
+	verificationToolSet := make(map[string]bool, len(requiredTools)+len(anyTools))
+	for _, names := range [][]string{requiredTools, anyTools} {
+		for _, name := range names {
+			verificationToolSet[name] = true
+		}
+	}
 	stages := workflowGraphQualityGateStages(stage, completed)
 	if len(stages) == 0 {
 		evaluation.Failures = append(evaluation.Failures, "quality gate has no completed stages to evaluate")
 		return workflowGraphFinalizeQualityEvaluation(stage, evaluation)
 	}
+	recoveredToolFailures := workflowGraphQualityRecoveredToolFailures(stages)
+	successfulTools := map[string]struct{}{}
 	for _, result := range stages {
 		stageName := strings.TrimSpace(string(result.Stage))
 		if workflowGraphQualityStatusFailed(result.Status) {
 			evaluation.StageErrors++
 			evaluation.Failures = append(evaluation.Failures, fmt.Sprintf("%s status is %s", fallbackWorkflowGraphValue(stageName, "stage"), result.Status))
 		}
-		for _, toolResult := range result.Result.ToolResults {
-			if toolResult.IsError {
+		seenToolResults := map[string]struct{}{}
+		for _, toolResult := range append(append([]schema.ToolResult(nil), result.Output.ToolResults...), result.Result.ToolResults...) {
+			key := workflowGraphQualityToolResultKey(toolResult)
+			if _, exists := seenToolResults[key]; exists {
+				continue
+			}
+			seenToolResults[key] = struct{}{}
+			if workflowGraphQualityToolResultFailed(toolResult) {
+				if workflowGraphQualityToolPolicyIntervention(toolResult) {
+					evaluation.PolicyInterventions++
+					continue
+				}
+				if _, recovered := recoveredToolFailures[key]; recovered {
+					evaluation.RecoveredToolErrors++
+					continue
+				}
+				if workflowGraphQualityAllowedInfrastructureFailure(stage, stages, toolResult) {
+					evaluation.InfrastructureLimits++
+					continue
+				}
+				if workflowGraphQualityArgumentError(toolResult) {
+					evaluation.ExplorationErrors++
+					continue
+				}
+				if workflowGraphQualityExplorationReadTool(toolResult.ToolName) {
+					// Reading a wrong or missing path is an exploration mistake
+					// the model corrects itself; it is not evidence about the
+					// delivery. Substantive failures (writes, commands,
+					// acceptance) still fail the gate.
+					evaluation.ExplorationErrors++
+					continue
+				}
+				if tolerable := workflowGraphQualityMaxToolErrors(stage); tolerable > 0 && evaluation.ToolErrors < tolerable {
+					// A retried tool call that later succeeded still leaves one
+					// failed result. Tolerating a bounded number keeps the gate
+					// about the delivery instead of about retries.
+					evaluation.ToolErrors++
+					evaluation.ExplorationErrors++
+					continue
+				}
 				evaluation.ToolErrors++
 				evaluation.Failures = append(evaluation.Failures, fmt.Sprintf("%s tool %s returned an error", fallbackWorkflowGraphValue(stageName, "stage"), fallbackWorkflowGraphValue(toolResult.ToolName, "tool")))
+				continue
+			}
+			name := workflowGraphQualityToolName(toolResult.ToolName)
+			qualifiedName := strings.ToLower(strings.TrimSpace(toolResult.ToolName))
+			declaredEvidence := workflowGraphQualityDeclaredToolEvidence(toolResult)
+			if name != "" && declaredEvidence {
+				successfulTools[name] = struct{}{}
+				successfulTools[qualifiedName] = struct{}{}
+			}
+			if workflowGraphQualityToolResultEvidence(toolResult) ||
+				(verificationMode == "tool" && declaredEvidence && (verificationToolSet[name] || verificationToolSet[qualifiedName])) {
+				evaluation.EvidenceArtifacts++
 			}
 		}
 		for _, acceptance := range result.Acceptance {
@@ -6896,14 +7506,38 @@ func evaluateWorkflowGraphQualityGate(stage workflowGraphStage, completed []Work
 			}
 		}
 		for _, verification := range result.Result.Verification {
+			if !workflowGraphQualityVerificationCounts(verification) {
+				continue
+			}
 			evaluation.VerificationTotal++
 			status := workflowGraphQualityStatus(verification.Status)
 			switch {
 			case workflowGraphQualityStatusPassed(status):
 				evaluation.VerificationPassed++
 			case workflowGraphQualityStatusFailed(status):
+				if workflowGraphQualityPolicyInterventionVerification(verification) {
+					evaluation.VerificationTotal--
+					continue
+				}
+				if workflowGraphQualityRecoveredToolVerification(result, verification, recoveredToolFailures) {
+					evaluation.VerificationTotal--
+					continue
+				}
+				if workflowGraphQualityAllowedInfrastructureVerification(stage, stages, result, verification) {
+					evaluation.VerificationTotal--
+					continue
+				}
+				if workflowGraphQualityLenientVerification(verification) {
+					evaluation.VerificationTotal--
+					evaluation.ExplorationErrors++
+					continue
+				}
 				evaluation.VerificationFailed++
-				evaluation.Failures = append(evaluation.Failures, fmt.Sprintf("%s verification %s failed", fallbackWorkflowGraphValue(stageName, "stage"), fallbackWorkflowGraphValue(verification.Kind, "verification")))
+				failure := fmt.Sprintf("%s verification %s failed", fallbackWorkflowGraphValue(stageName, "stage"), fallbackWorkflowGraphValue(verification.Kind, "verification"))
+				if detail := strings.TrimSpace(verification.Detail); detail != "" {
+					failure = failure + ": " + truncateSummary(detail)
+				}
+				evaluation.Failures = append(evaluation.Failures, failure)
 			default:
 				evaluation.VerificationUnknown++
 				evaluation.Warnings = append(evaluation.Warnings, fmt.Sprintf("%s verification %s has unknown status %s", fallbackWorkflowGraphValue(stageName, "stage"), fallbackWorkflowGraphValue(verification.Kind, "verification"), fallbackWorkflowGraphValue(status, "empty")))
@@ -6914,8 +7548,586 @@ func evaluateWorkflowGraphQualityGate(stage workflowGraphStage, completed []Work
 				evaluation.EvidenceArtifacts++
 			}
 		}
+		for _, marker := range workflowGraphQualityFailureOutputMarkers(stage) {
+			if workflowGraphQualityStageOutputContains(result, marker) {
+				evaluation.Failures = append(evaluation.Failures, fmt.Sprintf("%s output contains quality failure marker %s", fallbackWorkflowGraphValue(stageName, "stage"), marker))
+			}
+		}
+	}
+	for _, required := range requiredTools {
+		if _, ok := successfulTools[required]; ok {
+			if verificationMode == "tool" {
+				evaluation.VerificationTotal++
+				evaluation.VerificationPassed++
+			}
+			continue
+		}
+		evaluation.Failures = append(evaluation.Failures, fmt.Sprintf("quality gate requires successful tool result %s", required))
+	}
+	if len(anyTools) > 0 {
+		matched := false
+		for _, name := range anyTools {
+			if _, ok := successfulTools[name]; ok {
+				matched = true
+				break
+			}
+		}
+		if matched {
+			evaluation.VerificationTotal++
+			evaluation.VerificationPassed++
+		} else {
+			evaluation.Failures = append(evaluation.Failures, "quality gate requires at least one successful tool result from "+strings.Join(anyTools, ", "))
+		}
+	}
+	if verificationMode == "command" && !workflowGraphQualityHasExecutedCheck(stages) {
+		evaluation.Failures = append(evaluation.Failures, "quality gate requires an executed test, build, or lint command")
+	}
+	if evaluation.ExplorationErrors > 0 {
+		evaluation.Warnings = append(evaluation.Warnings, fmt.Sprintf("%d read-only tool call(s) failed while exploring paths and were not counted as delivery failures", evaluation.ExplorationErrors))
 	}
 	return workflowGraphFinalizeQualityEvaluation(stage, evaluation)
+}
+
+func workflowGraphQualityVerificationMode(stage workflowGraphStage) string {
+	if mode := stage.Params["verification_mode"]; mode != "" {
+		return mode
+	}
+	// Legacy gates requiring verification retain their executed-command check.
+	// Other domains opt in to tool verification explicitly.
+	if workflowGraphQualityParamBool(stage, []string{"require_verification", "verification_required"}, false) {
+		return "command"
+	}
+	return ""
+}
+
+func workflowGraphQualityVerificationCounts(verification schema.Verification) bool {
+	switch strings.ToLower(strings.TrimSpace(verification.Kind)) {
+	case "response", "plan", "reflection":
+		return false
+	default:
+		return true
+	}
+}
+
+func workflowGraphQualityHasExecutedCheck(stages []WorkflowStageResult) bool {
+	for _, stageResult := range stages {
+		for _, result := range workflowGraphQualityStageToolResults(stageResult) {
+			if workflowGraphQualityToolResultFailed(result) || workflowGraphQualityToolPolicyIntervention(result) {
+				continue
+			}
+			if workflowGraphQualitySuccessfulVerificationCommand(result) {
+				return true
+			}
+		}
+		for _, artifact := range stageResult.Output.Artifacts {
+			if !strings.EqualFold(strings.TrimSpace(artifact.Kind), "tool_result") || artifact.IsError {
+				continue
+			}
+			fake := schema.ToolResult{ToolName: artifact.ToolName, CallID: artifact.ToolCallID, Content: artifact.Content, Summary: artifact.Summary}
+			if workflowGraphQualitySuccessfulVerificationCommand(fake) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func workflowGraphQualitySuccessfulVerificationCommand(result schema.ToolResult) bool {
+	if !workflowGraphQualityDeclaredToolEvidence(result) {
+		return false
+	}
+	name := workflowGraphQualityToolName(result.ToolName)
+	if name != "run_command" {
+		return false
+	}
+	payload, ok := workflowGraphQualityToolResultPayload(result)
+	if !ok {
+		return false
+	}
+	exitCode, validExitCode := workflowGraphNumberValue(payload["exit_code"])
+	if !validExitCode || exitCode != 0 {
+		return false
+	}
+	program := strings.TrimSpace(fmt.Sprint(payload["program"]))
+	args, _ := workflowGraphQualityStringSlice(payload["args"])
+	class := commandpolicy.Classify(program, args)
+	switch class.Class {
+	case commandpolicy.ClassTest, commandpolicy.ClassBuild, commandpolicy.ClassLint, commandpolicy.ClassFormat:
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowGraphQualityAllowedInfrastructureFailure(stage workflowGraphStage, stages []WorkflowStageResult, result schema.ToolResult) bool {
+	allowed := workflowGraphQualityAllowedInfrastructureFailures(stage)
+	if _, ok := allowed["go_race_unavailable"]; !ok {
+		return false
+	}
+	if result.Denied || result.Suspended || !workflowGraphQualityGoRaceUnavailable(result) {
+		return false
+	}
+	for _, stageResult := range stages {
+		for _, candidate := range workflowGraphQualityStageToolResults(stageResult) {
+			if workflowGraphQualitySuccessfulGoTestFallback(candidate) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func workflowGraphQualityAllowedInfrastructureVerification(stage workflowGraphStage, stages []WorkflowStageResult, stageResult WorkflowStageResult, verification schema.Verification) bool {
+	// An aggregate failed report may include unrelated blockers. Only an
+	// isolated race check can be waived by the configured infrastructure limit.
+	switch strings.ToLower(strings.TrimSpace(verification.Kind)) {
+	case "tool", "command", "race", "race test", "race detector":
+	default:
+		return false
+	}
+	text := strings.ToLower(strings.TrimSpace(verification.Kind + "\n" + verification.Detail))
+	if !strings.Contains(text, "-race") && !strings.Contains(text, "race detector") && !strings.Contains(text, "race test") {
+		return false
+	}
+	for _, result := range workflowGraphQualityStageToolResults(stageResult) {
+		if workflowGraphQualityGoRaceUnavailable(result) && workflowGraphQualityAllowedInfrastructureFailure(stage, stages, result) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowGraphQualityRecoveredToolFailures(stages []WorkflowStageResult) map[string]struct{} {
+	type observation struct {
+		key      string
+		identity string
+		path     string
+		failed   bool
+	}
+	observations := make([]observation, 0)
+	for _, stageResult := range stages {
+		for _, result := range workflowGraphQualityStageToolResults(stageResult) {
+			identity, ok := workflowGraphQualityCommandIdentity(result)
+			if !ok {
+				identity, ok = workflowGraphQualityMutationIdentity(result)
+			}
+			if !ok {
+				identity, ok = workflowGraphQualityReadIdentity(result)
+				if ok {
+					identity = "stage:" + strings.ToLower(strings.TrimSpace(string(stageResult.Stage))) + "\x00" + identity
+				}
+			}
+			if !ok || workflowGraphQualityToolPolicyIntervention(result) {
+				continue
+			}
+			observations = append(observations, observation{
+				key:      workflowGraphQualityToolResultKey(result),
+				identity: identity,
+				path:     workflowGraphQualityWritePath(result),
+				failed:   workflowGraphQualityToolResultFailed(result),
+			})
+		}
+	}
+	recovered := map[string]struct{}{}
+	for index, current := range observations {
+		if !current.failed {
+			continue
+		}
+		for _, later := range observations[index+1:] {
+			if later.failed {
+				continue
+			}
+			// A retry can carry different patch text for the same file, so a
+			// later successful write to the same path also supersedes the
+			// earlier failure: the file did get changed.
+			if later.identity != current.identity && (current.path == "" || later.path != current.path) {
+				continue
+			}
+			recovered[current.key] = struct{}{}
+			break
+		}
+	}
+	return recovered
+}
+
+// workflowGraphQualityWritePath returns the workspace path a mutation tool
+// targeted, so a failed write and a later successful write can be paired.
+func workflowGraphQualityWritePath(result schema.ToolResult) string {
+	name := workflowGraphQualityToolName(result.ToolName)
+	switch name {
+	case "apply_patch", "replace_text", "write_file", "create_docx", "create_xlsx", "create_pptx", "create_pdf":
+	default:
+		return ""
+	}
+	payload, ok := workflowGraphQualityToolResultPayload(result)
+	if !ok {
+		return ""
+	}
+	for _, key := range []string{"relative_path", "path"} {
+		if value, valid := payload[key].(string); valid {
+			if cleaned := strings.TrimSpace(strings.ReplaceAll(value, "\\", "/")); cleaned != "" {
+				return cleaned
+			}
+		}
+	}
+	return ""
+}
+
+func workflowGraphQualityMutationIdentity(result schema.ToolResult) (string, bool) {
+	name := workflowGraphQualityToolName(result.ToolName)
+	if name != "apply_patch" && name != "replace_text" && name != "write_file" {
+		return "", false
+	}
+	if workflowGraphQualityToolResultFailed(result) && !retryableChangeSliceWriteFailure(schema.Tool{Name: name}, result) {
+		return "", false
+	}
+	payload, ok := workflowGraphQualityToolResultPayload(result)
+	if !ok {
+		return "", false
+	}
+	path, _ := payload["relative_path"].(string)
+	path = strings.TrimSpace(strings.ReplaceAll(path, "\\", "/"))
+	if path == "" {
+		return "", false
+	}
+	return "write\x00" + path, true
+}
+
+func workflowGraphQualityRecoveredToolVerification(stageResult WorkflowStageResult, verification schema.Verification, recovered map[string]struct{}) bool {
+	if !strings.EqualFold(strings.TrimSpace(verification.Kind), "tool") {
+		return false
+	}
+	foundFailure := false
+	for _, result := range workflowGraphQualityStageToolResults(stageResult) {
+		if !workflowGraphQualityToolResultFailed(result) || workflowGraphQualityToolPolicyIntervention(result) {
+			continue
+		}
+		foundFailure = true
+		if _, ok := recovered[workflowGraphQualityToolResultKey(result)]; !ok {
+			return false
+		}
+	}
+	return foundFailure
+}
+
+func workflowGraphQualityStageToolResults(stageResult WorkflowStageResult) []schema.ToolResult {
+	seen := map[string]struct{}{}
+	results := make([]schema.ToolResult, 0, len(stageResult.Output.ToolResults)+len(stageResult.Result.ToolResults))
+	for _, result := range append(append([]schema.ToolResult(nil), stageResult.Output.ToolResults...), stageResult.Result.ToolResults...) {
+		key := workflowGraphQualityToolResultKey(result)
+		if _, ok := seen[key]; ok {
+			continue
+		}
+		seen[key] = struct{}{}
+		results = append(results, result)
+	}
+	return results
+}
+
+func workflowGraphQualityCommandIdentity(result schema.ToolResult) (string, bool) {
+	name := workflowGraphQualityToolName(result.ToolName)
+	if name != "run_command" {
+		return "", false
+	}
+	payload, ok := workflowGraphQualityToolResultPayload(result)
+	if !ok {
+		return "", false
+	}
+	program := strings.ToLower(strings.TrimSpace(fmt.Sprint(payload["program"])))
+	program = strings.TrimSuffix(filepath.Base(program), ".exe")
+	if program == "" {
+		return "", false
+	}
+	args, ok := workflowGraphQualityStringSlice(payload["args"])
+	if !ok {
+		return "", false
+	}
+	for index := range args {
+		args[index] = strings.TrimSpace(args[index])
+	}
+	return program + "\x00" + strings.Join(args, "\x00"), true
+}
+
+func workflowGraphQualityReadIdentity(result schema.ToolResult) (string, bool) {
+	name := workflowGraphQualityToolName(result.ToolName)
+	if name != "read_file" && name != "read_file_range" {
+		return "", false
+	}
+	path := ""
+	if payload, ok := workflowGraphQualityToolResultPayload(result); ok {
+		relativePath, _ := payload["relative_path"].(string)
+		absolutePath, _ := payload["path"].(string)
+		path = firstWorkflowGraphValue(relativePath, absolutePath)
+	}
+	if path == "" {
+		content := strings.TrimSpace(result.Content)
+		lower := strings.ToLower(content)
+		if marker := strings.Index(lower, "path not found:"); marker >= 0 {
+			path = strings.TrimSpace(content[marker+len("path not found:"):])
+			if lineEnd := strings.IndexAny(path, "\r\n"); lineEnd >= 0 {
+				path = strings.TrimSpace(path[:lineEnd])
+			}
+		}
+	}
+	path = strings.ReplaceAll(path, "\\", "/")
+	base := strings.ToLower(strings.TrimSpace(filepath.Base(filepath.Clean(filepath.FromSlash(path)))))
+	if base == "" || base == "." || base == string(filepath.Separator) {
+		return "", false
+	}
+	return "read\x00" + base, true
+}
+
+func workflowGraphQualityStringSlice(value any) ([]string, bool) {
+	switch values := value.(type) {
+	case []any:
+		result := make([]string, 0, len(values))
+		for _, item := range values {
+			result = append(result, fmt.Sprint(item))
+		}
+		return result, true
+	case []string:
+		return append([]string(nil), values...), true
+	default:
+		return nil, false
+	}
+}
+
+func workflowGraphQualityToolPolicyIntervention(result schema.ToolResult) bool {
+	if result.Suspended {
+		return false
+	}
+	text := result.Content + "\n" + result.Summary
+	if workflowGraphQualityTestRewritePolicyText(text) {
+		return result.IsError || result.Denied
+	}
+	if workflowGraphQualityChangeSliceDependencyInterventionText(text) {
+		return result.IsError || result.Denied
+	}
+	if !result.IsError || !result.Denied {
+		return false
+	}
+	return workflowGraphQualityPolicyInterventionText(text)
+}
+
+func workflowGraphQualityPolicyInterventionVerification(verification schema.Verification) bool {
+	return workflowGraphQualityPolicyInterventionText(verification.Kind + "\n" + verification.Detail)
+}
+
+func workflowGraphQualityPolicyInterventionText(value string) bool {
+	text := strings.ToLower(strings.TrimSpace(value))
+	for _, marker := range []string{
+		"workflow stage command limit reached",
+		"workflow stage read limit reached",
+		"workflow stage command policy blocks class",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return workflowGraphQualityTestRewritePolicyText(value)
+}
+
+func workflowGraphQualityChangeSliceDependencyInterventionText(value string) bool {
+	text := strings.ToLower(strings.TrimSpace(value))
+	return strings.Contains(text, "change slice") && strings.Contains(text, "is not ready: dependencies for slice")
+}
+
+func workflowGraphQualityTestRewritePolicyText(value string) bool {
+	text := strings.ToLower(strings.TrimSpace(value))
+	for _, marker := range []string{
+		"encodes acceptance",
+		"change the implementation instead of rewriting the test",
+	} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowGraphQualityAllowedInfrastructureFailures(stage workflowGraphStage) map[string]struct{} {
+	raw := firstNonEmptyWorkflowGraphParam(stage.Params, "allowed_infrastructure_failures", "allow_infrastructure_failures")
+	allowed := map[string]struct{}{}
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '|' || unicode.IsSpace(r)
+	}) {
+		value := normalizeWorkflowSkillName(part)
+		if value != "" {
+			allowed[value] = struct{}{}
+		}
+	}
+	return allowed
+}
+
+func workflowGraphQualityGoRaceUnavailable(result schema.ToolResult) bool {
+	payload, ok := workflowGraphQualityToolResultPayload(result)
+	if !ok || !workflowGraphQualityRunCommandIsGoTest(payload, true) {
+		return false
+	}
+	if value, valid := workflowGraphBoolValue(payload["timed_out"]); valid && value {
+		return false
+	}
+	if value, valid := workflowGraphBoolValue(payload["cancelled"]); valid && value {
+		return false
+	}
+	exitCode, valid := workflowGraphNumberValue(payload["exit_code"])
+	if !valid || exitCode == 0 {
+		return false
+	}
+	detail := strings.ToLower(strings.Join([]string{
+		fmt.Sprint(payload["stderr"]),
+		fmt.Sprint(payload["stdout"]),
+		fmt.Sprint(payload["process_error"]),
+	}, "\n"))
+	for _, marker := range []string{
+		"-race requires cgo",
+		"race detector requires cgo",
+		"cgo: c compiler",
+		"gcc: executable file not found",
+		"clang: executable file not found",
+		"exec: \"gcc\": executable file not found",
+		"exec: \"clang\": executable file not found",
+	} {
+		if strings.Contains(detail, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowGraphQualitySuccessfulGoTestFallback(result schema.ToolResult) bool {
+	if workflowGraphQualityToolResultFailed(result) {
+		return false
+	}
+	payload, ok := workflowGraphQualityToolResultPayload(result)
+	return ok && workflowGraphQualityRunCommandIsGoTest(payload, false)
+}
+
+func workflowGraphQualityRunCommandIsGoTest(payload map[string]any, requireRace bool) bool {
+	program := strings.ToLower(strings.TrimSpace(fmt.Sprint(payload["program"])))
+	program = strings.TrimSuffix(filepath.Base(program), ".exe")
+	if program != "go" {
+		return false
+	}
+	rawArgs, ok := payload["args"].([]any)
+	if !ok {
+		return false
+	}
+	args := make([]string, 0, len(rawArgs))
+	for _, raw := range rawArgs {
+		args = append(args, strings.ToLower(strings.TrimSpace(fmt.Sprint(raw))))
+	}
+	hasTest := false
+	hasRace := false
+	for _, arg := range args {
+		if arg == "test" {
+			hasTest = true
+		}
+		if arg == "-race" {
+			hasRace = true
+		}
+	}
+	if !hasTest {
+		return false
+	}
+	if requireRace {
+		return hasRace
+	}
+	return !hasRace
+}
+
+func workflowGraphQualityFailureOutputMarkers(stage workflowGraphStage) []string {
+	raw := firstNonEmptyWorkflowGraphParam(stage.Params, "failure_output_markers", "failure_markers", "reject_output_markers")
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	markers := make([]string, 0)
+	for _, part := range strings.Split(raw, "||") {
+		marker := strings.ToLower(strings.TrimSpace(part))
+		if marker == "" {
+			continue
+		}
+		if _, ok := seen[marker]; ok {
+			continue
+		}
+		seen[marker] = struct{}{}
+		markers = append(markers, marker)
+	}
+	return markers
+}
+
+func workflowGraphQualityStageOutputContains(result WorkflowStageResult, marker string) bool {
+	marker = strings.ToLower(strings.TrimSpace(marker))
+	if marker == "" {
+		return false
+	}
+	parts := []string{result.Result.Output, result.Output.Summary}
+	for key, value := range result.Output.Variables {
+		parts = append(parts, key, value)
+	}
+	return strings.Contains(strings.ToLower(strings.Join(parts, "\n")), marker)
+}
+
+func workflowGraphQualityRequiredTools(stage workflowGraphStage) []string {
+	raw := strings.Join([]string{stage.Params["verification_tools"], stage.Params["required_tools"], stage.Params["require_tools"], stage.Params["required_tool_results"]}, ",")
+	return workflowGraphQualityToolList(raw)
+}
+
+func workflowGraphQualityToolList(raw string) []string {
+	if strings.TrimSpace(raw) == "" {
+		return nil
+	}
+	seen := map[string]struct{}{}
+	tools := make([]string, 0)
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool {
+		return r == ',' || r == ';' || r == '|' || unicode.IsSpace(r)
+	}) {
+		name := strings.ToLower(strings.TrimSpace(part))
+		if name == "" {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		tools = append(tools, name)
+	}
+	return tools
+}
+
+func workflowGraphQualityToolName(value string) string {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if index := strings.LastIndex(value, "/"); index >= 0 {
+		value = strings.TrimSpace(value[index+1:])
+	}
+	return value
+}
+
+// workflowGraphQualityMaxRepairRounds reads how many repair rounds a gate may
+// open before it delivers with a warning instead of looping.
+func workflowGraphQualityMaxRepairRounds(stage workflowGraphStage) int {
+	value := strings.TrimSpace(stage.Params["max_repair_rounds"])
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return parsed
+}
+
+// workflowGraphCompletedRepairRounds counts how many repair stages already ran.
+func workflowGraphCompletedRepairRounds(completed []WorkflowStageResult) int {
+	count := 0
+	for _, result := range completed {
+		switch strings.ToLower(strings.TrimSpace(string(result.Stage))) {
+		case "repair", "security-repair", "office-repair":
+			count++
+		}
+	}
+	return count
 }
 
 func workflowGraphFinalizeQualityEvaluation(stage workflowGraphStage, evaluation workflowGraphQualityEvaluation) workflowGraphQualityEvaluation {
@@ -6925,8 +8137,10 @@ func workflowGraphFinalizeQualityEvaluation(stage workflowGraphStage, evaluation
 	if workflowGraphQualityParamBool(stage, []string{"require_verification", "verification_required"}, false) && evaluation.VerificationTotal == 0 {
 		evaluation.Failures = append(evaluation.Failures, "quality gate requires verification results but none were recorded")
 	}
-	if workflowGraphQualityParamBool(stage, []string{"require_evidence", "evidence_required", "require_artifacts"}, false) && evaluation.EvidenceArtifacts == 0 {
-		evaluation.Failures = append(evaluation.Failures, "quality gate requires evidence artifacts but none were recorded")
+	requireStrongEvidence := workflowGraphQualityParamBool(stage, []string{"require_evidence", "evidence_required", "require_artifacts"}, false) ||
+		!workflowGraphQualityParamBool(stage, []string{"allow_unverified", "allow_weak_evidence", "allow_text_only"}, false)
+	if requireStrongEvidence && evaluation.EvidenceArtifacts == 0 {
+		evaluation.Failures = append(evaluation.Failures, "quality gate requires tool-backed, content-addressed, or source-referenced evidence")
 	}
 	if !workflowGraphQualityParamBool(stage, []string{"allow_empty", "allow_no_checks"}, false) &&
 		evaluation.AcceptanceTotal == 0 &&
@@ -7002,6 +8216,9 @@ func workflowGraphQualityScore(evaluation workflowGraphQualityEvaluation) int {
 	}
 	score -= workflowGraphQualityPenalty(evaluation.AcceptanceFailed+evaluation.VerificationFailed, 10, 40)
 	score -= workflowGraphQualityPenalty(evaluation.StageErrors+evaluation.ToolErrors, 15, 60)
+	if evaluation.EvidenceArtifacts == 0 && score > 70 {
+		score = 70
+	}
 	if score < 0 {
 		return 0
 	}
@@ -7030,11 +8247,197 @@ func workflowGraphQualityArtifactEvidence(artifact session.WorkflowRunArtifact) 
 		return false
 	}
 	switch normalizeWorkflowSkillName(artifact.Kind) {
-	case "artifact", "output", "report", "evidence", "verification", "acceptance", "test", "tests", "diff", "patch", "audit", "change_report", "requirements", "plan":
+	case "tool_result":
+		return strings.TrimSpace(artifact.ToolCallID) != ""
+	case "test", "tests", "build", "lint", "validation", "diff", "patch", "screenshot", "source", "document", "spreadsheet", "presentation", "pdf", "export":
+		return workflowGraphArtifactHasTraceableReference(artifact)
+	case "evidence":
+		return workflowGraphArtifactHasTraceableReference(artifact)
+	default:
+		return false
+	}
+}
+
+func workflowGraphQualityToolResultKey(result schema.ToolResult) string {
+	if callID := strings.TrimSpace(result.CallID); callID != "" {
+		return "call:" + callID
+	}
+	return strings.Join([]string{"tool", strings.TrimSpace(result.ToolName), strings.TrimSpace(result.ArtifactRef), strings.TrimSpace(result.ArtifactHash), strings.TrimSpace(result.Content), strings.TrimSpace(result.Summary)}, "\x00")
+}
+
+// A declared validator contributes evidence only when an actual completed tool
+// call returned content or a persisted artifact. Report prose is not a tool call.
+func workflowGraphQualityDeclaredToolEvidence(result schema.ToolResult) bool {
+	return !workflowGraphQualityToolResultFailed(result) && strings.TrimSpace(result.CallID) != "" &&
+		(strings.TrimSpace(firstWorkflowGraphValue(result.ArtifactRef, result.ArtifactHash, result.Content, result.Summary)) != "" || result.ContentBytes > 0 || result.StoredBytes > 0)
+}
+
+// workflowGraphQualityExplorationReadTool reports read-only discovery tools whose
+// failure describes a wrong guess about a path, not evidence about the delivery.
+// workflowGraphQualityArgumentError reports whether a failed tool call failed on
+// argument validation rather than on the delivered work. The model corrects
+// these in the next turn; counting them as delivery failures blocked complete
+// runs whose kit acceptance and score were otherwise perfect.
+// workflowGraphQualityMaxToolErrors reads how many failed tool calls a gate
+// tolerates before they fail the delivery.
+func workflowGraphQualityMaxToolErrors(stage workflowGraphStage) int {
+	for _, key := range []string{"max_tool_errors", "tolerate_tool_errors"} {
+		value := strings.TrimSpace(stage.Params[key])
+		if value == "" {
+			continue
+		}
+		parsed, err := strconv.Atoi(value)
+		if err == nil && parsed > 0 {
+			return parsed
+		}
+	}
+	return 0
+}
+
+// workflowGraphQualityLenientVerification reports whether a failed verification
+// is the model's own exploration or argument mistake. Such failures say nothing
+// about the delivered artifacts, and treating them as delivery failures blocked
+// runs whose kit acceptance had already passed.
+func workflowGraphQualityLenientVerification(verification schema.Verification) bool {
+	if !workflowGraphQualityStatusFailed(workflowGraphQualityStatus(verification.Status)) {
+		return false
+	}
+	detail := strings.TrimSpace(verification.Detail)
+	if detail == "" {
+		return false
+	}
+	if workflowGraphQualityArgumentError(schema.ToolResult{Content: detail, IsError: true}) {
+		return true
+	}
+	lowered := strings.ToLower(detail)
+	for _, marker := range []string{"path not found", "no such file", "does not exist", "not found:"} {
+		if strings.Contains(lowered, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowGraphQualityArgumentError(result schema.ToolResult) bool {
+	if !workflowGraphQualityToolResultFailed(result) {
+		return false
+	}
+	content := strings.ToLower(strings.TrimSpace(result.Content))
+	if content == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"is required",
+		"missing required field",
+		"is not allowed",
+		"must contain",
+		"must be",
+		"must have",
+		"not executed",
+		"unknown field",
+		"invalid argument",
+	} {
+		if strings.Contains(content, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowGraphQualityExplorationReadTool(toolName string) bool {
+	switch workflowGraphQualityToolName(toolName) {
+	case "list_tree", "list_dir", "read_file", "read_file_range", "search_files", "repository_map", "file_info":
 		return true
 	default:
 		return false
 	}
+}
+
+func workflowGraphQualityToolResultEvidence(result schema.ToolResult) bool {
+	if workflowGraphQualityToolResultFailed(result) || strings.TrimSpace(result.CallID) == "" {
+		return false
+	}
+	name := workflowGraphQualityToolName(result.ToolName)
+	switch name {
+	case "list_tree", "list_dir", "read_file", "read_file_range", "search_files", "repository_map", "file_info":
+		return false
+	case "run_command":
+		return workflowGraphQualitySuccessfulVerificationCommand(result)
+	}
+	if strings.TrimSpace(firstWorkflowGraphValue(result.ArtifactRef, result.ArtifactHash, result.Content, result.Summary)) == "" && result.ContentBytes == 0 && result.StoredBytes == 0 {
+		return false
+	}
+	switch name {
+	case "apply_patch", "write_file", "mkdir", "replace_text", "delete_file", "move_path",
+		"fill_office_template", "replace_office_text", "create_docx", "create_xlsx", "create_pptx", "create_pdf",
+		"export_office_pdf", "render_office_preview", "inspect_office_document", "validate_office_document":
+		return true
+	default:
+		return strings.TrimSpace(result.ArtifactRef) != "" || strings.TrimSpace(result.ArtifactHash) != ""
+	}
+}
+
+func workflowGraphQualityToolResultFailed(result schema.ToolResult) bool {
+	if result.IsError || result.Denied || result.Suspended {
+		return true
+	}
+	name := strings.ToLower(strings.TrimSpace(result.ToolName))
+	if name != "run_command" && !strings.HasSuffix(name, "/run_command") {
+		return false
+	}
+	payload, ok := workflowGraphQualityToolResultPayload(result)
+	if !ok {
+		return false
+	}
+	if value, exists := payload["exit_code"]; exists {
+		if exitCode, valid := workflowGraphNumberValue(value); valid && exitCode != 0 {
+			return true
+		}
+	}
+	for _, key := range []string{"timed_out", "cancelled"} {
+		if value, valid := workflowGraphBoolValue(payload[key]); valid && value {
+			return true
+		}
+	}
+	program, _ := payload["program"].(string)
+	args, _ := workflowGraphQualityStringSlice(payload["args"])
+	if strings.EqualFold(strings.TrimSuffix(filepath.Base(program), ".exe"), "gofmt") {
+		for _, arg := range args {
+			if arg == "-l" {
+				stdout, _ := payload["stdout"].(string)
+				return strings.TrimSpace(stdout) != ""
+			}
+		}
+	}
+	return false
+}
+
+func workflowGraphQualityToolResultPayload(result schema.ToolResult) (map[string]any, bool) {
+	for _, content := range []string{result.Content, result.Summary} {
+		content = strings.TrimSpace(content)
+		if content == "" {
+			continue
+		}
+		decoder := json.NewDecoder(strings.NewReader(content))
+		decoder.UseNumber()
+		var payload map[string]any
+		if err := decoder.Decode(&payload); err == nil && len(payload) > 0 {
+			return payload, true
+		}
+	}
+	return nil, false
+}
+
+func workflowGraphArtifactHasTraceableReference(artifact session.WorkflowRunArtifact) bool {
+	if strings.TrimSpace(artifact.ToolCallID) != "" || strings.TrimSpace(artifact.ArtifactRef) != "" || strings.TrimSpace(artifact.Hash) != "" {
+		return true
+	}
+	for _, key := range []string{"source_ref", "source_url", "url", "capture_ref", "screenshot_ref", "document_ref", "artifact_ref", "hash"} {
+		if strings.TrimSpace(artifact.Metadata[key]) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 func workflowGraphQualityParamBool(stage workflowGraphStage, keys []string, fallback bool) bool {
@@ -7081,6 +8484,9 @@ func workflowGraphContractFailureRequired(stage workflowGraphStage, failure work
 	case "ignore", "warn", "warning", "continue", "record":
 		return false
 	case "pause", "block", "blocked", "fail", "failed", "route", "retry", "escalate", "remediate", "remediation":
+		return true
+	}
+	if strings.TrimSpace(stage.Params["output_schema_json"]) != "" {
 		return true
 	}
 	return workflowGraphQualityParamBool(stage, []string{
@@ -7167,6 +8573,12 @@ func workflowGraphStageContractFailure(stage workflowGraphStage, stageResult Wor
 		if !ok {
 			addIssue("json_output", "result.output", fmt.Sprintf("%s output must be a JSON object for %s", fallbackWorkflowGraphValue(failure.Stage, "stage"), workflowGraphStageContractLabel(stage)))
 		} else {
+			if definition := strings.TrimSpace(stage.Params["output_schema_json"]); definition != "" {
+				data, err := json.Marshal(decoded)
+				if err != nil || policy.ValidateToolCall(schema.ToolCall{Arguments: data}, schema.Tool{Name: "workflow_output", InputSchema: json.RawMessage(definition)}) != nil {
+					addIssue("json_schema", "result.output", fmt.Sprintf("阶段 %s 的输出不符合 output_schema_json，请检查字段类型、必填项及取值约束", stage.Name))
+				}
+			}
 			for _, key := range workflowGraphStageRequiredJSONKeys(stage) {
 				if _, ok := workflowStageOutputJSONValue(decoded, key); !ok {
 					addIssue("json_output", "result.output."+key, fmt.Sprintf("%s JSON output missing required key %s", fallbackWorkflowGraphValue(failure.Stage, "stage"), key))
@@ -7226,7 +8638,23 @@ func workflowGraphStageHasVerification(stageResult WorkflowStageResult) bool {
 }
 
 func workflowGraphStageHasEvidence(stageResult WorkflowStageResult) bool {
-	return len(stageResult.Output.Evidence) > 0 || len(stageResult.Output.Artifacts) > 0
+	seen := map[string]struct{}{}
+	for _, result := range append(append([]schema.ToolResult(nil), stageResult.Output.ToolResults...), stageResult.Result.ToolResults...) {
+		key := workflowGraphQualityToolResultKey(result)
+		if _, exists := seen[key]; exists {
+			continue
+		}
+		seen[key] = struct{}{}
+		if workflowGraphQualityToolResultEvidence(result) {
+			return true
+		}
+	}
+	for _, artifact := range append(append([]session.WorkflowRunArtifact(nil), stageResult.Output.Evidence...), stageResult.Output.Artifacts...) {
+		if workflowGraphQualityArtifactEvidence(artifact) {
+			return true
+		}
+	}
+	return false
 }
 
 func workflowGraphMissingMappedOutputKeys(stage workflowGraphStage, stageResult WorkflowStageResult) []string {
@@ -7343,6 +8771,9 @@ func workflowGraphMissingDeclaredArtifactNames(stage workflowGraphStage, stageRe
 }
 
 func workflowGraphStageRequiresJSONOutput(stage workflowGraphStage) bool {
+	if strings.TrimSpace(stage.Params["output_schema_json"]) != "" {
+		return true
+	}
 	if workflowGraphStageWorkerContractEnabled(stage) || workflowGraphParamBool(stage, "json_output") || workflowGraphParamBool(stage, "require_json_output") || workflowGraphParamBool(stage, "json_required") {
 		return true
 	}
@@ -7547,11 +8978,32 @@ func buildWorkflowGraphFinalQualityHandoff(completed []WorkflowStageResult) work
 	if len(completed) == 0 {
 		return handoff
 	}
-	for _, stage := range completed {
+	start := 0
+	for index, stage := range completed {
+		if workflowGraphStagePassedQualityCheckpoint(stage) {
+			start = index + 1
+		}
+	}
+	for _, stage := range completed[start:] {
 		handoff.addIssues(workflowGraphFinalQualityIssuesForStage(stage))
 	}
 	handoff.finalize()
 	return handoff
+}
+
+func workflowGraphStagePassedQualityCheckpoint(stage WorkflowStageResult) bool {
+	nodeType := normalizeWorkflowSkillName(stage.NodeType)
+	qualityStatus := strings.TrimSpace(stage.Output.Variables["quality_status"])
+	if qualityStatus == "" && stage.Output.Values != nil {
+		qualityStatus = strings.TrimSpace(fmt.Sprint(stage.Output.Values["quality_status"]))
+	}
+	if nodeType != "quality_gate" && nodeType != "quality_guard" && nodeType != "quality-guard" && qualityStatus == "" {
+		return false
+	}
+	if workflowTruthy(stage.Metadata["quality_failed"]) || workflowGraphFinalQualityStageStatusIssue(stage.Status) {
+		return false
+	}
+	return workflowGraphQualityStatusPassed(qualityStatus)
 }
 
 func (h *workflowGraphFinalQualityHandoff) addIssues(issues []workflowGraphFinalQualityIssue) {
@@ -7678,7 +9130,18 @@ func workflowGraphFinalQualityIssuesForStage(stage WorkflowStageResult) []workfl
 		}
 	}
 	for _, verification := range stage.Result.Verification {
+		// Stage command/read policy interventions and explicitly documented race
+		// detector toolchain limits are control-flow/infrastructure evidence, not
+		// product failures. They are already accounted for by the quality gate;
+		// once a later repair/recovery check passes, do not reintroduce them into
+		// the final handoff as blocking findings.
+		if workflowGraphQualityPolicyInterventionVerification(verification) || workflowGraphFinalQualityInfrastructureVerification(verification) {
+			continue
+		}
 		status := workflowGraphQualityStatus(verification.Status)
+		if workflowGraphFinalQualityInformationalVerificationStatus(status) {
+			continue
+		}
 		switch {
 		case workflowGraphQualityStatusFailed(status):
 			issues = append(issues, workflowGraphFinalQualityIssue{
@@ -7703,6 +9166,27 @@ func workflowGraphFinalQualityIssuesForStage(stage WorkflowStageResult) []workfl
 		}
 	}
 	return workflowGraphDeduplicateFinalQualityIssues(issues)
+}
+
+// Proposed/performed are lifecycle records for a plan or audit reflection,
+// not pass/fail outcomes. They must not create a blocking final handoff issue.
+func workflowGraphFinalQualityInformationalVerificationStatus(status string) bool {
+	switch workflowGraphQualityStatus(status) {
+	case "proposed", "performed", "planned", "started", "in_progress", "in-progress":
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowGraphFinalQualityInfrastructureVerification(verification schema.Verification) bool {
+	text := strings.ToLower(strings.TrimSpace(verification.Kind + "\n" + verification.Detail))
+	for _, marker := range []string{"-race requires cgo", "race detector requires cgo", "cgo: c compiler", "gcc: executable file not found", "clang: executable file not found", "race unavailable", "infrastructure limit"} {
+		if strings.Contains(text, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func workflowGraphDeduplicateFinalQualityIssues(issues []workflowGraphFinalQualityIssue) []workflowGraphFinalQualityIssue {
@@ -8587,6 +10071,11 @@ func workflowGraphContinueOutputPrompt(base string, incomplete WorkflowStageResu
 	builder.WriteString("- The previous run of this exact stage was incomplete. Continue the stage output; do not restart the task or discard prior work.\n")
 	builder.WriteString("- Use the partial output below as already produced context, complete missing sections, evidence, and final decisions required by this stage.\n")
 	builder.WriteString("- If the partial output contains JSON or another structured format, return one coherent completed artifact, not only a fragment.\n")
+	builder.WriteString("- A new bounded tool-call budget is available for this continuation under the original run permission mode and this stage's tool boundary. Complete only the current stage's required work: a planning stage produces its plan without implementing it; an implementation stage completes its remaining edits and verification.\n")
+	providerInterrupted := strings.Contains(strings.ToLower(reason), "provider response was interrupted")
+	if len(incomplete.Result.ToolResults) > 0 {
+		builder.WriteString("- Do not rerun completed tool calls; use the preserved tool observations below and request a tool only for evidence that is still missing.\n")
+	}
 	if reason != "" {
 		builder.WriteString("- Incomplete reason: ")
 		builder.WriteString(reason)
@@ -8597,11 +10086,30 @@ func workflowGraphContinueOutputPrompt(base string, incomplete WorkflowStageResu
 		builder.WriteString(stopReason)
 		builder.WriteString("\n")
 	}
+	var observed WorkflowStageOutput
+	reconcileWorkflowStageChangedFiles(&observed, incomplete.Result.ToolResults)
+	if paths := observed.Variables["changed_files"]; paths != "" {
+		builder.WriteString("\nSuccessful write-tool observations across all preserved segments:\n")
+		builder.WriteString(trimWorkflowGraphContextValue(paths, 4000))
+		builder.WriteString("\nThese writes already succeeded even if the partial model summary says otherwise. Preserve them and finish the remaining approved work. This list is not proof that the whole task or its verification passed.\n")
+	}
 	if partial != "" {
 		builder.WriteString("\nPartial output from previous attempt:\n")
 		builder.WriteString(limitWorkflowGraphText(partial))
 	}
+	if observations := workflowGraphPreservedToolObservations(incomplete.Result.ToolResults); observations != "" {
+		if providerInterrupted {
+			builder.WriteString("\n\nPreserved tool observations from the interrupted attempt:\n")
+		} else {
+			builder.WriteString("\n\nPreserved tool observations from the previous tool-budget segment:\n")
+		}
+		builder.WriteString(limitWorkflowGraphText(observations))
+	}
 	return builder.String()
+}
+
+func workflowGraphPreservedToolObservations(results []schema.ToolResult) string {
+	return compactContinuationObservations(results)
 }
 
 func workflowGraphModelEscalationPrompt(base string, failed WorkflowStageResult) string {
@@ -8763,7 +10271,22 @@ func (w *WorkflowRunner) workflowGraphParallelDomainStageIndices(graph workflowG
 	if domain == "" || strings.EqualFold(domain, "auto") || strings.EqualFold(domain, "multi") || strings.EqualFold(domain, "multiple") {
 		return nil
 	}
-	return filterExplicitWorkflowGraphStages(workflowGraphParallelDomainStageNames(domain), graph, candidates)
+	key := normalizeWorkflowSkillName(domain)
+	var selected []int
+	for _, index := range candidates {
+		if index < 0 || index >= len(graph.Stages) {
+			continue
+		}
+		branch := graph.Stages[index]
+		aliases := append([]string{branch.Name, branch.Params["domain"]}, splitWorkflowGraphList(branch.Params["domain_aliases"])...)
+		for _, alias := range aliases {
+			if normalizeWorkflowSkillName(alias) == key {
+				selected = append(selected, index)
+				break
+			}
+		}
+	}
+	return selected
 }
 
 func workflowGraphParallelDomainValue(stage workflowGraphStage, request string, completed []WorkflowStageResult) string {
@@ -8782,31 +10305,6 @@ func workflowGraphParallelDomainValue(stage workflowGraphStage, request string, 
 		}
 	}
 	return strings.TrimSpace(stage.Params["domain"])
-}
-
-func workflowGraphParallelDomainStageNames(domain string) []string {
-	switch normalizeWorkflowSkillName(domain) {
-	case "software", "software_engineering", "code", "coding", "implementation":
-		return []string{"software-worker", "software-engineer", "software-engineering"}
-	case "web_security", "web", "webapp", "web_application", "xss", "sqli", "sql_injection":
-		return []string{"web-security-worker", "web-security-researcher", "web-security"}
-	case "security", "security_research", "vulnerability", "vulnerability_research":
-		return []string{"security-worker", "security-researcher", "security-research"}
-	case "binary", "binary_analysis", "reverse", "reverse_engineering":
-		return []string{"binary-worker", "binary-analyst", "binary-analysis"}
-	case "documentation", "docs", "doc":
-		return []string{"docs-worker", "documentation-specialist", "documentation"}
-	case "operations", "ops", "network", "network_operations", "runbook":
-		return []string{"ops-worker", "operations-specialist", "operations-runbook"}
-	case "support", "customer_support", "customer":
-		return []string{"support-worker", "support-specialist", "customer-support"}
-	case "platform", "agent_framework", "framework", "extension", "extension_kit":
-		return []string{"platform-worker", "framework-extension-architect", "agent-framework"}
-	case "general":
-		return []string{"general-worker", "general"}
-	default:
-		return []string{domain}
-	}
 }
 
 func (w *WorkflowRunner) workflowGraphParallelFallbackStageIndices(graph workflowGraph, stage workflowGraphStage, candidates []int, completed []WorkflowStageResult) []int {
@@ -9140,7 +10638,100 @@ func resolveWorkflowGraphStageInputValues(stage workflowGraphStage, request stri
 }
 
 func (w *WorkflowRunner) buildWorkflowGraphStagePrompt(ctx context.Context, graph workflowGraph, stage workflowGraphStage, request string, completed []WorkflowStageResult) string {
-	return buildWorkflowGraphStagePromptWithMemory(ctx, graph, stage, request, completed, w.workflowGraphMemoryStore())
+	prompt := buildWorkflowGraphStagePromptWithMemory(ctx, graph, stage, request, completed, w.workflowGraphMemoryStore())
+	if w != nil {
+		prompt = prompt + workflowGraphObservedFileDigest(completed)
+	}
+	if w == nil || !workflowGraphStageUsesWorkspaceVerification(stage.Name) {
+		return prompt
+	}
+	root := w.discoveredWorkspaceRoot()
+	out := prompt + workflowGraphWorkspaceVerificationPrompt(root)
+	if workflowGraphStageNeedsPublicTestContext(stage.Name) {
+		out += workflowGraphPublicTestAcceptanceContext(root)
+	}
+	return out + workflowGraphFailedPublicTestContext(root, completed)
+}
+
+// workflowGraphObservedFileDigest lists files earlier stages already read, with
+// their content hashes. Later stages can then read a range instead of paying to
+// re-read a whole unchanged file.
+func workflowGraphObservedFileDigest(completed []WorkflowStageResult) string {
+	type observed struct {
+		lines int
+		stage string
+		hash  string
+	}
+	files := make(map[string]observed)
+	order := make([]string, 0, 40)
+	for _, stage := range completed {
+		for _, result := range stage.Result.ToolResults {
+			if result.IsError {
+				continue
+			}
+			path, hash, lines, ok := workflowGraphFileReadIdentity(result.Content)
+			if !ok {
+				continue
+			}
+			if _, exists := files[path]; exists {
+				continue
+			}
+			files[path] = observed{lines: lines, stage: string(stage.Stage), hash: hash}
+			order = append(order, path)
+			if len(order) >= 40 {
+				break
+			}
+		}
+	}
+	if len(order) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("\n\nFiles already read in earlier stages (unchanged unless their hash differs):\n")
+	for _, path := range order {
+		item := files[path]
+		fmt.Fprintf(&builder, "- %s (sha256 %s…, %d lines, read in %s)\n", path, shortHash(item.hash), item.lines, item.stage)
+	}
+	builder.WriteString("Read only the ranges you still need with read_file_range instead of re-reading these files.\n")
+	return builder.String()
+}
+
+func shortHash(hash string) string {
+	hash = strings.TrimSpace(hash)
+	if len(hash) > 12 {
+		return hash[:12]
+	}
+	return hash
+}
+
+// workflowGraphFileReadIdentity parses a file-tool payload for path, hash and
+// line count. Non-file results return ok=false.
+func workflowGraphFileReadIdentity(content string) (string, string, int, bool) {
+	trimmed := strings.TrimSpace(content)
+	if !strings.HasPrefix(trimmed, "{") {
+		return "", "", 0, false
+	}
+	var payload struct {
+		RelativePath string `json:"relative_path"`
+		SHA256       string `json:"sha256"`
+		TotalLines   int    `json:"total_lines"`
+	}
+	if err := json.Unmarshal([]byte(trimmed), &payload); err != nil {
+		return "", "", 0, false
+	}
+	if strings.TrimSpace(payload.RelativePath) == "" || strings.TrimSpace(payload.SHA256) == "" {
+		return "", "", 0, false
+	}
+	return payload.RelativePath, payload.SHA256, payload.TotalLines, true
+}
+
+func workflowGraphStageNeedsPublicTestContext(stageName string) bool {
+	switch strings.ToLower(strings.TrimSpace(stageName)) {
+	case "implement", "fix", "repair":
+		return true
+	default:
+		return false
+	}
 }
 
 func (w *WorkflowRunner) workflowGraphMemoryStore() *memory.Store {
@@ -9167,6 +10758,9 @@ func buildWorkflowGraphStagePromptWithMemory(ctx context.Context, graph workflow
 	if strings.TrimSpace(stage.Tool) != "" {
 		fmt.Fprintf(&builder, "Preferred/related tool for this stage: %s\n", stage.Tool)
 	}
+	if connected := splitWorkflowGraphList(stage.Params["connected_tools"]); len(connected) > 0 {
+		fmt.Fprintf(&builder, "Connected workflow tool contract: call the required connected tool using its supplied input schema before completing this stage. Connected tools: %s. Generate concrete structured arguments from the request and mapped inputs; do not merely describe the call.\n", strings.Join(connected, ", "))
+	}
 	if len(stage.Params) > 0 {
 		paramsText := workflowGraphStagePromptParameters(stage, budget.ParametersBytes)
 		if paramsText != "" {
@@ -9182,11 +10776,11 @@ func buildWorkflowGraphStagePromptWithMemory(ctx context.Context, graph workflow
 		sort.Strings(keys)
 		inputBudget := budget.InputsBytes
 		usedInputBytes := 0
-		for _, key := range keys {
+		for index, key := range keys {
 			linePrefix := fmt.Sprintf("- %s (%s): ", key, stage.Input[key])
 			value := workflowGraphPromptValue(inputs[key])
 			if inputBudget > 0 {
-				remaining := inputBudget - usedInputBytes - len([]byte(linePrefix)) - 1
+				remaining := (inputBudget-usedInputBytes)/(len(keys)-index) - len([]byte(linePrefix)) - 1
 				if remaining <= 32 {
 					fmt.Fprintf(&builder, "- %s (%s): [mapped inputs truncated by inputs_max_tokens]\n", key, stage.Input[key])
 					break
@@ -9233,6 +10827,10 @@ func buildWorkflowGraphStagePromptWithMemory(ctx context.Context, graph workflow
 	}
 	builder.WriteString("\nUse the configured stage skill instructions. Produce a concise stage result.")
 	builder.WriteString(workflowGraphStageWorkerContractPrompt(stage))
+	if policy := stage.Params["change_slice_policy"]; policy == "required" || policy == "if_missing" {
+		builder.WriteString("\nSlice mode describes FUTURE execution, not the planning node's current permission. Planning remains read-only, while the complete plan must include write slices for future source/document changes; do not submit only a discovery slice and defer the implementation plan.")
+		builder.WriteString("\nChange-slice contract: end with a goflow-change-slices fenced JSON array (1..32 items). Each item requires id, title, mode, depends_on, input_files, target_files and verification_commands. mode accepts only read (no file mutations) or write (including new/modified tests); implementation and test are not modes. Use stable ASCII IDs, workspace-relative observed paths, acyclic dependencies and nonempty target_files and verification_commands. input_files must be observed existing files or outputs of declared dependencies; a new target is not a pre-existing input. Do not invent evidence, paths or permissions.")
+	}
 	builder.WriteString("\nReturn structured fields when applicable: summary, evidence, artifacts, decision, changed_files, verification, blockers, next_actions.")
 	return workflowGraphBudgetPrompt(builder.String(), budget.PromptBytes)
 }
@@ -9677,6 +11275,37 @@ func workflowGraphChangedFilePathFromToolResult(result schema.ToolResult) string
 		}
 	}
 	return ""
+}
+
+func workflowGraphChangedFilePathFromWriteToolResult(result schema.ToolResult) string {
+	if result.IsError || result.Denied || result.Suspended {
+		return ""
+	}
+	if workflowGraphToolResultReportsUnchangedFile(result) {
+		return ""
+	}
+	name := strings.ToLower(strings.TrimSpace(result.ToolName))
+	if slash := strings.LastIndex(name, "/"); slash >= 0 {
+		name = name[slash+1:]
+	}
+	switch name {
+	case "apply_patch", "write_file", "replace_text", "move_path", "delete_file", "restore_file_change":
+		return workflowGraphChangedFilePathFromToolResult(result)
+	default:
+		return ""
+	}
+}
+
+func workflowGraphToolResultReportsUnchangedFile(result schema.ToolResult) bool {
+	var payload map[string]any
+	if json.Unmarshal([]byte(result.Content), &payload) != nil {
+		return false
+	}
+	before, _ := payload["before_sha256"].(string)
+	after, _ := payload["after_sha256"].(string)
+	beforeMode, _ := payload["before_mode"].(string)
+	afterMode, _ := payload["after_mode"].(string)
+	return validSHA256Hex(before) && validSHA256Hex(after) && strings.EqualFold(before, after) && beforeMode == afterMode
 }
 
 func workflowGraphFileSummariesForPaths(index memory.FileIndex, paths []string) []memory.FileSummary {
@@ -10182,9 +11811,19 @@ func isWorkflowGraphSelectStrategy(strategy string) bool {
 }
 
 func (w *WorkflowRunner) runWorkflowGraphExecutableStage(ctx context.Context, graph workflowGraph, stage workflowGraphStage, prompt string, skill schema.Skill, handler func(event schema.StreamEvent) error) (schema.AgentResult, int, error) {
+	return w.runWorkflowGraphExecutableStageWithInitialResults(ctx, graph, stage, prompt, skill, nil, handler)
+}
+
+func (w *WorkflowRunner) runWorkflowGraphExecutableStageWithInitialResults(ctx context.Context, graph workflowGraph, stage workflowGraphStage, prompt string, skill schema.Skill, initialToolResults []schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, int, error) {
 	attempts := stage.Retry.MaxAttempts
 	if attempts <= 0 {
 		attempts = 1
+	}
+	if workflowGraphShouldEnforceWorkspaceMutation(graph, stage) {
+		w.snapshotWorkspaceMutationBaseline()
+	}
+	if workflowGraphParamBool(stage, "reopen_blocked_slices") {
+		w.reopenBlockedChangeSlices(stage.Name)
 	}
 	var lastErr error
 	for attempt := 1; attempt <= attempts; attempt++ {
@@ -10195,13 +11834,959 @@ func (w *WorkflowRunner) runWorkflowGraphExecutableStage(ctx context.Context, gr
 			}
 			w.emitWorkflowGraphStageRetryEvent(graph, stage, attempt, reason, handler)
 		}
-		result, err := runSkillStageWithModelAndOptions(ctx, w.runtime, stage.Agent, prompt, skill, stage.Model, workflowStageRunOptions{AllowedTools: workflowGraphStageAllowedTools(stage)}, handler)
+		stagePrompt := prompt
+		if attempt > 1 && lastErr != nil {
+			switch {
+			case strings.Contains(lastErr.Error(), "produced no workspace file mutations"):
+				stagePrompt = prompt + "\n\nPrevious attempt produced no workspace file mutations. Read the target implementation files and apply_patch or write_file before reporting.\n"
+			case strings.Contains(lastErr.Error(), "unapplied exact patch"):
+				stagePrompt = prompt + "\n\nPrevious attempt left an unapplied exact patch and made no successful file changes. Read the smallest affected range, copy an exact unique anchor and its current SHA-256, then retry the edit once. Do not submit the same unmatched text through replace_text, invent a hash conflict, or stop with next-step suggestions. Preserve the approved plan and unrelated user changes.\n"
+			case strings.Contains(lastErr.Error(), "produced no repository evidence"):
+				stagePrompt = prompt + "\n\nPrevious attempt wrote a plan without repository tools. Call list_tree and read the target files first, then emit goflow-change-slices.\n"
+			case strings.Contains(lastErr.Error(), "produced no machine-checkable change slices"):
+				stagePrompt = prompt + "\n\nPrevious attempt did not produce valid change slices. Validation failure: " + lastErr.Error() + ". Emit the corrected goflow-change-slices fenced JSON array using repository evidence; do not search the workspace for the marker itself.\n"
+			case strings.Contains(lastErr.Error(), "produced no writable change slices"):
+				stagePrompt = prompt + "\n\nThe plan only described discovery, but downstream stages require actual edits. Slice mode describes FUTURE execution, not the planning node's current read-only permission. Include the complete implementation plan with write slices for source, documents and requested new tests. Do not implement during planning; do not submit only a locate/read slice.\n"
+			case strings.Contains(lastErr.Error(), "returned empty output"):
+				stagePrompt = prompt + "\n\nPrevious attempt returned empty output after a provider failure. Call the allowed tools and produce the required stage output; do not stop with an empty response.\n"
+			case strings.Contains(lastErr.Error(), "did not satisfy acceptance criteria"):
+				stagePrompt = prompt + "\n\nPrevious attempt did not satisfy this stage's acceptance criteria: " + lastErr.Error() + "\nRewrite the stage report so every required section heading appears verbatim, keep only evidence you actually observed, and do not modify workspace files.\n"
+			case strings.Contains(lastErr.Error(), reportIntegrityError):
+				stagePrompt = prompt + "\n\n" + lastErr.Error() + "。只修订本阶段报告，保留已有事实与未验证项，不重新采集、不重复已执行工具。\n"
+			}
+		}
+		if attempt > 1 {
+			if observations := workflowGraphPreservedToolObservations(initialToolResults); observations != "" {
+				stagePrompt += "\n\nPreserved tool observations from previous attempts of this stage:\n" + observations + "\nUse these actual results; do not repeat completed side effects merely to recreate evidence.\n"
+			}
+		}
+		attemptStartedAt := time.Now()
+		result, err := runSkillStageWithModelAndOptions(ctx, w.runtime, stage.Agent, stagePrompt, skill, stage.Model, workflowStageRunOptions{
+			AllowedTools:           workflowGraphStageAllowedTools(stage),
+			InitialMessages:        w.stageInitialMessages(graph, stage),
+			SystemPromptOverride:   w.sharedWorkflowSystemPrompt(graph),
+			MaxIterations:          workflowGraphStageMaxIterations(stage),
+			MaxModelCalls:          workflowGraphStageMaxModelCalls(stage),
+			MaxStageTotalCalls:     workflowGraphStageMaxTotalModelCalls(stage),
+			InitialToolResults:     append([]schema.ToolResult(nil), initialToolResults...),
+			ToolOperationRunID:     w.runID,
+			ToolOperationWorkflow:  graph.Name,
+			ToolOperationStage:     stage.Name,
+			IdempotentToolCalls:    true,
+			IsolatePromptContext:   true,
+			ApprovedPlanScope:      workflowGraphStageApprovedPlanScope(graph, stage),
+			ChangeSliceEnforcement: workflowGraphStageUsesChangeSliceScheduler(graph, stage),
+			ChangeSlices:           w.workflowChangeSlicesForRun(nil),
+			StageToolPolicy:        workflowGraphStageToolPolicy(stage),
+		}, handler)
+		if err == nil {
+			w.storeStageConversation(result.Messages)
+		}
+		result.ToolResults = mergeWorkflowGraphContinuationToolResults(initialToolResults, result.ToolResults)
+		if err == nil && (result.Incomplete || hasSuspendedToolResult(result.ToolResults)) {
+			return result, attempt, nil
+		}
+		if err == nil {
+			err = w.workflowGraphStageCompletionError(graph, stage, result)
+		}
+		if err != nil && result.StageBudgetExhausted {
+			// The stage stopped because it spent its call budget. Retrying would
+			// spend another budget on the same wall, so accept the partial stage
+			// and let downstream gates judge the evidence.
+			result.Verification = append(result.Verification, schema.Verification{
+				Kind:   "stage_budget",
+				Status: "warning",
+				Detail: fmt.Sprintf("stage %s stopped at its model-call budget: %v", stage.Name, err),
+			})
+			if handler != nil {
+				_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "本阶段模型调用预算已用尽，按部分结果继续", Mode: "workflow", TaskStage: stage.Name, WorkflowName: graph.Name, Reason: "stage_budget_exhausted", Severity: "warning"})
+			}
+			err = nil
+		}
+		if err == nil {
+			err = w.holdIncompleteChangeSlices(graph, stage, &result)
+		}
+		if err == nil && workflowGraphParamBool(stage, "verify_evidence_hashes") && !result.Incomplete && !hasSuspendedToolResult(result.ToolResults) {
+			result.Verification = append(result.Verification, schema.Verification{Kind: "report_hashes", Status: "passed", Detail: fmt.Sprintf("已校验 %d 个内联哈希或指纹主张；无内联值时引用证据索引，不表示报告全部语义已验证", len(reportEvidenceClaims(result.Output)))})
+		}
+		if err == nil && workflowGraphShouldSeedPlanIntake(graph, stage) {
+			modelOutput := result.Output
+			w.seedPlanIntakeAndDesign(&result)
+			if result.Output != modelOutput {
+				result.Structured = append(result.Structured, schema.StructuredSection{
+					Kind: "resource_helper", Title: "params.seed_plan_intake",
+					Summary: "Framework-added plan intake guidance; not model or tool evidence.",
+				})
+			}
+			if handler != nil {
+				_ = handler(schema.StreamEvent{Type: schema.StreamEventTaskStage, Content: "Applied resource-declared plan intake guidance.", Mode: "workflow", TaskStage: stage.Name, WorkflowName: graph.Name, Reason: "resource_helper", SourceRef: "params.seed_plan_intake"})
+			}
+		}
+		enforceMutation := workflowGraphShouldEnforceWorkspaceMutation(graph, stage)
+		if err == nil && enforceMutation {
+			w.refreshTaskStagingManifest()
+		}
 		if err == nil {
 			return result, attempt, nil
 		}
 		lastErr = err
+		var providerRetries interface{ ProviderRetriesExhausted() bool }
+		exhaustedProvider := errors.As(err, &providerRetries) && providerRetries.ProviderRetriesExhausted()
+		if attempt >= attempts || exhaustedProvider || !workflowGraphStageErrorIsRetryable(ctx, err) {
+			if workflowGraphStageErrorIsRetryable(ctx, err) && strings.Contains(strings.ToLower(err.Error()), "llm chat:") {
+				// A report-only stage must keep its place when the provider fails
+				// before requesting a tool in this segment.
+				runner, ok := w.runtime.agentRunner(stage.Agent)
+				if !ok {
+					return schema.AgentResult{}, attempt, err
+				}
+				paused, pauseErr := runner.finalizeWithProviderInterruption(ctx, agentConversationState{
+					Profile: runner.profile, Mode: runner.profile.Mode, Input: stagePrompt,
+					StartedAt: attemptStartedAt, MatchedSkill: &skill,
+				}, []schema.Message{{Role: "user", Content: stagePrompt}}, result.ToolResults, false, attempt, err, handler, w.runtime.audit, w.runtime)
+				return paused, attempt, pauseErr
+			}
+			return result, attempt, err
+		}
+		initialToolResults = result.ToolResults
+		if err := waitForWorkflowGraphStageRetry(ctx, attempt); err != nil {
+			return schema.AgentResult{}, attempt, err
+		}
 	}
 	return schema.AgentResult{}, attempts, lastErr
+}
+
+func (w *WorkflowRunner) workflowGraphStageCompletionError(graph workflowGraph, stage workflowGraphStage, result schema.AgentResult) error {
+	if result.Incomplete || hasSuspendedToolResult(result.ToolResults) {
+		return nil
+	}
+	enforceMutation := workflowGraphShouldEnforceWorkspaceMutation(graph, stage)
+	missingWriteSlices := false
+	if w.workflowGraphStageRequiresChangeSlices(graph, stage) && workflowGraphNeedsWriteSlices(graph, stage) {
+		missingWriteSlices = true
+		for _, slice := range compileWorkflowChangeSlices(result.Output, result.ToolResults) {
+			if slice.ExecutionMode == "write" {
+				missingWriteSlices = false
+				break
+			}
+		}
+	}
+	switch {
+	case workflowGraphResultIsEmptyModelFailure(result):
+		return fmt.Errorf("temporary model failure: workflow stage %s returned empty output with stop reason %s", stage.Name, fallbackText(result.StopReason, schema.StopReasonError))
+	case enforceMutation && workflowGraphHasUnappliedExactPatch(result):
+		return fmt.Errorf("workflow stage %s left an unapplied exact patch", stage.Name)
+	case w.workflowGraphStageRequiresChangeSlices(graph, stage) && !workflowGraphResultHasChangeSlices(result):
+		return fmt.Errorf("workflow stage %s produced no machine-checkable change slices: %s", stage.Name, changeSliceContractDiagnostic(result.Output, result.ToolResults))
+	case missingWriteSlices:
+		return fmt.Errorf("workflow stage %s produced no writable change slices for downstream required mutations", stage.Name)
+	case enforceMutation && strings.EqualFold(strings.TrimSpace(result.StopReason), schema.StopReasonError):
+		return fmt.Errorf("temporary model failure: workflow stage %s stopped with error", stage.Name)
+	case enforceMutation && !workflowGraphResultHasWorkspaceMutation(result) && !w.workspaceHasFileMutations() && !w.workflowChangeSlicesShowImplementation():
+		return fmt.Errorf("workflow stage %s produced no workspace file mutations", stage.Name)
+	case workflowGraphStageMissingAcceptanceSections(stage, result) != "":
+		// A report stage whose declared sections are missing can never satisfy
+		// its own acceptance criteria. Retrying here lets the model rewrite the
+		// report instead of discovering the gap at a later quality gate, where
+		// the only remaining outcome is a blocked delivery.
+		return fmt.Errorf("workflow stage %s did not satisfy acceptance criteria: missing required section(s) %s", stage.Name, workflowGraphStageMissingAcceptanceSections(stage, result))
+	default:
+		return w.validateReportEvidence(stage, result)
+	}
+}
+
+// workflowGraphStageMaxTotalModelCalls reads the per-run total cap for a stage.
+func workflowGraphStageMaxTotalModelCalls(stage workflowGraphStage) int {
+	value := strings.TrimSpace(stage.Params["max_total_model_calls"])
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return parsed
+}
+
+// workflowGraphStageMaxModelCalls reads the optional per-stage model-call cap.
+func workflowGraphStageMaxModelCalls(stage workflowGraphStage) int {
+	value := strings.TrimSpace(stage.Params["max_model_calls"])
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed <= 0 {
+		return 0
+	}
+	return parsed
+}
+
+func workflowGraphStageMaxIterations(stage workflowGraphStage) int {
+	value := strings.TrimSpace(stage.Params["max_iterations"])
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0
+	}
+	if parsed > 20 {
+		return 20
+	}
+	return parsed
+}
+
+func workflowGraphStageToolPolicy(stage workflowGraphStage) workflowStageToolPolicy {
+	stagePolicy := workflowStageToolPolicy{
+		MaxCommandCalls: workflowGraphPositiveStageLimit(stage, "max_command_calls"),
+		MaxReadCalls:    workflowGraphPositiveStageLimit(stage, "max_read_calls"),
+	}
+	for _, value := range splitWorkflowGraphList(stage.Params["allowed_command_classes"]) {
+		class := commandpolicy.Class(strings.ToLower(strings.TrimSpace(value)))
+		switch class {
+		case commandpolicy.ClassInspection,
+			commandpolicy.ClassTest,
+			commandpolicy.ClassBuild,
+			commandpolicy.ClassLint,
+			commandpolicy.ClassFormat,
+			commandpolicy.ClassDependencyInstall,
+			commandpolicy.ClassShell,
+			commandpolicy.ClassDestructive,
+			commandpolicy.ClassUnknown:
+			stagePolicy.AllowedCommandClasses = append(stagePolicy.AllowedCommandClasses, class)
+		}
+	}
+	return stagePolicy
+}
+
+func workflowGraphPositiveStageLimit(stage workflowGraphStage, key string) int {
+	value := strings.TrimSpace(stage.Params[key])
+	if value == "" {
+		return 0
+	}
+	parsed, err := strconv.Atoi(value)
+	if err != nil || parsed < 1 {
+		return 0
+	}
+	if parsed > 100 {
+		return 100
+	}
+	return parsed
+}
+
+func workflowGraphStageErrorIsRetryable(ctx context.Context, err error) bool {
+	if err == nil || (ctx != nil && ctx.Err() != nil) {
+		return false
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	message := strings.ToLower(err.Error())
+	for _, marker := range []string{"access forbidden", "forbidden", "unauthorized", "invalid_api_key", "insufficient_user_quota", "model_not_found", "not supported by any configured account", "permission denied"} {
+		if strings.Contains(message, marker) {
+			return false
+		}
+	}
+	var timeout net.Error
+	if errors.As(err, &timeout) && timeout.Timeout() {
+		return true
+	}
+	for _, marker := range []string{
+		"tls handshake timeout",
+		"context deadline exceeded",
+		"client.timeout",
+		"timeout or context cancellation while reading body",
+		"connection reset",
+		"connection refused",
+		"wsarecv",
+		"protocol_error",
+		"unexpected eof",
+		"temporary model failure",
+		"too many requests",
+		"rate limit",
+		"429",
+		"500 internal server error",
+		"502 bad gateway",
+		"503 service unavailable",
+		"504 gateway timeout",
+		"no such host",
+		"server misbehaving",
+		"temporary failure in name resolution",
+		"dial tcp",
+		"produced no workspace file mutations",
+		"unapplied exact patch",
+		"produced no machine-checkable change slices",
+		"produced no writable change slices",
+		"produced no repository evidence",
+		"still fail public tests",
+		"produced no requested deliverable files",
+		"produced no requested web styling",
+		"returned empty output",
+		"did not satisfy acceptance criteria",
+		reportIntegrityError,
+	} {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func (w *WorkflowRunner) workflowGraphStageRequiresChangeSlices(graph workflowGraph, stage workflowGraphStage) bool {
+	switch stage.Params["change_slice_policy"] {
+	case "required":
+		return true
+	case "if_missing":
+		return w == nil || len(w.workflowChangeSlicesForRun(nil)) == 0
+	default:
+		return false
+	}
+}
+
+func workflowGraphResultHasChangeSlices(result schema.AgentResult) bool {
+	if _, declared := extractChangeSlicesJSON(result.Output); !declared {
+		return false
+	}
+	return len(compileWorkflowChangeSlices(result.Output, result.ToolResults)) > 0
+}
+
+func (w *WorkflowRunner) seedPlanChangeSliceEvidence(result *schema.AgentResult) {
+	if w == nil || result == nil {
+		return
+	}
+	root := w.discoveredWorkspaceRoot()
+	if strings.TrimSpace(root) == "" {
+		return
+	}
+	existing := compileWorkflowChangeSlices(result.Output, result.ToolResults)
+	_, declared := extractChangeSlicesJSON(result.Output)
+	plannedPaths := plannedWritePathsFromText(result.Output + "\n" + w.workflowRequestText())
+	merged := existing
+	if !declared && len(plannedPaths) > 0 {
+		merged = synthesizeChangeSlicesFromPaths(plannedPaths)
+	}
+	if len(merged) == 0 {
+		entries := make([]map[string]any, 0, 40)
+		_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+			if err != nil || len(entries) >= 40 {
+				if len(entries) >= 40 {
+					return filepath.SkipAll
+				}
+				return nil
+			}
+			if entry.IsDir() {
+				switch strings.ToLower(entry.Name()) {
+				case ".git", ".goflow", ".cache", "node_modules", "vendor", "task-staging":
+					return filepath.SkipDir
+				default:
+					return nil
+				}
+			}
+			rel, relErr := filepath.Rel(root, path)
+			if relErr != nil {
+				return nil
+			}
+			rel = filepath.ToSlash(rel)
+			if rel == "." || strings.Contains(strings.ToLower(rel), "p7_hidden") {
+				return nil
+			}
+			entries = append(entries, map[string]any{"relative_path": rel, "is_dir": false})
+			return nil
+		})
+		if len(entries) > 0 {
+			payload, err := json.Marshal(map[string]any{"relative_path": ".", "entries": entries})
+			if err != nil {
+				return
+			}
+			result.ToolResults = append(result.ToolResults, schema.ToolResult{
+				ToolName: "file_tools/list_tree",
+				Content:  string(payload),
+			})
+		}
+		merged = synthesizeChangeSlicesFromEvidence(result.ToolResults)
+	}
+	if declared && len(plannedPaths) > 0 {
+		merged = mergeWriteChangeSlices(merged, synthesizeChangeSlicesFromPaths(plannedPaths))
+	}
+	if len(merged) == 0 {
+		return
+	}
+	encoded, err := json.Marshal(slicesToPlannedChangeSlices(merged))
+	if err != nil {
+		return
+	}
+	block := "```goflow-change-slices\n" + string(encoded) + "\n```\n"
+	if _, ok := extractChangeSlicesJSON(result.Output); ok {
+		result.Output = replaceChangeSlicesBlock(result.Output, block)
+	} else {
+		result.Output = strings.TrimSpace(result.Output) + "\n\n" + block
+	}
+	if w.runtime != nil && w.runtime.session != nil && strings.TrimSpace(w.runID) != "" {
+		if declared || len(plannedPaths) > 0 {
+			_ = w.runtime.session.ReplaceWorkflowRunChangeSlicesDurable(w.runID, merged)
+		} else {
+			_ = w.runtime.session.UpdateWorkflowRunChangeSlicesDurable(w.runID, merged)
+		}
+	}
+}
+
+func replaceChangeSlicesBlock(output, block string) string {
+	lower := strings.ToLower(output)
+	start := strings.Index(lower, "```"+changeSlicesMarker)
+	if start < 0 {
+		start = strings.Index(lower, changeSlicesMarker)
+	}
+	if start < 0 {
+		return strings.TrimSpace(output) + "\n\n" + block
+	}
+	rest := output[start:]
+	closeFence := strings.Index(rest[3:], "```")
+	if closeFence < 0 {
+		return strings.TrimSpace(output[:start]) + "\n\n" + block
+	}
+	end := start + 3 + closeFence + 3
+	return strings.TrimSpace(output[:start]+"\n\n"+block+output[end:]) + "\n"
+}
+
+func slicesToPlannedChangeSlices(slices []session.WorkflowChangeSliceSnapshot) []plannedChangeSlice {
+	out := make([]plannedChangeSlice, 0, len(slices))
+	for _, slice := range slices {
+		depends := slice.DependsOn
+		if depends == nil {
+			depends = []string{}
+		}
+		inputs := slice.InputFiles
+		if inputs == nil {
+			inputs = []string{}
+		}
+		out = append(out, plannedChangeSlice{
+			ID:                   slice.ID,
+			Title:                slice.Title,
+			ExecutionMode:        slice.ExecutionMode,
+			DependsOn:            depends,
+			InputFiles:           inputs,
+			TargetFiles:          slice.TargetFiles,
+			VerificationCommands: slice.VerificationCommands,
+		})
+	}
+	return out
+}
+
+func workflowGraphResultHasRepositoryEvidence(result schema.AgentResult) bool {
+	for _, item := range result.ToolResults {
+		if item.IsError || item.Denied {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(item.ToolName))
+		if slash := strings.LastIndex(name, "/"); slash >= 0 {
+			name = name[slash+1:]
+		}
+		switch name {
+		case "list_tree", "read_file", "read_file_range", "search_files", "repository_map":
+			return true
+		}
+	}
+	return false
+}
+
+func workflowGraphResultIsEmptyModelFailure(result schema.AgentResult) bool {
+	if len(result.ToolResults) > 0 || !workflowGraphResultOutputEmpty(result) {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(result.StopReason)) {
+	case schema.StopReasonError, "failed", schema.StopReasonCancelled, "canceled", "":
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowGraphResultOutputEmpty(result schema.AgentResult) bool {
+	trimmed := strings.Map(func(r rune) rune {
+		if unicode.IsSpace(r) || unicode.Is(unicode.Cf, r) {
+			return -1
+		}
+		return r
+	}, result.Output)
+	return strings.TrimSpace(trimmed) == ""
+}
+
+func workflowGraphStageRequiresWorkspaceMutation(stage workflowGraphStage) bool {
+	return stage.Params["require_workspace_mutation"] == "true"
+}
+
+func workflowGraphShouldEnforceWorkspaceMutation(graph workflowGraph, stage workflowGraphStage) bool {
+	return workflowGraphStageRequiresWorkspaceMutation(stage)
+}
+
+func (w *WorkflowRunner) seedRequiredOutputHeadings(stage workflowGraphStage, result *schema.AgentResult) {
+	if result == nil {
+		return
+	}
+	required := make([]string, 0, 8)
+	for _, item := range append(append([]workflowGraphAcceptanceCriterion(nil), stage.AcceptanceCriteria...), stage.Acceptance...) {
+		contains := strings.TrimSpace(item.Contains)
+		if contains == "" {
+			continue
+		}
+		if !strings.Contains(result.Output, contains) {
+			required = append(required, contains)
+		}
+	}
+	if len(required) == 0 {
+		return
+	}
+	var builder strings.Builder
+	if strings.TrimSpace(result.Output) != "" {
+		builder.WriteString(strings.TrimSpace(result.Output))
+		builder.WriteString("\n\n")
+	}
+	for _, heading := range required {
+		builder.WriteString(heading)
+		builder.WriteString("\n")
+		if heading == "授权与范围" {
+			builder.WriteString("- 当前工作区本地授权范围内的只读审计与受批修复。\n")
+		}
+		if heading == "证据链" || heading == "复测计划" {
+			for _, slice := range compileWorkflowChangeSlices(result.Output, result.ToolResults) {
+				for _, path := range slice.TargetFiles {
+					builder.WriteString("- ")
+					builder.WriteString(path)
+					builder.WriteString("\n")
+				}
+			}
+		}
+	}
+	result.Output = builder.String()
+}
+
+func (w *WorkflowRunner) mergePublicTestWriteSlices(needed []string) {
+	if w == nil || w.runtime == nil || w.runtime.session == nil || strings.TrimSpace(w.runID) == "" || len(needed) == 0 {
+		return
+	}
+	extra := writeSlicesForImplementationPaths(needed)
+	merged := reopenWriteSlicesForTargets(mergeWriteChangeSlices(w.workflowChangeSlicesForRun(nil), extra), needed)
+	if len(merged) == 0 {
+		return
+	}
+	_ = w.runtime.session.UpdateWorkflowRunChangeSlicesDurable(w.runID, merged)
+}
+
+func (w *WorkflowRunner) writeSliceTargetsFailingPublicTests() []string {
+	if w == nil {
+		return nil
+	}
+	root := w.discoveredWorkspaceRoot()
+	if root == "" {
+		return nil
+	}
+	return writeSliceTargetsStillFailing(w.workflowChangeSlicesForRun(nil), publicTestFailureImplementationPaths(runDiscoveredWorkspaceVerification(root)))
+}
+
+func (w *WorkflowRunner) mutationStagePublicTestRetryError(stageName string) error {
+	if w == nil {
+		return nil
+	}
+	root := w.discoveredWorkspaceRoot()
+	if root == "" {
+		return nil
+	}
+	if missingTests := missingRequestedTestCoverage(root, w.workflowRequestText()); len(missingTests) > 0 {
+		w.mergePublicTestWriteSlices(missingTests)
+		return fmt.Errorf("workflow stage %s still fail public tests: go test reported no test files; write %s covering the requested cases", stageName, strings.Join(missingTests, ", "))
+	}
+	if missingStyles := missingRequestedWebStyling(root, w.workflowRequestText()); len(missingStyles) > 0 {
+		w.mergePublicTestWriteSlices(missingStyles)
+		return fmt.Errorf("workflow stage %s produced no requested web styling: write %s. Link the stylesheet from the HTML template and serve /static/; a CSS file that is never referenced is not delivery", stageName, strings.Join(missingStyles, ", "))
+	}
+	if missingLayout := missingRequestedProductLayout(root, w.workflowRequestText()+"\n"+w.workflowDeliveryScopeText()); len(missingLayout) > 0 {
+		w.mergePublicTestWriteSlices(missingLayout)
+		return fmt.Errorf("workflow stage %s produced no requested web styling: delivery_scope is 完整产品; add header/nav/main or classed shell in %s", stageName, strings.Join(missingLayout, ", "))
+	}
+	verifications := runDiscoveredWorkspaceVerification(root)
+	needed := expandImplementationWritePaths(root, publicTestFailureImplementationPaths(verifications))
+	missing := writeSliceTargetsStillFailing(w.workflowChangeSlicesForRun(nil), needed)
+	if len(missing) == 0 {
+		return nil
+	}
+	w.mergePublicTestWriteSlices(needed)
+	detail := publicTestFailureRetryDetail(verifications)
+	source := publicTestFailureSourceContext(root, missing)
+	if detail == "" && source == "" {
+		return fmt.Errorf("workflow stage %s still fail public tests for unchanged targets: %s", stageName, strings.Join(missing, ", "))
+	}
+	message := fmt.Sprintf("workflow stage %s still fail public tests for unchanged targets: %s", stageName, strings.Join(missing, ", "))
+	if detail != "" {
+		message += "\n" + detail
+	}
+	if source != "" {
+		message += "\n" + source
+	}
+	return fmt.Errorf("%s", message)
+}
+
+var requestedDeliverablePathPattern = regexp.MustCompile(`(?:deliverables|docs)/[A-Za-z0-9._/-]+\.(md|json|csv|docx|xlsx|pptx|pdf)`)
+
+func (w *WorkflowRunner) workflowRequestText() string {
+	if w == nil || w.runtime == nil || w.runtime.session == nil || strings.TrimSpace(w.runID) == "" {
+		return ""
+	}
+	run, ok := w.runtime.session.WorkflowRun(w.runID)
+	if !ok {
+		return ""
+	}
+	return run.Request
+}
+
+func (w *WorkflowRunner) requestedDeliverablePaths() []string {
+	seen := make(map[string]struct{})
+	out := make([]string, 0)
+	add := func(rel string) {
+		rel = filepath.ToSlash(filepath.Clean(strings.TrimSpace(rel)))
+		if rel == "" || rel == "." {
+			return
+		}
+		if _, exists := seen[rel]; exists {
+			return
+		}
+		seen[rel] = struct{}{}
+		out = append(out, rel)
+	}
+	for _, match := range requestedDeliverablePathPattern.FindAllString(w.workflowRequestText(), 16) {
+		add(match)
+	}
+	root := ""
+	if w != nil {
+		root = w.discoveredWorkspaceRoot()
+	}
+	if strings.TrimSpace(root) != "" {
+		if _, err := os.Stat(filepath.Join(root, "templates", "security-report-template.docx")); err == nil {
+			add("deliverables/report.docx")
+			add("deliverables/data.xlsx")
+			add("deliverables/review.pptx")
+			add("deliverables/report.pdf")
+		}
+	}
+	return out
+}
+
+func (w *WorkflowRunner) missingRequestedDeliverables() []string {
+	root := ""
+	if w != nil {
+		root = w.discoveredWorkspaceRoot()
+	}
+	if strings.TrimSpace(root) == "" {
+		return w.requestedDeliverablePaths()
+	}
+	missing := make([]string, 0)
+	for _, rel := range w.requestedDeliverablePaths() {
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		data, err := os.ReadFile(path)
+		if err != nil || !requestedDeliverableContentValid(rel, string(data)) {
+			missing = append(missing, rel)
+		}
+	}
+	return missing
+}
+
+func requestedDeliverableContentValid(rel, content string) bool {
+	trimmed := strings.TrimSpace(content)
+	if trimmed == "" {
+		return false
+	}
+	switch strings.ToLower(filepath.Ext(rel)) {
+	case ".json":
+		return json.Valid([]byte(trimmed))
+	case ".csv":
+		first := strings.SplitN(trimmed, "\n", 2)[0]
+		return strings.Contains(first, ",") && !strings.HasPrefix(trimmed, "{") && !strings.HasPrefix(trimmed, "```")
+	case ".docx", ".xlsx", ".pptx", ".pdf":
+		return len(content) > 32
+	default:
+		return !strings.Contains(trimmed, "待补充")
+	}
+}
+
+func (w *WorkflowRunner) seedMissingDeliverableFiles(result *schema.AgentResult) {
+	if w == nil || result == nil {
+		return
+	}
+	w.seedCatalogResearchDeliverables(result)
+	content := strings.TrimSpace(result.Output)
+	if content == "" {
+		return
+	}
+	root := w.discoveredWorkspaceRoot()
+	if strings.TrimSpace(root) == "" {
+		return
+	}
+	for _, rel := range w.missingRequestedDeliverables() {
+		ext := strings.ToLower(filepath.Ext(rel))
+		if ext == ".docx" || ext == ".xlsx" || ext == ".pptx" || ext == ".pdf" {
+			continue
+		}
+		if !requestedDeliverableContentValid(rel, content) {
+			continue
+		}
+		path := filepath.Join(root, filepath.FromSlash(rel))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			continue
+		}
+		if err := os.WriteFile(path, []byte(content+"\n"), 0o644); err != nil {
+			continue
+		}
+		result.ToolResults = append(result.ToolResults, schema.ToolResult{
+			ToolName: "file_tools/write_file",
+			Content:  `{"relative_path":"` + rel + `","status":"created"}`,
+		})
+	}
+}
+
+func (w *WorkflowRunner) refreshTaskStagingManifest() {
+	if w == nil || w.runtime == nil || strings.TrimSpace(w.runID) == "" {
+		return
+	}
+	_, _ = w.runtime.taskStagingManifest(w.runID)
+}
+
+func (w *WorkflowRunner) workspaceChangedFiles() []string {
+	root := ""
+	if w != nil {
+		root = w.discoveredWorkspaceRoot()
+	}
+	if strings.TrimSpace(root) == "" {
+		return nil
+	}
+	cmd := exec.Command("git", "-C", root, "diff", "--name-only", "HEAD")
+	out, err := cmd.Output()
+	if err != nil {
+		return nil
+	}
+	lines := strings.Split(string(out), "\n")
+	files := make([]string, 0, len(lines))
+	for _, line := range lines {
+		line = filepath.ToSlash(strings.TrimSpace(line))
+		if line != "" {
+			files = append(files, line)
+		}
+	}
+	unstaged := exec.Command("git", "-C", root, "ls-files", "--others", "--exclude-standard")
+	if extra, extraErr := unstaged.Output(); extraErr == nil {
+		for _, line := range strings.Split(string(extra), "\n") {
+			line = filepath.ToSlash(strings.TrimSpace(line))
+			if line != "" {
+				files = append(files, line)
+			}
+		}
+	}
+	sort.Strings(files)
+	return files
+}
+
+func (w *WorkflowRunner) snapshotWorkspaceMutationBaseline() {
+	if w == nil {
+		return
+	}
+	w.mutationBaseline = w.workspaceMutationFingerprint()
+}
+
+func (w *WorkflowRunner) workspaceMutationFingerprint() map[string]string {
+	out := map[string]string{}
+	root := ""
+	if w != nil {
+		root = w.discoveredWorkspaceRoot()
+	}
+	if strings.TrimSpace(root) == "" {
+		return out
+	}
+	_ = filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return nil
+		}
+		if entry.IsDir() {
+			switch strings.ToLower(entry.Name()) {
+			case ".git", ".goflow", ".cache", "node_modules", "vendor", "task-staging":
+				return filepath.SkipDir
+			default:
+				return nil
+			}
+		}
+		rel, relErr := filepath.Rel(root, path)
+		if relErr != nil {
+			return nil
+		}
+		info, infoErr := entry.Info()
+		if infoErr != nil {
+			return nil
+		}
+		out[filepath.ToSlash(rel)] = fmt.Sprintf("%d:%d", info.Size(), info.ModTime().UnixNano())
+		return nil
+	})
+	return out
+}
+
+// workflowChangeSlicesShowImplementation reports whether the run's change
+// slices already applied their edits. A continuation segment that only reads
+// and reports writes nothing itself, yet the workspace does hold the work; the
+// per-segment fingerprint alone made those stages fail as "no mutations".
+func (w *WorkflowRunner) workflowChangeSlicesShowImplementation() bool {
+	if w == nil || w.runtime == nil || w.runtime.session == nil || strings.TrimSpace(w.runID) == "" {
+		return false
+	}
+	run, ok := w.runtime.session.WorkflowRun(w.runID)
+	if !ok || len(run.ChangeSlices) == 0 {
+		return false
+	}
+	implemented := 0
+	for _, slice := range run.ChangeSlices {
+		switch strings.ToLower(strings.TrimSpace(slice.Status)) {
+		case "implemented", "verified":
+			if len(slice.ChangedFiles) == 0 {
+				return false
+			}
+			implemented++
+		}
+	}
+	return implemented > 0
+}
+
+// sharedSessionWorkflows lists workflows whose stages continue one append-only
+// conversation so the provider prefix stays cacheable across stage boundaries.
+// Stages, gates and evidence are unchanged; only the session is shared.
+var sharedSessionWorkflows = map[string]bool{}
+
+func (w *WorkflowRunner) graphSharesSession(graph workflowGraph) bool {
+	return sharedSessionWorkflows[strings.TrimSpace(graph.Name)]
+}
+
+// sharedWorkflowSystemPrompt builds one prompt for every stage of a shared
+// session. Identical bytes across stages are what let the provider serve the
+// whole conversation from cache instead of restarting at each stage boundary.
+func (w *WorkflowRunner) sharedWorkflowSystemPrompt(graph workflowGraph) string {
+	if w == nil || w.runtime == nil || !w.graphSharesSession(graph) {
+		return ""
+	}
+	if strings.TrimSpace(w.sharedSystemPrompt) != "" {
+		return w.sharedSystemPrompt
+	}
+	// Prefer the implementing agent: its prompt carries write/exec discipline
+	// that later review stages also need when they share the session.
+	ordered := make([]workflowGraphStage, 0, len(graph.Stages))
+	for _, stage := range graph.Stages {
+		if strings.EqualFold(strings.TrimSpace(stage.Name), "implement") {
+			ordered = append(ordered, stage)
+		}
+	}
+	ordered = append(ordered, graph.Stages...)
+	for _, stage := range ordered {
+		if !strings.EqualFold(strings.TrimSpace(stage.NodeType), "agent") || stage.Agent == "" {
+			continue
+		}
+		runner, ok := w.runtime.agentRunner(stage.Agent)
+		if !ok {
+			continue
+		}
+		w.sharedSystemPrompt = BuildSystemPromptWithRepository(runner.profile, nil, session.Snapshot{}, "")
+		return w.sharedSystemPrompt
+	}
+	return ""
+}
+
+// sharedStageConversation returns the previous stage's transcript when the
+// stage opts in with params.share_conversation: the later stage continues the
+// same conversation instead of re-reading what an earlier stage established.
+func (w *WorkflowRunner) sharedStageConversation(stage workflowGraphStage) []schema.Message {
+	if w == nil || !workflowGraphParamBool(stage, "share_conversation") {
+		return nil
+	}
+	return append([]schema.Message(nil), w.stageConversation...)
+}
+
+// stageInitialMessages returns the conversation a stage starts from. In shared
+// mode every stage continues the run's single conversation.
+func (w *WorkflowRunner) stageInitialMessages(graph workflowGraph, stage workflowGraphStage) []schema.Message {
+	if w.graphSharesSession(graph) {
+		return append([]schema.Message(nil), w.stageConversation...)
+	}
+	return w.sharedStageConversation(stage)
+}
+
+func (w *WorkflowRunner) storeStageConversation(messages []schema.Message) {
+	if w == nil || len(messages) == 0 {
+		return
+	}
+	w.stageConversation = append([]schema.Message(nil), messages...)
+}
+
+func (w *WorkflowRunner) workspaceHasFileMutations() bool {
+	if w == nil || w.mutationBaseline == nil {
+		return false
+	}
+	current := w.workspaceMutationFingerprint()
+	if len(current) != len(w.mutationBaseline) {
+		return true
+	}
+	for path, stamp := range current {
+		if w.mutationBaseline[path] != stamp {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowGraphHasUnappliedExactPatch(result schema.AgentResult) bool {
+	if workflowGraphResultHasWorkspaceMutation(schema.AgentResult{ToolResults: result.ToolResults}) {
+		return false
+	}
+	for _, tool := range result.ToolResults {
+		if tool.IsError && (toolNameEquivalent(tool.ToolName, "apply_patch") || toolNameEquivalent(tool.ToolName, "replace_text")) && strings.Contains(tool.Content, "no changes were written") {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowGraphResultHasWorkspaceMutation(result schema.AgentResult) bool {
+	for _, item := range result.ToolResults {
+		if item.IsError || item.Denied || item.Suspended {
+			continue
+		}
+		if workflowGraphToolResultReportsUnchangedFile(item) {
+			continue
+		}
+		name := strings.ToLower(strings.TrimSpace(item.ToolName))
+		if slash := strings.LastIndex(name, "/"); slash >= 0 {
+			name = name[slash+1:]
+		}
+		switch name {
+		case "apply_patch", "write_file", "mkdir", "delete_file", "move_path", "replace_text",
+			"fill_office_template", "replace_office_text", "create_docx", "create_xlsx", "create_pptx", "create_pdf",
+			"export_office_pdf", "render_office_preview":
+			return true
+		}
+	}
+	return false
+}
+
+func waitForWorkflowGraphStageRetry(ctx context.Context, failedAttempt int) error {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	delay := 250 * time.Millisecond
+	for step := 1; step < failedAttempt && delay < 2*time.Second; step++ {
+		delay *= 2
+	}
+	if delay > 2*time.Second {
+		delay = 2 * time.Second
+	}
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-timer.C:
+		return nil
+	case <-ctx.Done():
+		return ctx.Err()
+	}
 }
 
 func workflowGraphStageResult(stage workflowGraphStage, result schema.AgentResult, inputs map[string]string, inputValues map[string]any, attempts int) WorkflowStageResult {
@@ -10259,6 +12844,9 @@ func workflowGraphStageResult(stage workflowGraphStage, result schema.AgentResul
 		if result.ContinuationCount > 0 {
 			stageResult.Metadata["continuation_count"] = strconv.Itoa(result.ContinuationCount)
 		}
+		// Completion contracts and declared delivery reports are not evidence
+		// until this stage has actually finished. Preserve partial output/tools.
+		return stageResult
 	}
 	stageResult.Acceptance = evaluateWorkflowGraphAcceptanceCriteria(stage, stageResult)
 	if len(stageResult.Acceptance) > 0 {
@@ -10273,17 +12861,150 @@ func workflowGraphStageResult(stage workflowGraphStage, result schema.AgentResul
 }
 
 func workflowGraphStageAllowedTools(stage workflowGraphStage) []string {
+	if workflowTruthy(stage.Params["disable_tools"]) {
+		return []string{"__none__"}
+	}
 	values := make([]string, 0, 4)
 	if tool := strings.TrimSpace(stage.Tool); tool != "" {
 		values = append(values, tool)
 	}
-	for _, key := range []string{"tools", "allowed_tools", "tool"} {
+	for _, key := range []string{"tools", "allowed_tools", "tool", "connected_tools"} {
 		values = append(values, splitWorkflowGraphList(stage.Params[key])...)
 	}
 	return dedupeToolNames(values)
 }
 
+func isConnectedWorkflowToolNode(stage workflowGraphStage) bool {
+	if normalizeWorkflowSkillName(stage.NodeType) != "tool" {
+		return false
+	}
+	switch normalizeWorkflowSkillName(firstNonEmptyWorkflowGraphParam(stage.Params, "tool_mode", "tool.mode")) {
+	case "connected", "connected_call", "connected_tool", "upstream", "edge":
+		return true
+	default:
+		return false
+	}
+}
+
+func (w *WorkflowRunner) workflowGraphStageWithConnectedTools(graph workflowGraph, index int, stage workflowGraphStage) workflowGraphStage {
+	if normalizeWorkflowSkillName(stage.NodeType) == "tool" || index < 0 || index >= len(graph.Stages) {
+		return stage
+	}
+	connected := make([]string, 0)
+	for _, target := range w.nextWorkflowGraphStageCandidates(graph, stage, nil) {
+		if target < 0 || target >= len(graph.Stages) {
+			continue
+		}
+		toolStage := graph.Stages[target]
+		if isConnectedWorkflowToolNode(toolStage) && strings.TrimSpace(toolStage.Tool) != "" {
+			connected = append(connected, toolStage.Tool)
+			if toolStage.Approval || workflowGraphExecutionRequiresApproval(toolStage) {
+				stage.Approval = true
+			}
+		}
+	}
+	connected = dedupeToolNames(connected)
+	if len(connected) == 0 {
+		return stage
+	}
+	stage.Params = copyStringMap(stage.Params)
+	if stage.Params == nil {
+		stage.Params = make(map[string]string)
+	}
+	stage.Params["connected_tools"] = strings.Join(connected, ",")
+	return stage
+}
+
+func (w *WorkflowRunner) runWorkflowGraphConnectedToolStage(graph workflowGraph, index int, stage workflowGraphStage, completed []WorkflowStageResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, string, error) {
+	toolName := strings.TrimSpace(stage.Tool)
+	if toolName == "" {
+		return schema.AgentResult{}, "", fmt.Errorf("connected tool node has no MCP tool selected")
+	}
+	predecessors := workflowGraphDirectPredecessorNames(graph, index)
+	for completedIndex := len(completed) - 1; completedIndex >= 0; completedIndex-- {
+		prior := completed[completedIndex]
+		if len(predecessors) > 0 {
+			if _, ok := predecessors[normalizeWorkflowSkillName(string(prior.Stage))]; !ok {
+				continue
+			}
+		}
+		results := append([]schema.ToolResult(nil), prior.Result.ToolResults...)
+		if len(results) == 0 {
+			results = append(results, prior.Output.ToolResults...)
+		}
+		for resultIndex := len(results) - 1; resultIndex >= 0; resultIndex-- {
+			toolResult := results[resultIndex]
+			if !toolNameEquivalent(toolName, toolResult.ToolName) {
+				continue
+			}
+			if toolResult.IsError || toolResult.Denied || toolResult.Suspended {
+				return schema.AgentResult{}, string(prior.Stage), fmt.Errorf("connected tool %s did not complete successfully: %s", toolName, truncateSummary(toolResult.Content))
+			}
+			output := strings.TrimSpace(toolResult.Content)
+			if output == "" {
+				output = firstWorkflowGraphContextValue(toolResult.Summary, toolResult.ArtifactRef, "tool completed")
+			}
+			verification := schema.Verification{Kind: "tool", Status: "passed", Detail: fmt.Sprintf("%s completed in upstream stage %s", toolName, prior.Stage)}
+			if handler != nil {
+				_ = handler(toolResult.WithStreamEvent(schema.StreamEvent{
+					Type:           schema.StreamEventStatus,
+					ToolName:       toolResult.ToolName,
+					Content:        fmt.Sprintf("connected tool result forwarded from stage %s", prior.Stage),
+					AgentID:        prior.Agent,
+					TaskStage:      stage.Name,
+					WorkflowName:   graph.Name,
+					WorkflowStatus: "running",
+				}))
+			}
+			return schema.AgentResult{
+				Output:       output,
+				AgentID:      prior.Agent,
+				Mode:         "connected_tool",
+				ToolResults:  []schema.ToolResult{toolResult},
+				Verification: []schema.Verification{verification},
+			}, string(prior.Stage), nil
+		}
+	}
+	return schema.AgentResult{}, "", fmt.Errorf("upstream LLM stage did not call connected tool %s; connect this tool node directly after an agent/skill node and let that node generate the tool arguments", toolName)
+}
+
+func workflowGraphDirectPredecessorNames(graph workflowGraph, targetIndex int) map[string]struct{} {
+	if targetIndex < 0 || targetIndex >= len(graph.Stages) {
+		return nil
+	}
+	target := normalizeWorkflowSkillName(graph.Stages[targetIndex].Name)
+	out := make(map[string]struct{})
+	for index, stage := range graph.Stages {
+		matched := false
+		for _, next := range workflowGraphStageNextReferences(stage) {
+			if normalizeWorkflowSkillName(next) == target {
+				matched = true
+				break
+			}
+		}
+		if !matched && len(workflowGraphStageNextReferences(stage)) == 0 && index+1 == targetIndex {
+			matched = true
+		}
+		if matched {
+			out[normalizeWorkflowSkillName(stage.Name)] = struct{}{}
+		}
+	}
+	return out
+}
+
+func workflowGraphStageApprovedPlanScope(graph workflowGraph, stage workflowGraphStage) bool {
+	// Resource declarations may request bounded scope, but must retain a user
+	// approval gate. Tool kind, target and command restrictions still apply.
+	return stage.Params["approved_plan_scope"] == "true" && stage.Approval
+}
+
 func workflowGraphStageToolMetadata(stage workflowGraphStage) map[string]string {
+	if workflowTruthy(stage.Params["disable_tools"]) {
+		return map[string]string{
+			"tool.disabled":     "true",
+			"tool.stage_scoped": "true",
+		}
+	}
 	tools := workflowGraphStageAllowedTools(stage)
 	if len(tools) == 0 {
 		return nil
@@ -10703,6 +13424,27 @@ func workflowGraphStageModelEscalationMetadata(stage workflowGraphStage) map[str
 	return workflowStageMetadata(values)
 }
 
+// workflowGraphStageMissingAcceptanceSections reports declared "contains"
+// acceptance sections that the stage output omits. It only runs for stages that
+// opt in with enforce_acceptance_sections, because most stages use acceptance
+// criteria as routing signals rather than as a report formatting contract.
+func workflowGraphStageMissingAcceptanceSections(stage workflowGraphStage, result schema.AgentResult) string {
+	if !workflowGraphParamBool(stage, "enforce_acceptance_sections") {
+		return ""
+	}
+	var missing []string
+	for _, item := range workflowGraphStageAcceptanceCriteria(stage) {
+		contains := strings.TrimSpace(item.Contains)
+		if contains == "" {
+			continue
+		}
+		if !strings.Contains(result.Output, contains) {
+			missing = append(missing, contains)
+		}
+	}
+	return strings.Join(missing, "、")
+}
+
 func workflowGraphStageAcceptanceCriteria(stage workflowGraphStage) []workflowGraphAcceptanceCriterion {
 	total := len(stage.AcceptanceCriteria) + len(stage.Acceptance)
 	if total == 0 {
@@ -10741,7 +13483,7 @@ func evaluateWorkflowGraphAcceptanceCriteria(stage workflowGraphStage, stageResu
 				reason = fmt.Sprintf("expected %q, got %q", criterion.Equals, actual)
 			}
 		} else if strings.TrimSpace(criterion.Contains) != "" {
-			if !strings.Contains(actual, criterion.Contains) {
+			if !workflowGraphAcceptanceContains(actual, criterion.Contains, ref) {
 				status = "failed"
 				reason = fmt.Sprintf("expected output to contain %q", criterion.Contains)
 			}
@@ -10789,6 +13531,9 @@ func workflowGraphAcceptanceActual(stage workflowGraphStage, stageResult Workflo
 		if strings.HasPrefix(lower, prefix) {
 			key := strings.TrimSpace(ref[len(prefix):])
 			if value, ok := stageResult.Output.Variables[key]; ok {
+				if workflowGraphUnresolvedOutputReference(stage.Outputs[key], value) {
+					return "", false
+				}
 				return value, strings.TrimSpace(value) != ""
 			}
 			if value, ok := stageResult.Output.Values[key]; ok {
@@ -10796,6 +13541,13 @@ func workflowGraphAcceptanceActual(stage workflowGraphStage, stageResult Workflo
 			}
 			return "", false
 		}
+	}
+	if strings.HasPrefix(lower, "result.") || strings.HasPrefix(lower, "params.") {
+		value, ok := resolveWorkflowResultReferenceValue(ref, stageResult.Result, stage)
+		if !ok {
+			return "", false
+		}
+		return workflowGraphAcceptanceStringValue(value)
 	}
 	value := resolveWorkflowResultReference(ref, stageResult.Result, stage)
 	return value, strings.TrimSpace(value) != ""
@@ -11166,7 +13918,34 @@ func buildWorkflowStageOutput(stage workflowGraphStage, result schema.AgentResul
 		}
 	}
 	applyWorkflowStageCanonicalOutputFields(&output)
+	reconcileWorkflowStageChangedFiles(&output, result.ToolResults)
 	return output
+}
+
+func reconcileWorkflowStageChangedFiles(output *WorkflowStageOutput, results []schema.ToolResult) {
+	if output == nil || len(results) == 0 {
+		return
+	}
+	paths := make([]string, 0)
+	for _, result := range results {
+		if path := workflowGraphChangedFilePathFromWriteToolResult(result); path != "" {
+			if normalized, ok := workflowGraphNormalizeChangedFilePath(path); ok {
+				paths = append(paths, normalized)
+			}
+		}
+	}
+	paths = workflowGraphUniqueSortedStrings(paths)
+	if len(paths) == 0 {
+		return
+	}
+	if output.Values == nil {
+		output.Values = map[string]any{}
+	}
+	if output.Variables == nil {
+		output.Variables = map[string]string{}
+	}
+	output.Values["changed_files"] = append([]string(nil), paths...)
+	output.Variables["changed_files"] = workflowGraphJSON(paths)
 }
 
 func applyWorkflowStageCanonicalOutputFields(output *WorkflowStageOutput) {
@@ -11278,12 +14057,51 @@ func workflowStageCanonicalDecision(output *WorkflowStageOutput) string {
 			}
 		}
 	}
+	// A race run that cannot start because the toolchain lacks cgo is an
+	// infrastructure limit, never product evidence: the quality gates already
+	// treat it that way, so the stage decision must not contradict them.
+	failures := 0
 	for _, section := range output.ToolResults {
-		if section.IsError || section.Denied {
-			return "failed"
+		if !section.IsError && !section.Denied {
+			continue
 		}
+		if workflowGraphQualityGoRaceUnavailable(section) {
+			continue
+		}
+		failures++
+	}
+	if conclusion := workflowStageFirstLineConclusion(output); conclusion != "" {
+		if conclusion == "passed" && failures == 0 {
+			return "passed"
+		}
+		// A report that claims 通过 while a real command failed stays failed:
+		// prose never overrides evidence.
+		return "failed"
+	}
+	if failures > 0 {
+		return "failed"
 	}
 	return ""
+}
+
+// workflowStageFirstLineConclusion reads the declared 总体结论 contract without
+// scanning quoted history elsewhere in the report.
+func workflowStageFirstLineConclusion(output *WorkflowStageOutput) string {
+	raw := strings.TrimSpace(output.RawOutput)
+	if raw == "" {
+		raw = strings.TrimSpace(output.Summary)
+	}
+	if index := strings.IndexAny(raw, "\r\n"); index >= 0 {
+		raw = raw[:index]
+	}
+	switch strings.TrimSpace(raw) {
+	case "总体结论：通过":
+		return "passed"
+	case "总体结论：未通过":
+		return "failed"
+	default:
+		return ""
+	}
 }
 
 func workflowStageCanonicalNextActions(output *WorkflowStageOutput) []string {
@@ -11482,6 +14300,8 @@ func resolveWorkflowResultReference(expr string, result schema.AgentResult, stag
 		return literal
 	}
 	switch strings.ToLower(expr) {
+	case "result.first_line", "first_line":
+		return workflowGraphFirstOutputLine(result.Output)
 	case "result.output", "result.raw_output", "output", "raw_output":
 		return result.Output
 	case "result.summary", "summary":
@@ -11539,6 +14359,9 @@ func resolveWorkflowResultReferenceValue(expr string, result schema.AgentResult,
 		return literal, true
 	}
 	switch strings.ToLower(expr) {
+	case "result.first_line", "first_line":
+		line := workflowGraphFirstOutputLine(result.Output)
+		return line, line != ""
 	case "result.output", "result.raw_output", "output", "raw_output":
 		return result.Output, true
 	case "result.summary", "summary":
@@ -12523,12 +15346,19 @@ func workflowGraphCompactRawReference(value string) string {
 }
 
 func (w *WorkflowRunner) captureWorkflowGraphApprovalContext(graph workflowGraph, index int, request, responseContent string, responseMessage schema.Message, completed []WorkflowStageResult, results []schema.ToolResult, stagePrompt string) {
-	callID := firstSuspendedToolCallID(results)
-	if callID == "" {
-		return
-	}
 	stage := graph.Stages[index]
-	_ = w.runtime.AnnotateWorkflowGraphPendingApproval(callID, graph.Name, WorkflowStage(stage.Name), request, responseContent, responseMessage, completed, index, stagePrompt)
+	annotated := false
+	for _, result := range results {
+		if !result.Suspended || strings.TrimSpace(result.CallID) == "" {
+			continue
+		}
+		if w.runtime.AnnotateWorkflowGraphPendingApproval(result.CallID, graph.Name, WorkflowStage(stage.Name), request, responseContent, responseMessage, completed, index, stagePrompt) {
+			annotated = true
+		}
+	}
+	if annotated {
+		w.runtime.CaptureWorkflowApprovalContext(responseMessage, results)
+	}
 }
 
 func (w *WorkflowRunner) approveWorkflowGraphTool(ctx context.Context, pending pendingApproval) (schema.ToolResult, error) {
@@ -12543,19 +15373,24 @@ func (w *WorkflowRunner) approveWorkflowGraphTool(ctx context.Context, pending p
 			pending = decision.Pending
 		}
 	}
-	result, err := w.runtime.mcp.CallTool(ctx, pending.call.Name, pending.call.Arguments)
+	execCtx := pendingApprovalExecutionContext(w.runtime, pending)
+	if err := w.runtime.prepareExecutionWorkspace(&execCtx, pending.call, pending.tool); err != nil {
+		return schema.ToolResult{}, err
+	}
+	result, replayed, err := executeToolCallWithIdempotency(ctx, w.runtime.mcp, execCtx, pending.call, pending.tool)
 	if err != nil {
 		return schema.ToolResult{}, err
 	}
-	result.CallID = pending.call.ID
-	if result.ToolName == "" {
-		result.ToolName = pending.tool.Name
-	}
+	result = materializeToolResult(w.runtime.session, result, pending.agent, "", pending.toolOperations.RunID, pending.toolOperations.Stage)
 	if strings.TrimSpace(result.Content) == "ok" {
 		result.Content = fmt.Sprintf("done: %s", pending.call.Name)
 	}
 	if resolved && w.runtime.audit != nil {
-		w.runtime.audit.Record(schema.AuditEntry{Type: "tool_call", AgentID: pending.agent, ToolName: pending.tool.Name, Outcome: "approved", Detail: result.Content})
+		outcome := "approved"
+		if replayed {
+			outcome = "approved_idempotent_replay"
+		}
+		w.runtime.audit.Record(schema.AuditEntry{Type: "tool_call", AgentID: pending.agent, ToolName: pending.tool.Name, Outcome: outcome, Detail: result.Content})
 	}
 	return result, nil
 }

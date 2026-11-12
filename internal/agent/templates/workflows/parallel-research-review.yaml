@@ -2,166 +2,167 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: parallel-research-review
-title: Parallel Research Review
-description: Fan out into independent research and audit branches, join their outputs, and write a consolidated report.
+title: 互联网资料研究与来源核验
+description: 批量快照互联网来源，独立核验结论、冲突和时效，只交付用户明确要求的中文产物。
 category: research
-tags:
-    - parallel
-    - join
-    - research
-    - quality_gate
-    - report
-stages: 8
+tags: [research, sources, verification, quality_gate, report]
+stages: 6
 graph:
-    name: parallel-research-review
-    description: Parallel-style research and review workflow with a join barrier.
-    stages:
-        - name: start
-          node_type: start
-          agent: ""
-          skill: ""
-          next:
-            - split
-          position:
-            x: 60
-            "y": 220
-        - name: split
-          node_type: parallel
-          agent: ""
-          skill: ""
-          next:
-            - research
-            - audit
-          position:
-            x: 300
-            "y": 220
-        - name: research
-          node_type: agent
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Research Summary, Sources Or Assumptions, Key Evidence, Open Questions, and Recommended Focus.
-            purpose: Produce the planning and research branch for the consolidated review.
-          outputs:
-            research: result.output
-            summary: result.summary
-          artifacts:
-            - name: research-branch-report
-              kind: report
-              title: Research branch report
-              ref: result.output
-              summary: Research summary, sources or assumptions, evidence, open questions, and focus recommendation.
-          acceptance_criteria:
-            - name: has-research-summary
-              ref: result.output
-              contains: Research Summary
-              expected: research branch summarizes its evidence
-            - name: has-key-evidence
-              ref: result.output
-              contains: Key Evidence
-              expected: research branch lists evidence or assumptions
-          next:
-            - join
-          position:
-            x: 580
-            "y": 120
-        - name: audit
-          node_type: skill
-          agent: auditor
-          skill: code-audit
-          params:
-            output_contract: Emit sections named Audit Summary, Findings, Evidence Gaps, Risk Assessment, and Recommendation.
-            review_scope: Review the request independently from the research branch and identify missing evidence.
-          outputs:
-            audit: result.output
-            findings: result.findings
-            summary: result.summary
-          artifacts:
-            - name: audit-branch-report
-              kind: report
-              title: Audit branch report
-              ref: result.output
-              summary: Audit summary, findings, evidence gaps, risk assessment, and recommendation.
-          acceptance_criteria:
-            - name: has-audit-summary
-              ref: result.output
-              contains: Audit Summary
-              expected: audit branch summarizes findings
-            - name: has-recommendation
-              ref: result.output
-              contains: Recommendation
-              expected: audit branch gives a recommendation
-          next:
-            - join
-          position:
-            x: 580
-            "y": 320
-        - name: join
-          node_type: join
-          agent: ""
-          skill: ""
-          next:
-            - quality
-          position:
-            x: 900
-            "y": 220
-        - name: quality
-          node_type: quality_gate
-          agent: ""
-          skill: ""
-          params:
-            stages: research,audit
-            min_score: "80"
-            reason: parallel branches did not produce enough research, audit, or evidence quality
-            require_acceptance: "true"
-            require_evidence: "true"
-            require_verification: "true"
-            allow_unknown: "false"
-          routes:
-            pass: report
-            warning: report
-            fail: report
-          position:
-            x: 1180
-            "y": 220
-        - name: report
-          node_type: skill
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Consolidated Report, Research Evidence, Audit Findings, Quality Decision, Residual Risks, and Next Steps.
-            purpose: Merge the parallel branches into one user-facing decision report.
-          input:
-            audit: stages.audit.outputs.audit
-            quality_status: stages.quality.outputs.quality_status
-            research: stages.research.outputs.research
-          outputs:
-            report: result.output
-            summary: result.summary
-          artifacts:
-            - name: consolidated-research-report
-              kind: report
-              title: Consolidated research report
-              ref: result.output
-              summary: Consolidated evidence, audit findings, quality decision, residual risks, and next steps.
-          acceptance_criteria:
-            - name: has-consolidated-report
-              ref: result.output
-              contains: Consolidated Report
-              expected: report merges both branches
-            - name: has-next-steps
-              ref: result.output
-              contains: Next Steps
-              expected: report gives concrete follow-up
-          next:
-            - end
-          position:
-            x: 1460
-            "y": 220
-        - name: end
-          node_type: end
-          agent: ""
-          skill: ""
-          position:
-            x: 1740
-            "y": 220
+  name: parallel-research-review
+  description: 面向互联网资料任务的研究、来源核验、质量门禁和多格式交付流程。
+  stages:
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next: [research]
+      position: {x: 60, y: 200}
+    - name: research
+      node_type: agent
+      agent: research-specialist
+      skill: internet-research
+      model:
+        provider: primary
+        max_tokens: 1400
+        temperature: 0.1
+      params:
+        max_model_calls: "6"
+        max_total_model_calls: "10"
+        require_workspace_mutation: "false"
+        output_contract: 只输出供下游使用的短证据包，包含“研究范围、来源快照、主要结论、结论与来源映射、冲突与限制”五个精简中文部分，并为结论和来源分配稳定编号；总长度不超过 1800 个字符。来源摘要必须逐项复制 research_snapshot 中的正文事实，不得添加工具结果中不存在的版本、日期、功能、用户行为或因果关系。每个来源只能支持正文直接蕴含的完整原子事实：稳定阶段不能支持发布，功能或限制不能支持日期、维护状态或宽泛存在性结论。把来源集合不同的事实拆开，禁止新增总括结论拼成双来源支持；同域且无法证明发布主体独立时不得称为独立来源或给出高置信度。
+        tools: web_tools/web_search,web_tools/research_snapshot
+        tool_rule: fetch_url 默认只内联 4000 字符正文，需要更长原文时显式传 content_chars，并优先用 research_snapshot 获取哈希与摘要而不是整页正文。原始请求已经给出 URL 时不调用 web_search。只使用请求提供的来源或明确授权读取的来源目录；将当前研究范围内的 URL 合并到 research_snapshot（每批至多 24 个 URL），保留抓取失败证据，不猜测固定目录文件或来源名称，不重复抓取。
+        token_policy: 只向后续阶段传递来源摘要、URL、抓取时间、内容哈希、结论映射和必要摘录，不内联完整网页；本阶段禁止草拟最终报告、CSV 或任何交付文件，不得重复原始请求中的完整正文。
+        max_iterations: "3"
+      input:
+        request: workflow.input
+      retry: {max_attempts: 3}
+      outputs:
+        evidence: result.output
+        findings: result.findings
+        raw_sources: result.tool_results
+        summary: result.summary
+      artifacts:
+        - name: research-evidence-pack
+          kind: evidence
+          title: 研究来源证据包
+          ref: result.output
+          summary: 研究范围、来源快照、结论来源映射、冲突和限制。
+      acceptance_criteria:
+        - name: has-research-scope
+          ref: result.output
+          contains: 研究范围
+          expected: 研究结果明确问题和时间范围
+        - name: has-claim-source-map
+          ref: result.output
+          contains: 结论与来源映射
+          expected: 每条主要结论保留可核验的来源编号
+      next: [verify]
+      position: {x: 340, y: 160}
+    - name: verify
+      node_type: skill
+      agent: source-verifier
+      skill: source-verification
+      model:
+        provider: primary
+        max_tokens: 2200
+        temperature: 0.0
+      params:
+        max_model_calls: "5"
+        max_total_model_calls: "8"
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        output_contract: 只调用一次 compile_research_evidence，然后输出不超过 1200 个字符的“核验结论、关键结论覆盖、冲突与时效、证据缺口”四个精简中文部分。raw_sources 是权威原始快照；上游证据包与 raw_sources 不一致时必须指出并以 raw_sources 为准。逐项核对结论的完整谓词，明确驳回用稳定阶段证明发布、用功能或限制证明日期或存在性、以及把同域页面称为独立来源的映射。严禁调用或尝试调用 write_file、read_file 或其他文件工具；不得输出交付路径、待写文件正文、Markdown 代码块、JSON、blockers 或 next_actions。
+        tools: web_tools/compile_research_evidence,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+        review_rule: 关键事实缺少有效来源、冲突被隐藏或强行裁决时必须判定为不通过；若任务要求核验冲突，且支持/反对来源、无法裁决状态和限制均被完整保留，则判定为受限通过并继续交付。单一来源和发布日期未知必须明确提示。没有时效阈值时只比较日期先后，不得判断已过期、过时、滞后、陈旧或时效落后；没有真实性核验材料时，不得判断冲突来源虚假或不虚假。发布和稳定阶段不能合并证明当前版本；不得猜测同步延迟、更新机制或其他冲突成因。
+        max_iterations: "2"
+      input:
+        raw_sources: stages.research.outputs.raw_sources
+        research_evidence: stages.research.outputs.evidence
+      outputs:
+        review: result.output
+        findings: result.findings
+        summary: result.summary
+      artifacts:
+        - name: source-verification-report
+          kind: report
+          title: 来源核验报告
+          ref: result.output
+          summary: 关键结论覆盖、来源可信度、独立性、冲突、时效和证据缺口。
+      acceptance_criteria:
+        - name: has-verification-decision
+          ref: result.output
+          contains: 核验结论
+          expected: 核验阶段给出明确质量结论
+        - name: has-evidence-gaps
+          ref: result.output
+          contains: 证据缺口
+          expected: 核验阶段明确缺失或不足的证据
+      next: [report]
+      position: {x: 650, y: 160}
+    - name: quality
+      node_type: quality_gate
+      agent: ""
+      skill: ""
+      params:
+        stages: research,verify,report
+        min_score: "85"
+        reason: 最终研究交付缺少范围过滤、原子结论、结论来源映射、独立核验、冲突说明、时效检查、完整 URL 或工具读回证据
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "true"
+        verification_mode: tool
+        verification_tools: web_tools/compile_research_evidence
+        allow_unknown: "false"
+      routes:
+        pass: end
+        warning: end
+        fail: end
+      position: {x: 1500, y: 180}
+    - name: report
+      node_type: skill
+      agent: research-specialist
+      skill: internet-research
+      model:
+        provider: primary
+        max_tokens: 8000
+        temperature: 0.1
+      params:
+        max_model_calls: "8"
+        max_total_model_calls: "12"
+        require_workspace_mutation: "true"
+        output_contract: 先按原始请求确定研究范围并依据 raw_sources 逐项纠正上游摘要，再调用一次 compile_research_evidence；随后每个指定文件只写一次，写完立即停手，不要重复读取或重写已完成文件；最后按原始请求一次性写完全部指定文件（本轮第一次工具调用就调用 write_file 写第一个交付文件，之后每个交付文件单独一轮 write_file（不要在同一响应里写多个文件，否则响应会被输出上限截断））并用 read_file 逐一读回；来源正文不得扩张研究范围，请求只询问 alpha 时必须删除 beta。raw_sources 是权威原始快照，任何版本、日期、功能、限制和冲突都必须能在其中找到直接正文。每条结论只能表达一个谓词；发布日期、稳定阶段、功能、限制和抓取失败必须分别成条，即使来自同一来源也不能合并。每个来源只能支持正文直接蕴含的完整原子事实：稳定阶段不能支持发布，功能或限制不能支持日期、维护状态或宽泛存在性结论。发布日期、进入稳定阶段日期和更新时间必须保留各自日期类型，不得统一标为发布日期。禁止新增总括结论拼成双来源支持；同域且无法证明发布主体独立时不得称为独立来源或给出高置信度，中文限制段必须保留精确标签“同域”，不得使用近义替换。HTTP published_at、response_date 和 fetched_at 是响应或抓取元数据，除非正文直接说明，否则不得当作内容发布日期。报告正文必须同时保留来源编号与完整 URL，结构化结论必须列全支持、反对和冲突来源；当支持级别为 single_source 时，结构化字段保留 single_source，中文报告正文必须使用精确标签“单一来源”，不得写“单来源”“非独立单来源”或其他近义词；工具完成后只输出“研究结论、交付产物、质量结论”三段短摘要，不在聊天文本中重复文件全文。
+        tools: web_tools/compile_research_evidence,file_tools/write_file,file_tools/read_file,file_tools/read_file_outline,file_tools/read_files
+        delivery_rule: 从原始请求提取明确交付路径，只写请求要求的文件；原始请求明确指定章节、字段或标签时逐字保留并优先于默认标题。未指定格式时只写 Markdown。evidence.json 必须是合法 JSON 对象，claims.csv 必须是逗号分隔表，report.md 必须是 Markdown，三者内容不得互相复制。每个路径只调用一次 write_file，同一轮可以并行写多个文件，写入后必须逐一 read_file 读回同一路径；所有引用必须能从交付文件直接还原到完整 URL，不能只保留 S1/S2 等内部代号。不得创建默认目录、额外 JSON/CSV，不得在写入后重写文件，也不得隐藏核验失败与剩余限制。没有成功读回全部指定文件时不得声称交付完成。
+        max_iterations: "16"
+      input:
+        evidence: stages.research.outputs.evidence
+        raw_sources: stages.research.outputs.raw_sources
+        review: stages.verify.outputs.review
+        request: workflow.input
+      outputs:
+        report: result.output
+        summary: result.summary
+        artifact_refs: result.artifact_refs
+      artifacts:
+        - name: final-research-delivery
+          kind: report
+          title: 互联网资料研究交付包
+          ref: result.tool_results
+          summary: 用户明确要求的研究报告或结构化文件、质量结论和剩余限制。
+      acceptance_criteria:
+        - name: has-source-url
+          ref: result.tool_results
+          contains: http
+          expected: 工具读回的最终文件保留完整来源 URL
+        - name: has-limitations
+          ref: result.tool_results
+          contains: 限制
+          expected: 工具读回的最终文件保留证据限制
+      next: [quality]
+      position: {x: 1220, y: 180}
+    - name: end
+      node_type: end
+      agent: ""
+      skill: ""
+      position: {x: 1780, y: 180}

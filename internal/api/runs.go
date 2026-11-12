@@ -11,51 +11,73 @@ import (
 )
 
 func (s *Server) handleRunCollection(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
+	switch r.Method {
+	case http.MethodGet:
+		snapshot := s.sessionSnapshotWithApprovalRisk()
+		writeJSON(w, s.runCollectionResponseFor(snapshot.AgentRuns, snapshot.WorkflowRuns, runCollectionQueryFromRequest(r)))
+	case http.MethodPost:
+		// V3 uses one task collection for creation and durable history.
+		s.handleRun(w, r)
+	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
 	}
-	snapshot := s.sessionSnapshotWithApprovalRisk()
-	writeJSON(w, s.runCollectionResponseFor(snapshot.AgentRuns, snapshot.WorkflowRuns, runCollectionQueryFromRequest(r)))
 }
 
 type runCollectionResponse struct {
-	Runs    []runCollectionItem   `json:"runs"`
+	Runs    []TaskRecord          `json:"runs"`
 	Filters runCollectionQuery    `json:"filters,omitempty"`
 	Counts  runCollectionRunCount `json:"counts"`
 	Facets  runCollectionFacets   `json:"facets,omitempty"`
 }
 
-type runCollectionItem struct {
-	ID          string `json:"id"`
-	Type        string `json:"type"`
-	Name        string `json:"name,omitempty"`
-	Status      string `json:"status,omitempty"`
-	Request     string `json:"request,omitempty"`
-	Summary     string `json:"summary,omitempty"`
-	AgentID     string `json:"agent_id,omitempty"`
-	Mode        string `json:"mode,omitempty"`
-	Workflow    string `json:"workflow,omitempty"`
-	StartedAt   string `json:"started_at,omitempty"`
-	UpdatedAt   string `json:"updated_at,omitempty"`
-	CompletedAt string `json:"completed_at,omitempty"`
-	RetryOf     string `json:"retry_of,omitempty"`
-	Attempt     int    `json:"attempt,omitempty"`
+// TaskRecord is the stable task-facing contract layered over durable Agent and
+// workflow run snapshots. The underlying snapshots remain the source of truth.
+type TaskRecord struct {
+	ID            string                `json:"id"`
+	Type          string                `json:"type"`
+	Kind          string                `json:"kind"`
+	Title         string                `json:"title"`
+	Name          string                `json:"name,omitempty"`
+	Status        string                `json:"status,omitempty"`
+	Request       string                `json:"request,omitempty"`
+	Summary       string                `json:"summary,omitempty"`
+	AgentID       string                `json:"agent_id,omitempty"`
+	Mode          string                `json:"mode,omitempty"`
+	Workflow      string                `json:"workflow,omitempty"`
+	TargetID      string                `json:"target_id,omitempty"`
+	StartedAt     string                `json:"started_at,omitempty"`
+	UpdatedAt     string                `json:"updated_at,omitempty"`
+	CompletedAt   string                `json:"completed_at,omitempty"`
+	RetryOf       string                `json:"retry_of,omitempty"`
+	Attempt       int                   `json:"attempt,omitempty"`
+	ScheduleID    string                `json:"schedule_id,omitempty"`
+	ScheduleJobID string                `json:"schedule_job_id,omitempty"`
+	ResourcePins  []session.ResourcePin `json:"resource_pins,omitempty"`
 
 	NeedsAction bool                        `json:"needs_action"`
+	Resumable   bool                        `json:"resumable"`
+	Recommended string                      `json:"recommended_action,omitempty"`
 	HasError    bool                        `json:"has_error"`
 	Quality     *workflowRunQualitySummary  `json:"quality,omitempty"`
 	Actions     *runCollectionActionSummary `json:"actions_summary,omitempty"`
 
+	DetailPath    string `json:"detail_path,omitempty"`
+	EventsPath    string `json:"events_path,omitempty"`
 	EventsURL     string `json:"events_url,omitempty"`
+	TimelinePath  string `json:"timeline_path,omitempty"`
 	ReplayPath    string `json:"replay_path,omitempty"`
 	EvidencePath  string `json:"evidence_path,omitempty"`
 	ArtifactsPath string `json:"artifacts_path,omitempty"`
 	ContextPath   string `json:"context_path,omitempty"`
 	ActionsPath   string `json:"actions_path,omitempty"`
 	DiffsPath     string `json:"diffs_path,omitempty"`
+	DeliveryPath  string `json:"delivery_path,omitempty"`
+	ExportPath    string `json:"export_path,omitempty"`
 	Source        string `json:"source,omitempty"`
 }
+
+// Keep the internal name as an alias while callers migrate to TaskRecord.
+type runCollectionItem = TaskRecord
 
 type runCollectionQuery struct {
 	Type            string `json:"type,omitempty"`
@@ -134,7 +156,7 @@ func (s *Server) runCollectionResponseFor(agentRuns []session.AgentRunSnapshot, 
 		Workflow: len(workflowRuns),
 	}
 	facets := s.runCollectionFacetsFor(agentRuns, workflowRuns)
-	matched := make([]runCollectionItem, 0, len(agentRuns)+len(workflowRuns))
+	matched := make([]TaskRecord, 0, len(agentRuns)+len(workflowRuns))
 	for _, run := range agentRuns {
 		if agentRunCollectionRunActive(run) {
 			counts.Active++
@@ -176,7 +198,7 @@ func (s *Server) runCollectionResponseFor(agentRuns []session.AgentRunSnapshot, 
 	})
 	counts.Matched = len(matched)
 	if query.Limit > 0 && len(matched) > query.Limit {
-		matched = append([]runCollectionItem(nil), matched[:query.Limit]...)
+		matched = append([]TaskRecord(nil), matched[:query.Limit]...)
 	}
 	counts.Returned = len(matched)
 	return runCollectionResponse{Runs: matched, Filters: query, Counts: counts, Facets: facets}
@@ -292,71 +314,128 @@ func runCollectionWorkflowRunHasAvailableAction(actions []workflowRunAction, act
 	return false
 }
 
-func (s *Server) runCollectionItemForAgent(run session.AgentRunSnapshot) runCollectionItem {
+func (s *Server) runCollectionItemForAgent(run session.AgentRunSnapshot) TaskRecord {
 	agentID := strings.TrimSpace(run.AgentID)
 	name := agentID
 	if name == "" {
 		name = "Agent run"
 	}
-	base := "/api/agent-runs/" + strings.TrimSpace(run.ID)
-	return runCollectionItem{
+	base := unifiedRunBasePath(run.ID)
+	actions := s.runCollectionAgentActionSummary(run)
+	needsAction := agentRunCollectionRunNeedsAction(run)
+	return TaskRecord{
 		ID:            run.ID,
 		Type:          "agent",
+		Kind:          "agent",
+		Title:         name,
 		Name:          name,
 		Status:        run.Status,
 		Request:       run.Request,
 		Summary:       agentRunSnapshotSummary(run),
 		AgentID:       agentID,
 		Mode:          run.Mode,
+		TargetID:      run.TargetID,
 		StartedAt:     run.StartedAt,
 		UpdatedAt:     run.UpdatedAt,
 		CompletedAt:   run.CompletedAt,
 		RetryOf:       run.RetryOf,
 		Attempt:       run.Attempt,
-		NeedsAction:   agentRunCollectionRunNeedsAction(run),
+		ScheduleID:    run.ScheduleID,
+		ScheduleJobID: run.ScheduleJobID,
+		ResourcePins:  session.CopyResourcePins(run.ResourcePins),
+		NeedsAction:   needsAction,
+		Resumable:     needsAction && runCollectionActionSummaryResumable(actions),
+		Recommended:   runCollectionActionSummaryRecommended(actions),
 		HasError:      agentRunCollectionRunHasError(run),
-		Actions:       s.runCollectionAgentActionSummary(run),
+		Actions:       actions,
+		DetailPath:    base,
+		EventsPath:    base + "/events/stream",
 		EventsURL:     base + "/events/stream",
+		TimelinePath:  base + "/timeline",
 		ReplayPath:    base + "/replay",
 		ArtifactsPath: base + "/artifacts",
 		ContextPath:   base + "/context",
 		ActionsPath:   base + "/actions",
 		DiffsPath:     base + "/diffs",
+		DeliveryPath:  base + "/delivery",
+		ExportPath:    base + "/export",
 		Source:        "agent_run",
 	}
 }
 
-func (s *Server) runCollectionItemForWorkflow(run session.WorkflowRunSnapshot) runCollectionItem {
-	base := "/api/workflow-runs/" + strings.TrimSpace(run.ID)
+func (s *Server) runCollectionItemForWorkflow(run session.WorkflowRunSnapshot) TaskRecord {
+	base := unifiedRunBasePath(run.ID)
 	quality := workflowRunQualitySummaryFor(run)
-	return runCollectionItem{
+	actions := s.runCollectionWorkflowActionSummary(run)
+	needsAction := workflowRunCollectionRunNeedsAction(run)
+	title := strings.TrimSpace(run.Name)
+	if title == "" {
+		title = "Workflow run"
+	}
+	return TaskRecord{
 		ID:            run.ID,
 		Type:          "workflow",
+		Kind:          "workflow",
+		Title:         title,
 		Name:          run.Name,
-		Status:        run.Status,
+		Status:        effectiveWorkflowRunStatus(run),
 		Request:       run.Request,
 		Summary:       runCollectionWorkflowSummary(run),
 		AgentID:       runCollectionWorkflowPrimaryAgent(run),
 		Mode:          runCollectionWorkflowPrimaryMode(run),
 		Workflow:      run.Name,
+		TargetID:      run.TargetID,
 		StartedAt:     run.StartedAt,
 		UpdatedAt:     run.UpdatedAt,
 		CompletedAt:   run.CompletedAt,
 		RetryOf:       run.RetryOf,
 		Attempt:       run.Attempt,
-		NeedsAction:   workflowRunCollectionRunNeedsAction(run),
+		ScheduleID:    run.ScheduleID,
+		ScheduleJobID: run.ScheduleJobID,
+		ResourcePins:  session.CopyResourcePins(run.ResourcePins),
+		NeedsAction:   needsAction,
+		Resumable:     needsAction && runCollectionActionSummaryResumable(actions),
+		Recommended:   runCollectionActionSummaryRecommended(actions),
 		HasError:      workflowRunCollectionRunHasError(run),
 		Quality:       &quality,
-		Actions:       s.runCollectionWorkflowActionSummary(run),
+		Actions:       actions,
+		DetailPath:    base,
+		EventsPath:    base + "/events/stream",
 		EventsURL:     base + "/events/stream",
+		TimelinePath:  base + "/timeline",
 		ReplayPath:    base + "/replay",
 		EvidencePath:  base + "/evidence",
 		ArtifactsPath: base + "/artifacts",
 		ContextPath:   base + "/context",
 		ActionsPath:   base + "/actions",
 		DiffsPath:     base + "/diffs",
+		DeliveryPath:  base + "/delivery",
+		ExportPath:    base + "/export",
 		Source:        "workflow_run",
 	}
+}
+
+func unifiedRunBasePath(runID string) string {
+	return "/api/runs/" + strings.TrimSpace(runID)
+}
+
+func runCollectionActionSummaryRecommended(summary *runCollectionActionSummary) string {
+	if summary == nil {
+		return ""
+	}
+	return strings.TrimSpace(summary.Recommended)
+}
+
+func runCollectionActionSummaryResumable(summary *runCollectionActionSummary) bool {
+	if summary == nil {
+		return false
+	}
+	for _, action := range summary.AvailableItems {
+		if action.Name != "cancel" {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) runCollectionAgentActionSummary(run session.AgentRunSnapshot) *runCollectionActionSummary {
@@ -372,7 +451,7 @@ func (s *Server) runCollectionAgentActionSummary(run session.AgentRunSnapshot) *
 		WithRisk:       counts.WithRisk,
 		Recommended:    recommendedAgentRunAction(actions),
 		AvailableNames: runCollectionAgentAvailableActionNames(actions),
-		AvailableItems: runCollectionAgentAvailableActions(actions),
+		AvailableItems: runCollectionAgentAvailableActions(run.ID, actions),
 	}
 }
 
@@ -389,7 +468,7 @@ func (s *Server) runCollectionWorkflowActionSummary(run session.WorkflowRunSnaps
 		WithRisk:       counts.WithRisk,
 		Recommended:    recommendedWorkflowRunAction(actions),
 		AvailableNames: runCollectionWorkflowAvailableActionNames(actions),
-		AvailableItems: runCollectionWorkflowAvailableActions(actions),
+		AvailableItems: runCollectionWorkflowAvailableActions(run.ID, actions),
 	}
 }
 
@@ -413,7 +492,7 @@ func runCollectionWorkflowAvailableActionNames(actions []workflowRunAction) []st
 	return names
 }
 
-func runCollectionAgentAvailableActions(actions []agentRunAction) []runCollectionAvailableAction {
+func runCollectionAgentAvailableActions(runID string, actions []agentRunAction) []runCollectionAvailableAction {
 	items := make([]runCollectionAvailableAction, 0, len(actions))
 	for _, action := range actions {
 		if !action.Available {
@@ -424,9 +503,9 @@ func runCollectionAgentAvailableActions(actions []agentRunAction) []runCollectio
 			Kind:               action.Kind,
 			Label:              action.Label,
 			Method:             action.Method,
-			Path:               action.Path,
-			StreamPath:         action.StreamPath,
-			EventsPath:         action.EventsPath,
+			Path:               unifiedRunActionPath(runID, action.Name),
+			StreamPath:         unifiedRunActionStreamPath(runID, action.Name, action.StreamPath),
+			EventsPath:         unifiedRunBasePath(runID) + "/events/stream",
 			SupportsBackground: action.SupportsBackground,
 			SupportsStream:     action.SupportsStream,
 			AcceptsBody:        action.AcceptsBody,
@@ -437,7 +516,7 @@ func runCollectionAgentAvailableActions(actions []agentRunAction) []runCollectio
 	return items
 }
 
-func runCollectionWorkflowAvailableActions(actions []workflowRunAction) []runCollectionAvailableAction {
+func runCollectionWorkflowAvailableActions(runID string, actions []workflowRunAction) []runCollectionAvailableAction {
 	items := make([]runCollectionAvailableAction, 0, len(actions))
 	for _, action := range actions {
 		if !action.Available {
@@ -448,9 +527,9 @@ func runCollectionWorkflowAvailableActions(actions []workflowRunAction) []runCol
 			Kind:               action.Kind,
 			Label:              action.Label,
 			Method:             action.Method,
-			Path:               action.Path,
-			StreamPath:         action.StreamPath,
-			EventsPath:         action.EventsPath,
+			Path:               unifiedRunActionPath(runID, action.Name),
+			StreamPath:         unifiedRunActionStreamPath(runID, action.Name, action.StreamPath),
+			EventsPath:         unifiedRunBasePath(runID) + "/events/stream",
 			SupportsBackground: action.SupportsBackground,
 			SupportsStream:     action.SupportsStream,
 			AcceptsBody:        action.AcceptsBody,
@@ -459,6 +538,17 @@ func runCollectionWorkflowAvailableActions(actions []workflowRunAction) []runCol
 		})
 	}
 	return items
+}
+
+func unifiedRunActionPath(runID, actionName string) string {
+	return unifiedRunBasePath(runID) + "/actions/" + strings.TrimSpace(actionName)
+}
+
+func unifiedRunActionStreamPath(runID, actionName, sourceStreamPath string) string {
+	if strings.TrimSpace(sourceStreamPath) == "" {
+		return ""
+	}
+	return unifiedRunActionPath(runID, actionName) + "/stream"
 }
 
 func runCollectionWorkflowSummary(run session.WorkflowRunSnapshot) string {

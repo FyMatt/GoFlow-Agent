@@ -15,27 +15,55 @@ import (
 )
 
 const (
-	workflowNamePlanFixAudit = "plan-fix-audit"
-	workflowNameSkillChain   = "skill-chain"
+	workflowNamePlanFixAudit              = "plan-fix-audit"
+	workflowNamePlanImplementAudit        = "plan-implement-audit"
+	workflowNameComplexProjectDelivery    = "complex-project-delivery"
+	workflowNameSecurityAuditEvidenceGate = "security-audit-evidence-gate"
+	workflowNameSkillChain                = "skill-chain"
 
 	workflowAgentPlanner = "planner"
 	workflowAgentFixer   = "fixer"
 	workflowAgentAuditor = "auditor"
 	workflowAgentChat    = "chat"
+
+	maxWorkflowSubWorkflowDepth = 8
 )
 
 // WorkflowRunner coordinates built-in staged workflows.
 type WorkflowRunner struct {
-	runtime  *Runtime
-	registry map[string]workflowDefinition
-	runID    string
+	runtime          *Runtime
+	registry         map[string]workflowDefinition
+	runID            string
+	mutationBaseline map[string]string
+	// stageConversation is the transcript of the previous opted-in stage.
+	stageConversation []schema.Message
+	// sharedSystemPrompt is cached once per run when the graph shares a session.
+	sharedSystemPrompt string
 }
 
 type workflowRunStartHookKey struct{}
 type workflowRunRetryOfKey struct{}
+type workflowResourcePinsKey struct{}
+type workflowScheduleKey struct{}
+type workflowCallPathKey struct{}
 
 type workflowStageRunOptions struct {
-	AllowedTools []string
+	AllowedTools           []string
+	MaxIterations          int
+	InitialToolResults     []schema.ToolResult
+	ToolOperationRunID     string
+	ToolOperationWorkflow  string
+	ToolOperationStage     string
+	IdempotentToolCalls    bool
+	IsolatePromptContext   bool
+	ApprovedPlanScope      bool
+	ChangeSliceEnforcement bool
+	ChangeSlices           []session.WorkflowChangeSliceSnapshot
+	StageToolPolicy        workflowStageToolPolicy
+	InitialMessages        []schema.Message
+	SystemPromptOverride   string
+	MaxModelCalls          int
+	MaxStageTotalCalls     int
 }
 
 // WithWorkflowRunStartHook returns a context that is notified after a run id is allocated.
@@ -52,6 +80,22 @@ func WithWorkflowRunRetryOf(ctx context.Context, retryOf string) context.Context
 		return ctx
 	}
 	return context.WithValue(ctx, workflowRunRetryOfKey{}, strings.TrimSpace(retryOf))
+}
+
+// WithWorkflowResourcePins fixes the resources selected for a workflow run.
+func WithWorkflowResourcePins(ctx context.Context, pins []session.ResourcePin) context.Context {
+	if ctx == nil || len(pins) == 0 {
+		return ctx
+	}
+	return context.WithValue(ctx, workflowResourcePinsKey{}, session.CopyResourcePins(pins))
+}
+
+// WithWorkflowSchedule links a new Workflow task to its durable scheduler job.
+func WithWorkflowSchedule(ctx context.Context, scheduleID, jobID string) context.Context {
+	if ctx == nil || strings.TrimSpace(scheduleID) == "" || strings.TrimSpace(jobID) == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, workflowScheduleKey{}, [2]string{strings.TrimSpace(scheduleID), strings.TrimSpace(jobID)})
 }
 
 type workflowDefinition struct {
@@ -182,6 +226,19 @@ func NewWorkflowRunner(rt *Runtime) *WorkflowRunner {
 
 // Run dispatches a named workflow.
 func (w *WorkflowRunner) Run(ctx context.Context, name, request string, approve bool, handler func(event schema.StreamEvent) error) (WorkflowResult, error) {
+	isRootWorkflow := true
+	if ctx != nil {
+		path, _ := ctx.Value(workflowCallPathKey{}).([]string)
+		isRootWorkflow = len(path) == 0
+	}
+	if isRootWorkflow && w != nil && w.runtime != nil {
+		w.runtime.ClearAudit()
+	}
+	var err error
+	ctx, err = workflowContextWithCallPath(ctx, name)
+	if err != nil {
+		return WorkflowResult{}, err
+	}
 	definition, ok, err := w.workflowDefinition(name)
 	if err != nil {
 		return WorkflowResult{}, err
@@ -189,7 +246,10 @@ func (w *WorkflowRunner) Run(ctx context.Context, name, request string, approve 
 	if !ok || definition.run == nil {
 		return WorkflowResult{}, fmt.Errorf("unknown workflow: %s", name)
 	}
-	runID := w.startWorkflowRun(ctx, name, request)
+	runID, err := w.startWorkflowRun(ctx, name, request)
+	if err != nil {
+		return WorkflowResult{}, err
+	}
 	previousRunID := w.runID
 	w.runID = runID
 	defer func() { w.runID = previousRunID }()
@@ -201,6 +261,28 @@ func (w *WorkflowRunner) Run(ctx context.Context, name, request string, approve 
 	result.RunID = runID
 	w.completeWorkflowRun(runID, result)
 	return result, nil
+}
+
+func workflowContextWithCallPath(ctx context.Context, name string) (context.Context, error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	name = normalizePersistedWorkflowName(name)
+	path, _ := ctx.Value(workflowCallPathKey{}).([]string)
+	path = append([]string(nil), path...)
+	for index, existing := range path {
+		if normalizePersistedWorkflowName(existing) != name {
+			continue
+		}
+		cycle := append(append([]string(nil), path[index:]...), name)
+		return nil, fmt.Errorf("sub-workflow cycle detected: %s", strings.Join(cycle, " -> "))
+	}
+	if len(path) >= maxWorkflowSubWorkflowDepth {
+		chain := append(path, name)
+		return nil, fmt.Errorf("sub-workflow depth exceeds maximum %d: %s", maxWorkflowSubWorkflowDepth, strings.Join(chain, " -> "))
+	}
+	path = append(path, name)
+	return context.WithValue(ctx, workflowCallPathKey{}, path), nil
 }
 
 // Resume resumes a suspended workflow.
@@ -219,7 +301,10 @@ func (w *WorkflowRunner) Resume(ctx context.Context, name, callID string, approv
 	if !ok {
 		return WorkflowResult{}, fmt.Errorf("pending approval not found: %s", callID)
 	}
-	runID := w.workflowRunIDForResume(ctx, name, pending)
+	runID, err := w.workflowRunIDForResume(ctx, name, pending)
+	if err != nil {
+		return WorkflowResult{}, err
+	}
 	previousRunID := w.runID
 	w.runID = runID
 	defer func() { w.runID = previousRunID }()
@@ -262,7 +347,7 @@ func (w *WorkflowRunner) ResumeToolApproval(ctx context.Context, runID string, a
 		if strings.TrimSpace(pending.workflow) == "" || strings.TrimSpace(pending.tool.Name) == "" {
 			return WorkflowResult{}, fmt.Errorf("pending approval is not scoped to a workflow tool call: %s", pending.call.ID)
 		}
-		if err := w.runtime.EnableWorkflowAutoApprovalForTool(pending.workflow, pending.stage, pending.tool); err != nil {
+		if err := w.runtime.enableWorkflowAutoApproval(pending); err != nil {
 			return WorkflowResult{}, err
 		}
 	}
@@ -271,24 +356,15 @@ func (w *WorkflowRunner) ResumeToolApproval(ctx context.Context, runID string, a
 	defer func() { w.runID = previousRunID }()
 	handler = w.recordWorkflowRunEvents(run.ID, handler)
 	w.runtime.session.SetWorkflow(session.WorkflowSnapshot{
-		RunID:                        run.ID,
-		Name:                         run.Name,
-		Status:                       "running",
-		NextStage:                    run.NextStage,
-		Request:                      run.Request,
-		Summary:                      run.Summary,
-		LastApproval:                 run.ApprovalPrompt,
-		PendingCallID:                run.PendingCallID,
-		PendingToolName:              run.PendingToolName,
-		PendingAgentID:               run.PendingAgentID,
-		PendingArguments:             run.PendingArgs,
-		PendingArgumentsSummary:      run.PendingArgsSummary,
-		PendingArgumentsArtifactRef:  run.PendingArgsArtifactRef,
-		PendingArgumentsHash:         run.PendingArgsHash,
-		PendingArgumentsBytes:        run.PendingArgsBytes,
-		PendingArgumentsStoredBytes:  run.PendingArgsStoredBytes,
-		PendingArgumentsExternalized: run.PendingArgsExternalized,
-		PendingResponseMessage:       schema.CopyMessage(run.PendingResponseMessage),
+		RunID:     run.ID,
+		Name:      run.Name,
+		Status:    "running",
+		NextStage: run.NextStage,
+		Request:   run.Request,
+		Summary:   run.Summary,
+		// The submitted approval is no longer pending. Clear its durable
+		// fields before resuming so polling clients do not mistake the running
+		// continuation for another approval of the same call.
 	})
 	w.runtime.session.UpdateWorkflowRunState(w.runtime.session.Snapshot().Workflow)
 	w.runtime.session.AppendWorkflowRunEvent(run.ID, session.WorkflowRunEventSnapshot{
@@ -307,6 +383,42 @@ func (w *WorkflowRunner) ResumeToolApproval(ctx context.Context, runID string, a
 	result.RunID = run.ID
 	w.completeWorkflowRun(run.ID, result)
 	w.clearWorkflowPendingApprovalSummary(pending.call.ID)
+	return result, nil
+}
+
+// ResumeToolApprovalBatch approves only the tool calls that were already
+// presented in the current assistant turn. Later calls remain approval-gated.
+func (w *WorkflowRunner) ResumeToolApprovalBatch(ctx context.Context, runID string, handler func(event schema.StreamEvent) error) (WorkflowResult, error) {
+	if w == nil || w.runtime == nil || w.runtime.session == nil {
+		return WorkflowResult{}, fmt.Errorf("workflow runtime not configured")
+	}
+	run, ok := w.runtime.session.WorkflowRun(runID)
+	if !ok {
+		return WorkflowResult{}, fmt.Errorf("workflow run not found: %s", runID)
+	}
+	pending, err := w.pendingToolApprovalFromRun(ctx, run)
+	if err != nil {
+		return WorkflowResult{}, err
+	}
+	batchSize := w.runtime.WorkflowApprovalGroupSize(pending.call.ID)
+	if batchSize < 1 {
+		batchSize = 1
+	}
+
+	var result WorkflowResult
+	for index := 0; index < batchSize; index++ {
+		current, exists := w.runtime.session.WorkflowRun(runID)
+		if !exists {
+			return WorkflowResult{}, fmt.Errorf("workflow run not found: %s", runID)
+		}
+		if !strings.EqualFold(strings.TrimSpace(current.Status), "awaiting_tool_approval") {
+			return result, nil
+		}
+		result, err = w.ResumeToolApproval(ctx, runID, true, false, handler)
+		if err != nil {
+			return WorkflowResult{}, err
+		}
+	}
 	return result, nil
 }
 
@@ -380,6 +492,9 @@ func (w *WorkflowRunner) pendingToolApprovalFromRun(ctx context.Context, run ses
 		}
 		if len(pending.completed) == 0 {
 			pending.completed = workflowStageResultsFromRunSnapshots(run.CompletedStages)
+		}
+		if err := w.enrichRebuiltToolApproval(run, &pending); err != nil {
+			return pendingApproval{}, err
 		}
 		return pending, nil
 	}
@@ -455,6 +570,12 @@ func (w *WorkflowRunner) enrichRebuiltToolApproval(run session.WorkflowRunSnapsh
 			pending.stage = WorkflowStage(stage.Name)
 			pending.skillIndex = index
 			pending.stagePrompt = w.buildWorkflowGraphStagePrompt(context.Background(), graph, stage, pending.request, pending.completed)
+			pending.toolOperations = workflowToolOperationScope{
+				RunID:    run.ID,
+				Workflow: graph.Name,
+				Stage:    stage.Name,
+				Enabled:  stage.Retry.MaxAttempts > 1,
+			}
 			if strings.TrimSpace(pending.agent) == "" {
 				pending.agent = strings.TrimSpace(stage.Agent)
 			}
@@ -585,50 +706,76 @@ func (w *WorkflowRunner) workflowDefinition(name string) (workflowDefinition, bo
 	return definition, ok, nil
 }
 
-func (w *WorkflowRunner) startWorkflowRun(ctx context.Context, name, request string) string {
+func (w *WorkflowRunner) startWorkflowRun(ctx context.Context, name, request string) (string, error) {
 	if w == nil || w.runtime == nil || w.runtime.session == nil {
-		return ""
+		return "", fmt.Errorf("workflow runtime not configured")
 	}
 	opts := session.WorkflowRunStartOptions{}
+	opts.TargetID = executionTargetIDFromContext(ctx)
+	opts.Attachments = taskAttachmentsFromContext(ctx)
+	controls := runControlsFromContext(ctx, w.runtime)
+	opts.ReasoningEffort = controls.ReasoningEffort
+	opts.PermissionMode = controls.PermissionMode
 	if retryOf, ok := ctx.Value(workflowRunRetryOfKey{}).(string); ok {
 		opts.RetryOf = strings.TrimSpace(retryOf)
 	}
-	runID := w.runtime.session.StartWorkflowRunWithOptions(name, request, opts)
+	if pins, ok := ctx.Value(workflowResourcePinsKey{}).([]session.ResourcePin); ok {
+		opts.ResourcePins = session.CopyResourcePins(pins)
+	}
+	if schedule, ok := ctx.Value(workflowScheduleKey{}).([2]string); ok {
+		opts.ScheduleID = schedule[0]
+		opts.ScheduleJobID = schedule[1]
+	}
+	runID, err := w.runtime.session.StartWorkflowRunWithOptionsDurable(name, request, opts)
+	if err != nil {
+		return "", fmt.Errorf("persist workflow start: %w", err)
+	}
 	w.runtime.session.SetWorkflow(session.WorkflowSnapshot{
-		RunID:   runID,
-		Name:    name,
-		Status:  "running",
-		Request: request,
+		RunID:        runID,
+		Name:         name,
+		Status:       "running",
+		Request:      request,
+		TargetID:     normalizeExecutionTargetID(opts.TargetID),
+		ResourcePins: session.CopyResourcePins(opts.ResourcePins),
+		Attachments:  append([]schema.AttachmentRef(nil), opts.Attachments...),
 	})
 	w.recordWorkflowStarted(runID, name, request, opts.RetryOf)
 	notifyWorkflowRunStarted(ctx, runID)
-	return runID
+	return runID, nil
 }
 
-func (w *WorkflowRunner) workflowRunIDForResume(ctx context.Context, name string, pending pendingApproval) string {
+func (w *WorkflowRunner) workflowRunIDForResume(ctx context.Context, name string, pending pendingApproval) (string, error) {
 	if w == nil || w.runtime == nil || w.runtime.session == nil {
-		return ""
+		return "", fmt.Errorf("workflow runtime not configured")
 	}
 	snapshot := w.runtime.session.Snapshot().Workflow
 	if strings.EqualFold(strings.TrimSpace(snapshot.Name), strings.TrimSpace(name)) && strings.TrimSpace(snapshot.RunID) != "" {
 		notifyWorkflowRunStarted(ctx, snapshot.RunID)
-		return snapshot.RunID
+		return snapshot.RunID, nil
 	}
 	if strings.EqualFold(strings.TrimSpace(snapshot.Name), strings.TrimSpace(name)) {
-		runID := w.runtime.session.StartWorkflowRunFromSnapshot(snapshot)
+		runID, err := w.runtime.session.StartWorkflowRunFromSnapshotDurable(snapshot)
+		if err != nil {
+			return "", fmt.Errorf("persist resumed workflow start: %w", err)
+		}
 		notifyWorkflowRunStarted(ctx, runID)
-		return runID
+		return runID, nil
 	}
-	runID := w.runtime.session.StartWorkflowRun(name, pending.request)
+	targetID := executionTargetIDFromContext(ctx)
+	runID, err := w.runtime.session.StartWorkflowRunWithOptionsDurable(name, pending.request, session.WorkflowRunStartOptions{TargetID: targetID})
+	if err != nil {
+		return "", fmt.Errorf("persist resumed workflow start: %w", err)
+	}
 	w.runtime.session.SetWorkflow(session.WorkflowSnapshot{
-		RunID:   runID,
-		Name:    name,
-		Status:  "running",
-		Request: pending.request,
+		RunID:    runID,
+		Name:     name,
+		Status:   "running",
+		Request:  pending.request,
+		TargetID: normalizeExecutionTargetID(targetID),
 	})
 	w.recordWorkflowStarted(runID, name, pending.request, "")
 	notifyWorkflowRunStarted(ctx, runID)
-	return runID
+	return runID, nil
 }
 
 func notifyWorkflowRunStarted(ctx context.Context, runID string) {
@@ -639,6 +786,16 @@ func notifyWorkflowRunStarted(ctx context.Context, runID string) {
 	if ok && hook != nil {
 		hook(runID)
 	}
+}
+
+func workflowExecutionTargetID(ctx context.Context, runtimeRef *Runtime) string {
+	if targetID := executionTargetIDFromContext(ctx); targetID != "" {
+		return normalizeExecutionTargetID(targetID)
+	}
+	if runtimeRef != nil && runtimeRef.session != nil {
+		return normalizeExecutionTargetID(runtimeRef.session.Snapshot().Workflow.TargetID)
+	}
+	return session.LocalTargetID
 }
 
 func (w *WorkflowRunner) recordWorkflowRunEvents(runID string, handler func(event schema.StreamEvent) error) func(event schema.StreamEvent) error {
@@ -667,7 +824,9 @@ func (w *WorkflowRunner) recordWorkflowRunEvents(runID string, handler func(even
 					runEvent.WorkflowStatus = snapshot.Status
 				}
 			}
-			w.runtime.session.AppendWorkflowRunEvent(runID, runEvent)
+			if err := w.runtime.session.AppendWorkflowRunEventDurable(runID, runEvent); err != nil {
+				return fmt.Errorf("persist workflow event before publish: %w", err)
+			}
 		}
 		if handler == nil {
 			return nil
@@ -791,10 +950,80 @@ func firstWorkflowGraphNonEmpty(values ...string) string {
 	return ""
 }
 
+// reconcileDeliveredChangeSlices keeps the run's slice report consistent with a
+// successful delivery: a slice marked blocked after its files were actually
+// changed is reported as implemented instead of contradicting the delivery.
+func (w *WorkflowRunner) reconcileDeliveredChangeSlices(runID, status string) {
+	if w == nil || w.runtime == nil || w.runtime.session == nil {
+		return
+	}
+	if strings.TrimSpace(strings.ToLower(status)) != "completed" {
+		return
+	}
+	slices := w.runtime.session.WorkflowRunChangeSlices(runID)
+	reconciled := 0
+	for i := range slices {
+		if strings.EqualFold(strings.TrimSpace(slices[i].Status), "blocked") && len(slices[i].ChangedFiles) > 0 {
+			slices[i].Status = "implemented"
+			slices[i].BlockedReason = ""
+			reconciled++
+		}
+	}
+	if reconciled == 0 {
+		return
+	}
+	if err := w.runtime.session.ReplaceWorkflowRunChangeSlicesDurable(runID, slices); err != nil {
+		return
+	}
+	w.runtime.session.AppendWorkflowRunEvent(runID, session.WorkflowRunEventSnapshot{
+		Type:           "change_slice_state",
+		Content:        fmt.Sprintf("reconciled %d change slice(s) after successful delivery", reconciled),
+		WorkflowName:   "",
+		WorkflowStatus: "completed",
+		Reason:         "change_slice_reconciled_after_delivery",
+	})
+}
+
+// deliverRunNotification sends the configured email notification for a finished
+// run. Delivery is best-effort and never blocks or fails the run itself.
+func (w *WorkflowRunner) deliverRunNotification(result WorkflowResult) {
+	if w == nil || w.runtime == nil {
+		return
+	}
+	sender := w.runtime.NotifySender()
+	if sender == nil {
+		return
+	}
+	status := strings.TrimSpace(result.Status)
+	subject := fmt.Sprintf("%s %s", fallbackWorkflowGraphValue(result.Name, "workflow"), fallbackWorkflowGraphValue(status, "finished"))
+	summary := strings.TrimSpace(result.FinalSummary)
+	if len(summary) > 4000 {
+		summary = summary[:4000] + "\n...(truncated)"
+	}
+	body := fmt.Sprintf("run: %s\nworkflow: %s\nstatus: %s\nnext stage: %s\n\n%s\n",
+		fallbackWorkflowGraphValue(w.runID, "unknown"), fallbackWorkflowGraphValue(result.Name, "workflow"),
+		fallbackWorkflowGraphValue(status, "unknown"), fallbackWorkflowGraphValue(string(result.NextStage), ""), summary)
+	go func() {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if err := sender.Send(ctx, subject, body); err != nil {
+			if w.runtime.audit != nil {
+				w.runtime.audit.Record(schema.AuditEntry{Type: "notification", AgentID: "workflow", Outcome: "email_failed", Detail: err.Error()})
+			}
+			return
+		}
+		if w.runtime.audit != nil {
+			w.runtime.audit.Record(schema.AuditEntry{Type: "notification", AgentID: "workflow", Outcome: "email_sent", Detail: subject})
+		}
+	}()
+}
+
 func (w *WorkflowRunner) completeWorkflowRun(runID string, result WorkflowResult) {
 	if w == nil || w.runtime == nil || w.runtime.session == nil || strings.TrimSpace(runID) == "" {
 		return
 	}
+	w.reconcileDeliveredChangeSlices(runID, result.Status)
+	w.deliverRunNotification(result)
 	w.runtime.session.CompleteWorkflowRun(
 		runID,
 		result.Status,
@@ -849,6 +1078,7 @@ func (w *WorkflowRunner) completeWorkflowRun(runID string, result WorkflowResult
 	if run, ok := w.runtime.session.WorkflowRun(runID); ok {
 		w.runtime.recordWorkflowTaskMemoryFromRun(run, nil)
 	}
+	w.runtime.releaseUnchangedTaskStaging(runID, result.Status)
 	_, _, _ = w.runtime.MaybeAutoCompactContext(context.Background(), "workflow run completed")
 }
 
@@ -856,7 +1086,7 @@ func (w *WorkflowRunner) failWorkflowRun(runID, name, request string, err error)
 	if w == nil || w.runtime == nil || w.runtime.session == nil || strings.TrimSpace(runID) == "" || err == nil {
 		return
 	}
-	if errors.Is(err, context.Canceled) {
+	if errors.Is(err, context.Canceled) || strings.Contains(strings.ToLower(err.Error()), "context canceled") {
 		reason := err.Error()
 		if strings.TrimSpace(reason) == "" {
 			reason = "workflow run cancelled"
@@ -2210,6 +2440,10 @@ func workflowRunStageSnapshots(stages []WorkflowStageResult) []session.WorkflowR
 	}
 	snapshots := make([]session.WorkflowRunStageSnapshot, 0, len(stages))
 	for _, stage := range stages {
+		var changeSlices []session.WorkflowChangeSliceSnapshot
+		if _, declared := extractChangeSlicesJSON(stage.Result.Output); declared {
+			changeSlices = compileWorkflowChangeSlices(stage.Result.Output, stage.Result.ToolResults)
+		}
 		snapshots = append(snapshots, session.WorkflowRunStageSnapshot{
 			Stage:                       string(stage.Stage),
 			AgentID:                     stage.Agent,
@@ -2225,6 +2459,7 @@ func workflowRunStageSnapshots(stages []WorkflowStageResult) []session.WorkflowR
 			Artifacts:                   append([]session.WorkflowRunArtifact(nil), stage.Output.Artifacts...),
 			Acceptance:                  append([]session.WorkflowRunAcceptanceSnapshot(nil), stage.Acceptance...),
 			Metadata:                    copyStringMap(stage.Metadata),
+			ChangeSlices:                changeSlices,
 			Result:                      stage.Result,
 			BudgetScope:                 stage.BudgetScope,
 			BudgetReason:                stage.BudgetReason,
@@ -2301,7 +2536,17 @@ func workflowRunEventSnapshot(event schema.StreamEvent) session.WorkflowRunEvent
 		Incomplete:                  event.Incomplete,
 		ToolName:                    event.ToolName,
 		ToolCallID:                  event.ToolCallID,
+		DurationMs:                  event.DurationMs,
+		ToolResultSummary:           event.ToolResultSummary,
+		ArtifactRef:                 event.ArtifactRef,
+		ArtifactHash:                event.ArtifactHash,
+		ToolResultBytes:             event.ToolResultContentBytes,
+		ToolResultStored:            event.ToolResultStoredBytes,
+		ToolResultTruncated:         event.ToolResultTruncated,
+		ArtifactRetention:           event.ArtifactRetention,
+		Redaction:                   event.Redaction,
 		ArgumentsSummary:            event.ArgumentsSummary,
+		ArgumentsHash:               event.ArgumentsHash,
 		AgentID:                     event.AgentID,
 		Mode:                        event.Mode,
 		IsError:                     event.IsError,
@@ -2311,6 +2556,8 @@ func workflowRunEventSnapshot(event schema.StreamEvent) session.WorkflowRunEvent
 		PromptTokens:                event.PromptTokens,
 		OutputTokens:                event.OutputTokens,
 		CachedTokens:                event.CachedTokens,
+		OutputKind:                  event.OutputKind,
+		CacheHitRate:                event.CacheHitRate,
 		WorkflowName:                event.WorkflowName,
 		WorkflowStatus:              event.WorkflowStatus,
 		NextStage:                   event.NextStage,
@@ -2383,13 +2630,14 @@ func (w *WorkflowRunner) runSkillChainFrom(ctx context.Context, request string, 
 		completed = append(completed, stageResult)
 		chain = w.extendSkillChain(chain, index, request, result.Output, completed)
 	}
-	finalSummary := summarizeWorkflow(completed)
+	finalSummary := workflowFinalSummary(completed)
+	finalStatus := workflowFinalDecisionStatus(finalSummary)
 	w.runtime.DisableWorkflowAutoApproval(workflowNameSkillChain)
 	if err := w.runtime.RestoreDefaultAgent(); err != nil {
 		return WorkflowResult{}, err
 	}
-	w.persistWorkflowState(workflowNameSkillChain, "completed", "", request, finalSummary, "")
-	return WorkflowResult{Name: workflowNameSkillChain, Status: "completed", CompletedStages: completed, FinalSummary: finalSummary}, nil
+	w.persistWorkflowState(workflowNameSkillChain, finalStatus, "", request, finalSummary, "")
+	return WorkflowResult{Name: workflowNameSkillChain, Status: finalStatus, CompletedStages: completed, FinalSummary: finalSummary}, nil
 }
 
 func (w *WorkflowRunner) resolveSkillChain(first schema.Skill) []schema.Skill {
@@ -2676,7 +2924,7 @@ func workflowPromptSummary(text string) string {
 	if len(text) <= 600 {
 		return text
 	}
-	return strings.TrimSpace(text[:597]) + "..."
+	return trimWorkflowGraphContextValue(text, 597) + "..."
 }
 
 func runSkillStage(ctx context.Context, runtimeRef *Runtime, agentID, input string, skill schema.Skill, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
@@ -2688,7 +2936,8 @@ func runSkillStageWithModel(ctx context.Context, runtimeRef *Runtime, agentID, i
 }
 
 func runSkillStageWithModelAndOptions(ctx context.Context, runtimeRef *Runtime, agentID, input string, skill schema.Skill, model workflowGraphStageModel, options workflowStageRunOptions, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
-	runner, ok := runtimeRef.runners[agentID]
+	ctx = WithExecutionTarget(ctx, workflowExecutionTargetID(ctx, runtimeRef))
+	runner, ok := runtimeRef.agentRunner(agentID)
 	if !ok {
 		return schema.AgentResult{}, fmt.Errorf("workflow agent not configured: %s", agentID)
 	}
@@ -2696,8 +2945,31 @@ func runSkillStageWithModelAndOptions(ctx context.Context, runtimeRef *Runtime, 
 		return schema.AgentResult{}, err
 	}
 	runner = runtimeRef.workflowStageRunnerWithModel(agentID, runner, model)
+	if options.MaxIterations > 0 && options.MaxIterations != runner.profile.MaxIterations {
+		profile := runner.profile
+		profile.MaxIterations = options.MaxIterations
+		runner = &AgentRunner{id: runner.id, profile: profile, llm: runner.llm, executor: runner.executor, fallbackUsed: runner.fallbackUsed}
+	}
 	manager := fixedSkillManager{skill: &skill}
-	result, err := runner.runStreamWithOptions(ctx, input, manager, runtimeRef.mcp, runtimeRef.session, runtimeRef.audit, runtimeRef, agentRunOptions{AllowedTools: options.AllowedTools}, handler)
+	result, err := runner.runStreamWithOptions(ctx, input, manager, runtimeRef.mcp, runtimeRef.session, runtimeRef.audit, runtimeRef, agentRunOptions{
+		AllowedTools:           options.AllowedTools,
+		SystemPromptOverride:   options.SystemPromptOverride,
+		MaxModelCalls:          options.MaxModelCalls,
+		MaxStageTotalCalls:     options.MaxStageTotalCalls,
+		InitialMessages:        append([]schema.Message(nil), options.InitialMessages...),
+		InitialToolResults:     append([]schema.ToolResult(nil), options.InitialToolResults...),
+		IsolatePromptContext:   options.IsolatePromptContext,
+		ApprovedPlanScope:      options.ApprovedPlanScope,
+		ChangeSliceEnforcement: options.ChangeSliceEnforcement,
+		ChangeSlices:           append([]session.WorkflowChangeSliceSnapshot(nil), options.ChangeSlices...),
+		StageToolPolicy:        options.StageToolPolicy,
+		ToolOperations: workflowToolOperationScope{
+			RunID:    options.ToolOperationRunID,
+			Workflow: options.ToolOperationWorkflow,
+			Stage:    options.ToolOperationStage,
+			Enabled:  options.IdempotentToolCalls,
+		},
+	}, handler)
 	if err != nil {
 		return result, err
 	}
@@ -2861,7 +3133,7 @@ func (w *WorkflowRunner) RunPlanFixAudit(ctx context.Context, request string, ap
 		return w.pauseWorkflowForIncompleteStage(workflowNamePlanFixAudit, request, completed, auditStageResult), nil
 	}
 	completed = append(completed, auditStageResult)
-	finalSummary := summarizeWorkflow(completed)
+	finalSummary := workflowFinalSummary(completed)
 	w.runtime.DisableWorkflowAutoApproval(workflowNamePlanFixAudit)
 	if err := w.runtime.RestoreDefaultAgent(); err != nil {
 		return WorkflowResult{}, err
@@ -2928,6 +3200,16 @@ func (w *WorkflowRunner) persistWorkflowState(name, status string, nextStage Wor
 		}
 	}
 	w.runtime.session.SetWorkflow(snapshot)
+	// Paused and terminal results must publish their status together with the
+	// completed stage snapshots. The caller persists that atomic result through
+	// completeWorkflowRun immediately after the workflow function returns. Save
+	// resumable tool context now, but keep the run visibly active until then.
+	if !strings.EqualFold(strings.TrimSpace(status), "running") {
+		activeSnapshot := snapshot
+		activeSnapshot.Status = "running"
+		w.runtime.session.UpdateWorkflowRunState(activeSnapshot)
+		return
+	}
 	w.runtime.session.UpdateWorkflowRunState(snapshot)
 	if strings.TrimSpace(snapshot.RunID) != "" {
 		w.runtime.session.AppendWorkflowRunEvent(snapshot.RunID, session.WorkflowRunEventSnapshot{
@@ -3095,7 +3377,7 @@ func (w *WorkflowRunner) runPlanFixAuditApprovedStages(ctx context.Context, requ
 		return WorkflowResult{}, fmt.Errorf("workflow stage %s: %w", WorkflowStageAudit, err)
 	}
 	completed = append(completed, WorkflowStageResult{Stage: WorkflowStageAudit, Agent: workflowAgentAuditor, Result: auditResult})
-	finalSummary := summarizeWorkflow(completed)
+	finalSummary := workflowFinalSummary(completed)
 	w.runtime.DisableWorkflowAutoApproval(workflowNamePlanFixAudit)
 	if err := w.runtime.RestoreDefaultAgent(); err != nil {
 		return WorkflowResult{}, err
@@ -3123,11 +3405,18 @@ func resumePlanFixAuditWorkflow(w *WorkflowRunner, ctx context.Context, pending 
 		if err := w.runtime.rejectToolApprovalByRiskPolicy(pending.tool); err != nil {
 			return WorkflowResult{}, err
 		}
+		if err := w.runtime.rejectPendingToolCallByNativeSandboxPolicy(pending); err != nil {
+			return WorkflowResult{}, err
+		}
 		resolved := false
 		if _, ok := w.runtime.PendingApproval(pending.call.ID); ok {
 			resolved = w.runtime.ResolvePendingApproval(pending.call.ID, true).Found
 		}
-		toolResult, err := w.runtime.mcp.CallTool(ctx, pending.call.Name, pending.call.Arguments)
+		execCtx := pendingApprovalExecutionContext(w.runtime, pending)
+		if err := w.runtime.prepareExecutionWorkspace(&execCtx, pending.call, pending.tool); err != nil {
+			return WorkflowResult{}, err
+		}
+		toolResult, err := callExecutionMCP(ctx, w.runtime.mcp, execCtx, pending.call, pending.tool)
 		if err != nil {
 			return WorkflowResult{}, err
 		}
@@ -3193,7 +3482,7 @@ func resumePlanFixAuditWorkflow(w *WorkflowRunner, ctx context.Context, pending 
 			return w.pauseWorkflowForIncompleteStage(workflowNamePlanFixAudit, pending.request, completed, auditStageResult), nil
 		}
 		completed = append(completed, auditStageResult)
-		finalSummary := summarizeWorkflow(completed)
+		finalSummary := workflowFinalSummary(completed)
 		w.runtime.DisableWorkflowAutoApproval(workflowNamePlanFixAudit)
 		if w.runtime.approvedWorkflowResumes != nil {
 			delete(w.runtime.approvedWorkflowResumes, pending.call.ID)
@@ -3271,10 +3560,17 @@ func resumeSkillChainWorkflow(w *WorkflowRunner, ctx context.Context, pending pe
 	if err := w.runtime.rejectToolApprovalByRiskPolicy(pending.tool); err != nil {
 		return WorkflowResult{}, err
 	}
+	if err := w.runtime.rejectPendingToolCallByNativeSandboxPolicy(pending); err != nil {
+		return WorkflowResult{}, err
+	}
 	if _, ok := w.runtime.PendingApproval(pending.call.ID); ok {
 		resolved = w.runtime.ResolvePendingApproval(pending.call.ID, true).Found
 	}
-	toolResult, err := w.runtime.mcp.CallTool(ctx, pending.call.Name, pending.call.Arguments)
+	execCtx := pendingApprovalExecutionContext(w.runtime, pending)
+	if err := w.runtime.prepareExecutionWorkspace(&execCtx, pending.call, pending.tool); err != nil {
+		return WorkflowResult{}, err
+	}
+	toolResult, err := callExecutionMCP(ctx, w.runtime.mcp, execCtx, pending.call, pending.tool)
 	if err != nil {
 		return WorkflowResult{}, err
 	}
@@ -3357,7 +3653,15 @@ func continueAgentRunWithModelAndSkill(ctx context.Context, runtimeRef *Runtime,
 }
 
 func continueAgentRunWithModelSkillAndOptions(ctx context.Context, runtimeRef *Runtime, agentID, input string, model workflowGraphStageModel, matchedSkill *schema.Skill, options workflowStageRunOptions, approvedCall schema.ToolCall, approvedResponseContent string, approvedResponseMessage schema.Message, approvedResult schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
-	runner, ok := runtimeRef.runners[agentID]
+	approvedResults := make([]schema.ToolResult, 0, 1)
+	if strings.TrimSpace(approvedResult.CallID) != "" || strings.TrimSpace(approvedResult.ToolName) != "" || strings.TrimSpace(approvedResult.Content) != "" {
+		approvedResults = append(approvedResults, approvedResult)
+	}
+	return continueAgentRunWithModelSkillOptionsAndResults(ctx, runtimeRef, agentID, input, model, matchedSkill, options, approvedCall, approvedResponseContent, approvedResponseMessage, approvedResults, handler)
+}
+
+func continueAgentRunWithModelSkillOptionsAndResults(ctx context.Context, runtimeRef *Runtime, agentID, input string, model workflowGraphStageModel, matchedSkill *schema.Skill, options workflowStageRunOptions, approvedCall schema.ToolCall, approvedResponseContent string, approvedResponseMessage schema.Message, approvedResults []schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	runner, ok := runtimeRef.agentRunner(agentID)
 	if !ok {
 		return schema.AgentResult{}, fmt.Errorf("workflow agent not configured: %s", agentID)
 	}
@@ -3372,26 +3676,60 @@ func continueAgentRunWithModelSkillAndOptions(ctx context.Context, runtimeRef *R
 	mode := profile.Mode
 	memoryText := ""
 	promptContext := promptBudgetContext{}
-	if runtimeRef != nil && runtimeRef.MemoryStore() != nil {
+	if !options.IsolatePromptContext && runtimeRef != nil && runtimeRef.MemoryStore() != nil {
 		if memoryContext, err := runtimeRef.MemoryStore().PromptContextFresh(ctx, input, runtimeRef.currentWorkflowRunID()); err == nil {
 			memoryText = memoryContext.PromptText()
 			promptContext.Memory = &memoryContext
 		}
 	}
 	snapshot := runtimeRef.SessionSnapshot()
-	systemPrompt := BuildSystemPrompt(profile, matchedSkill, snapshot)
+	if options.IsolatePromptContext {
+		snapshot.RecentPrompts = nil
+		snapshot.RecentTools = nil
+		snapshot.LastSkill = ""
+		snapshot.LastSkillMatch = nil
+	}
+	repositoryInstructions, repositoryInstructionPaths, repositoryInstructionErr := repositoryInstructionPrompt(runtimeRef)
+	if repositoryInstructionErr != nil && runtimeRef.audit != nil {
+		runtimeRef.audit.Record(schema.AuditEntry{Type: "repository_instructions", AgentID: agentID, Outcome: "error", Detail: repositoryInstructionErr.Error()})
+	}
+	systemPrompt := BuildSystemPromptWithRepository(profile, matchedSkill, snapshot, repositoryInstructions)
 	messages := dynamicContextMessages(memoryText, snapshot, input, []schema.Message{{Role: "user", Content: input}})
-	collectedResults := make([]schema.ToolResult, 0, 1)
+	collectedResults := make([]schema.ToolResult, 0, len(approvedResults))
+	conversationRestored := false
 	if strings.TrimSpace(approvedCall.ID) != "" {
+		if resume, ok := runtimeRef.workflowConversationContext(approvedCall.ID); ok {
+			systemPrompt = resume.SystemPrompt
+			messages = compactMessagesForResumePrompt(resume.Messages)
+			collectedResults = append(collectedResults, resume.CollectedResults...)
+			conversationRestored = true
+		}
+	}
+	if strings.TrimSpace(approvedCall.ID) != "" && !conversationRestored {
 		messages = append(messages, responseMessageForApproval(approvedResponseContent, approvedCall, approvedResponseMessage))
 		messages = compactMessagesForResumePrompt(messages)
 	}
-	if strings.TrimSpace(approvedResult.CallID) != "" || strings.TrimSpace(approvedResult.ToolName) != "" || strings.TrimSpace(approvedResult.Content) != "" {
+	for _, approvedResult := range approvedResults {
+		if strings.TrimSpace(approvedResult.CallID) == "" && strings.TrimSpace(approvedResult.ToolName) == "" && strings.TrimSpace(approvedResult.Content) == "" {
+			continue
+		}
 		artifactRef := storeCompactedToolResultArtifact(runtimeRef.session, approvedResult, agentID, mode)
 		messages = append(messages, schema.Message{Role: "tool", Name: approvedResult.ToolName, ToolCallID: approvedResult.CallID, Content: compactToolResultForPromptWithArtifact(approvedResult, artifactRef)})
 		collectedResults = append(collectedResults, approvedResult)
 	}
+	profile = applyContextToolBoundary(ctx, profile)
 	execCtx := newExecutionContext(agentID, profile, tools, runtimeRef.audit, workspaceRoot(runtimeRef))
+	controls := runControlsFromContext(ctx, runtimeRef)
+	execCtx.RunPermissionMode = controls.PermissionMode
+	execCtx.TargetID = workflowExecutionTargetID(ctx, runtimeRef)
+	execCtx.Session = runtimeRef.session
+	execCtx.WorkflowRunID = options.ToolOperationRunID
+	execCtx.WorkflowName = options.ToolOperationWorkflow
+	execCtx.WorkflowStage = options.ToolOperationStage
+	execCtx.IdempotentToolCalls = options.IdempotentToolCalls
+	execCtx.ApprovedPlanScope = options.ApprovedPlanScope
+	execCtx.ChangeSliceEnforcement = options.ChangeSliceEnforcement
+	execCtx.ChangeSlices = append([]session.WorkflowChangeSliceSnapshot(nil), options.ChangeSlices...)
 	execCtx.MemoryStore = runtimeRef.MemoryStore()
 	execCtx.MemoryTaskID = runtimeRef.currentWorkflowRunID()
 	execCtx.RiskPolicy = runtimeRef.toolRiskPolicy()
@@ -3402,6 +3740,14 @@ func continueAgentRunWithModelSkillAndOptions(ctx context.Context, runtimeRef *R
 	streamedText := false
 	startedAt := time.Now()
 	actionNudge := newActionNudgeTracker(profile, mode, matchedSkill, input)
+	if handler != nil {
+		if len(repositoryInstructionPaths) > 0 {
+			_ = handler(schema.StreamEvent{Type: schema.StreamEventStatus, Content: "repository_instructions=" + strings.Join(repositoryInstructionPaths, ","), AgentID: agentID, Mode: mode})
+		}
+		if repositoryInstructionErr != nil {
+			_ = handler(schema.StreamEvent{Type: schema.StreamEventError, Content: "repository instructions were not loaded: " + repositoryInstructionErr.Error(), AgentID: agentID, Mode: mode, IsError: true})
+		}
+	}
 	emitTaskStage(handler, runtimeRef.session, agentID, mode, initialTaskStageForMode(mode), "starting workflow stage")
 	for i := 0; i <= profile.MaxIterations; i++ {
 		finalResponseTurn := i == profile.MaxIterations
@@ -3409,16 +3755,19 @@ func continueAgentRunWithModelSkillAndOptions(ctx context.Context, runtimeRef *R
 			emitTaskStage(handler, runtimeRef.session, agentID, mode, "summarize", "reasoning over tool observations")
 		}
 		emitModelWaitStatus(handler, agentID, mode, modelWaitStatusContext{AfterToolResults: i > 0 && len(collectedResults) > 0})
-		request := schema.ChatRequest{Model: profile.Model, System: systemPrompt, Messages: messages, Tools: promptTools, Temperature: profile.Temperature, MaxTokens: profile.MaxTokens}
+		request := schema.ChatRequest{Model: profile.Model, System: executionTargetSystemPrompt(systemPrompt, execCtx.TargetID), Messages: messages, Tools: promptTools, Temperature: profile.Temperature, MaxTokens: profile.MaxTokens, ReasoningEffort: controls.ReasoningEffort}
 		emitPromptBudget(handler, runtimeRef.session, agentID, mode, request, matchedSkill, len(tools), promptToolContext)
 		resp, err := runAgentChatWithRecovery(ctx, runner.llm, request, agentID, mode, handler, &streamedText, &messages)
 		if err != nil {
 			if isRecoverableToolArgumentError(err) {
 				return runner.finalizeWithInvalidToolArguments(agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, collectedResults, false, i+1, handler, runtimeRef.audit)
 			}
+			if transientModelInterruptionAfterResults(ctx, err, collectedResults) {
+				return runner.finalizeWithProviderInterruption(ctx, agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, messages, collectedResults, false, i+1, err, handler, runtimeRef.audit, runtimeRef)
+			}
 			return schema.AgentResult{}, fmt.Errorf("llm chat: %w", err)
 		}
-		emitTokenUsage(handler, runtimeRef.session, agentID, mode, resp.Usage, promptToolContext)
+		emitTokenUsage(handler, runtimeRef.session, agentID, mode, resp, promptToolContext)
 		if len(resp.ToolCalls) == 0 {
 			completedResp, continuationCount, incomplete, err := runner.continueOutputLimitResponse(ctx, runner.llm, resp, request, messages, mode, runtimeRef.session, matchedSkill, promptToolContext, len(tools), collectedResults, false, i+1, handler, runtimeRef.audit, &streamedText)
 			if err != nil {
@@ -3449,15 +3798,23 @@ func continueAgentRunWithModelSkillAndOptions(ctx context.Context, runtimeRef *R
 		assistantMessage := assistantToolMessage(resp)
 		messages = append(messages, assistantMessage)
 		messages = compactMessagesForConversation(messages)
+		resumeMessages := schema.CopyMessages(messages)
+		resumeCollected := append([]schema.ToolResult(nil), collectedResults...)
 		batchProfile := classifyToolCallBatch(resp.ToolCalls, execCtx)
 		emitTaskStage(handler, runtimeRef.session, agentID, mode, taskStageForToolCalls(resp.ToolCalls, execCtx), summarizeToolCallStage(resp.ToolCalls, execCtx))
-		results, err := runner.executor.RunToolCalls(ctx, execCtx, resp.ToolCalls, runtimeRef, handler)
-		if err != nil {
-			if handler != nil {
-				_ = handler(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), AgentID: agentID, Mode: mode, IsError: true})
+		allowedCalls, blockedResults := enforceWorkflowStageToolPolicy(resp.ToolCalls, collectedResults, execCtx, options.StageToolPolicy)
+		var executedResults []schema.ToolResult
+		if len(allowedCalls) > 0 {
+			var err error
+			executedResults, err = runner.executor.RunToolCalls(ctx, execCtx, allowedCalls, runtimeRef, handler)
+			if err != nil {
+				if handler != nil {
+					_ = handler(schema.StreamEvent{Type: schema.StreamEventError, Content: err.Error(), AgentID: agentID, Mode: mode, IsError: true})
+				}
+				return schema.AgentResult{}, err
 			}
-			return schema.AgentResult{}, err
 		}
+		results := mergeWorkflowStageToolResults(resp.ToolCalls, executedResults, blockedResults)
 		for i, result := range results {
 			if !result.Suspended {
 				continue
@@ -3467,20 +3824,39 @@ func continueAgentRunWithModelSkillAndOptions(ctx context.Context, runtimeRef *R
 			}
 		}
 		collectedResults = append(collectedResults, results...)
+		suspendedCalls := make([]schema.ToolCall, 0)
 		for _, result := range results {
 			if handler != nil {
-				if err := handler(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: result.ToolName, ToolCallID: result.CallID, ArgumentsSummary: summarizeToolResultArguments(result, resp.ToolCalls), Content: result.Content, AgentID: agentID, Mode: mode, IsError: result.IsError, Suspended: result.Suspended}); err != nil {
+				eventResult := schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: result.ToolName, ToolCallID: result.CallID, ArgumentsSummary: summarizeToolResultArguments(result, resp.ToolCalls), Content: result.Content, AgentID: agentID, Mode: mode, IsError: result.IsError, Suspended: result.Suspended}
+				if call, ok := toolCallByID(resp.ToolCalls, result.CallID); ok {
+					eventResult.ArgumentsHash = toolArgumentsHash(call.Arguments)
+				}
+				event := result.WithStreamEvent(eventResult)
+				if err := handler(event); err != nil {
 					return schema.AgentResult{}, err
 				}
 			}
 			if result.Suspended {
-				return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode, Model: profile.Model, ResponseMessage: assistantMessage}, nil
+				if call, ok := toolCallByID(resp.ToolCalls, result.CallID); ok {
+					suspendedCalls = append(suspendedCalls, call)
+				}
+				continue
 			}
 			artifactRef := storeCompactedToolResultArtifact(runtimeRef.session, result, agentID, mode)
-			messages = append(messages, schema.Message{Role: "tool", Name: result.ToolName, ToolCallID: result.CallID, Content: compactToolResultForPromptWithArtifact(result, artifactRef)})
+			promptMessage := schema.Message{Role: "tool", Name: result.ToolName, ToolCallID: result.CallID, Content: compactToolResultForPromptWithArtifact(result, artifactRef)}
+			messages = append(messages, promptMessage)
+			resumeMessages = append(resumeMessages, promptMessage)
+			resumeCollected = append(resumeCollected, result)
+		}
+		if len(suspendedCalls) > 0 {
+			runtimeRef.CaptureWorkflowConversationContext(systemPrompt, resumeMessages, suspendedCalls, resumeCollected)
+			return schema.AgentResult{Output: resp.Message.Content, MatchedSkill: matchedSkill, ToolResults: collectedResults, AgentID: agentID, Mode: mode, Model: profile.Model, ResponseMessage: assistantMessage}, nil
 		}
 		if runFinalToolCalls {
 			return runner.finalizeAfterIterationBudget(ctx, agentConversationState{Profile: profile, MatchedSkill: matchedSkill, SystemPrompt: systemPrompt, MemoryText: memoryText, PromptContext: promptContext, Mode: mode, Input: input, Messages: messages, StartedAt: startedAt}, messages, collectedResults, false, i+1, handler, runtimeRef.audit, runtimeRef)
+		}
+		if len(blockedResults) > 0 {
+			messages = append(messages, schema.Message{Role: "user", Content: workflowStageToolPolicyNudge(options.StageToolPolicy, blockedResults)})
 		}
 		if nudge, ok := actionNudge.Next(batchProfile, len(results)); ok {
 			if summary := toolObservationDigestMessage(collectedResults); strings.TrimSpace(summary) != "" {
@@ -3505,6 +3881,32 @@ func summarizeWorkflow(stages []WorkflowStageResult) string {
 		parts = append(parts, fmt.Sprintf("[%s/%s] %s", stage.Stage, stage.Agent, truncateSummary(stage.Result.Output)))
 	}
 	return strings.Join(parts, "\n\n")
+}
+
+func workflowFinalSummary(stages []WorkflowStageResult) string {
+	for index := len(stages) - 1; index >= 0; index-- {
+		if output := strings.TrimSpace(stages[index].Result.Output); output != "" {
+			return output
+		}
+	}
+	return summarizeWorkflow(stages)
+}
+
+func workflowFinalDecisionStatus(summary string) string {
+	var result struct {
+		Decision string `json:"decision"`
+	}
+	if json.Unmarshal([]byte(strings.TrimSpace(summary)), &result) != nil {
+		return "completed"
+	}
+	switch strings.ToLower(strings.TrimSpace(result.Decision)) {
+	case "blocked", "needs_action", "needs-action":
+		return "blocked"
+	case "failed", "failure", "error", "rejected":
+		return "failed"
+	default:
+		return "completed"
+	}
 }
 
 func hasSuspendedToolResult(results []schema.ToolResult) bool {

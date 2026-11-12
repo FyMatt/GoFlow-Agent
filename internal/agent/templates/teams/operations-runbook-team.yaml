@@ -2,100 +2,100 @@ kind: goflow.team_template_resource
 version: 2
 min_supported_version: 1
 name: operations-runbook-team
-title: Operations Runbook Team
+title: 运维执行团队
 category: operations
-description: Plan operational changes, draft runbooks, risk-review steps, and hand off execution.
+description: 规划运维变更、编写运行手册、复核风险并完成受控执行交接。
 tags: [ops, runbook, risk, approval]
 recommended_workflow: operations-runbook
 recommended_entry_agent: planner
 role_templates:
   - name: incident-planner
-    label: Incident Planner
+    label: 运维规划者
     agent: planner
     skill: execution-plan
     responsibilities:
-      - understand operational goal
-      - identify prechecks and rollback
-      - define success signals
+      - 理解运维目标
+      - 识别前置检查和回滚方案
+      - 定义成功信号
     produces: [runbook_plan, rollback_plan]
   - name: runbook-author
-    label: Runbook Author
+    label: 运行手册编写者
     agent: fixer
     skill: code-writing
     responsibilities:
-      - write or update runbook files
-      - include commands and expected outputs
-      - preserve safety checks
+      - 编写或更新运行手册
+      - 写明命令和预期输出
+      - 保留安全检查
     consumes: [runbook_plan, rollback_plan]
     produces: [runbook_changes]
   - name: risk-reviewer
-    label: Risk Reviewer
+    label: 运维风险复核者
     agent: auditor
     skill: code-audit
     responsibilities:
-      - review destructive steps
-      - check rollback coverage
-      - flag approval gates
+      - 复核破坏性步骤
+      - 检查回滚覆盖范围
+      - 标记审批门禁
     consumes: [runbook_changes]
     produces: [risk_review]
   - name: operator-handoff
-    label: Operator Handoff
+    label: 操作者交接负责人
     agent: chat
     skill: execution-plan
     responsibilities:
-      - summarize exact operator actions
-      - separate automated from manual steps
-      - record unresolved decisions
+      - 汇总操作者需要执行的准确动作
+      - 区分自动步骤和人工步骤
+      - 记录未解决决策
     consumes: [risk_review]
     produces: [operator_handoff]
 handoffs:
   - from: incident-planner
     to: runbook-author
     kind: runbook_plan
-    subject: Operational plan and rollback
+    subject: 运维计划与回滚方案
     artifacts: [runbook_plan, rollback_plan]
     blackboard: [request, plan]
   - from: runbook-author
     to: risk-reviewer
     kind: risk_review
-    subject: Runbook changes ready for review
+    subject: 待复核的运行手册改动
     artifacts: [runbook_changes]
     blackboard: [evidence, finding]
   - from: risk-reviewer
     to: operator-handoff
     kind: operator_handoff
-    subject: Reviewed runbook and unresolved decisions
+    subject: 已复核运行手册与未解决决策
     artifacts: [risk_review]
     blackboard: [finding, decision]
 blackboard_templates:
   - kind: request
-    title: Original request and constraints
+    title: 原始请求与约束
     owner_role: incident-planner
     status: open
     tags: [scope]
-    description: The user request, allowed scope, and assumptions that should survive handoffs.
+    description: 在角色交接中持续保留用户请求、授权范围和关键假设。
   - kind: plan
-    title: Working plan
+    title: 当前运维计划
     owner_role: incident-planner
     status: open
     tags: [plan]
-    description: Current executable plan, stage ordering, and known blockers.
+    description: 当前可执行计划、阶段顺序和已知阻塞项。
   - kind: evidence
-    title: Evidence and observations
+    title: 证据与观察
     owner_role: incident-planner
     status: open
     tags: [evidence]
-    description: Tool observations, source references, test output, or collected artifacts.
+    description: 前检结果、命令输出、配置引用和已收集产物。
   - kind: decision
-    title: Decisions and approvals
+    title: 决策与审批
     owner_role: incident-planner
     status: open
     tags: [decision]
-    description: Decisions made by agents or the operator, including approval gates.
+    description: 智能体或操作者作出的决策，包括变更审批结果。
   - kind: finding
-    title: Findings and risks
+    title: 发现与风险
     owner_role: incident-planner
     status: open
     tags: [risk]
-    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+    description: 运维风险、失败信号、回滚缺口和未解决问题。
 output_contract: [runbook_plan, rollback_plan, risk_review, operator_handoff]

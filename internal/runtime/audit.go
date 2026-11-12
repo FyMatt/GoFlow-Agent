@@ -7,6 +7,8 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
+const maxAuditEntries = 1000
+
 // AuditLogger records runtime audit events.
 type AuditLogger struct {
 	mu      sync.Mutex
@@ -29,6 +31,9 @@ func (l *AuditLogger) Record(entry schema.AuditEntry) {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.entries = append(l.entries, entry)
+	if len(l.entries) > maxAuditEntries {
+		l.entries = append([]schema.AuditEntry(nil), l.entries[len(l.entries)-maxAuditEntries:]...)
+	}
 }
 
 func (l *AuditLogger) Entries() []schema.AuditEntry {

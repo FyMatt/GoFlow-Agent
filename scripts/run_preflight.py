@@ -7,11 +7,21 @@ import argparse
 import os
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
 
 ROOT = Path(__file__).resolve().parents[1]
+
+# Windows consoles commonly default to GBK while Go/JSON output can contain
+# arbitrary UTF-8 text. Keep the preflight report printable instead of turning
+# a successful check into a UnicodeEncodeError.
+for _stream in (sys.stdout, sys.stderr):
+    try:
+        _stream.reconfigure(encoding="utf-8", errors="replace")
+    except (AttributeError, ValueError):
+        pass
 
 
 def parse_args() -> argparse.Namespace:
@@ -37,6 +47,16 @@ def parse_args() -> argparse.Namespace:
         help="also build and validate release archive target GOOS/GOARCH; may be repeated",
     )
     return parser.parse_args()
+
+
+def release_build_command(python: str, targets: list[str]) -> tuple[list[str], list[str]]:
+    """Return one clean build command and its de-duplicated target list."""
+
+    unique_targets = list(dict.fromkeys(targets))
+    command = [python, "scripts/build_release_assets.py", "--clean", "--version", "dev"]
+    for target in unique_targets:
+        command.extend(["--target", target])
+    return command, unique_targets
 
 
 def run(
@@ -78,7 +98,32 @@ def run(
     raise SystemExit(last_returncode)
 
 
+def normalize_windows_temp() -> None:
+    """Expand 8.3 short TEMP/TMP names (CI uses RUNNER~1) before running checks.
+
+    Windows GitHub runners expose the temporary directory through a short path,
+    while Go tests assert the caller-provided path form. Fixing every package to
+    compare both forms is a larger refactor; normalising the environment keeps
+    the whole preflight on one canonical form.
+    """
+    if os.name != "nt":
+        return
+    for name in ("TEMP", "TMP"):
+        value = os.environ.get(name)
+        if not value or "~" not in value:
+            continue
+        try:
+            long_form = os.path.realpath(value)
+        except OSError:
+            continue
+        if long_form and os.path.isdir(long_form) and os.path.normcase(long_form) != os.path.normcase(value):
+            os.environ[name] = long_form
+            tempfile.tempdir = None
+            print(f"normalised {name} short path to {long_form}")
+
+
 def main() -> int:
+    normalize_windows_temp()
     args = parse_args()
     if args.skip_browser and args.browser_required:
         raise SystemExit("--skip-browser and --browser-required cannot be used together")
@@ -89,10 +134,14 @@ def main() -> int:
 
     checks = [
         ("Secret validation", [python, "scripts/validate_no_secrets.py"]),
+        ("Security regression validation", [python, "scripts/validate_security_regressions.py"]),
         ("Python MCP validation", [python, "scripts/validate_python_mcp.py"]),
         ("Extension workflow validation", [python, "scripts/validate_extension_workflow.py"]),
-        ("Binary analysis kit validation", [python, "scripts/validate_binary_analysis_kit.py"]),
         ("Resource link validation", [python, "scripts/validate_resource_links.py"]),
+        (
+            "Golden Provider case-definition validation (non-P7)",
+            [python, "scripts/validate_real_provider_matrix.py"],
+        ),
         ("Web i18n validation", [python, "scripts/validate_web_i18n.py"]),
         ("Documentation validation", [python, "scripts/validate_docs.py"]),
         ("HTTP Studio smoke", [python, "scripts/smoke_http_studio.py"]),
@@ -104,29 +153,65 @@ def main() -> int:
         browser_command = [python, "scripts/smoke_http_browser.py"]
         if args.browser_required:
             browser_command.append("--required")
+        browser_retry_markers = [
+            "Access is denied",
+            "Crashpad",
+            "Mojo",
+            "crash server failed to launch",
+            "拒绝访问",
+        ]
         run(
             "Browser Studio smoke",
             browser_command,
             attempts=3,
-            retry_markers=[
-                "Access is denied",
-                "Crashpad",
-                "Mojo",
-                "crash server failed to launch",
-                "拒绝访问",
-            ],
+            retry_markers=browser_retry_markers,
             retry_delay_seconds=3.0,
         )
+        if args.browser_required:
+            run(
+                "Browser performance gates",
+                [python, "scripts/smoke_http_browser.py", "--required", "--performance-only"],
+                attempts=3,
+                retry_markers=browser_retry_markers,
+                retry_delay_seconds=3.0,
+            )
 
     run("Deployment asset validation", [python, "scripts/validate_deployment_assets.py"])
-    for target in args.release_target or []:
+    build_command, release_targets = release_build_command(python, args.release_target or [])
+    if release_targets:
         run(
-            f"Release archive build ({target})",
-            [python, "scripts/build_release_assets.py", "--clean", "--version", "dev", "--target", target],
+            f"Release archive build ({', '.join(release_targets)})",
+            build_command,
         )
         run(
+            "Release SBOM and license inventory",
+            [
+                python,
+                "scripts/generate_sbom.py",
+                "--version",
+                "dev",
+                "--output",
+                "dist/SBOM.spdx.json",
+                "--license-output",
+                "dist/THIRD_PARTY_LICENSES.json",
+                "--update-checksums",
+            ],
+        )
+    for target in release_targets:
+        run(
             f"Release archive validation ({target})",
-            [python, "scripts/validate_release_archives.py", "--dist", "dist", "--version", "dev", "--target", target],
+            [
+                python,
+                "scripts/validate_release_archives.py",
+                "--dist",
+                "dist",
+                "--version",
+                "dev",
+                "--target",
+                target,
+                "--require-sbom",
+                "--require-license-report",
+            ],
         )
     print("\npreflight checks passed", flush=True)
     return 0

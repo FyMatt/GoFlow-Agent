@@ -2,8 +2,8 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: agent-framework-extension
-title: Agent Framework Extension
-description: Design and materialize a linked Agent/Skill/Tool/Workflow/Team extension with quality gates and operator review.
+title: 智能体框架扩展
+description: 设计并生成相互关联的智能体、技能、工具、工作流和团队扩展，并通过质量门禁与人工复核。
 category: platform
 tags:
     - agent-framework
@@ -71,6 +71,8 @@ graph:
             risk_level: medium
             boundary: extension-design
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Extension Summary, Resource Map, Agent Contract, Skill Contract, Tool Boundary, Workflow Data Flow, Team Roles, Policy Gates, Files To Create, Restart/Reload Notes, and Acceptance Criteria.
             purpose: Design a linked GoFlow extension package that can be materialized as versionable resources.
             quality_bar: Every generated resource must have a name, storage path, owner, inputs, outputs, safety boundary, and validation path.
@@ -121,6 +123,7 @@ graph:
             risk_level: medium
             boundary: design-review
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Review Decision, Missing Contracts, Safety Risks, Validation Gaps, Required Changes, and Recommendation. Use approved only when ready to materialize.
             review_scope: Review the extension design for over-broad agents, missing skill/tool contracts, missing workflow data flow, missing validation, unsafe tool permissions, and restart/reload ambiguity.
           input:
@@ -195,6 +198,7 @@ graph:
             boundary: workspace-resource-materialization
             requires_approval: true
           params:
+            require_workspace_mutation: "false"
             purpose: Create or update the requested GoFlow extension resources under their modular folders. Prefer scaffold commands or validated YAML formats where possible.
           input:
             design: stages.design.outputs.design
@@ -230,6 +234,7 @@ graph:
             risk_level: medium
             boundary: final-review
           params:
+            require_workspace_mutation: "false"
             review_scope: Check whether the generated resources match the design, remain workspace scoped, declare validation/restart guidance, and avoid unrelated edits.
           input:
             changes: stages.materialize.outputs.changes
@@ -250,6 +255,9 @@ graph:
           node_type: skill
           agent: planner
           skill: execution-plan
+          params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
           execution:
             mode: planning
             risk_level: medium
@@ -268,6 +276,8 @@ graph:
           node_type: skill
           agent: chat
           skill: execution-plan
+          params:
+            require_workspace_mutation: "false"
           execution:
             mode: manual
             risk_level: medium

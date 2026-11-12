@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"os"
 	"os/exec"
@@ -11,14 +13,10 @@ import (
 	"strings"
 	"time"
 
-	"gopkg.in/yaml.v3"
-)
+	"github.com/FyMatt/GoFlow-Agent/internal/nativesandbox"
 
-const (
-	containerIsolationProfileReadonly   = "readonly"
-	containerIsolationProfileWriter     = "writer"
-	containerIsolationProfileNetwork    = "network"
-	containerIsolationProfileProduction = "production"
+	"github.com/FyMatt/GoFlow-Agent/internal/persistence"
+	"gopkg.in/yaml.v3"
 )
 
 const (
@@ -62,24 +60,74 @@ func LoadForWorkspace(path, workspaceRoot string) (*Config, error) {
 	}
 
 	cfg.RuntimeHome = filepath.Dir(filepath.Dir(path))
+	cfg.DataRoot = resolveDataRoot(cfg.RuntimeHome)
 	cfg.WorkspaceRoot = filepath.Clean(workspaceRoot)
+	cfg.WorkspaceDataRoot = resolveWorkspaceDataRoot(cfg.RuntimeHome, cfg.DataRoot, cfg.WorkspaceRoot)
 	cfg.ConfigPath = filepath.Clean(path)
 	if err := mergeModularConfig(&cfg); err != nil {
 		return nil, err
 	}
+	sessionPersistConfigured := strings.TrimSpace(cfg.Session.PersistPath) != ""
 	applyDefaults(&cfg)
 	expandEnv(&cfg)
-	resolveRuntimePaths(&cfg, cfg.RuntimeHome, filepath.Dir(path))
-	resolveWorkspacePaths(&cfg)
-	normalizeConfig(&cfg)
-	if err := applyMCPServerIsolationProfiles(&cfg); err != nil {
+	if err := resolveSecretReferences(&cfg); err != nil {
 		return nil, err
 	}
+	resolveRuntimePaths(&cfg, cfg.RuntimeHome, filepath.Dir(path))
+	resolveWorkspacePaths(&cfg, sessionPersistConfigured)
+	normalizeConfig(&cfg)
 	if err := validate(&cfg); err != nil {
 		return nil, err
 	}
 
 	return &cfg, nil
+}
+
+func resolveSecretReferences(cfg *Config) error {
+	resolved, err := resolveConfiguredSecretReference(cfg.DataRoot, cfg.LLM.APIKey)
+	if err != nil {
+		return fmt.Errorf("resolve default provider api_key: %w", err)
+	}
+	cfg.LLM.APIKey = resolved
+	if strings.TrimSpace(cfg.Notifications.Email.Password) != "" {
+		resolved, err := resolveConfiguredSecretReference(cfg.DataRoot, cfg.Notifications.Email.Password)
+		if err != nil {
+			return fmt.Errorf("resolve notifications.email.password: %w", err)
+		}
+		cfg.Notifications.Email.Password = resolved
+	}
+	for name, provider := range cfg.Providers {
+		resolved, err := resolveConfiguredSecretReference(cfg.DataRoot, provider.APIKey)
+		if err != nil {
+			return fmt.Errorf("resolve provider %s api_key: %w", name, err)
+		}
+		provider.APIKey = resolved
+		cfg.Providers[name] = provider
+	}
+	return nil
+}
+
+// resolveConfiguredSecretReference treats a missing secret file as an
+// unconfigured Provider. The Web Studio must be able to start before a user
+// enters the first API key; malformed references and other read failures still
+// fail configuration loading.
+func resolveConfiguredSecretReference(dataRoot, value string) (string, error) {
+	value = strings.TrimSpace(value)
+	if !strings.HasPrefix(value, secretReferencePrefix) {
+		return value, nil
+	}
+	path, err := SecretReferencePath(dataRoot, value)
+	if err != nil {
+		return "", err
+	}
+	data, err := os.ReadFile(path)
+	if os.IsNotExist(err) {
+		return "", nil
+	}
+	if err != nil {
+		return "", fmt.Errorf("read secret reference: %w", err)
+	}
+	return strings.TrimSpace(string(data)), nil
 }
 
 func mergeModularConfig(cfg *Config) error {
@@ -95,7 +143,88 @@ func mergeModularConfig(cfg *Config) error {
 	if err := mergeMCPConfigDir(cfg, filepath.Join(cfg.RuntimeHome, "configs", "mcp_servers")); err != nil {
 		return err
 	}
+	if sameCleanPath(cfg.RuntimeHome, cfg.DataRoot) {
+		return nil
+	}
+	if err := mergeProviderConfigDir(cfg, filepath.Join(cfg.DataRoot, "resources", "providers")); err != nil {
+		return err
+	}
+	if err := mergeAgentConfigDir(cfg, filepath.Join(cfg.DataRoot, "resources", "agents")); err != nil {
+		return err
+	}
+	if err := mergeMCPConfigDir(cfg, filepath.Join(cfg.DataRoot, "resources", "mcp")); err != nil {
+		return err
+	}
+	return applyResourceTombstones(cfg)
+}
+
+func applyResourceTombstones(cfg *Config) error {
+	store := persistence.New(cfg.DataRoot)
+	for name := range cfg.Agents {
+		hidden, err := store.IsTombstoned("agents", name)
+		if err != nil {
+			return fmt.Errorf("load Agent tombstones: %w", err)
+		}
+		if hidden {
+			delete(cfg.Agents, name)
+		}
+	}
+	for name := range cfg.Providers {
+		hidden, err := store.IsTombstoned("providers", name)
+		if err != nil {
+			return fmt.Errorf("load Provider tombstones: %w", err)
+		}
+		if hidden {
+			delete(cfg.Providers, name)
+		}
+	}
+	servers := cfg.MCP[:0]
+	for _, server := range cfg.MCP {
+		hidden, err := store.IsTombstoned("mcp", server.Name)
+		if err != nil {
+			return fmt.Errorf("load MCP tombstones: %w", err)
+		}
+		if !hidden {
+			servers = append(servers, server)
+		}
+	}
+	cfg.MCP = servers
 	return nil
+}
+
+func resolveDataRoot(runtimeHome string) string {
+	value := strings.TrimSpace(os.Getenv("GOFLOW_DATA_ROOT"))
+	if value == "" {
+		return filepath.Clean(runtimeHome)
+	}
+	value = os.ExpandEnv(value)
+	if filepath.IsAbs(value) {
+		return filepath.Clean(value)
+	}
+	return filepath.Clean(filepath.Join(runtimeHome, value))
+}
+
+// ResolveDataRoot returns the configured persistent data directory.
+func ResolveDataRoot(runtimeHome string) string {
+	return resolveDataRoot(runtimeHome)
+}
+
+func sameCleanPath(left, right string) bool {
+	left = filepath.Clean(strings.TrimSpace(left))
+	right = filepath.Clean(strings.TrimSpace(right))
+	if runtime.GOOS == "windows" {
+		return strings.EqualFold(left, right)
+	}
+	return left == right
+}
+
+func resolveWorkspaceDataRoot(runtimeHome, dataRoot, workspaceRoot string) string {
+	if sameCleanPath(runtimeHome, dataRoot) {
+		return filepath.Clean(workspaceRoot)
+	}
+	sum := sha256.Sum256([]byte(filepath.Clean(workspaceRoot)))
+	key := hex.EncodeToString(sum[:8])
+	return filepath.Join(dataRoot, "workspaces", key)
 }
 
 func mergeProviderConfigDir(cfg *Config, dir string) error {
@@ -314,134 +443,6 @@ func mergeMCPServers(base, overrides []MCPServerRef) []MCPServerRef {
 	return merged
 }
 
-func applyMCPServerIsolationProfiles(cfg *Config) error {
-	if cfg == nil {
-		return nil
-	}
-	for i := range cfg.MCP {
-		if err := ApplyContainerIsolationProfile(&cfg.MCP[i]); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func ApplyContainerIsolationProfile(server *MCPServerRef) error {
-	if server == nil {
-		return nil
-	}
-	profile := strings.ToLower(strings.TrimSpace(server.IsolationProfile))
-	if profile == "" && server.IsolationOptions != nil {
-		profile = strings.ToLower(strings.TrimSpace(server.IsolationOptions["profile"]))
-	}
-	if profile == "" {
-		return nil
-	}
-	defaults := ContainerIsolationProfileDefaults(profile)
-	if len(defaults) == 0 {
-		return fmt.Errorf("mcp server %s isolation_profile %q is invalid; expected readonly, writer, network, or production", server.Name, profile)
-	}
-	if server.IsolationOptions == nil {
-		server.IsolationOptions = make(map[string]string, len(defaults)+1)
-	}
-	for key, value := range defaults {
-		if _, exists := server.IsolationOptions[key]; exists {
-			continue
-		}
-		server.IsolationOptions[key] = value
-	}
-	delete(server.IsolationOptions, "profile")
-	server.IsolationProfile = profile
-	return nil
-}
-
-func mergeContainerIsolationProfile(server MCPServerRef) MCPServerRef {
-	_ = ApplyContainerIsolationProfile(&server)
-	return server
-}
-
-func ContainerIsolationProfileDefaults(profile string) map[string]string {
-	switch strings.ToLower(strings.TrimSpace(profile)) {
-	case containerIsolationProfileReadonly:
-		return map[string]string{
-			"workspace_mount":   "ro",
-			"network":           "disabled",
-			"ipc":               "none",
-			"userns":            "auto",
-			"memory":            "256m",
-			"memory_swap":       "256m",
-			"cpus":              "0.5",
-			"pids_limit":        "64",
-			"pull_policy":       "missing",
-			"readonly_rootfs":   "true",
-			"no_new_privileges": "true",
-			"cap_drop":          "all",
-			"user":              "65532:65532",
-			"tmpfs":             "/tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m",
-			"init":              "true",
-			"tool_mount":        "ro",
-		}
-	case containerIsolationProfileWriter:
-		return map[string]string{
-			"workspace_mount":   "rw",
-			"network":           "disabled",
-			"ipc":               "none",
-			"userns":            "auto",
-			"memory":            "256m",
-			"memory_swap":       "256m",
-			"cpus":              "0.5",
-			"pids_limit":        "64",
-			"pull_policy":       "missing",
-			"readonly_rootfs":   "true",
-			"no_new_privileges": "true",
-			"cap_drop":          "all",
-			"tmpfs":             "/tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m",
-			"init":              "true",
-			"tool_mount":        "ro",
-		}
-	case containerIsolationProfileNetwork:
-		return map[string]string{
-			"workspace_mount":   "ro",
-			"network":           "bridge",
-			"ipc":               "none",
-			"userns":            "auto",
-			"memory":            "256m",
-			"memory_swap":       "256m",
-			"cpus":              "0.5",
-			"pids_limit":        "64",
-			"pull_policy":       "missing",
-			"readonly_rootfs":   "true",
-			"no_new_privileges": "true",
-			"cap_drop":          "all",
-			"user":              "65532:65532",
-			"tmpfs":             "/tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m",
-			"init":              "true",
-			"tool_mount":        "ro",
-		}
-	case containerIsolationProfileProduction:
-		return map[string]string{
-			"workspace_mount":   "ro",
-			"network":           "disabled",
-			"ipc":               "none",
-			"userns":            "auto",
-			"memory":            "256m",
-			"memory_swap":       "256m",
-			"cpus":              "0.5",
-			"pids_limit":        "64",
-			"pull_policy":       "never",
-			"readonly_rootfs":   "true",
-			"no_new_privileges": "true",
-			"cap_drop":          "all",
-			"user":              "65532:65532",
-			"tmpfs":             "/tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m",
-			"init":              "true",
-			"tool_mount":        "ro",
-		}
-	default:
-		return nil
-	}
-}
-
 func applyDefaults(cfg *Config) {
 	if cfg.Agent.Name == "" {
 		cfg.Agent.Name = "GoFlow Agent"
@@ -484,6 +485,7 @@ func ApplyMCPServerDefaults(server *MCPServerRef) {
 	if server == nil {
 		return
 	}
+	server.TargetScope = strings.ToLower(strings.TrimSpace(server.TargetScope))
 	if server.MaxRequestBytes <= 0 {
 		server.MaxRequestBytes = defaultMCPMaxRequestBytes
 	}
@@ -502,6 +504,60 @@ func ApplyMCPServerDefaults(server *MCPServerRef) {
 	if strings.TrimSpace(server.WorkDir) == "" {
 		server.WorkDir = "."
 	}
+	if strings.TrimSpace(server.Isolation) == "" {
+		server.Isolation = "auto"
+	}
+	if resolved, err := ResolveAutomaticMCPIsolation(*server); err == nil {
+		*server = resolved
+	}
+}
+
+// ResolveAutomaticMCPIsolation turns the compact "auto" setting into the
+// smallest execution boundary that can actually satisfy the server's scope.
+// It deliberately refuses to fall back to the host for an unknown server when
+// the native strong-sandbox executor is not fully enforced.
+func ResolveAutomaticMCPIsolation(server MCPServerRef) (MCPServerRef, error) {
+	return resolveAutomaticMCPIsolation(server, nativesandbox.Probe())
+}
+
+func resolveAutomaticMCPIsolation(server MCPServerRef, report nativesandbox.Report) (MCPServerRef, error) {
+	if !strings.EqualFold(strings.TrimSpace(server.Isolation), "auto") {
+		return server, nil
+	}
+	name := strings.ToLower(strings.TrimSpace(server.Name))
+	if strings.EqualFold(strings.TrimSpace(server.TargetScope), "host") || trustedHostMCPServer(name) {
+		server.Isolation = "process_group"
+		return server, nil
+	}
+	if trustedLocalMCPServer(name) {
+		server.Isolation = "process_group"
+		return server, nil
+	}
+	if report.StrongReady {
+		server.Isolation = "native_strong"
+		server.NetworkDisabled = true
+		server.IsolationOptions = nil
+		return server, nil
+	}
+	return server, fmt.Errorf("automatic isolation for MCP server %s refused: %s", server.Name, report.RefusalReason)
+}
+
+func trustedHostMCPServer(name string) bool {
+	switch name {
+	case "office_tools", "host_tools", "ssh_tools":
+		return true
+	default:
+		return false
+	}
+}
+
+func trustedLocalMCPServer(name string) bool {
+	switch name {
+	case "file_tools", "command_tools", "skill_runner", "python_notes", "web_tools", "network_tools", "notification_tools":
+		return true
+	default:
+		return false
+	}
 }
 
 func applyLLMDefaults(cfg *LLMConfig) {
@@ -511,8 +567,38 @@ func applyLLMDefaults(cfg *LLMConfig) {
 	if cfg.Provider == "" {
 		cfg.Provider = "openai-compatible"
 	}
+	cfg.WireAPI = normalizeWireAPI(cfg.WireAPI)
+	cfg.ReasoningEffort = NormalizeReasoningEffort(cfg.ReasoningEffort)
 	cfg.ProviderMessageFields = normalizeProviderMessageFields(cfg.ProviderMessageFields)
 	cfg.Pricing = normalizePricingConfig(cfg.Pricing)
+}
+
+// NormalizeReasoningEffort maps operator aliases onto the OpenAI-compatible
+// wire values. mid/med become medium; operator high aliases remain high.
+func NormalizeReasoningEffort(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "":
+		return ""
+	case "none", "minimal", "low", "medium":
+		return strings.ToLower(strings.TrimSpace(value))
+	case "mid", "med":
+		return "medium"
+	case "high", "xhigh", "max", "heavy":
+		return "high"
+	default:
+		return "medium"
+	}
+}
+
+func normalizeWireAPI(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "", "chat", "chat_completions", "chat-completions":
+		return "chat_completions"
+	case "responses", "response":
+		return "responses"
+	default:
+		return strings.ToLower(strings.TrimSpace(value))
+	}
 }
 
 func normalizePricingConfig(pricing PricingConfig) PricingConfig {
@@ -534,6 +620,7 @@ func pricingConfigured(pricing PricingConfig) bool {
 
 func expandEnv(cfg *Config) {
 	expandLLMEnv(&cfg.LLM)
+	cfg.HTTP.Token = os.ExpandEnv(cfg.HTTP.Token)
 	cfg.Skill.Directory = os.ExpandEnv(cfg.Skill.Directory)
 	cfg.DefaultAgent = os.ExpandEnv(cfg.DefaultAgent)
 	cfg.Verifier.Agent = os.ExpandEnv(cfg.Verifier.Agent)
@@ -627,6 +714,7 @@ func expandAuxiliaryModelEnv(cfg *AuxiliaryModelConfig) {
 func resolveRuntimePaths(cfg *Config, runtimeHome, configDir string) {
 	cfg.Skill.Directory = resolveRuntimePath(runtimeHome, configDir, cfg.Skill.Directory)
 	for i := range cfg.MCP {
+		cfg.MCP[i].RuntimeHome = runtimeHome
 		cfg.MCP[i].WorkDir = resolveRuntimePath(runtimeHome, configDir, cfg.MCP[i].WorkDir)
 		for j := range cfg.MCP[i].Args {
 			cfg.MCP[i].Args[j] = resolveRuntimeArg(runtimeHome, cfg.MCP[i].Args[j])
@@ -634,8 +722,12 @@ func resolveRuntimePaths(cfg *Config, runtimeHome, configDir string) {
 	}
 }
 
-func resolveWorkspacePaths(cfg *Config) {
-	cfg.Session.PersistPath = resolveRelativeTo(cfg.WorkspaceRoot, cfg.Session.PersistPath)
+func resolveWorkspacePaths(cfg *Config, sessionPersistConfigured bool) {
+	sessionRoot := cfg.WorkspaceRoot
+	if !sessionPersistConfigured && strings.TrimSpace(cfg.WorkspaceDataRoot) != "" {
+		sessionRoot = cfg.WorkspaceDataRoot
+	}
+	cfg.Session.PersistPath = resolveRelativeTo(sessionRoot, cfg.Session.PersistPath)
 	for i := range cfg.MCP {
 		cfg.MCP[i].WorkspaceRoot = cfg.WorkspaceRoot
 	}
@@ -707,6 +799,11 @@ func normalizeConfig(cfg *Config) {
 		cfg.DefaultAgent = firstSortedAgentName(cfg.Agents)
 	}
 	for name, profile := range cfg.Agents {
+		profile.Kind = strings.ToLower(strings.TrimSpace(profile.Kind))
+		profile.TargetScope = strings.ToLower(strings.TrimSpace(profile.TargetScope))
+		if profile.Kind == "" {
+			profile.Kind = AgentKindAgent
+		}
 		if profile.Name == "" {
 			profile.Name = name
 		}
@@ -813,14 +910,52 @@ func firstSortedAgentName(agents map[string]AgentProfile) string {
 		return ""
 	}
 	names := make([]string, 0, len(agents))
-	for name := range agents {
+	for name, profile := range agents {
+		if profile.IsSubagent() {
+			continue
+		}
 		names = append(names, name)
+	}
+	if len(names) == 0 {
+		return ""
 	}
 	sort.Strings(names)
 	return names[0]
 }
 
+func validateNotifications(cfg *Config) error {
+	email := cfg.Notifications.Email
+	if !email.Enabled {
+		return nil
+	}
+	if strings.TrimSpace(email.SMTPHost) == "" {
+		return fmt.Errorf("notifications.email.smtp_host is required when email notification is enabled")
+	}
+	if email.SMTPPort < 0 || email.SMTPPort > 65535 {
+		return fmt.Errorf("notifications.email.smtp_port must be between 1 and 65535")
+	}
+	from := strings.TrimSpace(email.From)
+	if from == "" {
+		from = strings.TrimSpace(email.Username)
+	}
+	if from == "" {
+		return fmt.Errorf("notifications.email.from is required when email notification is enabled")
+	}
+	if len(email.To) == 0 {
+		return fmt.Errorf("notifications.email.to requires at least one recipient")
+	}
+	switch strings.ToLower(strings.TrimSpace(email.TLS)) {
+	case "", "starttls", "tls", "none":
+	default:
+		return fmt.Errorf("notifications.email.tls must be starttls, tls or none")
+	}
+	return nil
+}
+
 func validate(cfg *Config) error {
+	if err := validateNotifications(cfg); err != nil {
+		return err
+	}
 	if len(cfg.Providers) == 0 {
 		return fmt.Errorf("at least one provider is required")
 	}
@@ -832,6 +967,9 @@ func validate(cfg *Config) error {
 	}
 	if _, ok := cfg.Agents[cfg.DefaultAgent]; !ok {
 		return fmt.Errorf("default_agent %q is not defined", cfg.DefaultAgent)
+	}
+	if cfg.Agents[cfg.DefaultAgent].IsSubagent() {
+		return fmt.Errorf("default_agent %q cannot reference a subagent", cfg.DefaultAgent)
 	}
 	if cfg.Skill.Directory == "" {
 		return fmt.Errorf("skill.directory is required")
@@ -853,6 +991,14 @@ func validate(cfg *Config) error {
 		}
 	}
 	for name, profile := range cfg.Agents {
+		switch profile.Kind {
+		case AgentKindAgent, AgentKindSubagent:
+		default:
+			return fmt.Errorf("agent %s kind must be agent or subagent", name)
+		}
+		if profile.TargetScope != "" && profile.TargetScope != "host" {
+			return fmt.Errorf("agent %s target_scope must be empty or host", name)
+		}
 		if strings.TrimSpace(profile.Provider) == "" {
 			return fmt.Errorf("agent %s provider is required", name)
 		}
@@ -933,11 +1079,11 @@ func validateAuxiliaryModelConfig(path string, route AuxiliaryModelConfig, provi
 // ValidateMCPServerRef validates one enabled MCP server reference after
 // defaults, environment expansion, and path resolution have been applied.
 func ValidateMCPServerRef(server MCPServerRef) error {
-	if err := ApplyContainerIsolationProfile(&server); err != nil {
-		return err
-	}
 	if strings.TrimSpace(server.Name) == "" {
 		return fmt.Errorf("enabled mcp server name is required")
+	}
+	if scope := strings.ToLower(strings.TrimSpace(server.TargetScope)); scope != "" && scope != "host" {
+		return fmt.Errorf("mcp server %s target_scope must be empty or host", server.Name)
 	}
 	if strings.TrimSpace(server.Command) == "" {
 		return fmt.Errorf("mcp server %s command is required", server.Name)
@@ -981,19 +1127,37 @@ func ValidateMCPServerRef(server MCPServerRef) error {
 	return nil
 }
 
+// ValidateMCPServerPlatform checks isolation options and host-platform support
+// without requiring the rest of a fully defaulted MCP server definition.
+func ValidateMCPServerPlatform(server MCPServerRef) error {
+	return validateMCPIsolation(server)
+}
+
 func validateMCPIsolation(server MCPServerRef) error {
 	mode := strings.ToLower(strings.TrimSpace(server.Isolation))
 	if mode == "" {
 		mode = "none"
 	}
+	if mode == "container" {
+		return fmt.Errorf("mcp server %s isolation %q has been removed; use isolation: auto or native_strong", server.Name, server.Isolation)
+	}
+	if strings.TrimSpace(server.IsolationProfile) != "" {
+		return fmt.Errorf("mcp server %s isolation_profile has been removed; use isolation: auto or native_strong", server.Name)
+	}
 	if isUnimplementedWindowsAppContainerIsolation(mode) {
-		return fmt.Errorf("mcp server %s isolation %q is not supported; use isolation: container for the supported Docker/Podman sandbox boundary", server.Name, server.Isolation)
+		return fmt.Errorf("mcp server %s isolation %q is managed internally; use isolation: auto or native_strong", server.Name, server.Isolation)
 	}
 	if err := validateMCPIsolationOptions(server.Name, mode, server.IsolationOptions); err != nil {
 		return err
 	}
 	switch mode {
-	case "none", "process_group":
+	case "none", "process_group", "auto":
+		return nil
+	case "native_strong":
+		report := nativesandbox.Probe()
+		if !report.StrongReady {
+			return fmt.Errorf("mcp server %s isolation native_strong is unavailable: %s", server.Name, report.RefusalReason)
+		}
 		return nil
 	case "windows_job", "windows_restricted_token":
 		if runtime.GOOS != "windows" {
@@ -1010,29 +1174,8 @@ func validateMCPIsolation(server MCPServerRef) error {
 			return fmt.Errorf("mcp server %s isolation %q is only supported on Linux", server.Name, server.Isolation)
 		}
 		return nil
-	case "container":
-		switch runtime.GOOS {
-		case "linux", "windows", "darwin":
-			if strings.TrimSpace(server.IsolationProfile) == "" && server.IsolationOptions != nil {
-				server.IsolationProfile = strings.TrimSpace(server.IsolationOptions["profile"])
-			}
-			if strings.TrimSpace(server.IsolationProfile) != "" {
-				if defaults := ContainerIsolationProfileDefaults(server.IsolationProfile); len(defaults) == 0 {
-					return fmt.Errorf("mcp server %s isolation_profile %q is invalid; expected readonly, writer, network, or production", server.Name, server.IsolationProfile)
-				}
-			}
-			if server.NetworkDisabled {
-				network := strings.ToLower(strings.TrimSpace(server.IsolationOptions["network"]))
-				if network != "" && network != "default" && network != "disabled" && network != "none" {
-					return fmt.Errorf("mcp server %s isolation_options.network conflicts with network_disabled; use disabled/none or clear network_disabled", server.Name)
-				}
-			}
-			return nil
-		default:
-			return fmt.Errorf("mcp server %s isolation %q is only supported on Linux, Windows, or macOS with a container runtime", server.Name, server.Isolation)
-		}
 	default:
-		return fmt.Errorf("mcp server %s isolation %q is invalid; expected none, process_group, windows_job, windows_restricted_token, linux_cgroup, linux_netns, or container", server.Name, server.Isolation)
+		return fmt.Errorf("mcp server %s isolation %q is invalid; expected auto, native_strong, process_group, windows_job, windows_restricted_token, linux_cgroup, or linux_netns", server.Name, server.Isolation)
 	}
 }
 
@@ -1047,12 +1190,14 @@ func isUnimplementedWindowsAppContainerIsolation(mode string) bool {
 
 func validateMCPIsolationOptions(serverName, mode string, options map[string]string) error {
 	if len(options) == 0 {
-		if mode == "container" {
-			return fmt.Errorf("mcp server %s isolation container requires isolation_options.image", serverName)
-		}
 		return nil
 	}
 	switch mode {
+	case "native_strong":
+		if len(options) > 0 {
+			return fmt.Errorf("mcp server %s isolation_options are managed internally with native_strong", serverName)
+		}
+		return nil
 	case "linux_cgroup":
 		return validateLinuxCgroupIsolationOptions(serverName, options)
 	case "linux_netns":
@@ -1062,10 +1207,8 @@ func validateMCPIsolationOptions(serverName, mode string, options map[string]str
 			return fmt.Errorf("mcp server %s isolation_options are not supported with windows_restricted_token", serverName)
 		}
 		return nil
-	case "container":
-		return validateContainerIsolationOptions(serverName, options)
 	default:
-		return fmt.Errorf("mcp server %s isolation_options are only supported with linux_cgroup, linux_netns, or container", serverName)
+		return fmt.Errorf("mcp server %s isolation_options are only supported with linux_cgroup or linux_netns", serverName)
 	}
 }
 
@@ -1116,368 +1259,6 @@ func validLinuxNetworkNamespaceCommandConfig(value string) bool {
 		return true
 	}
 	return filepath.IsAbs(value)
-}
-
-func validateContainerIsolationOptions(serverName string, options map[string]string) error {
-	allowed := map[string]struct{}{
-		"image":             {},
-		"runtime":           {},
-		"workspace_mount":   {},
-		"workspace_target":  {},
-		"container_workdir": {},
-		"network":           {},
-		"ipc":               {},
-		"userns":            {},
-		"memory":            {},
-		"memory_swap":       {},
-		"cpus":              {},
-		"pids_limit":        {},
-		"pull_policy":       {},
-		"readonly_rootfs":   {},
-		"user":              {},
-		"cap_drop":          {},
-		"no_new_privileges": {},
-		"security_opt":      {},
-		"tmpfs":             {},
-		"init":              {},
-		"tool_mount":        {},
-		"tool_source":       {},
-		"tool_target":       {},
-	}
-	for key, value := range options {
-		normalized := strings.ToLower(strings.TrimSpace(key))
-		if _, ok := allowed[normalized]; !ok {
-			return fmt.Errorf("mcp server %s isolation_options.%s is invalid; expected one of: image, runtime, workspace_mount, workspace_target, container_workdir, network, ipc, userns, memory, memory_swap, cpus, pids_limit, pull_policy, readonly_rootfs, user, cap_drop, no_new_privileges, security_opt, tmpfs, init, tool_source, tool_target, tool_mount", serverName, key)
-		}
-		switch normalized {
-		case "image":
-			if strings.TrimSpace(value) == "" {
-				return fmt.Errorf("mcp server %s isolation_options.image is required for container isolation", serverName)
-			}
-		case "runtime":
-			if !validContainerRuntime(value) {
-				return fmt.Errorf("mcp server %s isolation_options.runtime is invalid; expected docker, podman, or an absolute runtime path", serverName)
-			}
-		case "workspace_mount":
-			if !validContainerWorkspaceMount(value) {
-				return fmt.Errorf("mcp server %s isolation_options.workspace_mount is invalid; expected rw, ro, or none", serverName)
-			}
-		case "tool_mount":
-			if !validContainerWorkspaceMount(value) {
-				return fmt.Errorf("mcp server %s isolation_options.tool_mount is invalid; expected rw, ro, or none", serverName)
-			}
-		case "workspace_target", "container_workdir", "tool_target":
-			if err := validateContainerAbsolutePath(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.%s is invalid: %w", serverName, key, err)
-			}
-		case "tool_source":
-			if err := validateContainerHostPath(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.%s is invalid: %w", serverName, key, err)
-			}
-		case "network":
-			if !validContainerNetworkMode(value) {
-				return fmt.Errorf("mcp server %s isolation_options.network is invalid; expected default, disabled, none, bridge, host, or a safe Docker network name", serverName)
-			}
-		case "ipc":
-			if !validContainerIPCMode(value) {
-				return fmt.Errorf("mcp server %s isolation_options.ipc is invalid; expected private or none", serverName)
-			}
-		case "userns":
-			if !validContainerUserNamespace(value) {
-				return fmt.Errorf("mcp server %s isolation_options.userns is invalid; expected private, auto, nomap, or keep-id", serverName)
-			}
-		case "memory":
-			if err := validateContainerMemory(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.memory is invalid: %w", serverName, err)
-			}
-		case "memory_swap":
-			if err := validateContainerMemory(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.memory_swap is invalid: %w", serverName, err)
-			}
-		case "cpus":
-			if err := validatePositiveFloat(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.cpus is invalid: %w", serverName, err)
-			}
-		case "pids_limit":
-			if err := validatePositiveInteger(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.pids_limit is invalid: %w", serverName, err)
-			}
-		case "readonly_rootfs", "no_new_privileges":
-			if err := validateBoolString(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.%s is invalid: %w", serverName, key, err)
-			}
-		case "pull_policy":
-			if !validContainerPullPolicy(value) {
-				return fmt.Errorf("mcp server %s isolation_options.pull_policy is invalid; expected always, missing, or never", serverName)
-			}
-		case "user":
-			if err := validateContainerUser(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.user is invalid: %w", serverName, err)
-			}
-		case "cap_drop":
-			if err := validateContainerCapDrop(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.cap_drop is invalid: %w", serverName, err)
-			}
-		case "init":
-			if err := validateBoolString(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.%s is invalid: %w", serverName, key, err)
-			}
-		case "security_opt":
-			if err := validateContainerSecurityOptions(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.%s is invalid: %w", serverName, key, err)
-			}
-		case "tmpfs":
-			if err := validateContainerTmpfsOptions(value); err != nil {
-				return fmt.Errorf("mcp server %s isolation_options.%s is invalid: %w", serverName, key, err)
-			}
-		}
-	}
-	if strings.TrimSpace(options["image"]) == "" {
-		return fmt.Errorf("mcp server %s isolation container requires isolation_options.image", serverName)
-	}
-	return nil
-}
-
-func validContainerRuntime(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" || value == "docker" || value == "podman" {
-		return true
-	}
-	return filepath.IsAbs(value)
-}
-
-func validContainerWorkspaceMount(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "rw", "readwrite", "ro", "readonly", "none":
-		return true
-	default:
-		return false
-	}
-}
-
-func validateContainerAbsolutePath(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	if strings.ContainsRune(value, 0) {
-		return fmt.Errorf("path contains a null byte")
-	}
-	if !strings.HasPrefix(value, "/") {
-		return fmt.Errorf("path must be absolute inside the container")
-	}
-	if strings.Contains(value, "\\") {
-		return fmt.Errorf("path must use forward slashes")
-	}
-	return nil
-}
-
-func validateContainerHostPath(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	if strings.ContainsRune(value, 0) {
-		return fmt.Errorf("path contains a null byte")
-	}
-	if !filepath.IsAbs(value) {
-		return fmt.Errorf("path must be absolute on the host")
-	}
-	return nil
-}
-
-func validateContainerSecurityOptions(value string) error {
-	for _, item := range splitContainerSecurityOptionConfig(value) {
-		if strings.ContainsRune(item, 0) {
-			return fmt.Errorf("security option contains a null byte")
-		}
-		if strings.ContainsAny(item, "\r\n") {
-			return fmt.Errorf("security option must be a single runtime argument")
-		}
-	}
-	return nil
-}
-
-func splitContainerSecurityOptionConfig(value string) []string {
-	return splitDelimitedConfigOption(value, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r'
-	})
-}
-
-func validateContainerTmpfsOptions(value string) error {
-	for _, item := range splitContainerTmpfsOptionConfig(value) {
-		if strings.ContainsRune(item, 0) {
-			return fmt.Errorf("tmpfs option contains a null byte")
-		}
-		target := item
-		if index := strings.Index(target, ":"); index >= 0 {
-			target = target[:index]
-		}
-		if err := validateContainerAbsolutePath(target); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func splitContainerTmpfsOptionConfig(value string) []string {
-	return splitDelimitedConfigOption(value, func(r rune) bool {
-		return r == ';' || r == '\n' || r == '\r'
-	})
-}
-
-func splitDelimitedConfigOption(value string, separator func(rune) bool) []string {
-	fields := strings.FieldsFunc(value, separator)
-	out := make([]string, 0, len(fields))
-	for _, field := range fields {
-		field = strings.TrimSpace(field)
-		if field == "" {
-			continue
-		}
-		out = append(out, field)
-	}
-	return out
-}
-
-func validContainerNetworkMode(value string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" || value == "default" || value == "disabled" || value == "none" || value == "bridge" || value == "host" {
-		return true
-	}
-	for _, ch := range value {
-		if (ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch == '-' || ch == '_' || ch == '.' {
-			continue
-		}
-		return false
-	}
-	return true
-}
-
-func validContainerIPCMode(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "private", "none":
-		return true
-	default:
-		return false
-	}
-}
-
-func validContainerUserNamespace(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "private", "auto", "nomap", "keep-id":
-		return true
-	default:
-		return false
-	}
-}
-
-func validContainerPullPolicy(value string) bool {
-	switch strings.ToLower(strings.TrimSpace(value)) {
-	case "", "always", "missing", "never":
-		return true
-	default:
-		return false
-	}
-}
-
-func validatePositiveFloat(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	parsed, err := strconv.ParseFloat(value, 64)
-	if err != nil || parsed <= 0 {
-		return fmt.Errorf("value must be a positive number")
-	}
-	return nil
-}
-
-func validateContainerMemory(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	suffix := value[len(value)-1]
-	if suffix >= '0' && suffix <= '9' {
-		return validatePositiveInteger(value)
-	}
-	switch suffix {
-	case 'b', 'B', 'k', 'K', 'm', 'M', 'g', 'G', 't', 'T':
-	default:
-		return fmt.Errorf("value must be a positive integer with optional b, k, m, g, or t suffix")
-	}
-	number := strings.TrimSpace(value[:len(value)-1])
-	if number == "" {
-		return fmt.Errorf("value must include a positive integer before the suffix")
-	}
-	return validatePositiveInteger(number)
-}
-
-func validateContainerUser(value string) error {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return nil
-	}
-	if strings.ContainsRune(value, 0) || strings.ContainsAny(value, " \t\r\n") {
-		return fmt.Errorf("value must be a single user or UID[:group/GID] token")
-	}
-	parts := strings.Split(value, ":")
-	if len(parts) > 2 {
-		return fmt.Errorf("value must be user or UID with an optional group/GID")
-	}
-	for _, part := range parts {
-		if part == "" {
-			return fmt.Errorf("user and group segments must not be empty")
-		}
-		if !validContainerIdentityToken(part) {
-			return fmt.Errorf("user and group segments may contain only letters, numbers, underscore, dot, or hyphen")
-		}
-	}
-	return nil
-}
-
-func validContainerIdentityToken(value string) bool {
-	for _, ch := range value {
-		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') || ch == '_' || ch == '.' || ch == '-' {
-			continue
-		}
-		return false
-	}
-	return value != ""
-}
-
-func validateContainerCapDrop(value string) error {
-	for _, item := range splitContainerCapDropOptionConfig(value) {
-		if !validContainerCapabilityToken(item) {
-			return fmt.Errorf("capability %q is invalid; use all or capability names such as NET_ADMIN", item)
-		}
-	}
-	return nil
-}
-
-func splitContainerCapDropOptionConfig(value string) []string {
-	return splitDelimitedConfigOption(value, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == ' ' || r == '\t'
-	})
-}
-
-func validContainerCapabilityToken(value string) bool {
-	value = strings.TrimSpace(value)
-	if value == "" {
-		return false
-	}
-	if strings.EqualFold(value, "all") {
-		return true
-	}
-	for _, ch := range value {
-		if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') ||
-			(ch >= '0' && ch <= '9') || ch == '_' {
-			continue
-		}
-		return false
-	}
-	return true
 }
 
 func validatePositiveInteger(value string) error {

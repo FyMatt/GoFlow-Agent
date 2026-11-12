@@ -173,7 +173,7 @@ func TestLoadRuntimeConfigFromPathUsesExplicitConfig(t *testing.T) {
 	if err := os.MkdirAll(configDir, 0o755); err != nil {
 		t.Fatalf("mkdir config dir: %v", err)
 	}
-	configPath := filepath.Join(configDir, "goflow.docker.yaml")
+	configPath := filepath.Join(configDir, "goflow.custom.yaml")
 	workspaceRoot := t.TempDir()
 	if err := os.WriteFile(configPath, []byte(`providers:
   primary:
@@ -235,6 +235,7 @@ Answer normally.
 	if err := os.WriteFile(configPath, []byte(`providers:
   primary:
     provider: openai-compatible
+    api_key: secret://providers/primary/api_key
 agents:
   chat:
     provider: primary
@@ -259,5 +260,50 @@ session:
 	_, err = app.Runtime.RunStream(context.Background(), "hello", nil)
 	if err == nil || !strings.Contains(err.Error(), "model provider setup required") {
 		t.Fatalf("expected setup-required run error, got %v", err)
+	}
+}
+
+func TestBootstrapDefersMCPDiscoveryUntilATaskNeedsTools(t *testing.T) {
+	runtimeHome := t.TempDir()
+	configDir := filepath.Join(runtimeHome, "configs")
+	if err := os.MkdirAll(configDir, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+	workspaceRoot := t.TempDir()
+	skillDir := filepath.Join(runtimeHome, "skills", "first-run")
+	if err := os.MkdirAll(skillDir, 0o755); err != nil {
+		t.Fatalf("mkdir skill dir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(skillDir, "SKILL.md"), []byte("---\nname: first-run\ndescription: Test skill.\n---\n"), 0o644); err != nil {
+		t.Fatalf("write skill: %v", err)
+	}
+	configPath := filepath.Join(configDir, "goflow.yaml")
+	if err := os.WriteFile(configPath, []byte(`providers:
+  primary:
+    provider: openai-compatible
+agents:
+  chat:
+    provider: primary
+skill:
+  directory: ./skills
+mcp_servers:
+  - name: unavailable
+    command: goflow-tool-that-does-not-exist
+    enabled: true
+    timeout: 1s
+    allowed_commands: [goflow-tool-that-does-not-exist]
+session:
+  max_history: 8
+`), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	app, err := Bootstrap(context.Background(), BootstrapOptions{RuntimeHome: runtimeHome, WorkspaceRoot: workspaceRoot, ConfigPath: configPath})
+	if err != nil {
+		t.Fatalf("Bootstrap should not block Web Studio on MCP discovery: %v", err)
+	}
+	defer app.Close()
+	if _, err := app.MCPClient.ListTools(context.Background()); err == nil {
+		t.Fatal("expected deferred MCP discovery to report the unavailable command")
 	}
 }

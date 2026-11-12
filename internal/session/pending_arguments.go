@@ -48,6 +48,12 @@ func (s *State) normalizePendingApprovalLocked(approval PendingApprovalSnapshot)
 }
 
 func (s *State) normalizeWorkflowSnapshotLocked(snapshot WorkflowSnapshot) WorkflowSnapshot {
+	// Resume transitions often omit identity fields. The selected target belongs
+	// to the durable run and must not fall back to local or another active run.
+	if index := s.workflowRunIndexLocked(snapshot.RunID); index >= 0 {
+		snapshot.TargetID = s.workflowRuns[index].TargetID
+	}
+	snapshot.TargetID = normalizeRunTargetID(snapshot.TargetID)
 	if strings.TrimSpace(snapshot.PendingCallID) == "" {
 		return clearWorkflowSnapshotPendingArguments(snapshot)
 	}

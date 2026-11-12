@@ -10,6 +10,15 @@ func CopyMessage(message Message) Message {
 		message.ToolCall = &call
 	}
 	message.ToolCalls = CopyToolCalls(message.ToolCalls)
+	if len(message.ContentParts) > 0 {
+		message.ContentParts = append([]MessageContentPart(nil), message.ContentParts...)
+		for i := range message.ContentParts {
+			if message.ContentParts[i].Attachment != nil {
+				attachment := *message.ContentParts[i].Attachment
+				message.ContentParts[i].Attachment = &attachment
+			}
+		}
+	}
 	if len(message.ProviderFields) > 0 {
 		fields := make(map[string]json.RawMessage, len(message.ProviderFields))
 		for key, value := range message.ProviderFields {

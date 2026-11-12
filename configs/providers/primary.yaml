@@ -1,10 +1,16 @@
 # Loaded automatically from configs/providers/*.yaml.
 primary:
     provider: openai-compatible
-    base_url: ${GOFLOW_BASE_URL}
-    api_key: ${GOFLOW_API_KEY}
-    model: ${GOFLOW_MODEL}
-    provider_message_fields:
-        - reasoning_content
-    timeout: 60s
+    base_url: https://api.deepseek.com/v1
+    wire_api: chat_completions
+    api_key: secret://providers/primary/api_key
+    model: deepseek-flash
+    timeout: 5m
+    reasoning_effort: low
     retry_backoff: 2s
+    # 官方峰时价格；谷时为一半。用于运行成本估算，不参与计费。
+    pricing:
+        currency: CNY
+        input_per_million_tokens: 2
+        output_per_million_tokens: 8
+        cached_input_per_million_tokens: 0.04

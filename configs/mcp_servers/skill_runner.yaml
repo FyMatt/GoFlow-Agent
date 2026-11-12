@@ -8,6 +8,7 @@ mcp_servers:
       - --skills-dir
       - ./skills
     enabled: true
+    optional: true
     timeout: 2m
     workdir: .
     env_allowlist:
@@ -17,12 +18,15 @@ mcp_servers:
       - LOCALAPPDATA
       - TMP
       - TEMP
+      - GOPATH
+      - GOCACHE
+      - GOMODCACHE
       - GOFLOW_SKILL_PYTHON_CMD
       - GOFLOW_SKILL_NODE_CMD
       - GOFLOW_SKILL_BASH_CMD
       - GOFLOW_SKILL_POWERSHELL_CMD
       - GOFLOW_SKILL_GO_CMD
-    isolation: process_group
+    isolation: auto
     restart_limit: 3
     cooldown: 10s
     max_concurrent_calls: 1

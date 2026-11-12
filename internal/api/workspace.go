@@ -427,7 +427,7 @@ func (s *Server) workspaceFolderPickerResponse(message string, capability worksp
 		Actions:               workspaceActionHints(snapshot, "", s.workspaceRebindSupported()),
 		SwitchPlan:            workspaceSwitchPlanForPath("", "", s.workspaceRebindSupported()),
 		RequiresLocalRequest:  true,
-		RequiresExplicitOptIn: true,
+		RequiresExplicitOptIn: false,
 		OptInEnv:              capability.OptInEnv,
 		FolderPickerMode:      capability.Mode,
 		FolderPickerPlatform:  capability.Platform,

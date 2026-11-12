@@ -60,3 +60,16 @@ func TestBuildLinuxNetworkNamespaceCommandRejectsUnsafeUnshareCommand(t *testing
 		t.Fatal("expected relative unshare command to fail")
 	}
 }
+
+func TestLinuxNetworkOptionBoolAcceptsCommonTrueValues(t *testing.T) {
+	for _, value := range []string{"1", "true", "TRUE", "yes", "on"} {
+		if !linuxNetworkOptionBool(value) {
+			t.Fatalf("expected %q to be true", value)
+		}
+	}
+	for _, value := range []string{"", "0", "false", "no", "off", "unknown"} {
+		if linuxNetworkOptionBool(value) {
+			t.Fatalf("expected %q to be false", value)
+		}
+	}
+}

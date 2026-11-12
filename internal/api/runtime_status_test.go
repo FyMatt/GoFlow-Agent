@@ -1,12 +1,29 @@
 package api
 
 import (
+	"encoding/json"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
+
+func TestProviderSummaryExposesConfiguredReasoningDefault(t *testing.T) {
+	runtimeRef := newAPITestRuntimeWithStateAndResponses(t, session.New(8), nil)
+	server := NewServer(runtimeRef)
+	for _, summary := range server.providerSummaries() {
+		provider, _ := runtimeRef.Provider(summary.ID)
+		if summary.ReasoningEffort != provider.ReasoningEffort {
+			t.Fatalf("reasoning default was lost: %#v", summary)
+		}
+	}
+	encoded, err := json.Marshal(providerSummary{ID: "primary", ReasoningEffort: "low"})
+	if err != nil || !strings.Contains(string(encoded), `"reasoning_effort":"low"`) {
+		t.Fatalf("reasoning default must reach browser: %s err=%v", encoded, err)
+	}
+}
 
 func TestBuildCostRecommendationsUsesRecentWindow(t *testing.T) {
 	history := make([]schema.PromptBudget, 0, 12)

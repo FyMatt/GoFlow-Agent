@@ -31,6 +31,25 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
+func TestRunEarlyCLICommandDoesNotRequireRuntimeConfiguration(t *testing.T) {
+	for _, args := range [][]string{{"--version"}, {"version"}} {
+		var output bytes.Buffer
+		if !runEarlyCLICommand(args, &output) {
+			t.Fatalf("expected %v to be handled", args)
+		}
+		if !strings.HasPrefix(output.String(), "GoFlow ") {
+			t.Fatalf("unexpected version output for %v: %q", args, output.String())
+		}
+	}
+	var help bytes.Buffer
+	if !runEarlyCLICommand([]string{"--help"}, &help) || !strings.Contains(help.String(), "本地智能体工作流平台") {
+		t.Fatalf("unexpected help output: %q", help.String())
+	}
+	if runEarlyCLICommand([]string{"--http", ":8080"}, io.Discard) {
+		t.Fatal("runtime arguments must not be consumed by the early command handler")
+	}
+}
+
 func TestResolvePathsUsesHTTPFlag(t *testing.T) {
 	runtimeHome := t.TempDir()
 	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
@@ -49,8 +68,8 @@ func TestResolvePathsUsesHTTPFlag(t *testing.T) {
 	if resolvedWorkspace != workspaceRoot {
 		t.Fatalf("expected workspace %q, got %q", workspaceRoot, resolvedWorkspace)
 	}
-	if httpAddr != ":8080" {
-		t.Fatalf("expected http addr %q, got %q", ":8080", httpAddr)
+	if httpAddr != "127.0.0.1:8080" {
+		t.Fatalf("expected loopback http addr %q, got %q", "127.0.0.1:8080", httpAddr)
 	}
 }
 
@@ -61,19 +80,35 @@ func TestResolvePathsAcceptsConfigFlag(t *testing.T) {
 		t.Fatalf("mkdir workspace: %v", err)
 	}
 
-	configPath, resolvedWorkspace, httpAddr, err := resolvePaths(runtimeHome, []string{"--config", "configs/goflow.docker.yaml", "--workspace", workspaceRoot, "--http", ":8080"})
+	configPath, resolvedWorkspace, httpAddr, err := resolvePaths(runtimeHome, []string{"--config", "configs/goflow.custom.yaml", "--workspace", workspaceRoot, "--http", ":8080"})
 	if err != nil {
 		t.Fatalf("resolve paths: %v", err)
 	}
-	wantConfigPath := filepath.Join(runtimeHome, "configs", "goflow.docker.yaml")
+	wantConfigPath := filepath.Join(runtimeHome, "configs", "goflow.custom.yaml")
 	if configPath != wantConfigPath {
 		t.Fatalf("expected config path %q, got %q", wantConfigPath, configPath)
 	}
 	if resolvedWorkspace != workspaceRoot {
 		t.Fatalf("expected workspace %q, got %q", workspaceRoot, resolvedWorkspace)
 	}
-	if httpAddr != ":8080" {
-		t.Fatalf("expected http addr %q, got %q", ":8080", httpAddr)
+	if httpAddr != "127.0.0.1:8080" {
+		t.Fatalf("expected loopback http addr %q, got %q", "127.0.0.1:8080", httpAddr)
+	}
+}
+
+func TestNormalizeHTTPListenAddrRequiresExplicitRemoteBinding(t *testing.T) {
+	tests := map[string]string{
+		"":               "",
+		":8080":          "127.0.0.1:8080",
+		":0":             "127.0.0.1:0",
+		"localhost:8080": "localhost:8080",
+		"0.0.0.0:8080":   "0.0.0.0:8080",
+		"[::]:8080":      "[::]:8080",
+	}
+	for input, want := range tests {
+		if got := normalizeHTTPListenAddr(input); got != want {
+			t.Fatalf("normalizeHTTPListenAddr(%q) = %q, want %q", input, got, want)
+		}
 	}
 }
 
@@ -157,32 +192,17 @@ func TestResolvePathSettingsWithDefaultConfig(t *testing.T) {
 	}
 }
 
-func TestApplyStartupEnvDefaultsMirrorsBackupProviderFromPrimary(t *testing.T) {
-	t.Setenv("GOFLOW_BASE_URL", "https://example.test/v1")
-	t.Setenv("GOFLOW_API_KEY", "primary-key")
-	t.Setenv("GOFLOW_MODEL", "primary-model")
-	t.Setenv("GOFLOW_BACKUP_BASE_URL", "")
-	t.Setenv("GOFLOW_BACKUP_API_KEY", "")
-	t.Setenv("GOFLOW_BACKUP_MODEL", "")
-
-	applyStartupEnvDefaults(runtimeHomeInfo{})
-
-	if os.Getenv("GOFLOW_BACKUP_BASE_URL") != "https://example.test/v1" {
-		t.Fatalf("expected backup base url fallback, got %q", os.Getenv("GOFLOW_BACKUP_BASE_URL"))
-	}
-	if os.Getenv("GOFLOW_BACKUP_API_KEY") != "primary-key" {
-		t.Fatalf("expected backup api key fallback, got %q", os.Getenv("GOFLOW_BACKUP_API_KEY"))
-	}
-	if os.Getenv("GOFLOW_BACKUP_MODEL") != "primary-model" {
-		t.Fatalf("expected backup model fallback, got %q", os.Getenv("GOFLOW_BACKUP_MODEL"))
-	}
-}
-
 func TestApplyStartupEnvDefaultsSetsBinaryToolCommands(t *testing.T) {
 	runtimeHome := t.TempDir()
 	t.Setenv("GOFLOW_FILE_TOOLS_CMD", "")
 	t.Setenv("GOFLOW_WEB_TOOLS_CMD", "")
 	t.Setenv("GOFLOW_NETWORK_TOOLS_CMD", "")
+	t.Setenv("GOFLOW_OFFICE_TOOLS_CMD", "")
+	t.Setenv("GOFLOW_COMMAND_TOOLS_CMD", "")
+	t.Setenv("GOFLOW_SKILL_RUNNER_CMD", "")
+	t.Setenv("GOFLOW_HOST_TOOLS_CMD", "")
+	t.Setenv("GOFLOW_SSH_TOOLS_CMD", "")
+	t.Setenv("GOFLOW_NOTIFICATION_TOOLS_CMD", "")
 	t.Setenv("GOFLOW_PYTHON_CMD", "")
 	t.Setenv("GOFLOW_PYTHON_NOTES_PATH", "")
 
@@ -192,6 +212,11 @@ func TestApplyStartupEnvDefaultsSetsBinaryToolCommands(t *testing.T) {
 		"GOFLOW_FILE_TOOLS_CMD":    filepath.Join(runtimeHome, "bin", executableName("file_tools")),
 		"GOFLOW_WEB_TOOLS_CMD":     filepath.Join(runtimeHome, "bin", executableName("web_tools")),
 		"GOFLOW_NETWORK_TOOLS_CMD": filepath.Join(runtimeHome, "bin", executableName("network_tools")),
+		"GOFLOW_OFFICE_TOOLS_CMD":  filepath.Join(runtimeHome, "bin", executableName("office_tools")),
+		"GOFLOW_COMMAND_TOOLS_CMD": filepath.Join(runtimeHome, "bin", executableName("command_tools")),
+		"GOFLOW_SKILL_RUNNER_CMD":  filepath.Join(runtimeHome, "bin", executableName("skill_runner")),
+		"GOFLOW_HOST_TOOLS_CMD":    filepath.Join(runtimeHome, "bin", executableName("host_tools")),
+		"GOFLOW_SSH_TOOLS_CMD":     filepath.Join(runtimeHome, "bin", executableName("ssh_tools")),
 		"GOFLOW_PYTHON_CMD":        defaultPythonCommand(),
 		"GOFLOW_PYTHON_NOTES_PATH": filepath.Join(runtimeHome, "mcp_servers", "python_notes.py"),
 	}
@@ -199,6 +224,14 @@ func TestApplyStartupEnvDefaultsSetsBinaryToolCommands(t *testing.T) {
 		if got := os.Getenv(key); got != want {
 			t.Fatalf("expected %s=%q, got %q", key, want, got)
 		}
+	}
+	if got, want := os.Getenv("GOFLOW_NOTIFICATION_TOOLS_CMD"), filepath.Join(runtimeHome, "bin", executableName("notification_tools")); got != want {
+		t.Fatalf("notification command default: got %q, want %q", got, want)
+	}
+	t.Setenv("GOFLOW_NOTIFICATION_TOOLS_CMD", "custom-notification-command")
+	applyStartupEnvDefaults(runtimeHomeInfo{Root: runtimeHome, BinaryArchive: true})
+	if os.Getenv("GOFLOW_NOTIFICATION_TOOLS_CMD") != "custom-notification-command" {
+		t.Fatal("startup replaced the user's notification command override")
 	}
 }
 
@@ -2250,7 +2283,7 @@ examples:
 		if handled := handleCommand(context.Background(), "/new-workflow release-check", manager, nil, nil); !handled {
 			t.Fatal("expected /new-workflow to be handled")
 		}
-		if handled := handleCommand(context.Background(), "/new-workflow security-review --template human-input-security-review", manager, nil, nil); !handled {
+		if handled := handleCommand(context.Background(), "/new-workflow security-review --template security-audit-evidence-gate", manager, nil, nil); !handled {
 			t.Fatal("expected templated /new-workflow to be handled")
 		}
 		if handled := handleCommand(context.Background(), "/new-kit software-engineering acme-platform", manager, nil, nil); !handled {
@@ -2287,7 +2320,7 @@ examples:
 			t.Fatal("expected /new-workflow-template to be handled")
 		}
 	})
-	if !strings.Contains(output, "notes-helper.py") || !strings.Contains(output, "researcher.yaml") || !strings.Contains(output, "deepseek.yaml") || !strings.Contains(output, "release-check") || !strings.Contains(output, "template=human-input-security-review") || !strings.Contains(output, "acme-platform") || !strings.Contains(output, "framework-starter") || !strings.Contains(output, "support-desk") || !strings.Contains(output, "obs-kit") || !strings.Contains(output, "acme-platform-full-agent") || !strings.Contains(output, "acme-binary-full-agent") || !strings.Contains(output, "high-risk-gate") || !strings.Contains(output, "custom-review-team") || !strings.Contains(output, "custom-framework-team") || !strings.Contains(output, "custom-support-team") || !strings.Contains(output, "custom-plan-template") {
+	if !strings.Contains(output, "notes-helper.py") || !strings.Contains(output, "researcher.yaml") || !strings.Contains(output, "deepseek.yaml") || !strings.Contains(output, "release-check") || !strings.Contains(output, "template=security-audit-evidence-gate") || !strings.Contains(output, "acme-platform") || !strings.Contains(output, "framework-starter") || !strings.Contains(output, "support-desk") || !strings.Contains(output, "obs-kit") || !strings.Contains(output, "acme-platform-full-agent") || !strings.Contains(output, "acme-binary-full-agent") || !strings.Contains(output, "high-risk-gate") || !strings.Contains(output, "custom-review-team") || !strings.Contains(output, "custom-framework-team") || !strings.Contains(output, "custom-support-team") || !strings.Contains(output, "custom-plan-template") {
 		t.Fatalf("expected scaffold output, got %q", output)
 	}
 	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "notes-helper.py"), "WORKSPACE_ROOT")
@@ -2305,8 +2338,8 @@ examples:
 	assertFileContains(t, filepath.Join(runtimeHome, "configs", "providers", "deepseek.yaml"), "api_key: ${DEEPSEEK_API_KEY}")
 	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "release-check", "workflow.yaml"), "skill: execution-plan")
 	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "release-check", "WORKFLOW.md"), "Workflow")
-	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "security-review", "workflow.yaml"), "node_type: input_gate")
-	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "security-review", "workflow.yaml"), "web-vulnerability-research")
+	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "security-review", "workflow.yaml"), "node_type: quality_gate")
+	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "security-review", "workflow.yaml"), "skill: vulnerability-research")
 	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform", "kit.yaml"), "kind: goflow.kit")
 	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform", "kit.yaml"), "software-engineering")
 	assertFileContains(t, filepath.Join(runtimeHome, "kits", "acme-platform", "kit.yaml"), "plan-fix-audit")
@@ -2323,7 +2356,7 @@ examples:
 	assertFileContains(t, filepath.Join(runtimeHome, "configs", "agents", "acme-platform-full-agent.yaml"), "acme-platform-full-helper/read_text")
 	assertFileContains(t, filepath.Join(runtimeHome, "skills", "acme-platform-full-skill", "SKILL.md"), "workflow-handoff")
 	assertFileContains(t, filepath.Join(runtimeHome, "mcp_servers", "acme-platform-full-helper.py"), "WORKSPACE_ROOT")
-	assertFileContains(t, filepath.Join(runtimeHome, "configs", "mcp_servers", "acme-platform-full-helper.yaml"), "isolation: container")
+	assertFileContains(t, filepath.Join(runtimeHome, "configs", "mcp_servers", "acme-platform-full-helper.yaml"), "isolation: auto")
 	assertFileContains(t, filepath.Join(runtimeHome, "workflows", "acme-platform-full-workflow", "workflow.yaml"), "policy_guard")
 	assertFileContains(t, filepath.Join(runtimeHome, "templates", "workflows", "acme-platform-full-template.yaml"), "goflow.workflow_template_resource")
 	assertFileContains(t, filepath.Join(runtimeHome, "templates", "teams", "acme-platform-full-team.yaml"), "goflow.team_template_resource")
@@ -2633,9 +2666,8 @@ vertical_pack:
   required_inputs: [requirement, acceptance criteria]
   tool_boundaries:
     - File tools stay inside the confirmed workspace.
-  simple_mode:
+  presentation_guidance:
     - Show task, verification, and final handoff.
-  expert_mode:
     - Show workflow graph, tool allowlists, and context budgets.
 examples:
   - title: Improve project
@@ -2684,7 +2716,7 @@ metadata:
 			t.Fatal("expected /kits detail command to be handled")
 		}
 	})
-	for _, want := range []string{"Vertical Kit", "Acme Platform Kit", "maturity=professional", "domain=software-engineering", "Scoped engineering delivery", "simple_mode", "expert_mode", "providers", "primary", "workflow_templates", "software-team-review-gate", "examples", "Optimize this project.", "metadata", "owner=local"} {
+	for _, want := range []string{"Vertical Kit", "Acme Platform Kit", "maturity=professional", "domain=software-engineering", "Scoped engineering delivery", "presentation_guidance", "providers", "primary", "workflow_templates", "software-team-review-gate", "examples", "Optimize this project.", "metadata", "owner=local"} {
 		if !strings.Contains(detailOutput, want) {
 			t.Fatalf("expected kit detail to contain %q, got %q", want, detailOutput)
 		}

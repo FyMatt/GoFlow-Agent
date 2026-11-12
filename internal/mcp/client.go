@@ -44,6 +44,7 @@ type rpcError struct {
 
 // Client manages a stdio MCP server connection.
 type Client struct {
+	config           config.MCPServerRef
 	name             string
 	command          string
 	args             []string
@@ -52,6 +53,7 @@ type Client struct {
 	env              []string
 	envAllowlist     []string
 	workspaceRoot    string
+	taskScope        schema.TaskWorkspaceScope
 	networkDisabled  bool
 	isolation        string
 	isolationOptions map[string]string
@@ -94,6 +96,7 @@ func NewClient(cfg config.MCPServerRef) *Client {
 		maxConcurrent = 1
 	}
 	return &Client{
+		config:           cloneMCPServerRef(cfg),
 		name:             cfg.Name,
 		command:          cfg.Command,
 		args:             append([]string(nil), cfg.Args...),
@@ -115,6 +118,54 @@ func NewClient(cfg config.MCPServerRef) *Client {
 		nextID:           1,
 		lastHealth:       "idle",
 	}
+}
+
+func (c *Client) cloneForWorkspace(workspaceRoot string) *Client {
+	return c.cloneForTaskWorkspace(schema.TaskWorkspaceScope{Root: workspaceRoot, Workspace: workspaceRoot})
+}
+
+func (c *Client) cloneForTaskWorkspace(scope schema.TaskWorkspaceScope) *Client {
+	if c == nil {
+		return nil
+	}
+	cfg := cloneMCPServerRef(c.config)
+	if strings.TrimSpace(cfg.Name) == "" {
+		cfg = config.MCPServerRef{
+			Name:               c.name,
+			Command:            c.command,
+			Args:               append([]string(nil), c.args...),
+			Enabled:            true,
+			Timeout:            c.timeout,
+			WorkDir:            c.workDir,
+			EnvAllowlist:       append([]string(nil), c.envAllowlist...),
+			NetworkDisabled:    c.networkDisabled,
+			Isolation:          c.isolation,
+			IsolationOptions:   cloneStringMap(c.isolationOptions),
+			RestartLimit:       c.restartLimit,
+			Cooldown:           c.cooldown,
+			MaxConcurrentCalls: c.maxConcurrent,
+			MaxRequestBytes:    c.maxRequestBytes,
+			MaxResponseBytes:   c.maxResponseBytes,
+		}
+	}
+	cfg.WorkspaceRoot = scope.Workspace
+	client := NewClient(cfg)
+	client.taskScope = scope
+	if strings.TrimSpace(scope.Dependencies) != "" {
+		client.env = append(client.env, fmt.Sprintf("GOFLOW_DEPENDENCY_CACHE_ROOT=%s", scope.Dependencies))
+		client.env = append(client.env, "GOFLOW_NETWORK_DISABLED=1")
+	}
+	return client
+}
+
+func cloneMCPServerRef(cfg config.MCPServerRef) config.MCPServerRef {
+	copy := cfg
+	copy.Args = append([]string(nil), cfg.Args...)
+	copy.EnvAllowlist = append([]string(nil), cfg.EnvAllowlist...)
+	copy.AllowedCommandPaths = append([]string(nil), cfg.AllowedCommandPaths...)
+	copy.AllowedCommands = append([]string(nil), cfg.AllowedCommands...)
+	copy.IsolationOptions = cloneStringMap(cfg.IsolationOptions)
+	return copy
 }
 
 func (c *Client) ensureStarted() error {
@@ -141,8 +192,28 @@ func (c *Client) restartLocked() error {
 		c.recordFailureLocked(err)
 		return err
 	}
+	if c.isolation == "auto" {
+		resolved, err := config.ResolveAutomaticMCPIsolation(config.MCPServerRef{
+			Name:             c.name,
+			TargetScope:      "",
+			Isolation:        c.isolation,
+			IsolationProfile: c.isolationOptions["profile"],
+			IsolationOptions: c.isolationOptions,
+		})
+		if err != nil {
+			c.recordFailureLocked(err)
+			return err
+		}
+		if resolved.Isolation == "auto" {
+			err := fmt.Errorf("automatic isolation for MCP server %s was not resolved; refusing unisolated startup", c.name)
+			c.recordFailureLocked(err)
+			return err
+		}
+		c.isolation = resolved.Isolation
+		c.isolationOptions = cloneStringMap(resolved.IsolationOptions)
+	}
 
-	cmd, err := c.newServerCommand()
+	cmd, commandCleanup, err := c.newServerCommand()
 	if err != nil {
 		wrapped := fmt.Errorf("prepare mcp server %s command: %w", c.name, err)
 		c.recordFailureLocked(wrapped)
@@ -154,16 +225,18 @@ func (c *Client) restartLocked() error {
 		c.recordFailureLocked(wrapped)
 		return wrapped
 	}
-	attrCleanupTransferred := false
+	cleanupTransferred := false
 	defer func() {
-		if attrCleanup != nil && !attrCleanupTransferred {
-			_ = attrCleanup()
+		if !cleanupTransferred {
+			_ = joinCleanup(attrCleanup, commandCleanup)
 		}
 	}()
-	cmd.SysProcAttr = processAttr
-	if c.isolation != "container" && strings.TrimSpace(c.workDir) != "" {
+	if cmd.SysProcAttr == nil {
+		cmd.SysProcAttr = processAttr
+	}
+	if strings.TrimSpace(c.workDir) != "" {
 		cmd.Dir = c.workDir
-	} else if c.isolation != "container" && filepath.IsAbs(c.command) {
+	} else if filepath.IsAbs(c.command) {
 		cmd.Dir = filepath.Dir(c.command)
 	}
 	cmd.Stderr = os.Stderr
@@ -185,24 +258,22 @@ func (c *Client) restartLocked() error {
 		c.recordFailureLocked(wrapped)
 		return wrapped
 	}
-	attrCleanupTransferred = true
 	isolationHandle, err := attachProcessIsolation(c.isolation, c.isolationOptions, cmd)
 	if err != nil {
 		_ = cmd.Process.Kill()
 		_ = cmd.Wait()
-		if attrCleanup != nil {
-			_ = attrCleanup()
-		}
+		_ = joinCleanup(attrCleanup, commandCleanup)
 		wrapped := fmt.Errorf("apply mcp server %s isolation %s: %w", c.name, c.isolation, err)
 		c.recordFailureLocked(wrapped)
 		return wrapped
 	}
-	if isolationHandle == nil && attrCleanup != nil {
+	if isolationHandle == nil && (attrCleanup != nil || commandCleanup != nil) {
 		isolationHandle = &processIsolation{}
 	}
-	if isolationHandle != nil && attrCleanup != nil {
-		isolationHandle.cleanup = attrCleanup
+	if isolationHandle != nil && (attrCleanup != nil || commandCleanup != nil) {
+		isolationHandle.cleanup = func() error { return joinCleanup(attrCleanup, commandCleanup) }
 	}
+	cleanupTransferred = true
 	c.cmd = cmd
 	c.isolationHandle = isolationHandle
 	c.stdin = bufio.NewWriter(stdinPipe)
@@ -214,45 +285,46 @@ func (c *Client) restartLocked() error {
 	return nil
 }
 
-func (c *Client) newServerCommand() (*exec.Cmd, error) {
+func (c *Client) newServerCommand() (*exec.Cmd, func() error, error) {
+	command, args, err := prepareLocalGoRunCommand(c.command, c.args, c.workDir, c.env)
+	if err != nil {
+		return nil, nil, err
+	}
+	if c.isolation == "native_strong" {
+		return c.buildNativeStrongServerCommand(command, args)
+	}
 	if c.isolation == "linux_netns" {
 		runtimeCommand, runtimeArgs, runtimeEnv, err := buildLinuxNetworkNamespaceCommand(linuxNetworkNamespaceConfig{
-			Command: c.command,
-			Args:    c.args,
+			Command: command,
+			Args:    args,
 			Options: c.isolationOptions,
 			Env:     c.env,
 		})
 		if err != nil {
-			return nil, err
+			return nil, nil, err
 		}
 		cmd := exec.Command(runtimeCommand, runtimeArgs...)
 		cmd.Env = runtimeEnv
-		return cmd, nil
+		return cmd, nil, nil
 	}
-	if c.isolation != "container" {
-		cmd := exec.Command(c.command, c.args...)
-		cmd.Env = c.env
-		return cmd, nil
+	cmd := exec.Command(command, args...)
+	cmd.Env = c.env
+	return cmd, nil, nil
+}
+
+func joinCleanup(cleanups ...func() error) error {
+	var joined error
+	for _, cleanup := range cleanups {
+		if cleanup == nil {
+			continue
+		}
+		joined = errors.Join(joined, cleanup())
 	}
-	runtimeCommand, runtimeArgs, runtimeEnv, err := buildContainerRunCommand(containerRunConfig{
-		ServerName:      c.name,
-		Command:         c.command,
-		Args:            c.args,
-		Options:         c.isolationOptions,
-		EnvAllowlist:    c.envAllowlist,
-		WorkspaceRoot:   c.workspaceRoot,
-		NetworkDisabled: c.networkDisabled,
-	})
-	if err != nil {
-		return nil, err
-	}
-	cmd := exec.Command(runtimeCommand, runtimeArgs...)
-	cmd.Env = runtimeEnv
-	return cmd, nil
+	return joined
 }
 
 func (c *Client) processIsolationMode() string {
-	if c.isolation == "container" || c.isolation == "linux_netns" {
+	if c.isolation == "linux_netns" || c.isolation == "native_strong" {
 		return "process_group"
 	}
 	return c.isolation
@@ -343,6 +415,15 @@ func (c *Client) markHealthyLocked(detail string) {
 	c.cooldownUntil = time.Time{}
 }
 
+func (c *Client) markCallerCancelledLocked() {
+	c.lastError = ""
+	c.lastErrorAt = time.Time{}
+	c.lastHealth = "idle"
+	c.lastHealthAt = time.Now()
+	c.consecutiveFailure = 0
+	c.cooldownUntil = time.Time{}
+}
+
 func (c *Client) inCooldownLocked() bool {
 	return !c.cooldownUntil.IsZero() && time.Now().Before(c.cooldownUntil)
 }
@@ -384,7 +465,10 @@ func (c *Client) HealthStatus(ctx context.Context) string {
 		Tools []schema.Tool `json:"tools"`
 	}
 	if err := c.callLocked(ctx, "tools/list", map[string]any{}, &out); err != nil {
-		c.recordFailureLocked(err)
+		if errors.Is(err, context.Canceled) {
+			c.markCallerCancelledLocked()
+			return fmt.Sprintf("idle (restarts=%d)", c.restartCount)
+		}
 		if c.inCooldownLocked() {
 			return fmt.Sprintf("cooldown (restarts=%d, until=%s)", c.restartCount, c.cooldownUntil.Format(time.RFC3339))
 		}
@@ -574,8 +658,17 @@ func (c *Client) callLocked(ctx context.Context, method string, params interface
 
 	select {
 	case <-ctx.Done():
-		wrapped := fmt.Errorf("mcp call timeout: %w", ctx.Err())
-		c.recordFailureLocked(wrapped)
+		ctxErr := ctx.Err()
+		_ = c.stopProcessLocked()
+		wrapped := mcpCallContextError(ctxErr)
+		if errors.Is(ctxErr, context.Canceled) {
+			// The stdio stream must restart because its pending response can no
+			// longer be matched safely, but an HTTP/browser caller going away is
+			// not an MCP dependency or server-health failure.
+			c.markCallerCancelledLocked()
+		} else {
+			c.recordFailureLocked(wrapped)
+		}
 		return wrapped
 	case err := <-errCh:
 		if err == io.EOF {
@@ -613,6 +706,13 @@ func (c *Client) callLocked(ctx context.Context, method string, params interface
 		c.markHealthyLocked(c.readyHealthLabel())
 		return nil
 	}
+}
+
+func mcpCallContextError(err error) error {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return fmt.Errorf("mcp call timeout: %w", err)
+	}
+	return fmt.Errorf("mcp call cancelled: %w", err)
 }
 
 func decodeArguments(arguments []byte, maxBytes int) (map[string]any, error) {

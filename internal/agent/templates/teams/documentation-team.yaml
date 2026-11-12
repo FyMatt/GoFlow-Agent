@@ -2,104 +2,99 @@ kind: goflow.team_template_resource
 version: 2
 min_supported_version: 1
 name: documentation-team
-title: Documentation Team
+title: 办公文档交付团队
 category: documentation
-description: Plan, draft, review, and publication-check documentation work.
-tags: [docs, review, publish]
+description: 从需求整理、真实文件制作到格式校验、PDF 转换和预览验收的办公文档协作模板。
+tags: [office, document, delivery, quality]
 recommended_workflow: docs-review-publish
 recommended_entry_agent: planner
 role_templates:
-  - name: docs-planner
-    label: Docs Planner
+  - name: document-planner
+    label: 文档需求规划者
     agent: planner
     skill: execution-plan
     responsibilities:
-      - identify audience
-      - define outline
-      - spot stale docs
-    produces: [outline, doc_targets]
-  - name: docs-writer
-    label: Docs Writer
-    agent: fixer
-    skill: code-writing
+      - 明确目标读者、使用场景和交付格式
+      - 整理输入资料、数据来源和文件清单
+      - 定义各格式的内容结构和验收条件
+    produces: [document_brief, delivery_manifest]
+  - name: office-producer
+    label: 办公文档制作员
+    agent: documentation-specialist
+    skill: office-document-production
     responsibilities:
-      - edit documentation files
-      - keep examples runnable
-      - avoid unrelated rewrites
-    consumes: [outline, doc_targets]
-    produces: [draft_changes]
-  - name: docs-reviewer
-    label: Docs Reviewer
+      - 创建或修改真实 DOCX、XLSX、PPTX 和 PDF
+      - 自动应用简洁版式、公式、标题层级和可编辑结构
+      - 导出 PDF 并生成预览图
+      - 保留覆盖前备份和文件哈希
+    tools:
+      - office_tools/office_capabilities
+      - office_tools/create_docx
+      - office_tools/create_xlsx
+      - office_tools/create_pptx
+      - office_tools/create_pdf
+      - office_tools/replace_office_text
+      - office_tools/fill_office_template
+      - office_tools/export_office_pdf
+      - office_tools/render_office_preview
+    consumes: [document_brief, delivery_manifest]
+    produces: [office_files, pdf_files, preview_images]
+  - name: document-verifier
+    label: 文档质量复核员
     agent: auditor
-    skill: code-audit
+    skill: office-document-production
     responsibilities:
-      - check accuracy
-      - check link integrity and anchors
-      - check bilingual parity and version/platform notes
-      - check install/deployment steps
-      - flag missing warnings
-    tools: [python_notes/markdown_link_check, python_notes/redaction_check]
-    consumes: [draft_changes]
-    produces: [review_notes]
-  - name: publish-operator
-    label: Publish Operator
-    agent: chat
-    skill: execution-plan
-    responsibilities:
-      - prepare release handoff
-      - list verification and publish commands
-      - preserve publish readiness blockers
-      - wait for operator approval
-    consumes: [review_notes]
-    produces: [publish_handoff]
+      - 检查四类格式结构、文本和可打开状态
+      - 检查 Excel 公式、PPT 比例和 Word 表格层级
+      - 核对源文件、PDF、预览图和交付清单
+      - 明确通过、需修改或受环境限制的结论
+    tools:
+      - office_tools/inspect_office_document
+      - office_tools/validate_office_document
+    consumes: [office_files, pdf_files, preview_images]
+    produces: [validation_report, delivery_decision]
 handoffs:
-  - from: docs-planner
-    to: docs-writer
-    kind: outline_handoff
-    subject: Documentation outline
-    artifacts: [outline, doc_targets]
+  - from: document-planner
+    to: office-producer
+    kind: document_brief_handoff
+    subject: 文档需求与交付清单
+    artifacts: [document_brief, delivery_manifest]
     blackboard: [request, plan]
-  - from: docs-writer
-    to: docs-reviewer
-    kind: review_request
-    subject: Documentation draft
-    artifacts: [draft_changes]
+  - from: office-producer
+    to: document-verifier
+    kind: office_delivery_review
+    subject: 待复核办公文档
+    artifacts: [office_files, pdf_files, preview_images]
     blackboard: [evidence, finding]
-  - from: docs-reviewer
-    to: publish-operator
-    kind: publish_gate
-    subject: Reviewed documentation
-    artifacts: [review_notes]
-    blackboard: [finding, decision]
 blackboard_templates:
   - kind: request
-    title: Original request and constraints
-    owner_role: docs-planner
+    title: 原始需求与约束
+    owner_role: document-planner
     status: open
     tags: [scope]
-    description: The user request, allowed scope, and assumptions that should survive handoffs.
+    description: 保留目标读者、使用场景、输入资料、格式要求和不可变约束。
   - kind: plan
-    title: Working plan
-    owner_role: docs-planner
+    title: 文档制作与交付计划
+    owner_role: document-planner
     status: open
     tags: [plan]
-    description: Current executable plan, stage ordering, and known blockers.
+    description: 记录格式清单、内容结构、产物路径和验收条件。
   - kind: evidence
-    title: Evidence and observations
-    owner_role: docs-planner
+    title: 文件与校验证据
+    owner_role: office-producer
     status: open
     tags: [evidence]
-    description: Tool observations, source references, test output, or collected artifacts.
+    description: 记录源文件、PDF、预览图、结构摘要、哈希和格式校验结果。
+  - kind: finding
+    title: 格式问题与交付风险
+    owner_role: document-verifier
+    status: open
+    tags: [quality]
+    description: 记录文件损坏、结构缺失、公式异常、文字越界、预览失败和待修正项。
   - kind: decision
-    title: Decisions and approvals
-    owner_role: docs-planner
+    title: 最终交付结论
+    owner_role: document-verifier
     status: open
     tags: [decision]
-    description: Decisions made by agents or the operator, including approval gates.
-  - kind: finding
-    title: Findings and risks
-    owner_role: docs-planner
-    status: open
-    tags: [risk]
-    description: Bugs, vulnerabilities, regressions, or unresolved questions.
-output_contract: [doc_targets, draft_changes, review_notes, publish_handoff]
+    description: 给出通过、需修改或受环境限制的明确质量结论。
+output_contract: [document_brief, delivery_manifest, office_files, pdf_files, preview_images, validation_report, delivery_decision]

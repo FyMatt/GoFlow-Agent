@@ -43,6 +43,96 @@ func TestStateSaveAndLoadRoundTripsSnapshot(t *testing.T) {
 	}
 }
 
+func TestStateLoadMigratesUnversionedSnapshot(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	if err := os.WriteFile(path, []byte(`{"active_agent":"planner","mode":"audit","recent_prompts":["legacy"]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := New(3)
+	if err := state.Load(path); err != nil {
+		t.Fatalf("load legacy session: %v", err)
+	}
+	snapshot := state.Snapshot()
+	if snapshot.SchemaVersion != snapshotSchemaVersion || snapshot.ActiveAgent != "planner" || len(snapshot.RecentPrompts) != 1 {
+		t.Fatalf("legacy session was not migrated: %#v", snapshot)
+	}
+	var persisted Snapshot
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := json.Unmarshal(data, &persisted); err != nil || persisted.SchemaVersion != snapshotSchemaVersion {
+		t.Fatalf("migrated schema version was not persisted: snapshot=%#v err=%v", persisted, err)
+	}
+}
+
+func TestStateLoadRejectsFutureSnapshotVersion(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "session.json")
+	data, err := json.Marshal(Snapshot{SchemaVersion: snapshotSchemaVersion + 1, ActiveAgent: "future"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	state := New(3)
+	if err := state.Load(path); err == nil || !strings.Contains(err.Error(), "unsupported session schema version") {
+		t.Fatalf("expected future schema rejection, got %v", err)
+	}
+}
+
+func TestWorkflowRunPendingToolCallNormalizesRunningStatus(t *testing.T) {
+	state := New(8)
+	runID := state.StartWorkflowRun("approval-flow", "update a file")
+	state.UpdateWorkflowRunState(WorkflowSnapshot{
+		RunID:           runID,
+		Name:            "approval-flow",
+		Status:          "running",
+		Request:         "update a file",
+		NextStage:       "implement",
+		PendingCallID:   "call-1",
+		PendingToolName: "file_tools/write_file",
+	})
+
+	run, ok := state.WorkflowRun(runID)
+	if !ok {
+		t.Fatal("expected workflow run")
+	}
+	if run.Status != "awaiting_tool_approval" {
+		t.Fatalf("expected pending tool call to normalize status, got %q", run.Status)
+	}
+}
+
+func TestAgentRunSuspendedCallsRestoreMissingApprovalMetadata(t *testing.T) {
+	state := New(8)
+	runID := state.StartAgentRunWithOptions("update a file", AgentRunStartOptions{AgentID: "fixer"})
+	_, ok := state.SetAgentRunResumeContext(runID, AgentRunResumeContextSnapshot{
+		AgentID: "fixer",
+		SuspendedCalls: []schema.ToolCall{{
+			ID:        "call-1",
+			Name:      "file_tools/write_file",
+			Arguments: json.RawMessage(`{"path":"note.txt","content":"hello"}`),
+		}},
+	})
+	if !ok {
+		t.Fatal("expected agent run resume context to be stored")
+	}
+
+	run, ok := state.AgentRun(runID)
+	if !ok {
+		t.Fatal("expected agent run")
+	}
+	if run.Status != "awaiting_tool_approval" || run.PendingCallID != "call-1" || run.PendingTool != "file_tools/write_file" {
+		t.Fatalf("expected suspended call to restore approval state, got %#v", run)
+	}
+	if len(run.PendingApprovals) != 1 || run.PendingApprovals[0].AgentRunID != runID || run.PendingApprovals[0].AgentID != "fixer" {
+		t.Fatalf("expected reconstructed pending approval, got %#v", run.PendingApprovals)
+	}
+	if got := state.AgentRuns(); len(got) != 1 || got[0].PendingCallID != "call-1" {
+		t.Fatalf("expected collection view to restore approval state, got %#v", got)
+	}
+}
+
 func TestStateArtifactsFilterAndPersist(t *testing.T) {
 	state := New(3)
 	artifact := state.AddArtifact(SessionArtifactSnapshot{Kind: "tool_result", ToolName: "read_file", AgentID: "planner", Content: strings.Repeat("x", maxSessionArtifactSummaryBytes+20)})
@@ -485,7 +575,7 @@ func TestStateAgentRunArtifactsUseContentAddressedStore(t *testing.T) {
 		Mode:    "fix",
 		ToolResults: []schema.ToolResult{{
 			CallID:   "call-1",
-			ToolName: "read_file",
+			ToolName: "run_command",
 			Content:  content,
 		}},
 		Findings: []schema.Finding{{
@@ -1072,5 +1162,79 @@ func TestStateSaveCreatesParentDirectory(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("expected saved file, got %v", err)
+	}
+}
+
+func TestStateAgentRunApprovalIsActionableOnlyAfterResumeContext(t *testing.T) {
+	state := New(4)
+	runID := state.StartAgentRunWithOptions("write report", AgentRunStartOptions{AgentID: "chat"})
+	call := schema.ToolCall{ID: "call-write", Name: "write_file", Arguments: []byte(`{"path":"report.md","content":"done"}`)}
+
+	state.AppendAgentRunEvent(runID, AgentRunEventSnapshot{
+		Type:       string(schema.StreamEventApproval),
+		ToolCallID: call.ID,
+		ToolName:   call.Name,
+		AgentID:    "chat",
+		Suspended:  true,
+	})
+	before, ok := state.AgentRun(runID)
+	if !ok || before.Status != "running" || before.PendingCallID != "" {
+		t.Fatalf("approval event must not expose an unrestorable action, got %#v", before)
+	}
+
+	state.SetAgentRunResumeContext(runID, AgentRunResumeContextSnapshot{
+		AgentID:        "chat",
+		Messages:       []schema.Message{{Role: "assistant", ToolCalls: []schema.ToolCall{call}}},
+		SuspendedCalls: []schema.ToolCall{call},
+	})
+	actionable, ok := state.AgentRun(runID)
+	if !ok || actionable.Status != "awaiting_tool_approval" || actionable.PendingCallID != call.ID || len(actionable.PendingApprovals) != 1 {
+		t.Fatalf("durable resume context must expose one actionable approval, got %#v", actionable)
+	}
+
+	state.MarkAgentRunApprovalResuming(runID)
+	resuming, ok := state.AgentRun(runID)
+	if !ok || resuming.Status != "running" || resuming.PendingCallID != "" || len(resuming.PendingApprovals) != 0 {
+		t.Fatalf("resuming run must hide the resolved approval, got %#v", resuming)
+	}
+}
+
+func TestStateAgentRunTerminalStateRejectsDelayedApprovalContext(t *testing.T) {
+	state := New(4)
+	runID := state.StartAgentRunWithOptions("write report", AgentRunStartOptions{AgentID: "chat"})
+	completed, ok := state.CompleteAgentRun(runID, "completed", schema.AgentResult{
+		Output:  "done",
+		AgentID: "chat",
+		Mode:    "fix",
+	})
+	if !ok || completed.Status != "completed" {
+		t.Fatalf("expected completed run, got %#v ok=%t", completed, ok)
+	}
+
+	call := schema.ToolCall{ID: "call-delayed", Name: "write_file", Arguments: []byte(`{"path":"report.md","content":"done"}`)}
+	if current, stored := state.SetAgentRunResumeContext(runID, AgentRunResumeContextSnapshot{
+		AgentID:        "chat",
+		Messages:       []schema.Message{{Role: "assistant", ToolCalls: []schema.ToolCall{call}}},
+		SuspendedCalls: []schema.ToolCall{call},
+	}); stored || current.Status != "completed" {
+		t.Fatalf("terminal run must reject delayed resume context, got %#v stored=%t", current, stored)
+	}
+	state.AppendAgentRunPendingApproval(runID, PendingApprovalSnapshot{
+		CallID:   call.ID,
+		ToolName: call.Name,
+		AgentID:  "chat",
+	})
+	state.MarkAgentRunApprovalResuming(runID)
+
+	run, ok := state.AgentRun(runID)
+	if !ok {
+		t.Fatal("expected completed run")
+	}
+	if run.Status != "completed" || run.ResumeContext != nil || run.PendingCallID != "" || len(run.PendingApprovals) != 0 {
+		t.Fatalf("delayed approval state must not reopen a terminal run, got %#v", run)
+	}
+	snapshot := state.Snapshot()
+	if len(snapshot.AgentRuns) != 1 || snapshot.AgentRuns[0].ResumeContext != nil || len(snapshot.AgentRuns[0].PendingApprovals) != 0 {
+		t.Fatalf("compact snapshot must keep terminal approval state clear, got %#v", snapshot.AgentRuns)
 	}
 }

@@ -1,5 +1,5 @@
 name: plan-fix-audit
-description: Plan a requested change, implement approved work, verify the result, pass an evidence-backed quality gate, and produce an audit-ready output.
+description: 规划用户提出的改动，实施已批准工作，验证结果，通过有证据的质量门禁并输出可审计交付物。
 stages:
     - name: start
       node_type: start
@@ -15,9 +15,12 @@ stages:
       agent: planner
       skill: execution-plan
       params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
         output_contract: Emit sections named Goal, Affected Files, Constraints, Acceptance Checks, Risks, and Open Questions.
-        purpose: Clarify the task before planning edits.
+        purpose: Compile the user request into a concise task contract without inspecting the workspace or calling tools.
         risk_scope: Identify workspace, dependency, test, approval, and rollback risks before planning edits.
+        max_iterations: "1"
       outputs:
         goal: result.summary
         intake_report: result.output
@@ -31,15 +34,15 @@ stages:
       acceptance_criteria:
         - name: has-goal
           ref: result.output
-          contains: Goal
+          exists: true
           expected: intake names the requested outcome
         - name: has-acceptance-checks
           ref: result.output
-          contains: Acceptance Checks
+          exists: true
           expected: intake defines how success will be checked
         - name: has-risks
           ref: result.output
-          contains: Risks
+          exists: true
           expected: intake records implementation and approval risks
       next:
         - plan
@@ -51,8 +54,12 @@ stages:
       agent: planner
       skill: execution-plan
       params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
         output_contract: Emit sections named Implementation Steps, Target Files, Verification Commands, Rollback Notes, and Handoff.
         purpose: Produce an implementation plan that the fixer can execute without rediscovering the task.
+        max_iterations: "3"
+        max_read_calls: "2"
       input:
         intake: stages.intake.outputs.intake_report
         request: workflow.input
@@ -68,15 +75,15 @@ stages:
       acceptance_criteria:
         - name: has-steps
           ref: result.output
-          contains: Implementation Steps
+          exists: true
           expected: plan contains ordered implementation steps
         - name: has-target-files
           ref: result.output
-          contains: Target Files
+          exists: true
           expected: plan names likely files or areas
         - name: has-verification
           ref: result.output
-          contains: Verification Commands
+          exists: true
           expected: plan declares verification commands or checks
       context:
         include:
@@ -100,11 +107,19 @@ stages:
       agent: fixer
       skill: code-writing
       params:
+        require_workspace_mutation: "false"
+        use_change_slice_scheduler: "true"
         edit_policy: Apply the approved plan with focused code changes, preserve user edits, and keep unrelated files untouched.
         output_contract: Emit sections named Change Summary, Files Changed, Verification Notes, and Residual Risk.
+        approved_plan_scope: "true"
+        contract_policy: The original workflow request is authoritative. Preserve every API, type signature, file constraint, and acceptance condition unless the request explicitly authorizes changing it.
+        verification_scope: Run gofmt -w on changed Go files, go test -count=1 ./..., and go vet ./.... Do not run go test -race or request CGO environment variables unless the original request explicitly requires the race detector.
+        max_command_calls: "4"
+        max_read_calls: "3"
       input:
         intake: stages.intake.outputs.intake_report
         plan: stages.plan.outputs.plan
+        request: workflow.input
       outputs:
         changes: result.changes
         implementation_report: result.output
@@ -118,11 +133,11 @@ stages:
       acceptance_criteria:
         - name: has-change-summary
           ref: result.output
-          contains: Change Summary
+          exists: true
           expected: implementation reports what changed
         - name: has-files-changed
           ref: result.output
-          contains: Files Changed
+          exists: true
           expected: implementation lists changed files or explains none
       retry:
         max_attempts: 2
@@ -146,13 +161,23 @@ stages:
       node_type: skill
       agent: auditor
       skill: code-audit
+      approval: true
       params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        use_change_slice_scheduler: "false"
         evidence: Include exact commands or checks performed. If a command was not run, explain why.
         output_contract: Emit sections named Verification Result, Commands Run, Failures, Coverage, and Residual Risk.
         verification_command: go test ./...
+        verification_scope: Run only go test ./..., go vet ./..., and gofmt -l on changed Go files. Do not run go test -race unless the user explicitly requires it. For gofmt use program gofmt with -l and file arguments, without a redundant fmt argument. Reuse implementation evidence and stop after these checks.
+        approved_plan_scope: "true"
+        max_iterations: "5"
+        max_command_calls: "3"
+        max_read_calls: "1"
       input:
         changes: stages.implement.outputs.implementation_report
         plan: stages.plan.outputs.plan
+        request: workflow.input
       outputs:
         summary: result.summary
         verification: result.output
@@ -165,11 +190,11 @@ stages:
       acceptance_criteria:
         - name: verification-result
           ref: result.output
-          contains: Verification Result
+          exists: true
           expected: verification declares pass, fail, warning, or not-run
         - name: commands-recorded
           ref: result.output
-          contains: Commands Run
+          exists: true
           expected: verification lists exact commands or explains why none ran
       context:
         include:
@@ -188,12 +213,21 @@ stages:
       node_type: skill
       agent: auditor
       skill: code-audit
+      approval: true
       params:
+        require_workspace_mutation: "false"
+        use_change_slice_scheduler: "false"
         output_contract: Emit sections named Findings, Severity Order, Missed Requirements, Test Gaps, Safety Notes, and Recommendation.
         severity_order: Prioritize concrete bugs and risks before summaries.
+        approved_plan_scope: "true"
+        evidence_policy: Review the supplied plan, implementation report, changed files, and verification evidence. Do not rerun commands or rediscover the workspace unless a specific evidence gap prevents a conclusion.
+        max_iterations: "2"
+        max_command_calls: "1"
+        max_read_calls: "1"
       input:
         implementation: stages.implement.outputs.implementation_report
         plan: stages.plan.outputs.plan
+        request: workflow.input
         verification: stages.verify.outputs.verification
       outputs:
         audit: result.output
@@ -208,11 +242,11 @@ stages:
       acceptance_criteria:
         - name: has-findings
           ref: result.output
-          contains: Findings
+          exists: true
           expected: audit includes findings or explicitly says none found
         - name: has-recommendation
           ref: result.output
-          contains: Recommendation
+          exists: true
           expected: audit gives a concrete recommendation
       context:
         include:
@@ -239,6 +273,8 @@ stages:
         require_acceptance: "true"
         require_evidence: "true"
         require_verification: "true"
+        verification_mode: command
+        allowed_infrastructure_failures: go_race_unavailable
         stages: implement,verify,audit
       routes:
         fail: revise
@@ -263,12 +299,16 @@ stages:
       agent: planner
       skill: execution-plan
       params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
         output_contract: Emit sections named Revision Plan, Blocking Issues, Required Evidence, and Next Action.
         purpose: Explain what must change before this workflow can be accepted.
+        max_iterations: "1"
       input:
         audit: stages.audit.outputs.audit
         failures: stages.quality.outputs.failures
         quality_status: stages.quality.outputs.quality_status
+        request: workflow.input
         verification: stages.verify.outputs.verification
       outputs:
         revision_plan: result.output
@@ -289,13 +329,18 @@ stages:
       agent: planner
       skill: execution-plan
       params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
         output_contract: Emit sections named Final Status, Delivered Changes, Verification Evidence, Audit Summary, Remaining Risks, and Next Steps.
         purpose: Produce a concise user-facing handoff whether the workflow passed, needs operator review, or requires revision.
+        evidence_policy: Synthesize only the supplied stage outputs. Do not call tools or repeat workspace inspection.
+        max_iterations: "1"
       input:
         audit: stages.audit.outputs.audit
         implementation: stages.implement.outputs.implementation_report
         plan: stages.plan.outputs.plan
         quality_status: stages.quality.outputs.quality_status
+        request: workflow.input
         revision_plan: stages.revise.outputs.revision_plan
         verification: stages.verify.outputs.verification
       outputs:
@@ -310,15 +355,15 @@ stages:
       acceptance_criteria:
         - name: has-final-status
           ref: result.output
-          contains: Final Status
+          exists: true
           expected: final handoff declares the outcome
         - name: has-verification-evidence
           ref: result.output
-          contains: Verification Evidence
+          exists: true
           expected: final handoff includes verification evidence or the reason it is missing
         - name: has-next-steps
           ref: result.output
-          contains: Next Steps
+          exists: true
           expected: final handoff gives concrete next steps
       context:
         include:

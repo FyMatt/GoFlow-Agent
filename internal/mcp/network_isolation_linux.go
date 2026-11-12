@@ -29,12 +29,21 @@ func buildLinuxNetworkNamespaceCommand(cfg linuxNetworkNamespaceConfig) (string,
 		return "", nil, nil, fmt.Errorf("linux_netns isolation_options.unshare_command must be unshare or an absolute path")
 	}
 	args := []string{"--net"}
-	if optionBool(options["map_root_user"]) {
+	if linuxNetworkOptionBool(options["map_root_user"]) {
 		args = append(args, "--map-root-user")
 	}
 	args = append(args, "--", command)
 	args = append(args, cfg.Args...)
 	return unshareCommand, args, append([]string(nil), cfg.Env...), nil
+}
+
+func linuxNetworkOptionBool(value string) bool {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "1", "true", "yes", "on":
+		return true
+	default:
+		return false
+	}
 }
 
 func normalizeLinuxNetworkNamespaceOptions(options map[string]string) map[string]string {

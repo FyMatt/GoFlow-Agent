@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
 	"encoding/hex"
@@ -14,6 +15,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/FyMatt/GoFlow-Agent/internal/persistence"
 )
 
 const (
@@ -246,7 +249,7 @@ func (s *ArtifactObjectStore) upsertIndexLocked(object ArtifactObject) error {
 		return err
 	}
 	data = append(data, '\n')
-	return os.WriteFile(s.indexPath(), data, 0o644)
+	return persistence.WriteFileAtomic(s.indexPath(), data, 0o644)
 }
 
 func artifactObjectMetadata(object ArtifactObject) ArtifactObjectMetadata {
@@ -266,15 +269,8 @@ func artifactObjectMetadata(object ArtifactObject) ArtifactObjectMetadata {
 }
 
 func writeArtifactObjectGzip(path string, object ArtifactObject) (int64, error) {
-	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-		return 0, err
-	}
-	file, err := os.Create(path)
-	if err != nil {
-		return 0, err
-	}
-	defer file.Close()
-	gz := gzip.NewWriter(file)
+	var buffer bytes.Buffer
+	gz := gzip.NewWriter(&buffer)
 	encoder := json.NewEncoder(gz)
 	encoder.SetIndent("", "  ")
 	if err := encoder.Encode(object); err != nil {
@@ -284,11 +280,10 @@ func writeArtifactObjectGzip(path string, object ArtifactObject) (int64, error) 
 	if err := gz.Close(); err != nil {
 		return 0, err
 	}
-	info, err := file.Stat()
-	if err != nil {
+	if err := persistence.WriteFileAtomic(path, buffer.Bytes(), 0o644); err != nil {
 		return 0, err
 	}
-	return info.Size(), nil
+	return int64(buffer.Len()), nil
 }
 
 func readArtifactObjectGzip(path string) (ArtifactObject, error) {

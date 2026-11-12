@@ -4,11 +4,15 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"os"
+	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 )
 
 func TestCallToolFetchURLReturnsStructuredPayload(t *testing.T) {
+	useLocalDocumentTransport(t)
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "text/html")
 		_, _ = w.Write([]byte("<html><head><title>Example Page</title></head><body><h1>Hello</h1><p>World</p></body></html>"))
@@ -164,21 +168,39 @@ func TestBuiltinToolsIncludesBrowserAutomationSecurityTools(t *testing.T) {
 	found := map[string]tool{}
 	for _, tool := range builtinTools() {
 		found[tool.Name] = tool
+		if !containsChineseText(tool.Description) {
+			t.Fatalf("tool %s must expose a Chinese description, got %q", tool.Name, tool.Description)
+		}
 	}
 	snapshot, ok := found["browser_snapshot"]
 	if !ok {
 		t.Fatal("expected browser_snapshot tool")
 	}
-	if snapshot.Kind != "network" || !strings.Contains(snapshot.Description, "allowed host") {
+	if snapshot.Kind != "network" || !strings.Contains(snapshot.Description, "主机白名单") {
 		t.Fatalf("unexpected browser snapshot metadata: %#v", snapshot)
 	}
 	probe, ok := found["browser_probe_points"]
 	if !ok {
 		t.Fatal("expected browser_probe_points tool")
 	}
-	if probe.Kind != "network" || !strings.Contains(probe.Description, "approval-gated") {
+	if probe.Kind != "network" || !strings.Contains(probe.Description, "审批") {
 		t.Fatalf("unexpected browser probe metadata: %#v", probe)
 	}
+	if !strings.Contains(string(probe.InputSchema), `"max_probes":{"type":"integer","minimum":0,"maximum":8}`) {
+		t.Fatalf("browser probe schema must enforce the bounded candidate limit, got %s", probe.InputSchema)
+	}
+	if hardMaxProbeCandidates != 8 || activeProbeInterval.Milliseconds() < 500 {
+		t.Fatalf("unexpected active probe rate limit: candidates=%d interval=%s", hardMaxProbeCandidates, activeProbeInterval)
+	}
+}
+
+func containsChineseText(value string) bool {
+	for _, current := range value {
+		if current >= '\u4e00' && current <= '\u9fff' {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCallToolFetchPageAssetsFetchesScriptsAndStyles(t *testing.T) {
@@ -223,5 +245,177 @@ func TestParseDuckDuckGoLiteResults(t *testing.T) {
 	}
 	if results[0]["title"] != "One Result" || results[1]["title"] != "Two Result" {
 		t.Fatalf("unexpected parsed titles: %#v", results)
+	}
+}
+
+func TestResearchSnapshotCachesAndDeduplicatesContent(t *testing.T) {
+	useLocalDocumentTransport(t)
+	cacheDir := t.TempDir()
+	t.Setenv("GOFLOW_RESEARCH_CACHE_DIR", cacheDir)
+	var requests atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests.Add(1)
+		w.Header().Set("Content-Type", "text/html")
+		w.Header().Set("Last-Modified", "Mon, 01 Jan 2024 00:00:00 GMT")
+		_, _ = w.Write([]byte("<html><head><title>研究来源</title></head><body>可复核的研究正文</body></html>"))
+	}))
+	defer server.Close()
+
+	first, err := researchSnapshots([]string{server.URL + "/a", server.URL + "/a#section", server.URL + "/b"}, 4096, defaultResearchCacheTTL)
+	if err != nil {
+		t.Fatalf("research snapshots: %v", err)
+	}
+	if first["unique_url_count"] != 2 || first["unique_content_count"] != 1 {
+		t.Fatalf("expected URL and content deduplication, got %#v", first)
+	}
+	items := first["snapshots"].([]researchSnapshot)
+	if len(items) != 2 || items[1].DuplicateOf == "" || items[0].ContentSHA256 == "" {
+		t.Fatalf("expected duplicate evidence metadata, got %#v", items)
+	}
+	if requests.Load() != 2 {
+		t.Fatalf("expected two unique fetches, got %d", requests.Load())
+	}
+
+	second, err := researchSnapshots([]string{server.URL + "/a", server.URL + "/b"}, 4096, defaultResearchCacheTTL)
+	if err != nil {
+		t.Fatalf("cached research snapshots: %v", err)
+	}
+	if second["cache_hit_count"] != 2 || requests.Load() != 2 {
+		t.Fatalf("expected two cache hits without more requests, result=%#v requests=%d", second, requests.Load())
+	}
+	entries, err := os.ReadDir(cacheDir)
+	if err != nil || len(entries) != 2 {
+		t.Fatalf("expected two cache files in %s, entries=%d err=%v", filepath.Clean(cacheDir), len(entries), err)
+	}
+}
+
+func TestResearchSnapshotRetriesServiceUnavailableOnce(t *testing.T) {
+	useLocalDocumentTransport(t)
+	t.Setenv("GOFLOW_RESEARCH_CACHE_DIR", t.TempDir())
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			http.Error(w, "temporary failure", http.StatusServiceUnavailable)
+			return
+		}
+		_, _ = w.Write([]byte("<html><head><title>恢复来源</title></head><body>来源已经恢复</body></html>"))
+	}))
+	defer server.Close()
+
+	first, err := researchSnapshots([]string{server.URL}, 4096, defaultResearchCacheTTL)
+	if err != nil {
+		t.Fatalf("first research snapshot: %v", err)
+	}
+	item := first["snapshots"].([]researchSnapshot)[0]
+	if item.IsError || item.Status != http.StatusOK {
+		t.Fatalf("503 should retry once inside the snapshot, got %#v", item)
+	}
+	if len(item.AttemptStatuses) != 2 || item.AttemptStatuses[0] != http.StatusServiceUnavailable || item.AttemptStatuses[1] != http.StatusOK {
+		t.Fatalf("expected 503 then 200 attempt statuses, got %#v", item.AttemptStatuses)
+	}
+	if requests != 2 {
+		t.Fatalf("retry must happen in one snapshot call, requests=%d", requests)
+	}
+	second, err := researchSnapshots([]string{server.URL}, 4096, defaultResearchCacheTTL)
+	if err != nil {
+		t.Fatalf("cached research snapshot: %v", err)
+	}
+	cached := second["snapshots"].([]researchSnapshot)[0]
+	if cached.IsError || !cached.CacheHit || requests != 2 {
+		t.Fatalf("recovered snapshot should be cached, item=%#v requests=%d", cached, requests)
+	}
+}
+
+func TestResearchSnapshotDoesNotCacheFailedResponse(t *testing.T) {
+	useLocalDocumentTransport(t)
+	t.Setenv("GOFLOW_RESEARCH_CACHE_DIR", t.TempDir())
+	requests := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requests++
+		if requests == 1 {
+			http.Error(w, "permanent failure", http.StatusInternalServerError)
+			return
+		}
+		_, _ = w.Write([]byte("<html><head><title>恢复来源</title></head><body>来源已经恢复</body></html>"))
+	}))
+	defer server.Close()
+
+	first, err := researchSnapshots([]string{server.URL}, 4096, defaultResearchCacheTTL)
+	if err != nil {
+		t.Fatalf("first research snapshot: %v", err)
+	}
+	if !first["snapshots"].([]researchSnapshot)[0].IsError {
+		t.Fatalf("expected failed HTTP response to be marked as error, got %#v", first)
+	}
+	second, err := researchSnapshots([]string{server.URL}, 4096, defaultResearchCacheTTL)
+	if err != nil {
+		t.Fatalf("second research snapshot: %v", err)
+	}
+	item := second["snapshots"].([]researchSnapshot)[0]
+	if item.IsError || item.CacheHit || requests != 2 {
+		t.Fatalf("expected live recovery without failed cache reuse, item=%#v requests=%d", item, requests)
+	}
+}
+
+func TestCompileResearchEvidenceProducesTraceableDeliverables(t *testing.T) {
+	claims := []map[string]any{
+		{"id": "C001", "text": "该项目支持结构化研究产物", "importance": "关键", "source_ids": []any{"S001", "S002"}, "confidence": "高"},
+	}
+	sources := []map[string]any{
+		{"id": "S001", "url": "https://docs.example.com/research", "title": "官方文档", "source_type": "official", "published_at": "2026-01-01", "supports": []any{"C001"}},
+		{"id": "S002", "url": "https://standards.example.net/report", "title": "标准说明", "source_type": "standard", "published_at": "2026-02-01", "supports": []any{"C001"}},
+	}
+	result, err := compileResearchEvidence("研究能力验收", claims, sources, 3650)
+	if err != nil {
+		t.Fatalf("compile research evidence: %v", err)
+	}
+	if result["review_status"] != "通过" {
+		t.Fatalf("expected passing evidence review, got %#v", result)
+	}
+	for _, key := range []string{"markdown", "json", "csv"} {
+		if !strings.Contains(result[key].(string), "C001") {
+			t.Fatalf("expected %s deliverable to preserve claim mapping, got %q", key, result[key])
+		}
+	}
+}
+
+func TestNormalizeResearchImportanceAcceptsProviderAliases(t *testing.T) {
+	tests := map[string]string{
+		"key": "key", "关键": "key", "high": "key", "高": "key",
+		"normal": "normal", "一般": "normal", "medium": "normal", "low": "normal", "中": "normal", "低": "normal", "": "normal",
+	}
+	for input, expected := range tests {
+		if got := normalizeResearchImportance(input); got != expected {
+			t.Fatalf("normalizeResearchImportance(%q) = %q, want %q", input, got, expected)
+		}
+	}
+}
+
+func TestCompileResearchEvidenceRejectsUnsupportedKeyClaim(t *testing.T) {
+	result, err := compileResearchEvidence(
+		"缺失来源验收",
+		[]map[string]any{{"id": "C001", "text": "没有来源的关键结论", "importance": "关键"}},
+		[]map[string]any{{"id": "S001", "url": "https://example.com/source", "title": "无关来源"}},
+		365,
+	)
+	if err != nil {
+		t.Fatalf("compile research evidence: %v", err)
+	}
+	if result["review_status"] != "不通过" {
+		t.Fatalf("expected unsupported key claim to fail, got %#v", result)
+	}
+}
+
+func TestBuiltinToolsIncludesResearchDeliveryTools(t *testing.T) {
+	found := map[string]tool{}
+	for _, item := range builtinTools() {
+		found[item.Name] = item
+	}
+	for _, name := range []string{"research_snapshot", "compile_research_evidence"} {
+		item, ok := found[name]
+		if !ok || !containsChineseText(item.Description) {
+			t.Fatalf("expected localized research tool %s, got %#v", name, item)
+		}
 	}
 }

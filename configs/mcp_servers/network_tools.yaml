@@ -6,10 +6,11 @@ mcp_servers:
       - run
       - ./mcp_servers/network_tools
     enabled: true
+    optional: true
     timeout: 30s
     workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP, GOFLOW_NETWORK_TOOLS_ENABLE_LIVE, GOFLOW_NETWORK_TOOLS_TOKEN, GOFLOW_RESTCONF_TOKEN]
-    isolation: process_group
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP, GOPATH, GOCACHE, GOMODCACHE, GOFLOW_NETWORK_TOOLS_ENABLE_LIVE, GOFLOW_NETWORK_TOOLS_TOKEN, GOFLOW_RESTCONF_TOKEN]
+    isolation: auto
     restart_limit: 3
     cooldown: 10s
     max_concurrent_calls: 1

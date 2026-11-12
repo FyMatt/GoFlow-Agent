@@ -2,19 +2,24 @@ package agent
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"path/filepath"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/internal/memory"
-	"github.com/FyMatt/GoFlow-Agent/internal/policy"
+	"github.com/FyMatt/GoFlow-Agent/internal/nativesandbox"
+	"github.com/FyMatt/GoFlow-Agent/internal/notify"
+	"github.com/FyMatt/GoFlow-Agent/internal/persistence"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
+	"github.com/FyMatt/GoFlow-Agent/internal/taskstaging"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
@@ -44,11 +49,28 @@ type Runtime struct {
 	workflowAutoApproval     map[string]map[string]workflowApprovalScope
 	autoApprovedResults      map[string]schema.ToolResult
 	approvedWorkflowResumes  map[string]pendingApproval
+	workflowApprovalResumes  map[string]workflowApprovalResume
+	workflowCallResumes      map[string]string
+	workflowResumeResults    map[string]map[string]schema.ToolResult
 	ordinaryApprovalResumes  map[string]ordinaryApprovalResume
 	ordinaryCallResumes      map[string]string
 	ordinaryResumeResults    map[string]map[string]schema.ToolResult
 	workspaceConfirmed       bool
 	workspaceConfirmationSet bool
+	nativeSandboxProbe       func() nativesandbox.Report
+	taskStagingMu            sync.Mutex
+	taskStaging              map[string]*taskstaging.Task
+	taskStagingEnabled       bool
+	notifySender             *notify.Sender
+	pluginMu                 sync.RWMutex
+}
+
+// NotifySender exposes the configured email sender (nil when disabled).
+func (r *Runtime) NotifySender() *notify.Sender {
+	if r == nil {
+		return nil
+	}
+	return r.notifySender
 }
 
 // SetMemoryStore attaches the workspace memory store used for prompt retrieval
@@ -100,7 +122,9 @@ type pendingApproval struct {
 	stagePrompt     string
 	graphRepeat     workflowGraphRepeatContext
 	ordinaryResume  string
+	workflowResume  string
 	agentRunID      string
+	toolOperations  workflowToolOperationScope
 }
 
 type ordinaryApprovalResume struct {
@@ -115,10 +139,22 @@ type ordinaryApprovalResume struct {
 	CollectedResults []schema.ToolResult
 }
 
+type workflowApprovalResume struct {
+	ID               string
+	ResponseMessage  schema.Message
+	SuspendedCalls   []schema.ToolCall
+	BaseResults      []schema.ToolResult
+	SystemPrompt     string
+	Messages         []schema.Message
+	CollectedResults []schema.ToolResult
+}
+
 type workflowApprovalScope struct {
-	Workflow string
-	Stage    WorkflowStage
-	ToolName string
+	Workflow    string
+	Stage       WorkflowStage
+	ToolName    string
+	Fingerprint string
+	ExpiresAt   time.Time
 }
 
 type approvalStore struct {
@@ -245,6 +281,21 @@ func (s *approvalStore) AnnotateOrdinaryResume(id, resumeID string) bool {
 	return true
 }
 
+func (s *approvalStore) AnnotateWorkflowResume(id, resumeID string) bool {
+	if s == nil {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	pending, ok := s.pending[id]
+	if !ok {
+		return false
+	}
+	pending.workflowResume = resumeID
+	s.pending[id] = pending
+	return true
+}
+
 func (s *approvalStore) List() []pendingApproval {
 	if s == nil {
 		return nil
@@ -312,16 +363,37 @@ func NewRuntime(cfg *config.Config, clients map[string]interfaces.LLMClient, ski
 		workflowAutoApproval:     make(map[string]map[string]workflowApprovalScope),
 		autoApprovedResults:      make(map[string]schema.ToolResult),
 		approvedWorkflowResumes:  make(map[string]pendingApproval),
+		workflowApprovalResumes:  make(map[string]workflowApprovalResume),
+		workflowCallResumes:      make(map[string]string),
+		workflowResumeResults:    make(map[string]map[string]schema.ToolResult),
 		ordinaryApprovalResumes:  make(map[string]ordinaryApprovalResume),
 		ordinaryCallResumes:      make(map[string]string),
 		ordinaryResumeResults:    make(map[string]map[string]schema.ToolResult),
 		workspaceConfirmed:       true,
 		workspaceConfirmationSet: true,
+		taskStagingEnabled:       true,
 	}
 	active := runtimeRef.defaultAgentID()
 	if state != nil {
 		active = runtimeRef.initializeSessionState(active)
 	}
+	email := cfg.Notifications.Email
+	timeout := 20 * time.Second
+	if parsed, err := time.ParseDuration(strings.TrimSpace(email.Timeout)); err == nil {
+		timeout = parsed
+	}
+	runtimeRef.notifySender = notify.NewSender(notify.EmailConfig{
+		Enabled:       email.Enabled,
+		Host:          email.SMTPHost,
+		Port:          email.SMTPPort,
+		Username:      email.Username,
+		Password:      email.Password,
+		From:          email.From,
+		To:            append([]string(nil), email.To...),
+		TLS:           email.TLS,
+		SubjectPrefix: email.SubjectPrefix,
+		Timeout:       timeout,
+	})
 	runtimeRef.active = active
 	runtimeRef.restoreOrdinaryApprovalsFromSession()
 	return runtimeRef, nil
@@ -368,6 +440,16 @@ func firstRuntimeAgent(agents map[string]config.AgentProfile) string {
 }
 
 func (r *Runtime) defaultAgentID() string {
+	if r == nil {
+		return ""
+	}
+	r.pluginMu.RLock()
+	defer r.pluginMu.RUnlock()
+	return r.defaultAgentIDLocked()
+}
+
+// defaultAgentIDLocked requires pluginMu to be held for reading or writing.
+func (r *Runtime) defaultAgentIDLocked() string {
 	if r == nil || r.cfg == nil {
 		return ""
 	}
@@ -383,21 +465,23 @@ func (r *Runtime) initializeSessionState(defaultAgent string) string {
 		return defaultAgent
 	}
 	if strings.TrimSpace(defaultAgent) == "" {
+		r.pluginMu.RLock()
 		defaultAgent = firstRuntimeAgent(r.cfg.Agents)
+		r.pluginMu.RUnlock()
 	}
 	snapshot := r.session.Snapshot()
 	if r.hasResumableSessionState(snapshot) {
 		active := strings.TrimSpace(snapshot.ActiveAgent)
-		if _, ok := r.runners[active]; ok {
+		if runner, ok := r.agentRunner(active); ok {
 			if mode := strings.TrimSpace(snapshot.Mode); mode == "" {
-				r.session.SetMode(r.runners[active].profile.Mode)
+				r.session.SetMode(runner.profile.Mode)
 			}
 			return active
 		}
 	}
-	if _, ok := r.runners[defaultAgent]; ok {
+	if runner, ok := r.agentRunner(defaultAgent); ok {
 		r.session.SetActiveAgent(defaultAgent)
-		r.session.SetMode(r.runners[defaultAgent].profile.Mode)
+		r.session.SetMode(runner.profile.Mode)
 	}
 	return defaultAgent
 }
@@ -429,7 +513,7 @@ func (r *Runtime) ensureOrdinaryChatAgentState() {
 		return
 	}
 	active := strings.TrimSpace(snapshot.ActiveAgent)
-	runner, ok := r.runners[active]
+	runner, ok := r.agentRunner(active)
 	if !ok {
 		_ = r.RestoreDefaultAgent()
 		return
@@ -455,19 +539,15 @@ func (r *Runtime) restoreAgentAfterCompletedTurn(agentID string) error {
 	if strings.TrimSpace(agentID) == "" {
 		agentID = r.defaultAgentID()
 	}
-	if _, ok := r.runners[agentID]; !ok {
+	if _, ok := r.agentRunner(agentID); !ok {
 		return r.RestoreDefaultAgent()
 	}
 	return r.SetActiveAgent(agentID)
 }
 
 func (r *Runtime) applySessionApprovedTools(execCtx *ExecutionContext) {
-	if r == nil || execCtx == nil || r.session == nil {
-		return
-	}
-	for _, scope := range r.session.ApprovedToolScopesForWorkspace(workspaceRoot(r)) {
-		execCtx.RememberApprovedToolScope(scope.Kind, scope.Name)
-	}
+	// Exact approval scopes are checked directly against session state by
+	// ExecutionContext. Legacy approved_tools entries are intentionally ignored.
 }
 
 func (r *Runtime) workflowInProgress() bool {
@@ -504,7 +584,7 @@ func (r *Runtime) ActiveAgent() string {
 
 // SetActiveAgent switches the active agent.
 func (r *Runtime) SetActiveAgent(agentID string) error {
-	runner, ok := r.runners[agentID]
+	runner, ok := r.agentRunner(agentID)
 	if !ok {
 		return fmt.Errorf("unknown agent: %s", agentID)
 	}
@@ -518,17 +598,27 @@ func (r *Runtime) SetActiveAgent(agentID string) error {
 
 // AgentNames lists configured agents.
 func (r *Runtime) AgentNames() []string {
+	r.pluginMu.RLock()
 	names := make([]string, 0, len(r.runners))
 	for name := range r.runners {
 		names = append(names, name)
 	}
+	r.pluginMu.RUnlock()
 	sort.Strings(names)
 	return names
 }
 
+// agentRunner returns a stable runner snapshot; registry writers replace pointers.
+func (r *Runtime) agentRunner(agentID string) (*AgentRunner, bool) {
+	r.pluginMu.RLock()
+	defer r.pluginMu.RUnlock()
+	runner, ok := r.runners[agentID]
+	return runner, ok
+}
+
 // Profile returns a configured agent profile.
 func (r *Runtime) Profile(agentID string) (config.AgentProfile, bool) {
-	runner, ok := r.runners[agentID]
+	runner, ok := r.agentRunner(agentID)
 	if !ok {
 		return config.AgentProfile{}, false
 	}
@@ -555,6 +645,16 @@ func (r *Runtime) Provider(name string) (config.LLMConfig, bool) {
 	}
 	provider, ok := r.cfg.Providers[strings.TrimSpace(name)]
 	return provider, ok
+}
+
+// ProviderAvailable reports whether a model route has an initialized client.
+// Some embedders inject clients directly and do not retain provider metadata.
+func (r *Runtime) ProviderAvailable(name string) bool {
+	if r == nil {
+		return false
+	}
+	_, ok := r.clients[strings.TrimSpace(name)]
+	return ok
 }
 
 func (r *Runtime) workflowStageRunnerWithModel(agentID string, runner *AgentRunner, model workflowGraphStageModel) *AgentRunner {
@@ -633,6 +733,11 @@ func (r *Runtime) ToolRiskPolicy() config.ToolRiskPolicyConfig {
 	return r.toolRiskPolicy()
 }
 
+// LocalOnly reports whether this workspace blocks non-loopback model routes.
+func (r *Runtime) LocalOnly() bool {
+	return r != nil && r.cfg != nil && r.cfg.Workspace.LocalOnly
+}
+
 // SetMode overrides the current session mode.
 func (r *Runtime) SetMode(mode string) error {
 	mode = strings.TrimSpace(strings.ToLower(mode))
@@ -655,7 +760,7 @@ func (r *Runtime) Mode() string {
 	if r.session != nil {
 		return r.session.Mode()
 	}
-	if runner, ok := r.runners[r.ActiveAgent()]; ok && runner.profile.Mode != "" {
+	if runner, ok := r.agentRunner(r.ActiveAgent()); ok && runner.profile.Mode != "" {
 		return runner.profile.Mode
 	}
 	return "chat"
@@ -665,7 +770,7 @@ func (r *Runtime) activeModel() string {
 	if r == nil {
 		return ""
 	}
-	if runner, ok := r.runners[r.ActiveAgent()]; ok {
+	if runner, ok := r.agentRunner(r.ActiveAgent()); ok {
 		return strings.TrimSpace(runner.profile.Model)
 	}
 	return ""
@@ -689,6 +794,15 @@ func (r *Runtime) SessionSnapshot() session.Snapshot {
 	return r.session.Snapshot()
 }
 
+// DurableSessionSnapshot waits for an in-flight Workflow transition to reach
+// durable storage before exposing it to page and API readers.
+func (r *Runtime) DurableSessionSnapshot() session.Snapshot {
+	if r == nil || r.session == nil {
+		return session.Snapshot{}
+	}
+	return r.session.DurableSnapshot()
+}
+
 // StartAgentRun records a durable ordinary agent run.
 func (r *Runtime) StartAgentRun(input string) string {
 	if r == nil || r.session == nil {
@@ -703,6 +817,15 @@ func (r *Runtime) StartAgentRunWithOptions(input string, opts session.AgentRunSt
 		return ""
 	}
 	return r.session.StartAgentRunWithOptions(input, opts)
+}
+
+// StartAgentRunWithOptionsDurable records and persists an ordinary run before
+// returning its id.
+func (r *Runtime) StartAgentRunWithOptionsDurable(input string, opts session.AgentRunStartOptions) (string, error) {
+	if r == nil || r.session == nil {
+		return "", nil
+	}
+	return r.session.StartAgentRunWithOptionsDurable(input, opts)
 }
 
 // AgentRuns returns durable ordinary agent run snapshots.
@@ -726,7 +849,8 @@ func (r *Runtime) RequestAgentRunCancel(runID, reason string) (session.AgentRunS
 	if r == nil || r.session == nil {
 		return session.AgentRunSnapshot{}, false
 	}
-	return r.session.RequestAgentRunCancel(runID, reason)
+	run, ok, _ := r.session.RequestAgentRunCancelDurable(runID, reason)
+	return run, ok
 }
 
 // CancelAgentRun marks an ordinary agent run as cancelled.
@@ -734,7 +858,8 @@ func (r *Runtime) CancelAgentRun(runID, reason string) (session.AgentRunSnapshot
 	if r == nil || r.session == nil {
 		return session.AgentRunSnapshot{}, false
 	}
-	return r.session.CancelAgentRun(runID, reason)
+	run, ok, _ := r.session.CancelAgentRunDurable(runID, reason)
+	return run, ok
 }
 
 // CancelAgentRunAndApprovals cancels a paused ordinary agent run and clears its pending approval.
@@ -747,7 +872,7 @@ func (r *Runtime) CancelAgentRunAndApprovals(runID, reason string) (session.Agen
 		return session.AgentRunSnapshot{}, false
 	}
 	r.cancelAgentRunApproval(run)
-	cancelled, ok := r.session.CancelAgentRun(runID, reason)
+	cancelled, ok, _ := r.session.CancelAgentRunDurable(runID, reason)
 	if !ok {
 		return session.AgentRunSnapshot{}, false
 	}
@@ -760,7 +885,19 @@ func (r *Runtime) CompleteAgentRun(runID, status string, result schema.AgentResu
 	if r == nil || r.session == nil {
 		return session.AgentRunSnapshot{}, false
 	}
-	return r.session.CompleteAgentRun(runID, status, result)
+	if terminalOrdinaryAgentRunStatus(status) {
+		r.clearAgentRunApprovals(runID)
+	}
+	run, ok, _ := r.session.CompleteAgentRunDurable(runID, status, result)
+	return run, ok
+}
+
+func (r *Runtime) BeginAgentRunContinuation(runID string) (session.AgentRunSnapshot, bool) {
+	if r == nil || r.session == nil {
+		return session.AgentRunSnapshot{}, false
+	}
+	run, ok, _ := r.session.ResumeAgentRunDurable(runID, "继续使用已保存的工具结果和任务暂存区完成未完成任务")
+	return run, ok
 }
 
 // FailAgentRun records a durable ordinary agent run failure.
@@ -768,7 +905,39 @@ func (r *Runtime) FailAgentRun(runID, message string) (session.AgentRunSnapshot,
 	if r == nil || r.session == nil {
 		return session.AgentRunSnapshot{}, false
 	}
-	return r.session.FailAgentRun(runID, message)
+	r.clearAgentRunApprovals(runID)
+	run, ok, _ := r.session.FailAgentRunDurable(runID, message)
+	return run, ok
+}
+
+func terminalOrdinaryAgentRunStatus(status string) bool {
+	switch strings.ToLower(strings.TrimSpace(status)) {
+	case "completed", "failed", "cancelled", "canceled", "denied":
+		return true
+	default:
+		return false
+	}
+}
+
+func (r *Runtime) clearAgentRunApprovals(runID string) {
+	if r == nil || r.approvals == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	runID = strings.TrimSpace(runID)
+	resumeIDs := make(map[string]struct{})
+	for _, pending := range r.approvals.List() {
+		if strings.TrimSpace(pending.agentRunID) != runID {
+			continue
+		}
+		if resumeID := strings.TrimSpace(pending.ordinaryResume); resumeID != "" {
+			resumeIDs[resumeID] = struct{}{}
+		}
+		r.approvals.Resolve(pending.call.ID, false)
+	}
+	for resumeID := range resumeIDs {
+		r.clearOrdinaryResume(resumeID)
+	}
+	r.syncPendingApprovals()
 }
 
 // AppendAgentRunEvent records an event on an existing durable ordinary agent run.
@@ -922,6 +1091,59 @@ func (r *Runtime) ArtifactObjects() (session.ArtifactObjectIndex, error) {
 		return store.Index()
 	}
 	return session.ArtifactObjectIndex{}, nil
+}
+
+// AttachmentObject returns uploaded binary input metadata and content.
+func (r *Runtime) AttachmentObject(hashOrRef string) (schema.AttachmentRef, []byte, bool, error) {
+	if r == nil || r.session == nil {
+		return schema.AttachmentRef{}, nil, false, nil
+	}
+	if store := r.session.AttachmentObjectStore(); store != nil {
+		return store.Get(hashOrRef)
+	}
+	return schema.AttachmentRef{}, nil, false, nil
+}
+
+func (r *Runtime) AttachmentObjects() (session.AttachmentObjectIndex, error) {
+	if r == nil || r.session == nil {
+		return session.AttachmentObjectIndex{}, nil
+	}
+	if store := r.session.AttachmentObjectStore(); store != nil {
+		return store.Index()
+	}
+	return session.AttachmentObjectIndex{}, nil
+}
+
+func (r *Runtime) PutAttachment(data []byte, attachment schema.AttachmentRef) (schema.AttachmentRef, bool, error) {
+	if r == nil || r.session == nil || r.session.AttachmentObjectStore() == nil {
+		return schema.AttachmentRef{}, false, fmt.Errorf("attachment store not configured")
+	}
+	return r.session.AttachmentObjectStore().Put(data, attachment)
+}
+
+func (r *Runtime) hydrateMessageAttachments(messages []schema.Message) ([]schema.Message, error) {
+	hydrated := schema.CopyMessages(messages)
+	for messageIndex := range hydrated {
+		for partIndex := range hydrated[messageIndex].ContentParts {
+			part := &hydrated[messageIndex].ContentParts[partIndex]
+			if part.Attachment == nil || strings.TrimSpace(part.DataURL) != "" {
+				continue
+			}
+			attachment, data, ok, err := r.AttachmentObject(part.Attachment.Ref)
+			if err != nil {
+				return nil, fmt.Errorf("load attachment %s: %w", part.Attachment.Name, err)
+			}
+			if !ok {
+				return nil, fmt.Errorf("attachment is no longer available: %s", part.Attachment.Name)
+			}
+			if !strings.HasPrefix(strings.ToLower(attachment.MIME), "image/") {
+				return nil, fmt.Errorf("attachment is not a supported image: %s", attachment.Name)
+			}
+			part.Attachment = &attachment
+			part.DataURL = "data:" + attachment.MIME + ";base64," + base64.StdEncoding.EncodeToString(data)
+		}
+	}
+	return hydrated, nil
 }
 
 // AddCollaborationMessage records a durable collaboration timeline message.
@@ -1130,7 +1352,7 @@ func (r *Runtime) recordOrdinaryChatRoute(request, targetAgent string, intent or
 		return
 	}
 	targetMode := ""
-	if runner, ok := r.runners[targetAgent]; ok {
+	if runner, ok := r.agentRunner(targetAgent); ok {
 		targetMode = runner.profile.Mode
 	}
 	reason := strings.TrimSpace(intent.Reason)
@@ -1176,7 +1398,7 @@ func (r *Runtime) handlePendingOrdinaryChatHandoff(ctx context.Context, input st
 		r.recordOrdinaryChatRoute(input, strings.TrimSpace(handoff.SourceAgent), ordinaryChatIntent{}, "handoff_revised")
 		sourceAgent := strings.TrimSpace(handoff.SourceAgent)
 		if sourceAgent != "" {
-			if _, ok := r.runners[sourceAgent]; ok && sourceAgent != r.ActiveAgent() {
+			if _, ok := r.agentRunner(sourceAgent); ok && sourceAgent != r.ActiveAgent() {
 				if err := r.SetActiveAgent(sourceAgent); err != nil {
 					return schema.AgentResult{}, true, err
 				}
@@ -1284,7 +1506,7 @@ func (r *Runtime) ConfirmPendingHandoff(ctx context.Context, handler func(event 
 		Outcome:     "handoff_confirmed",
 		Reason:      strings.TrimSpace(handoff.ExpectedAction),
 	})
-	runner, ok := r.runners[targetAgent]
+	runner, ok := r.agentRunner(targetAgent)
 	if !ok {
 		return schema.AgentResult{}, fmt.Errorf("handoff target agent not configured: %s", targetAgent)
 	}
@@ -1349,12 +1571,24 @@ func (r *Runtime) ClearAudit() {
 	}
 }
 
+// MarkAgentRunApprovalResuming prevents clients from rediscovering a resolved
+// approval while the ordinary tool loop is continuing in the background.
+func (r *Runtime) MarkAgentRunApprovalResuming(runID string) {
+	if r != nil && r.session != nil {
+		r.session.MarkAgentRunApprovalResuming(runID)
+	}
+}
+
 func (r *Runtime) queueApproval(call schema.ToolCall, tool schema.Tool, agentID string) {
 	r.queueApprovalForAgentRun(call, tool, agentID, "")
 }
 
 func (r *Runtime) queueApprovalForAgentRun(call schema.ToolCall, tool schema.Tool, agentID, agentRunID string) {
-	item := pendingApproval{call: call, tool: tool, agent: agentID, agentRunID: strings.TrimSpace(agentRunID)}
+	r.queueApprovalForAgentRunWithToolOperations(call, tool, agentID, agentRunID, workflowToolOperationScope{})
+}
+
+func (r *Runtime) queueApprovalForAgentRunWithToolOperations(call schema.ToolCall, tool schema.Tool, agentID, agentRunID string, operations workflowToolOperationScope) {
+	item := pendingApproval{call: call, tool: tool, agent: agentID, agentRunID: strings.TrimSpace(agentRunID), toolOperations: operations}
 	if r != nil && r.session != nil {
 		workflow := r.session.Snapshot().Workflow
 		if strings.TrimSpace(workflow.Name) != "" && strings.TrimSpace(workflow.NextStage) != "" {
@@ -1367,13 +1601,6 @@ func (r *Runtime) queueApprovalForAgentRun(call schema.ToolCall, tool schema.Too
 		r.approvals.Add(item)
 	}
 	r.syncPendingApprovals()
-	if r != nil && r.session != nil && strings.TrimSpace(item.agentRunID) != "" {
-		approval := r.persistedPendingApprovalSummary(item.call.ID)
-		if strings.TrimSpace(approval.CallID) == "" {
-			approval = pendingApprovalSnapshot(item)
-		}
-		r.session.AppendAgentRunPendingApproval(item.agentRunID, approval)
-	}
 }
 
 func (r *Runtime) syncPendingApprovals() {
@@ -1383,7 +1610,7 @@ func (r *Runtime) syncPendingApprovals() {
 	items := r.approvals.List()
 	summaries := make([]session.PendingApprovalSnapshot, 0, len(items))
 	for _, item := range items {
-		summaries = append(summaries, pendingApprovalSnapshot(item))
+		summaries = append(summaries, r.pendingApprovalSnapshot(item))
 	}
 	r.session.SetPendingApprovals(summaries)
 }
@@ -1392,6 +1619,8 @@ func pendingApprovalSnapshot(item pendingApproval) session.PendingApprovalSnapsh
 	return session.PendingApprovalSnapshot{
 		CallID:           item.call.ID,
 		ToolName:         item.tool.Name,
+		ToolServer:       item.tool.Server,
+		ToolKind:         item.tool.Kind,
 		AgentID:          item.agent,
 		ArgumentsSummary: summarizeApprovalArguments(item.call.Arguments),
 		Arguments:        string(item.call.Arguments),
@@ -1401,6 +1630,39 @@ func pendingApprovalSnapshot(item pendingApproval) session.PendingApprovalSnapsh
 		CompletedSummary: summarizeWorkflow(item.completed),
 		AgentRunID:       item.agentRunID,
 	}
+}
+
+func (r *Runtime) pendingApprovalSnapshot(item pendingApproval) session.PendingApprovalSnapshot {
+	snapshot := pendingApprovalSnapshot(item)
+	resumeID := strings.TrimSpace(item.workflowResume)
+	if resumeID == "" && r.workflowCallResumes != nil {
+		resumeID = strings.TrimSpace(r.workflowCallResumes[item.call.ID])
+	}
+	if resumeID != "" {
+		if resume, ok := r.workflowApprovalResumes[resumeID]; ok {
+			snapshot.WorkflowResumeID = resumeID
+			snapshot.WorkflowResponse = schema.CopyMessage(resume.ResponseMessage)
+			snapshot.WorkflowCalls = schema.CopyToolCalls(resume.SuspendedCalls)
+			snapshot.WorkflowBaseResults = append([]schema.ToolResult(nil), resume.BaseResults...)
+			if results := r.workflowResumeResults[resumeID]; len(results) > 0 {
+				for _, call := range resume.SuspendedCalls {
+					if result, ok := results[call.ID]; ok {
+						snapshot.WorkflowResults = append(snapshot.WorkflowResults, result)
+					}
+				}
+			}
+			snapshot.WorkflowSystemPrompt = resume.SystemPrompt
+			snapshot.WorkflowMessages = schema.CopyMessages(resume.Messages)
+			snapshot.WorkflowCollected = append([]schema.ToolResult(nil), resume.CollectedResults...)
+		}
+	}
+	if scope, err := r.approvalScopeForPending(item, time.Now().UTC()); err == nil {
+		snapshot.ApprovalFingerprint = scope.Fingerprint
+		snapshot.ApprovalWorkspace = scope.Workspace
+		snapshot.ApprovalTarget = scope.Target
+		snapshot.ApprovalExpiresAt = scope.ExpiresAt.Format(time.RFC3339)
+	}
+	return snapshot
 }
 
 func responseMessageForApproval(responseContent string, call schema.ToolCall, message schema.Message) schema.Message {
@@ -1435,7 +1697,7 @@ func (r *Runtime) PendingApprovalSummaries() []session.PendingApprovalSnapshot {
 	items := r.approvals.List()
 	summaries := make([]session.PendingApprovalSnapshot, 0, len(items))
 	for _, item := range items {
-		summaries = append(summaries, pendingApprovalSnapshot(item))
+		summaries = append(summaries, r.pendingApprovalSnapshot(item))
 	}
 	return summaries
 }
@@ -1510,7 +1772,7 @@ func (r *Runtime) CanRememberPendingToolApproval(id string) (bool, string) {
 	if !ok {
 		return false, fmt.Sprintf("pending approval not found: %s", id)
 	}
-	if r.canRememberToolApproval(pending.tool) {
+	if r.canRememberCallApproval(pending.call, pending.tool) {
 		return true, ""
 	}
 	return false, toolRememberRiskPolicyReason(pending.tool)
@@ -1542,6 +1804,9 @@ func (r *Runtime) CanApprovePendingToolApproval(id string) (bool, string) {
 		return false, fmt.Sprintf("pending approval not found: %s", id)
 	}
 	if err := r.rejectToolApprovalByRiskPolicy(pending.tool); err != nil {
+		return false, err.Error()
+	}
+	if err := r.rejectPendingToolCallByNativeSandboxPolicy(pending); err != nil {
 		return false, err.Error()
 	}
 	return true, ""
@@ -1634,6 +1899,215 @@ func (r *Runtime) AnnotateWorkflowGraphRepeatPendingApproval(id, workflow string
 	return updated
 }
 
+func (r *Runtime) CaptureWorkflowApprovalContext(responseMessage schema.Message, results []schema.ToolResult) {
+	if r == nil || r.approvals == nil {
+		return
+	}
+	suspendedByID := make(map[string]struct{})
+	resultByID := make(map[string]schema.ToolResult)
+	for _, result := range results {
+		callID := strings.TrimSpace(result.CallID)
+		if callID == "" {
+			continue
+		}
+		resultByID[callID] = result
+		if result.Suspended {
+			suspendedByID[callID] = struct{}{}
+		}
+	}
+	if len(suspendedByID) == 0 {
+		return
+	}
+	orderedCalls := schema.CopyToolCalls(responseMessage.ToolCalls)
+	if len(orderedCalls) == 0 {
+		for callID := range suspendedByID {
+			if pending, ok := r.approvals.Get(callID); ok {
+				orderedCalls = append(orderedCalls, schema.CopyToolCall(pending.call))
+			}
+		}
+		sort.SliceStable(orderedCalls, func(i, j int) bool { return orderedCalls[i].ID < orderedCalls[j].ID })
+	}
+	suspendedCalls := make([]schema.ToolCall, 0, len(suspendedByID))
+	baseResults := make([]schema.ToolResult, 0, len(orderedCalls)-len(suspendedByID))
+	for _, call := range orderedCalls {
+		if _, ok := suspendedByID[call.ID]; ok {
+			suspendedCalls = append(suspendedCalls, schema.CopyToolCall(call))
+			continue
+		}
+		if result, ok := resultByID[call.ID]; ok && !result.Suspended {
+			baseResults = append(baseResults, result)
+		}
+	}
+	if len(suspendedCalls) == 0 {
+		return
+	}
+	resumeID := strings.TrimSpace(suspendedCalls[0].ID)
+	if resumeID == "" {
+		return
+	}
+	resume := workflowApprovalResume{
+		ID:              resumeID,
+		ResponseMessage: schema.CopyMessage(responseMessage),
+		SuspendedCalls:  suspendedCalls,
+		BaseResults:     append([]schema.ToolResult(nil), baseResults...),
+	}
+	if existing, ok := r.workflowApprovalResumes[resumeID]; ok {
+		resume.SystemPrompt = existing.SystemPrompt
+		resume.Messages = schema.CopyMessages(existing.Messages)
+		resume.CollectedResults = append([]schema.ToolResult(nil), existing.CollectedResults...)
+	}
+	if r.workflowApprovalResumes == nil {
+		r.workflowApprovalResumes = make(map[string]workflowApprovalResume)
+	}
+	if r.workflowCallResumes == nil {
+		r.workflowCallResumes = make(map[string]string)
+	}
+	if r.workflowResumeResults == nil {
+		r.workflowResumeResults = make(map[string]map[string]schema.ToolResult)
+	}
+	r.workflowApprovalResumes[resumeID] = resume
+	for _, call := range suspendedCalls {
+		callID := strings.TrimSpace(call.ID)
+		if callID == "" {
+			continue
+		}
+		r.workflowCallResumes[callID] = resumeID
+		r.approvals.AnnotateWorkflowResume(callID, resumeID)
+	}
+	r.syncPendingApprovals()
+}
+
+// CaptureWorkflowConversationContext preserves the exact model prefix that led
+// to a suspended tool call. Resuming from this prefix prevents the model from
+// repeating repository discovery after every approval and keeps provider cache
+// keys stable across approval boundaries.
+func (r *Runtime) CaptureWorkflowConversationContext(systemPrompt string, messages []schema.Message, suspendedCalls []schema.ToolCall, collectedResults []schema.ToolResult) {
+	if r == nil || r.approvals == nil || len(suspendedCalls) == 0 {
+		return
+	}
+	resumeID := strings.TrimSpace(suspendedCalls[0].ID)
+	if resumeID == "" {
+		return
+	}
+	if r.workflowApprovalResumes == nil {
+		r.workflowApprovalResumes = make(map[string]workflowApprovalResume)
+	}
+	if r.workflowCallResumes == nil {
+		r.workflowCallResumes = make(map[string]string)
+	}
+	resume := r.workflowApprovalResumes[resumeID]
+	resume.ID = resumeID
+	resume.SystemPrompt = systemPrompt
+	resume.Messages = schema.CopyMessages(messages)
+	resume.CollectedResults = append([]schema.ToolResult(nil), collectedResults...)
+	resume.SuspendedCalls = schema.CopyToolCalls(suspendedCalls)
+	r.workflowApprovalResumes[resumeID] = resume
+	for _, call := range suspendedCalls {
+		callID := strings.TrimSpace(call.ID)
+		if callID == "" {
+			continue
+		}
+		r.workflowCallResumes[callID] = resumeID
+		r.approvals.AnnotateWorkflowResume(callID, resumeID)
+	}
+	r.syncPendingApprovals()
+}
+
+func (r *Runtime) workflowConversationContext(callID string) (workflowApprovalResume, bool) {
+	if r == nil || r.workflowCallResumes == nil {
+		return workflowApprovalResume{}, false
+	}
+	resumeID := strings.TrimSpace(r.workflowCallResumes[strings.TrimSpace(callID)])
+	if resumeID == "" {
+		return workflowApprovalResume{}, false
+	}
+	resume, ok := r.workflowApprovalResumes[resumeID]
+	if !ok || len(resume.Messages) == 0 {
+		return workflowApprovalResume{}, false
+	}
+	resume.Messages = schema.CopyMessages(resume.Messages)
+	resume.CollectedResults = append([]schema.ToolResult(nil), resume.CollectedResults...)
+	return resume, true
+}
+
+func (r *Runtime) WorkflowApprovalGroupSize(callID string) int {
+	if r == nil || r.workflowCallResumes == nil {
+		return 0
+	}
+	resumeID := strings.TrimSpace(r.workflowCallResumes[strings.TrimSpace(callID)])
+	if resumeID == "" {
+		return 0
+	}
+	return len(r.workflowApprovalResumes[resumeID].SuspendedCalls)
+}
+
+func (r *Runtime) RecordWorkflowApprovalResult(pending pendingApproval, result schema.ToolResult) ([]schema.ToolResult, bool) {
+	if r == nil || strings.TrimSpace(result.CallID) == "" {
+		return nil, true
+	}
+	resumeID := strings.TrimSpace(pending.workflowResume)
+	if resumeID == "" && r.workflowCallResumes != nil {
+		resumeID = strings.TrimSpace(r.workflowCallResumes[result.CallID])
+	}
+	if resumeID == "" {
+		return []schema.ToolResult{result}, true
+	}
+	resume, ok := r.workflowApprovalResumes[resumeID]
+	if !ok {
+		return []schema.ToolResult{result}, true
+	}
+	if r.workflowResumeResults == nil {
+		r.workflowResumeResults = make(map[string]map[string]schema.ToolResult)
+	}
+	if r.workflowResumeResults[resumeID] == nil {
+		r.workflowResumeResults[resumeID] = make(map[string]schema.ToolResult)
+	}
+	r.workflowResumeResults[resumeID][result.CallID] = result
+	for _, call := range resume.SuspendedCalls {
+		if _, ok := r.workflowResumeResults[resumeID][call.ID]; !ok {
+			r.syncPendingApprovals()
+			return nil, false
+		}
+	}
+	resultsByID := make(map[string]schema.ToolResult, len(resume.BaseResults)+len(resume.SuspendedCalls))
+	for _, base := range resume.BaseResults {
+		resultsByID[base.CallID] = base
+	}
+	for callID, resolved := range r.workflowResumeResults[resumeID] {
+		resultsByID[callID] = resolved
+	}
+	ordered := make([]schema.ToolResult, 0, len(resultsByID))
+	for _, call := range resume.ResponseMessage.ToolCalls {
+		if item, ok := resultsByID[call.ID]; ok {
+			ordered = append(ordered, item)
+		}
+	}
+	if len(ordered) == 0 {
+		for _, call := range resume.SuspendedCalls {
+			ordered = append(ordered, resultsByID[call.ID])
+		}
+	}
+	r.syncPendingApprovals()
+	return ordered, true
+}
+
+func (r *Runtime) ClearWorkflowApprovalResume(callID string) {
+	if r == nil {
+		return
+	}
+	resumeID := strings.TrimSpace(r.workflowCallResumes[strings.TrimSpace(callID)])
+	if resumeID == "" {
+		return
+	}
+	resume := r.workflowApprovalResumes[resumeID]
+	for _, call := range resume.SuspendedCalls {
+		delete(r.workflowCallResumes, call.ID)
+		delete(r.approvedWorkflowResumes, call.ID)
+	}
+	delete(r.workflowApprovalResumes, resumeID)
+	delete(r.workflowResumeResults, resumeID)
+}
+
 func (r *Runtime) CaptureOrdinaryApprovalContext(agentRunID, agentID string, profile config.AgentProfile, matchedSkill *schema.Skill, systemPrompt, mode string, messages []schema.Message, suspendedCalls []schema.ToolCall, collectedResults []schema.ToolResult) {
 	if r == nil || r.approvals == nil || len(suspendedCalls) == 0 {
 		return
@@ -1679,7 +2153,7 @@ func (r *Runtime) CaptureOrdinaryApprovalContext(agentRunID, agentID string, pro
 		r.approvals.AnnotateOrdinaryResume(call.ID, resumeID)
 	}
 	if r.session != nil && strings.TrimSpace(agentRunID) != "" {
-		r.session.SetAgentRunResumeContext(agentRunID, session.AgentRunResumeContextSnapshot{
+		if _, stored := r.session.SetAgentRunResumeContext(agentRunID, session.AgentRunResumeContextSnapshot{
 			AgentID:          agentID,
 			Mode:             mode,
 			SystemPrompt:     systemPrompt,
@@ -1687,9 +2161,134 @@ func (r *Runtime) CaptureOrdinaryApprovalContext(agentRunID, agentID string, pro
 			Messages:         messages,
 			SuspendedCalls:   suspendedCalls,
 			CollectedResults: collectedResults,
-		})
+		}); !stored {
+			for _, call := range suspendedCalls {
+				if pending, ok := r.approvals.Get(call.ID); ok && strings.EqualFold(strings.TrimSpace(pending.agentRunID), strings.TrimSpace(agentRunID)) {
+					r.approvals.Resolve(call.ID, false)
+				}
+			}
+			r.clearOrdinaryResume(resumeID)
+			r.syncPendingApprovals()
+			return
+		}
+		// Publish per-run approvals only after the matching resume context is
+		// durable. Otherwise an HTTP poll can observe an approval that cannot
+		// resume yet and incorrectly offer a retry action.
+		for _, call := range suspendedCalls {
+			approval := r.persistedPendingApprovalSummary(call.ID)
+			if strings.TrimSpace(approval.CallID) == "" {
+				if pending, ok := r.approvals.Get(call.ID); ok {
+					approval = pendingApprovalSnapshot(pending)
+				}
+			}
+			if strings.TrimSpace(approval.CallID) != "" {
+				r.session.AppendAgentRunPendingApproval(agentRunID, approval)
+			}
+		}
 	}
 	r.syncPendingApprovals()
+}
+
+func (r *Runtime) CaptureOrdinaryContinuationContext(agentRunID, agentID string, matchedSkill *schema.Skill, systemPrompt, mode string, messages []schema.Message, collectedResults []schema.ToolResult) bool {
+	if r == nil || r.session == nil || strings.TrimSpace(agentRunID) == "" || len(messages) == 0 || len(collectedResults) == 0 {
+		return false
+	}
+	var skillCopy *schema.Skill
+	if matchedSkill != nil {
+		copied := *matchedSkill
+		skillCopy = &copied
+	}
+	_, stored := r.session.SetAgentRunResumeContext(agentRunID, session.AgentRunResumeContextSnapshot{
+		AgentID:          strings.TrimSpace(agentID),
+		Mode:             strings.TrimSpace(mode),
+		SystemPrompt:     systemPrompt,
+		MatchedSkill:     skillCopy,
+		Messages:         schema.CopyMessages(messages),
+		CollectedResults: append([]schema.ToolResult(nil), collectedResults...),
+	})
+	return stored
+}
+
+// RebuildIncompleteAgentRunContinuation repairs older iteration-budget runs
+// that retained tool evidence and task staging but did not persist messages.
+func (r *Runtime) RebuildIncompleteAgentRunContinuation(runID string) (session.AgentRunSnapshot, bool) {
+	if r == nil || r.session == nil || strings.TrimSpace(runID) == "" {
+		return session.AgentRunSnapshot{}, false
+	}
+	run, ok := r.session.AgentRun(runID)
+	if !ok || !strings.EqualFold(strings.TrimSpace(run.Status), "paused_need_more_budget") || run.ResumeContext != nil || run.Result == nil || !run.Result.Incomplete || len(run.Result.ToolResults) == 0 {
+		return run, false
+	}
+	agentID := fallbackText(run.AgentID, run.Result.AgentID)
+	runner, ok := r.agentRunner(agentID)
+	if !ok {
+		return run, false
+	}
+	summary := strings.TrimSpace(run.Output)
+	if summary == "" {
+		summary = "The previous tool iteration ended before a final verified delivery was available."
+	}
+	messages := []schema.Message{
+		{Role: "user", Content: run.Request},
+		{Role: "user", Content: "Continue the unfinished task in the existing task-staging workspace. Treat staged files as the source of truth; do not restart repository discovery or reread unchanged files. Finish all missing implementation, tests, and verification before returning a final result. Previous incomplete summary:\n" + summary},
+	}
+	updated, stored := r.session.SetAgentRunResumeContext(runID, session.AgentRunResumeContextSnapshot{
+		AgentID:          agentID,
+		Mode:             fallbackText(run.Mode, runner.profile.Mode),
+		SystemPrompt:     runner.profile.SystemPrompt,
+		MatchedSkill:     run.Result.MatchedSkill,
+		Messages:         messages,
+		CollectedResults: append([]schema.ToolResult(nil), run.Result.ToolResults...),
+	})
+	if !stored || r.session.PersistConfigured() != nil {
+		return run, false
+	}
+	return updated, true
+}
+
+func (r *Runtime) ResumeInterruptedAgentRun(ctx context.Context, runID string, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	if r == nil || r.session == nil || strings.TrimSpace(runID) == "" {
+		return schema.AgentResult{}, fmt.Errorf("agent continuation context is unavailable")
+	}
+	run, ok := r.session.AgentRun(runID)
+	status := strings.ToLower(strings.TrimSpace(run.Status))
+	if !ok || (status != "paused_need_more_budget" && status != "running") || run.ResumeContext == nil {
+		return schema.AgentResult{}, fmt.Errorf("agent run is not paused with a resumable continuation context")
+	}
+	resume := r.session.HydrateAgentRunResumeContext(*run.ResumeContext)
+	agentID := fallbackText(resume.AgentID, run.AgentID)
+	runner, ok := r.agentRunner(agentID)
+	if !ok {
+		return schema.AgentResult{}, fmt.Errorf("ordinary continuation agent not configured: %s", agentID)
+	}
+	if err := r.SetActiveAgent(agentID); err != nil {
+		return schema.AgentResult{}, err
+	}
+	messages := compactMessagesForResumePrompt(resume.Messages)
+	messages = append(messages, schema.Message{Role: "user", Content: "Continue the unfinished task from the saved tool observations and existing task-staging workspace, which is the source of truth. Do not rerun successful tool calls, repeat repository discovery, or reread unchanged files. Use tools to finish every remaining requested implementation, test, and verification item. Do not stop with a plan or next-step list while required deliverables remain incomplete. Return the final evidence-backed result only after verification."})
+	result, err := runner.continueConversation(ctx, agentConversationState{
+		Profile:          runner.profile,
+		MatchedSkill:     resume.MatchedSkill,
+		SystemPrompt:     resume.SystemPrompt,
+		Mode:             fallbackText(resume.Mode, fallbackText(run.Mode, runner.profile.Mode)),
+		Messages:         messages,
+		CollectedResults: append([]schema.ToolResult(nil), resume.CollectedResults...),
+		StartedAt:        time.Now(),
+	}, r.skills, r.mcp, r.session, r.audit, r, handler)
+	if err != nil {
+		return schema.AgentResult{}, err
+	}
+	result.AuditTrail = r.AuditTrail()
+	result.AgentID = runner.id
+	if strings.TrimSpace(result.Mode) == "" {
+		result.Mode = r.Mode()
+	}
+	if err := r.maybeRunVerifierPass(ctx, run.Request, &result, handler); err != nil {
+		return schema.AgentResult{}, err
+	}
+	result.AuditTrail = r.AuditTrail()
+	r.restoreDefaultAgentAfterCompletedTurn()
+	return result, nil
 }
 
 func (r *Runtime) restoreOrdinaryApprovalsFromSession() {
@@ -1697,7 +2296,9 @@ func (r *Runtime) restoreOrdinaryApprovalsFromSession() {
 		return
 	}
 	snapshot := r.session.Snapshot()
-	tools := r.restoreToolCatalog()
+	// Pending approvals persist their tool name, arguments, and approval scope.
+	// Do not restart every local MCP server merely to reopen those records.
+	tools := make(map[string]schema.Tool)
 	restored := make(map[string]struct{})
 	for _, run := range snapshot.AgentRuns {
 		for _, pending := range run.PendingApprovals {
@@ -1709,6 +2310,26 @@ func (r *Runtime) restoreOrdinaryApprovalsFromSession() {
 	for _, pending := range snapshot.PendingApprovals {
 		r.restorePendingApprovalSnapshot(pending, tools, restored, workflowMessages[strings.TrimSpace(pending.CallID)])
 	}
+	r.syncPendingApprovals()
+}
+
+// RestoreAgentRunApproval rehydrates one persisted ordinary run's approval
+// and resume context. HTTP action rendering calls this after a worker boundary
+// so a transiently missing in-memory approval cannot strand a run.
+func (r *Runtime) RestoreAgentRunApproval(runID string) {
+	if r == nil || r.session == nil || strings.TrimSpace(runID) == "" {
+		return
+	}
+	run, ok := r.session.AgentRun(runID)
+	if !ok {
+		return
+	}
+	tools := make(map[string]schema.Tool)
+	restored := make(map[string]struct{})
+	for _, pending := range run.PendingApprovals {
+		r.restorePendingApprovalSnapshot(pending, tools, restored, schema.Message{})
+	}
+	r.restoreOrdinaryResumeContext(run)
 	r.syncPendingApprovals()
 }
 
@@ -1728,36 +2349,8 @@ func workflowPendingResponseMessages(runs []session.WorkflowRunSnapshot) map[str
 	return out
 }
 
-func (r *Runtime) restoreToolCatalog() map[string]schema.Tool {
-	tools := make(map[string]schema.Tool)
-	if r == nil || r.mcp == nil {
-		return tools
-	}
-	listed, err := r.mcp.ListTools(context.Background())
-	if err == nil {
-		for _, tool := range listed {
-			name := strings.TrimSpace(tool.Name)
-			if name == "" {
-				continue
-			}
-			tools[name] = tool
-			if strings.TrimSpace(tool.Server) != "" {
-				tools[strings.TrimSpace(tool.Server)+"/"+name] = tool
-			}
-		}
-		return tools
-	}
-	for _, name := range r.mcp.ToolNames() {
-		name = strings.TrimSpace(name)
-		if name != "" {
-			tools[name] = schema.Tool{Name: name}
-		}
-	}
-	return tools
-}
-
 func (r *Runtime) restorePendingApprovalSnapshot(pending session.PendingApprovalSnapshot, tools map[string]schema.Tool, restored map[string]struct{}, responseMessage schema.Message) {
-	if r == nil || r.approvals == nil || strings.TrimSpace(pending.CallID) == "" || strings.TrimSpace(pending.AgentRunID) == "" {
+	if r == nil || r.approvals == nil || strings.TrimSpace(pending.CallID) == "" || (strings.TrimSpace(pending.AgentRunID) == "" && strings.TrimSpace(pending.WorkflowName) == "") {
 		return
 	}
 	if r.session != nil {
@@ -1768,10 +2361,23 @@ func (r *Runtime) restorePendingApprovalSnapshot(pending session.PendingApproval
 		return
 	}
 	restored[callID] = struct{}{}
+	if _, ok := r.approvals.Get(callID); ok {
+		// The live record contains the complete tool and resume metadata. Action
+		// discovery may call this method while a worker is paused, so never
+		// replace that record with a reduced persisted representation.
+		return
+	}
 	toolName := strings.TrimSpace(pending.ToolName)
+	if len(pending.WorkflowResponse.ToolCalls) > 0 || len(pending.WorkflowResponse.ProviderFields) > 0 || strings.TrimSpace(pending.WorkflowResponse.Content) != "" {
+		responseMessage = schema.CopyMessage(pending.WorkflowResponse)
+	}
 	tool := tools[toolName]
 	if strings.TrimSpace(tool.Name) == "" {
-		tool = schema.Tool{Name: toolName}
+		tool = schema.Tool{
+			Name:   toolName,
+			Server: strings.TrimSpace(pending.ToolServer),
+			Kind:   strings.TrimSpace(pending.ToolKind),
+		}
 	}
 	item := pendingApproval{
 		call: schema.ToolCall{
@@ -1787,9 +2393,52 @@ func (r *Runtime) restorePendingApprovalSnapshot(pending session.PendingApproval
 		responseContent: strings.TrimSpace(responseMessage.Content),
 		responseMessage: schema.CopyMessage(responseMessage),
 		agentRunID:      strings.TrimSpace(pending.AgentRunID),
+		workflowResume:  strings.TrimSpace(pending.WorkflowResumeID),
 	}
 	item.responseMessage = responseMessageForApproval(item.responseContent, item.call, item.responseMessage)
 	r.approvals.Add(item)
+	r.restoreWorkflowApprovalResumeSnapshot(pending)
+}
+
+func (r *Runtime) restoreWorkflowApprovalResumeSnapshot(pending session.PendingApprovalSnapshot) {
+	if r == nil || strings.TrimSpace(pending.WorkflowResumeID) == "" || len(pending.WorkflowCalls) == 0 {
+		return
+	}
+	resumeID := strings.TrimSpace(pending.WorkflowResumeID)
+	if r.workflowApprovalResumes == nil {
+		r.workflowApprovalResumes = make(map[string]workflowApprovalResume)
+	}
+	if r.workflowCallResumes == nil {
+		r.workflowCallResumes = make(map[string]string)
+	}
+	if r.workflowResumeResults == nil {
+		r.workflowResumeResults = make(map[string]map[string]schema.ToolResult)
+	}
+	r.workflowApprovalResumes[resumeID] = workflowApprovalResume{
+		ID:               resumeID,
+		ResponseMessage:  schema.CopyMessage(pending.WorkflowResponse),
+		SuspendedCalls:   schema.CopyToolCalls(pending.WorkflowCalls),
+		BaseResults:      append([]schema.ToolResult(nil), pending.WorkflowBaseResults...),
+		SystemPrompt:     pending.WorkflowSystemPrompt,
+		Messages:         schema.CopyMessages(pending.WorkflowMessages),
+		CollectedResults: append([]schema.ToolResult(nil), pending.WorkflowCollected...),
+	}
+	if r.workflowResumeResults[resumeID] == nil {
+		r.workflowResumeResults[resumeID] = make(map[string]schema.ToolResult)
+	}
+	for _, result := range pending.WorkflowResults {
+		if strings.TrimSpace(result.CallID) != "" {
+			r.workflowResumeResults[resumeID][result.CallID] = result
+		}
+	}
+	for _, call := range pending.WorkflowCalls {
+		if strings.TrimSpace(call.ID) != "" {
+			r.workflowCallResumes[call.ID] = resumeID
+		}
+	}
+	if callID := strings.TrimSpace(pending.CallID); callID != "" {
+		r.approvals.AnnotateWorkflowResume(callID, resumeID)
+	}
 }
 
 func (r *Runtime) restoreOrdinaryResumeContext(run session.AgentRunSnapshot) {
@@ -1813,7 +2462,7 @@ func (r *Runtime) restoreOrdinaryResumeContext(run session.AgentRunSnapshot) {
 	if agentID == "" {
 		agentID = strings.TrimSpace(run.AgentID)
 	}
-	runner, ok := r.runners[agentID]
+	runner, ok := r.agentRunner(agentID)
 	if !ok {
 		return
 	}
@@ -1987,7 +2636,7 @@ func (r *Runtime) clearOrdinaryResume(resumeID string) {
 }
 
 func (r *Runtime) resumeOrdinaryRun(ctx context.Context, resume ordinaryApprovalResume, approvedResults []schema.ToolResult, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
-	runner, ok := r.runners[resume.AgentID]
+	runner, ok := r.agentRunner(resume.AgentID)
 	if !ok {
 		return schema.AgentResult{}, fmt.Errorf("ordinary resume agent not configured: %s", resume.AgentID)
 	}
@@ -2044,23 +2693,39 @@ func (r *Runtime) approveToolCall(ctx context.Context, id string, remember bool)
 		r.requeuePendingApproval(pending)
 		return schema.ToolResult{}, err
 	}
-	if remember && !r.canRememberToolApproval(pending.tool) {
+	if err := r.rejectPendingToolCallByNativeSandboxPolicy(pending); err != nil {
+		r.requeuePendingApproval(pending)
+		return schema.ToolResult{}, err
+	}
+	if remember && !r.canRememberCallApproval(pending.call, pending.tool) {
 		r.requeuePendingApproval(pending)
 		return schema.ToolResult{}, fmt.Errorf("tool %s cannot be remembered by tool_risk_policy; approve once instead", pending.tool.Name)
 	}
-	result, err := r.mcp.CallTool(ctx, pending.call.Name, pending.call.Arguments)
-	if err != nil {
+	var rememberedScope session.ApprovalScope
+	if remember {
+		var scopeErr error
+		rememberedScope, scopeErr = r.approvalScopeForPending(pending, time.Now().UTC())
+		if scopeErr != nil {
+			r.requeuePendingApproval(pending)
+			return schema.ToolResult{}, scopeErr
+		}
+	}
+	execCtx := pendingApprovalExecutionContext(r, pending)
+	if err := r.prepareExecutionWorkspace(&execCtx, pending.call, pending.tool); err != nil {
+		r.requeuePendingApproval(pending)
 		return schema.ToolResult{}, err
 	}
-	result.CallID = pending.call.ID
-	if result.ToolName == "" {
-		result.ToolName = pending.tool.Name
+	result, _, err := executeToolCallWithIdempotency(ctx, r.mcp, execCtx, pending.call, pending.tool)
+	if err != nil {
+		r.requeuePendingApproval(pending)
+		return schema.ToolResult{}, err
 	}
+	result = materializeToolResult(r.session, result, pending.agent, "", pending.toolOperations.RunID, pending.toolOperations.Stage)
 	if r.audit != nil {
 		r.audit.Record(schema.AuditEntry{Type: "tool_call", AgentID: pending.agent, ToolName: pending.tool.Name, Outcome: "approved", Detail: result.Content})
 	}
 	if remember {
-		r.rememberApprovedToolScope(pending.tool)
+		r.session.RememberApprovalScope(rememberedScope)
 	}
 	r.recordOrdinaryResumeResult(pending, result)
 	return result, nil
@@ -2074,11 +2739,11 @@ func (r *Runtime) RememberPendingToolApproval(id string) error {
 	if !ok {
 		return fmt.Errorf("pending approval not found: %s", id)
 	}
-	if !r.canRememberToolApproval(pending.tool) {
+	if !r.canRememberCallApproval(pending.call, pending.tool) {
 		return fmt.Errorf("tool %s cannot be remembered by tool_risk_policy; approve once instead", pending.tool.Name)
 	}
-	r.rememberApprovedToolScope(pending.tool)
-	return nil
+	_, err := r.rememberPendingApprovalScope(pending)
+	return err
 }
 
 func (r *Runtime) RememberPendingWorkflowToolApproval(id string) error {
@@ -2092,10 +2757,10 @@ func (r *Runtime) RememberPendingWorkflowToolApproval(id string) error {
 	if strings.TrimSpace(pending.workflow) == "" || strings.TrimSpace(pending.tool.Name) == "" {
 		return fmt.Errorf("pending approval is not scoped to a workflow tool call: %s", id)
 	}
-	if !r.canRememberToolApproval(pending.tool) {
+	if !r.canRememberCallApproval(pending.call, pending.tool) {
 		return fmt.Errorf("tool %s cannot be remembered by tool_risk_policy; approve once instead", pending.tool.Name)
 	}
-	return r.EnableWorkflowAutoApprovalForTool(pending.workflow, pending.stage, pending.tool)
+	return r.enableWorkflowAutoApproval(pending)
 }
 
 func (r *Runtime) requeuePendingApproval(pending pendingApproval) {
@@ -2114,14 +2779,6 @@ func (r *Runtime) requeuePendingApproval(pending pendingApproval) {
 		}
 		r.session.AppendAgentRunPendingApproval(pending.agentRunID, approval)
 	}
-}
-
-func (r *Runtime) EnableWorkflowAutoApprovalForTool(workflowName string, stage WorkflowStage, tool schema.Tool) error {
-	if !r.canRememberToolApproval(tool) {
-		return fmt.Errorf("tool %s cannot be remembered by tool_risk_policy; approve once instead", tool.Name)
-	}
-	r.EnableWorkflowAutoApproval(workflowName, stage, tool.Name)
-	return nil
 }
 
 func (r *Runtime) ApproveAllPendingToolCalls(ctx context.Context) ([]schema.ToolResult, error) {
@@ -2143,7 +2800,7 @@ func (r *Runtime) ApprovePendingToolCallsForWorkflow(ctx context.Context, workfl
 		if item.workflow != workflowName {
 			continue
 		}
-		if !r.canRememberToolApproval(item.tool) {
+		if !r.canRememberCallApproval(item.call, item.tool) {
 			return nil, fmt.Errorf("tool %s cannot be remembered by tool_risk_policy; approve once instead", item.tool.Name)
 		}
 	}
@@ -2157,25 +2814,38 @@ func (r *Runtime) ApprovePendingToolCallsForWorkflow(ctx context.Context, workfl
 			return nil, err
 		}
 		results = append(results, result)
-		if err := r.EnableWorkflowAutoApprovalForTool(workflowName, item.stage, item.tool); err != nil {
+		if err := r.enableWorkflowAutoApproval(item); err != nil {
 			return nil, err
 		}
 	}
 	return results, nil
 }
 
-func (r *Runtime) EnableWorkflowAutoApproval(workflowName string, stage WorkflowStage, toolName string) {
-	if r == nil || strings.TrimSpace(workflowName) == "" || strings.TrimSpace(toolName) == "" {
-		return
+func (r *Runtime) enableWorkflowAutoApproval(item pendingApproval) error {
+	if r == nil || strings.TrimSpace(item.workflow) == "" || strings.TrimSpace(item.tool.Name) == "" {
+		return fmt.Errorf("workflow approval scope is incomplete")
+	}
+	if !r.canRememberCallApproval(item.call, item.tool) {
+		return fmt.Errorf("tool %s cannot be remembered by tool_risk_policy; approve once instead", item.tool.Name)
+	}
+	scope, err := r.rememberPendingApprovalScope(item)
+	if err != nil {
+		return err
 	}
 	if r.workflowAutoApproval == nil {
 		r.workflowAutoApproval = make(map[string]map[string]workflowApprovalScope)
 	}
-	if r.workflowAutoApproval[workflowName] == nil {
-		r.workflowAutoApproval[workflowName] = make(map[string]workflowApprovalScope)
+	if r.workflowAutoApproval[item.workflow] == nil {
+		r.workflowAutoApproval[item.workflow] = make(map[string]workflowApprovalScope)
 	}
-	key := workflowAutoApprovalKey(stage, toolName)
-	r.workflowAutoApproval[workflowName][key] = workflowApprovalScope{Workflow: workflowName, Stage: stage, ToolName: toolName}
+	r.workflowAutoApproval[item.workflow][scope.Fingerprint] = workflowApprovalScope{
+		Workflow:    item.workflow,
+		Stage:       item.stage,
+		ToolName:    item.tool.Name,
+		Fingerprint: scope.Fingerprint,
+		ExpiresAt:   scope.ExpiresAt,
+	}
+	return nil
 }
 
 func (r *Runtime) DisableWorkflowAutoApproval(workflowName string) {
@@ -2193,15 +2863,16 @@ func (r *Runtime) shouldAutoApproveWorkflowCall(item pendingApproval) bool {
 	if !ok {
 		return false
 	}
-	scope, ok := scopes[workflowAutoApprovalKey(item.stage, item.tool.Name)]
+	now := time.Now().UTC()
+	candidate, err := r.approvalScopeForPending(item, now)
+	if err != nil {
+		return false
+	}
+	scope, ok := scopes[candidate.Fingerprint]
 	if !ok {
 		return false
 	}
-	return scope.Workflow == item.workflow && scope.Stage == item.stage && scope.ToolName == item.tool.Name && r.canRememberToolApproval(item.tool)
-}
-
-func workflowAutoApprovalKey(stage WorkflowStage, toolName string) string {
-	return string(stage) + "\x00" + strings.TrimSpace(toolName)
+	return scope.Workflow == item.workflow && scope.Stage == item.stage && scope.ToolName == item.tool.Name && scope.Fingerprint == candidate.Fingerprint && scope.ExpiresAt.After(now) && r.canRememberCallApproval(item.call, item.tool)
 }
 
 func (r *Runtime) AutoApprovedToolResult(ctx context.Context, id string) (schema.ToolResult, bool) {
@@ -2228,22 +2899,6 @@ func (r *Runtime) AutoApprovedToolResult(ctx context.Context, id string) (schema
 	return result, true
 }
 
-func (r *Runtime) rememberApprovedToolScope(tool schema.Tool) {
-	if r == nil || r.session == nil {
-		return
-	}
-	workspace := workspaceRoot(r)
-	toolName := strings.TrimSpace(tool.Name)
-	if strings.TrimSpace(workspace) == "" || toolName == "" {
-		return
-	}
-	kind := string(policy.KindForTool(tool))
-	if strings.TrimSpace(kind) == "" {
-		kind = "unknown"
-	}
-	r.session.RememberApprovedToolScope(workspace, kind, toolName)
-}
-
 func (r *Runtime) canRememberToolApproval(tool schema.Tool) bool {
 	if r.rejectToolApprovalByRiskPolicy(tool) != nil {
 		return false
@@ -2257,6 +2912,14 @@ func (r *Runtime) canRememberToolApproval(tool schema.Tool) bool {
 	return execCtx.canRememberApproval(tool)
 }
 
+func (r *Runtime) canRememberCallApproval(call schema.ToolCall, tool schema.Tool) bool {
+	if !r.canRememberToolApproval(tool) {
+		return false
+	}
+	execCtx := newExecutionContext("", config.AgentProfile{}, nil, nil, workspaceRoot(r))
+	return execCtx.canRememberCallApproval(call, tool)
+}
+
 func (r *Runtime) rejectToolApprovalByRiskPolicy(tool schema.Tool) error {
 	if r == nil || !r.toolRiskPolicy().RejectUnsandboxedRiskyTools {
 		return nil
@@ -2265,6 +2928,20 @@ func (r *Runtime) rejectToolApprovalByRiskPolicy(tool schema.Tool) error {
 	execCtx.RiskPolicy = r.toolRiskPolicy()
 	execCtx.MCPServers = r.MCPServerRefs()
 	return execCtx.rejectByRiskPolicy(tool)
+}
+
+func (r *Runtime) nativeSandboxReport() nativesandbox.Report {
+	if r != nil && r.nativeSandboxProbe != nil {
+		return r.nativeSandboxProbe()
+	}
+	return nativesandbox.Probe()
+}
+
+func (r *Runtime) rejectPendingToolCallByNativeSandboxPolicy(pending pendingApproval) error {
+	execCtx := pendingApprovalExecutionContext(r, pending)
+	report := r.nativeSandboxReport()
+	execCtx.NativeSandboxReport = &report
+	return execCtx.rejectByNativeSandboxPolicy(pending.call, pending.tool)
 }
 
 func toolRememberRiskPolicyReason(tool schema.Tool) string {
@@ -2718,18 +3395,28 @@ func (r *Runtime) DenyToolCall(id string) (schema.ToolResult, error) {
 
 // RunStream executes the request with the active agent.
 func (r *Runtime) RunStream(ctx context.Context, input string, handler func(event schema.StreamEvent) error) (schema.AgentResult, error) {
+	if r != nil && !r.workflowInProgress() {
+		r.ClearAudit()
+	}
 	r.ensureOrdinaryChatAgentState()
 	sourceAgent := r.ActiveAgent()
-	if result, handled, err := r.handlePendingOrdinaryChatHandoff(ctx, input, handler); handled {
-		return result, err
+	explicitAgent := agentTargetFromContext(ctx)
+	if explicitAgent == "" {
+		if result, handled, err := r.handlePendingOrdinaryChatHandoff(ctx, input, handler); handled {
+			return result, err
+		}
+	} else if _, ok := r.agentRunner(explicitAgent); !ok {
+		return schema.AgentResult{}, fmt.Errorf("unknown agent: %s", explicitAgent)
 	}
 	targetAgent := r.ActiveAgent()
 	rerouted := false
 	intent := ordinaryChatIntent{}
-	if r == nil || r.session == nil || !r.workflowInProgress() {
+	if explicitAgent != "" {
+		targetAgent = explicitAgent
+	} else if r == nil || r.session == nil || !r.workflowInProgress() {
 		targetAgent, intent, rerouted = r.routeOrdinaryChat(input)
 	}
-	if !rerouted && strings.TrimSpace(intent.Mode) == "" && r != nil && r.session != nil && !r.workflowInProgress() {
+	if explicitAgent == "" && !rerouted && strings.TrimSpace(intent.Mode) == "" && r != nil && r.session != nil && !r.workflowInProgress() {
 		if routedIntent, ok := r.classifyOrdinaryChatIntentWithModel(ctx, input, handler); ok {
 			targetAgent, intent, rerouted = r.routeOrdinaryChatIntent(routedIntent)
 		}
@@ -2746,6 +3433,9 @@ func (r *Runtime) RunStream(ctx context.Context, input string, handler func(even
 		}
 		r.recordOrdinaryChatRoute(input, targetAgent, intent, outcome)
 	}
+	if explicitAgent != "" {
+		r.recordOrdinaryChatRoute(input, targetAgent, ordinaryChatIntent{}, "explicit_target")
+	}
 	if !rerouted && intent.Mode == "" {
 		r.recordOrdinaryChatRoute(input, r.ActiveAgent(), ordinaryChatIntent{}, "stayed_default")
 	}
@@ -2756,11 +3446,19 @@ func (r *Runtime) RunStream(ctx context.Context, input string, handler func(even
 		}
 		r.audit.Record(schema.AuditEntry{Type: "intent_route", AgentID: targetAgent, Outcome: "rerouted", Detail: detail})
 	}
-	runner, ok := r.runners[r.ActiveAgent()]
+	runner, ok := r.agentRunner(r.ActiveAgent())
 	if !ok {
 		return schema.AgentResult{}, fmt.Errorf("active agent not configured: %s", r.ActiveAgent())
 	}
-	result, err := runner.RunStream(ctx, input, r.skills, r.mcp, r.session, r.audit, r, handler)
+	skillManager := r.skills
+	if skillName := agentSkillFromContext(ctx); skillName != "" {
+		skill, ok := findWorkflowSkillByName(r.skills.List(), skillName)
+		if !ok {
+			return schema.AgentResult{}, fmt.Errorf("unknown skill: %s", skillName)
+		}
+		skillManager = fixedSkillManager{skill: &skill}
+	}
+	result, err := runner.RunStream(ctx, input, skillManager, r.mcp, r.session, r.audit, r, handler)
 	if err != nil {
 		r.recordTaskMemory(input, runner.id, r.Mode(), schema.AgentResult{}, err)
 		_, _, _ = r.MaybeAutoCompactContext(ctx, "ordinary agent run failed")
@@ -2772,6 +3470,14 @@ func (r *Runtime) RunStream(ctx context.Context, input string, handler func(even
 	}
 	if strings.TrimSpace(result.Model) == "" {
 		result.Model = strings.TrimSpace(runner.profile.Model)
+	}
+	if agentResultAwaitingToolApproval(result) {
+		// A suspended tool batch is a durable pause, not a completed turn.
+		// Return immediately so the API can release its execution lock before
+		// exposing approval actions; verification and task memory run after the
+		// resumed conversation actually completes.
+		result.AuditTrail = r.AuditTrail()
+		return result, nil
 	}
 	if strings.EqualFold(result.Mode, "plan") && !strings.EqualFold(intent.Mode, "plan") && len(result.ToolResults) == 0 {
 		r.queueOrdinaryChatHandoff(input, result.Output, workflowAgentFixer, "fix")
@@ -2788,6 +3494,15 @@ func (r *Runtime) RunStream(ctx context.Context, input string, handler func(even
 	return result, nil
 }
 
+func agentResultAwaitingToolApproval(result schema.AgentResult) bool {
+	for _, toolResult := range result.ToolResults {
+		if toolResult.Suspended {
+			return true
+		}
+	}
+	return false
+}
+
 // WorkflowRunner constructs a staged workflow helper for this runtime.
 func (r *Runtime) WorkflowRunner() *WorkflowRunner {
 	return NewWorkflowRunner(r)
@@ -2797,6 +3512,17 @@ func (r *Runtime) WorkflowRunner() *WorkflowRunner {
 func (r *Runtime) RuntimeHome() string {
 	if r == nil || r.cfg == nil {
 		return ""
+	}
+	return strings.TrimSpace(r.cfg.RuntimeHome)
+}
+
+// DataRoot returns the persistent directory for user resources and runtime data.
+func (r *Runtime) DataRoot() string {
+	if r == nil || r.cfg == nil {
+		return ""
+	}
+	if root := strings.TrimSpace(r.cfg.DataRoot); root != "" {
+		return root
 	}
 	return strings.TrimSpace(r.cfg.RuntimeHome)
 }
@@ -2837,6 +3563,52 @@ func (r *Runtime) SkillRoot() string {
 		return filepath.Join(home, "skills")
 	}
 	return ""
+}
+
+// UserSkillRoot returns the writable Skill override directory.
+func (r *Runtime) UserSkillRoot() string {
+	if r == nil {
+		return ""
+	}
+	dataRoot := strings.TrimSpace(r.DataRoot())
+	runtimeHome := strings.TrimSpace(r.RuntimeHome())
+	if dataRoot == "" || sameRuntimePath(dataRoot, runtimeHome) {
+		return r.SkillRoot()
+	}
+	return filepath.Join(dataRoot, "resources", "skills")
+}
+
+// BuiltinSkillRoot returns the immutable Skill source directory.
+func (r *Runtime) BuiltinSkillRoot() string {
+	if r == nil {
+		return ""
+	}
+	if provider, ok := r.skills.(interface{ BuiltinRoot() string }); ok {
+		return strings.TrimSpace(provider.BuiltinRoot())
+	}
+	return r.SkillRoot()
+}
+
+// SetResourceTombstone hides or restores an immutable resource in the merged view.
+func (r *Runtime) SetResourceTombstone(family, name string, deleted bool) error {
+	if r == nil || sameRuntimePath(r.DataRoot(), r.RuntimeHome()) {
+		return nil
+	}
+	return persistence.New(r.DataRoot()).SetTombstone(family, name, deleted)
+}
+
+// IsResourceTombstoned reports whether an immutable resource is hidden.
+func (r *Runtime) IsResourceTombstoned(family, name string) (bool, error) {
+	if r == nil || sameRuntimePath(r.DataRoot(), r.RuntimeHome()) {
+		return false, nil
+	}
+	return persistence.New(r.DataRoot()).IsTombstoned(family, name)
+}
+
+func sameRuntimePath(left, right string) bool {
+	left = filepath.Clean(strings.TrimSpace(left))
+	right = filepath.Clean(strings.TrimSpace(right))
+	return strings.EqualFold(left, right)
 }
 
 // ReloadSkills reloads skills when the configured manager supports hot reload.

@@ -17,26 +17,21 @@ var embeddedToolPresetFS embed.FS
 
 // ToolPreset describes a reusable MCP tool scaffold preset.
 type ToolPreset struct {
-	Name             string            `json:"name" yaml:"name"`
-	DefaultName      string            `json:"default_name,omitempty" yaml:"default_name,omitempty"`
-	Title            string            `json:"title" yaml:"title"`
-	Description      string            `json:"description,omitempty" yaml:"description,omitempty"`
-	Category         string            `json:"category,omitempty" yaml:"category,omitempty"`
-	Tags             []string          `json:"tags,omitempty" yaml:"tags,omitempty"`
-	Language         string            `json:"language,omitempty" yaml:"language,omitempty"`
-	Isolation        string            `json:"isolation,omitempty" yaml:"isolation,omitempty"`
-	WorkspaceMount   string            `json:"workspace_mount,omitempty" yaml:"workspace_mount,omitempty"`
-	NetworkMode      string            `json:"network_mode,omitempty" yaml:"network_mode,omitempty"`
-	IsolationProfile string            `json:"isolation_profile,omitempty" yaml:"isolation_profile,omitempty"`
-	DefaultImage     string            `json:"default_image,omitempty" yaml:"default_image,omitempty"`
-	DefaultOptions   map[string]string `json:"default_isolation_options,omitempty" yaml:"default_isolation_options,omitempty"`
-	RiskLevel        string            `json:"risk_level,omitempty" yaml:"risk_level,omitempty"`
-	RequiresRestart  bool              `json:"requires_restart" yaml:"requires_restart"`
-	Capabilities     []string          `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
-	SafetyGuards     []string          `json:"safety_guards,omitempty" yaml:"safety_guards,omitempty"`
-	GeneratedPaths   []string          `json:"generated_paths,omitempty" yaml:"generated_paths,omitempty"`
-	ActivationSteps  []string          `json:"activation_steps,omitempty" yaml:"activation_steps,omitempty"`
-	Recommendations  []string          `json:"recommendations,omitempty" yaml:"recommendations,omitempty"`
+	Name            string   `json:"name" yaml:"name"`
+	DefaultName     string   `json:"default_name,omitempty" yaml:"default_name,omitempty"`
+	Title           string   `json:"title" yaml:"title"`
+	Description     string   `json:"description,omitempty" yaml:"description,omitempty"`
+	Category        string   `json:"category,omitempty" yaml:"category,omitempty"`
+	Tags            []string `json:"tags,omitempty" yaml:"tags,omitempty"`
+	Language        string   `json:"language,omitempty" yaml:"language,omitempty"`
+	Isolation       string   `json:"isolation,omitempty" yaml:"isolation,omitempty"`
+	RiskLevel       string   `json:"risk_level,omitempty" yaml:"risk_level,omitempty"`
+	RequiresRestart bool     `json:"requires_restart" yaml:"requires_restart"`
+	Capabilities    []string `json:"capabilities,omitempty" yaml:"capabilities,omitempty"`
+	SafetyGuards    []string `json:"safety_guards,omitempty" yaml:"safety_guards,omitempty"`
+	GeneratedPaths  []string `json:"generated_paths,omitempty" yaml:"generated_paths,omitempty"`
+	ActivationSteps []string `json:"activation_steps,omitempty" yaml:"activation_steps,omitempty"`
+	Recommendations []string `json:"recommendations,omitempty" yaml:"recommendations,omitempty"`
 }
 
 type toolPresetFile struct {
@@ -200,10 +195,6 @@ func normalizeToolPreset(preset ToolPreset) ToolPreset {
 	preset.Category = strings.TrimSpace(preset.Category)
 	preset.Language = strings.TrimSpace(preset.Language)
 	preset.Isolation = strings.TrimSpace(preset.Isolation)
-	preset.WorkspaceMount = strings.TrimSpace(preset.WorkspaceMount)
-	preset.NetworkMode = strings.TrimSpace(preset.NetworkMode)
-	preset.IsolationProfile = strings.TrimSpace(preset.IsolationProfile)
-	preset.DefaultImage = strings.TrimSpace(preset.DefaultImage)
 	preset.RiskLevel = strings.TrimSpace(preset.RiskLevel)
 	preset.Tags = normalizeStringList(preset.Tags, true)
 	preset.Capabilities = normalizeStringList(preset.Capabilities, true)
@@ -211,16 +202,6 @@ func normalizeToolPreset(preset ToolPreset) ToolPreset {
 	preset.GeneratedPaths = normalizeStringList(preset.GeneratedPaths, true)
 	preset.ActivationSteps = normalizeStringList(preset.ActivationSteps, true)
 	preset.Recommendations = normalizeStringList(preset.Recommendations, true)
-	if preset.DefaultOptions != nil {
-		options := make(map[string]string, len(preset.DefaultOptions))
-		for key, value := range preset.DefaultOptions {
-			key = strings.ToLower(strings.TrimSpace(key))
-			if key != "" {
-				options[key] = strings.TrimSpace(value)
-			}
-		}
-		preset.DefaultOptions = options
-	}
 	return preset
 }
 
@@ -245,12 +226,5 @@ func cloneToolPreset(preset ToolPreset) ToolPreset {
 	preset.GeneratedPaths = append([]string(nil), preset.GeneratedPaths...)
 	preset.ActivationSteps = append([]string(nil), preset.ActivationSteps...)
 	preset.Recommendations = append([]string(nil), preset.Recommendations...)
-	if preset.DefaultOptions != nil {
-		options := make(map[string]string, len(preset.DefaultOptions))
-		for key, value := range preset.DefaultOptions {
-			options[key] = value
-		}
-		preset.DefaultOptions = options
-	}
 	return preset
 }

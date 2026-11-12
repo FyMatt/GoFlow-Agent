@@ -2,8 +2,8 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: multi-domain-intake-router
-title: Multi-Domain Parallel Intake Router
-description: Collect task context, let a strong planner decompose the request into bounded domain slices, run only the selected domain workers in parallel, then join, audit, and hand off a compact final report.
+title: 多领域任务分流
+description: 收集任务上下文，由规划智能体拆解为边界明确的领域任务，仅并行执行所选分支；需要正式文档时，在领域结果通过质量门后生成、修改并校验真实 Office 交付物。
 category: starter
 tags:
     - starter
@@ -14,7 +14,7 @@ tags:
     - token-budget
     - quality_gate
     - handoff
-stages: 21
+stages: 24
 graph:
     name: multi-domain-intake-router
     description: Default entry workflow for broad tasks. It uses a strong planning route for branch-selection contracts, cheaper bounded domain workers for selected parallel execution, per-branch tool allowlists, cost attribution, artifact-first join, conflict diagnostics, and a quality-gated final handoff.
@@ -33,7 +33,9 @@ graph:
           agent: ""
           skill: ""
           params:
-            fields_json: '{"fields":[{"name":"domain","type":"select","label":"Primary domain","label_zh":"\u4e3b\u8981\u9886\u57df","required":true,"options":["auto","software","web_security","security","binary","documentation","operations","support","platform","general"],"default":"auto"},{"name":"goal","type":"textarea","label":"Goal","label_zh":"\u76ee\u6807","required":true},{"name":"target","type":"text","label":"Target file, URL, binary, system, device scope, customer context, or platform area","label_zh":"\u76ee\u6807\u6587\u4ef6\u3001URL\u3001\u4e8c\u8fdb\u5236\u3001\u7cfb\u7edf\u3001\u8bbe\u5907\u8303\u56f4\u3001\u5ba2\u6237\u4e0a\u4e0b\u6587\u6216\u5e73\u53f0\u533a\u57df"},{"name":"desired_output","type":"select","label":"Desired output","label_zh":"\u671f\u671b\u8f93\u51fa","options":["implementation","review_report","runbook","customer_reply","extension_kit","plan","multi_domain_report"],"default":"multi_domain_report"},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","label_zh":"\u98ce\u9669\u5bb9\u5fcd\u5ea6","options":["low","medium","high"],"default":"medium"},{"name":"max_parallel_domains","type":"number","label":"Max parallel domains","label_zh":"\u6700\u5927\u5e76\u884c\u9886\u57df\u6570","default":3}]}'
+            max_model_calls: "4"
+            max_total_model_calls: "6"
+            fields_json: '{"fields":[{"name":"domain","type":"select","label":"Primary domain","label_zh":"\u4e3b\u8981\u9886\u57df","required":true,"options":["auto","software","internet_research","web_security","security","binary","documentation","operations","support","platform","general"],"default":"auto"},{"name":"goal","type":"textarea","label":"Goal","label_zh":"\u76ee\u6807","required":true},{"name":"target","type":"text","label":"Target file, URL, binary, system, device scope, customer context, or platform area","label_zh":"\u76ee\u6807\u6587\u4ef6\u3001URL\u3001\u4e8c\u8fdb\u5236\u3001\u7cfb\u7edf\u3001\u8bbe\u5907\u8303\u56f4\u3001\u5ba2\u6237\u4e0a\u4e0b\u6587\u6216\u5e73\u53f0\u533a\u57df"},{"name":"desired_output","type":"select","label":"Desired output","label_zh":"\u671f\u671b\u8f93\u51fa","options":["implementation","review_report","research_report","runbook","customer_reply","extension_kit","plan","multi_domain_report","office_delivery"],"default":"multi_domain_report"},{"name":"risk_tolerance","type":"select","label":"Risk tolerance","label_zh":"\u98ce\u9669\u5bb9\u5fcd\u5ea6","options":["low","medium","high"],"default":"medium"},{"name":"max_parallel_domains","type":"number","label":"Max parallel domains","label_zh":"\u6700\u5927\u5e76\u884c\u9886\u57df\u6570","default":3}]}'
             manual: "true"
             prompt: Confirm the goal, target, desired output, risk tolerance, and maximum parallel domain slices before decomposition.
           outputs:
@@ -62,8 +64,12 @@ graph:
             risk_level: medium
             boundary: multi-domain-decomposition
           params:
-            output_contract: Return compact JSON with summary, active_branches, branch_selection_reason, pruned_branches, branch_contracts, per_branch_tool_allowlists, shared_context, acceptance_criteria, risk_gates, model_routes, token_budget, cost_attribution, and final_report_contract. active_branches must contain only stage names from software-worker, web-security-worker, security-worker, binary-worker, docs-worker, ops-worker, support-worker, platform-worker, or general-worker.
-            purpose: Decompose the request into only the domain slices needed for this task, then select bounded parallel worker branches.
+            max_model_calls: "5"
+            max_total_model_calls: "8"
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Return compact JSON with summary, active_branches, branch_selection_reason, pruned_branches, branch_contracts, per_branch_tool_allowlists, shared_context, acceptance_criteria, risk_gates, model_routes, token_budget, cost_attribution, office_delivery_required, office_delivery_reason, office_delivery_mode, and final_report_contract. active_branches must contain only stage names from software-worker, web-security-worker, research-worker, security-worker, binary-worker, docs-worker, ops-worker, support-worker, platform-worker, or general-worker. office_delivery_mode must be create, template, modify, or none.
+            purpose: Decompose the request into only the domain slices needed for this task, then select bounded parallel worker branches. Set office_delivery_required to true when the user asks for Word, Excel, PPT, PDF, a formal cross-domain report, a template-based deliverable, or an accurate modification of an existing office document. Select docs-worker for document-specific analysis, but leave final file production until upstream domain evidence has passed the quality gate.
             token_policy: Select the fewest useful branches, normally one to three. Do not copy raw files, logs, transcripts, secrets, or long evidence. Put details in artifacts or refs. Explain pruned branches so users can locate why a worker did not run.
           input:
             desired_output: stages.intake.outputs.desired_output
@@ -79,6 +85,9 @@ graph:
             cost_attribution: result.cost_attribution
             per_branch_tool_allowlists: result.per_branch_tool_allowlists
             pruned_branches: result.pruned_branches
+            office_delivery_mode: result.office_delivery_mode
+            office_delivery_reason: result.office_delivery_reason
+            office_delivery_required: result.office_delivery_required
             shared_context: result.shared_context
             summary: result.summary
             task_graph: result.output
@@ -117,6 +126,10 @@ graph:
               ref: result.output
               contains: cost_attribution
               expected: decomposition declares cost attribution by selected branch
+            - name: has-office-delivery-decision
+              ref: result.output
+              contains: office_delivery_required
+              expected: decomposition explicitly decides whether a real Office deliverable is required
           context:
             include:
                 - workflow.input
@@ -159,6 +172,7 @@ graph:
           next:
             - software-worker
             - web-security-worker
+            - research-worker
             - security-worker
             - binary-worker
             - docs-worker
@@ -174,7 +188,7 @@ graph:
           agent: software-engineer
           skill: code-writing
           model:
-            provider: backup
+            provider: primary
             max_tokens: 850
             temperature: 0.1
           execution:
@@ -182,12 +196,14 @@ graph:
             risk_level: medium
             boundary: workspace-software-slice
           params:
+            require_workspace_mutation: "false"
             domain: software-engineering
+            domain_aliases: software,code,coding,implementation,software-engineer
             team_template_ref: software-task-team
             worker_contract: domain_slice_v1
             output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, evidence, changed_files, verification, cost_attribution, blockers, next_actions, recommended_workflow, and artifact_refs.
             token_policy: Use branch_contracts only. Summarize discovery and verification; do not paste full diffs or large files.
-            tools: file_tools/read_file,file_tools/search_files,file_tools/write_file
+            tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/search_files,file_tools/write_file
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
             branch_selection_reason: stages.decompose.outputs.branch_selection_reason
@@ -237,7 +253,7 @@ graph:
           agent: web-security-researcher
           skill: web-vulnerability-research
           model:
-            provider: backup
+            provider: primary
             max_tokens: 850
             temperature: 0.1
           execution:
@@ -245,7 +261,9 @@ graph:
             risk_level: high
             boundary: authorized-web-evidence
           params:
+            require_workspace_mutation: "false"
             domain: web-security
+            domain_aliases: web,webapp,web_application,xss,sqli,sql_injection,web-security-researcher
             team_template_ref: web-research-team
             worker_contract: domain_slice_v1
             output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, evidence, target_scope, findings, verification, cost_attribution, blockers, next_actions, recommended_workflow, and artifact_refs.
@@ -294,12 +312,77 @@ graph:
           position:
             x: 1300
             "y": 140
+        - name: research-worker
+          node_type: agent
+          agent: research-specialist
+          skill: internet-research
+          model:
+            provider: primary
+            max_tokens: 1000
+            temperature: 0.1
+          execution:
+            mode: dry_run
+            risk_level: low
+            boundary: public-internet-research
+          params:
+            require_workspace_mutation: "false"
+            domain: internet-research
+            domain_aliases: research,research-specialist
+            team_template_ref: internet-research-team
+            worker_contract: domain_slice_v1
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, research_scope, source_snapshots, claim_source_map, source_conflicts, freshness_review, quality_status, cost_attribution, blockers, next_actions, recommended_workflow, and artifact_refs.
+            token_policy: Pass source summaries, canonical URLs, fetch times, content hashes, claim mappings, and necessary excerpts only. Never inline complete pages.
+            tools: web_tools/web_search,web_tools/research_snapshot,web_tools/compile_research_evidence,file_tools/write_file
+          input:
+            branch_contracts: stages.decompose.outputs.branch_contracts
+            branch_selection_reason: stages.decompose.outputs.branch_selection_reason
+            per_branch_tool_allowlists: stages.decompose.outputs.per_branch_tool_allowlists
+            request: workflow.input
+            shared_context: stages.decompose.outputs.shared_context
+          outputs:
+            evidence: result.evidence
+            report: result.output
+            summary: result.summary
+            verification: result.verification
+          artifacts:
+            - name: internet-research-domain-report
+              kind: report
+              title: 互联网资料研究领域报告
+              ref: result.output
+              summary: 研究范围、来源快照、结论来源映射、冲突、时效和交付产物。
+          acceptance_criteria:
+            - name: has-research-scope
+              ref: result.output
+              contains: research_scope
+              expected: 研究分支明确问题和时间范围
+            - name: has-claim-source-map
+              ref: result.output
+              contains: claim_source_map
+              expected: 研究分支保留结论与来源的结构化映射
+          context:
+            include:
+                - stages.decompose.outputs.branch_contracts
+                - stages.decompose.outputs.shared_context
+            exclude:
+                - raw_tool_logs
+                - large_file_contents
+                - unrelated_session_history
+            max_tokens: 1000
+            prompt_max_tokens: 3200
+            request_max_tokens: 500
+            inputs_max_tokens: 900
+            parameters_max_tokens: 700
+          next:
+            - join
+          position:
+            x: 1300
+            "y": 1100
         - name: security-worker
           node_type: agent
           agent: security-researcher
           skill: vulnerability-research
           model:
-            provider: backup
+            provider: primary
             max_tokens: 800
             temperature: 0.1
           execution:
@@ -307,12 +390,14 @@ graph:
             risk_level: high
             boundary: defensive-security-scope
           params:
+            require_workspace_mutation: "false"
             domain: security-research
+            domain_aliases: security,vulnerability,vulnerability_research,security-researcher
             team_template_ref: audit-security-team
             worker_contract: domain_slice_v1
             output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, authorized_scope, findings, evidence, exploitability_arbitration, verification, cost_attribution, blockers, next_actions, and artifact_refs.
             token_policy: Stay defensive and evidence-first. Do not provide exploit steps beyond authorized scope.
-            tools: file_tools/read_file,file_tools/search_files,web_tools/browser_snapshot,web_tools/browser_probe_points,python_notes/binary_format_summary,python_notes/binary_symbol_hints,python_notes/redaction_check
+            tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/search_files,web_tools/browser_snapshot,web_tools/browser_probe_points,python_notes/binary_format_summary,python_notes/binary_symbol_hints,python_notes/redaction_check
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
             branch_selection_reason: stages.decompose.outputs.branch_selection_reason
@@ -361,7 +446,7 @@ graph:
           agent: binary-analyst
           skill: reverse-engineering
           model:
-            provider: backup
+            provider: primary
             max_tokens: 800
             temperature: 0.1
           execution:
@@ -369,7 +454,9 @@ graph:
             risk_level: medium
             boundary: static-binary-analysis
           params:
+            require_workspace_mutation: "false"
             domain: binary-analysis
+            domain_aliases: binary,reverse,reverse_engineering,binary-analyst
             team_template_ref: binary-triage-team
             worker_contract: domain_slice_v1
             output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, sample_scope, format_summary, entropy_packing_hints, symbol_hints, static_evidence, cost_attribution, findings, unsafe_dynamic_analysis_blockers, blockers, next_actions, and artifact_refs.
@@ -416,22 +503,24 @@ graph:
         - name: docs-worker
           node_type: agent
           agent: documentation-specialist
-          skill: execution-plan
+          skill: office-document-production
           model:
-            provider: backup
+            provider: primary
             max_tokens: 750
             temperature: 0.1
           execution:
             mode: planning
             risk_level: low
-            boundary: documentation-scope
+            boundary: office-document-analysis
           params:
-            domain: documentation
+            require_workspace_mutation: "false"
+            domain: office-document
+            domain_aliases: documentation,docs,doc,documentation-specialist
             team_template_ref: documentation-team
             worker_contract: domain_slice_v1
-            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, doc_scope, proposed_changes, command_accuracy, link_integrity, bilingual_parity, publish_readiness, cost_attribution, evidence, blockers, next_actions, and artifact_refs.
-            token_policy: Summarize doc impact and cite sections or files by ref. Use link and redaction evidence by ref instead of copying entire docs.
-            tools: file_tools/read_file,file_tools/search_files,file_tools/write_file,python_notes/markdown_link_check,python_notes/redaction_check
+            output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, document_mode, source_path, template_path, requested_formats, document_scope, modification_plan, preservation_rules, validation_plan, cost_attribution, evidence, blockers, next_actions, and artifact_refs. document_mode must be create, template, or modify. For template and modify modes, identify exact targets and content that must remain unchanged.
+            token_policy: Inspect only the source or template structure needed to form an auditable modification plan. Cite document paths, sections, sheets, slides, placeholders, hashes, and artifact refs instead of copying whole documents.
+            tools: office_tools/office_capabilities,office_tools/inspect_office_document,office_tools/validate_office_document,file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/search_files
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
             branch_selection_reason: stages.decompose.outputs.branch_selection_reason
@@ -444,13 +533,17 @@ graph:
           artifacts:
             - name: documentation-domain-report
               kind: report
-              title: Documentation domain report
+              title: 办公文档处理方案
               ref: result.output
           acceptance_criteria:
-            - name: has-doc-scope
+            - name: has-document-mode
               ref: result.output
-              contains: doc_scope
-              expected: docs worker states documentation scope
+              contains: document_mode
+              expected: 明确从零制作、基于模板生成或修改现有文档
+            - name: has-preservation-rules
+              ref: result.output
+              contains: preservation_rules
+              expected: 明确保留样式、母版、公式和未指定内容的约束
           context:
             include:
                 - stages.decompose.outputs.branch_contracts
@@ -474,7 +567,7 @@ graph:
           agent: operations-specialist
           skill: execution-plan
           model:
-            provider: backup
+            provider: primary
             max_tokens: 800
             temperature: 0.1
           execution:
@@ -482,7 +575,9 @@ graph:
             risk_level: high
             boundary: operations-dry-run
           params:
+            require_workspace_mutation: "false"
             domain: operations-runbook
+            domain_aliases: operations,ops,network,network_operations,runbook,operations-specialist
             team_template_ref: operations-runbook-team
             worker_contract: domain_slice_v1
             output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, authorized_scope, prechecks, dry_run_plan, rollback, evidence, cost_attribution, blockers, next_actions, and artifact_refs.
@@ -535,7 +630,7 @@ graph:
           agent: support-specialist
           skill: execution-plan
           model:
-            provider: backup
+            provider: primary
             max_tokens: 700
             temperature: 0.1
           execution:
@@ -543,12 +638,14 @@ graph:
             risk_level: low
             boundary: customer-support-draft
           params:
+            require_workspace_mutation: "false"
             domain: customer-support
+            domain_aliases: support,customer,support-specialist
             team_template_ref: customer-support-team
             worker_contract: domain_slice_v1
             output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, ticket_context, product_area, customer_impact, privacy_flags, answer_draft, internal_notes, escalation, reviewer_quorum, cost_attribution, blockers, next_actions, and artifact_refs.
             token_policy: Separate customer-facing answer from internal notes. Do not invent policy commitments. Redact sensitive data before customer-visible output.
-            tools: file_tools/read_file,file_tools/search_files,web_tools/web_search,python_notes/support_case_summary,python_notes/redaction_check
+            tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/search_files,web_tools/web_search,python_notes/support_case_summary,python_notes/redaction_check
           input:
             branch_contracts: stages.decompose.outputs.branch_contracts
             branch_selection_reason: stages.decompose.outputs.branch_selection_reason
@@ -591,7 +688,7 @@ graph:
           agent: framework-extension-architect
           skill: execution-plan
           model:
-            provider: backup
+            provider: primary
             max_tokens: 850
             temperature: 0.1
           execution:
@@ -599,7 +696,9 @@ graph:
             risk_level: medium
             boundary: platform-extension-design
           params:
+            require_workspace_mutation: "false"
             domain: agent-framework
+            domain_aliases: platform,framework,extension,extension_kit,framework-extension-architect
             team_template_ref: framework-extension-team
             worker_contract: domain_slice_v1
             output_contract: Return compact JSON with summary, domain, branch_selection_reason, selected_tool_allowlist, resource_graph, contracts, validation_plan, activation_steps, cost_attribution, blockers, next_actions, and artifact_refs.
@@ -647,7 +746,7 @@ graph:
           agent: planner
           skill: execution-plan
           model:
-            provider: backup
+            provider: primary
             max_tokens: 700
             temperature: 0.1
           execution:
@@ -655,6 +754,8 @@ graph:
             risk_level: low
             boundary: fallback-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             domain: general
             worker_contract: domain_slice_v1
             output_contract: Return compact JSON with summary, domain, branch_selection_reason, plan, risks, acceptance_criteria, cost_attribution, blockers, next_actions, recommended_workflow, and artifact_refs.
@@ -725,8 +826,12 @@ graph:
             risk_level: medium
             boundary: multi-domain-join
           params:
-            output_contract: Emit sections named Integrated Multi-Domain Report, Active Branches, Branch Selection Reason, Pruned Branches, Per-Branch Tool Allowlists, Domain Outputs, Artifact Handoff, Join Conflicts, Missing Worker Artifacts, Branch Blockers, Missing Evidence, Verification Matrix, Cost Attribution, Recommended Workflow, Residual Risks, and Audit Request.
-            purpose: Merge only the selected worker summaries and artifact refs into one compact multi-domain report. Unselected branches must remain pruned, and missing selected artifacts or join_conflicts must be visible.
+            max_model_calls: "6"
+            max_total_model_calls: "10"
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Emit sections named Integrated Multi-Domain Report, Active Branches, Branch Selection Reason, Pruned Branches, Per-Branch Tool Allowlists, Domain Outputs, Artifact Handoff, Join Conflicts, Missing Worker Artifacts, Branch Blockers, Missing Evidence, Verification Matrix, Cost Attribution, Office Delivery Brief, Recommended Workflow, Residual Risks, and Audit Request. Office Delivery Brief must record whether delivery is required, create/template/modify mode, source or template path, requested DOCX/XLSX/PPTX/PDF formats, exact modification intent, preservation rules, and evidence refs; write Not Requested when no formal office file is needed.
+            purpose: Merge only the selected worker summaries and artifact refs into one compact multi-domain report. Unselected branches must remain pruned, and missing selected artifacts or join_conflicts must be visible. When Office delivery is required, preserve the original user intent and convert verified development, security, operations, or research results into a complete downstream document brief without inventing evidence.
             token_policy: Use summaries, structured fields, and artifact refs. Do not copy full branch reports unless needed for a blocker.
           input:
             active_branches: stages.join.outputs.active_branches
@@ -734,12 +839,19 @@ graph:
             binary_summary: stages.binary-worker.outputs.summary
             docs_summary: stages.docs-worker.outputs.summary
             general_summary: stages.general-worker.outputs.summary
+            desired_output: stages.intake.outputs.desired_output
             ops_summary: stages.ops-worker.outputs.summary
+            office_delivery_mode: stages.decompose.outputs.office_delivery_mode
+            office_delivery_reason: stages.decompose.outputs.office_delivery_reason
+            office_delivery_required: stages.decompose.outputs.office_delivery_required
+            original_request: workflow.input
             platform_summary: stages.platform-worker.outputs.summary
+            research_summary: stages.research-worker.outputs.summary
             security_summary: stages.security-worker.outputs.summary
             software_summary: stages.software-worker.outputs.summary
             support_summary: stages.support-worker.outputs.summary
             task_graph: stages.decompose.outputs.task_graph
+            target: stages.intake.outputs.target
             web_security_summary: stages.web-security-worker.outputs.summary
           outputs:
             integrated_report: result.output
@@ -772,6 +884,10 @@ graph:
               ref: result.output
               contains: Verification Matrix
               expected: aggregate records evidence or verification coverage
+            - name: has-office-delivery-brief
+              ref: result.output
+              contains: Office Delivery Brief
+              expected: aggregate records a complete Office handoff brief or explicitly states that it was not requested
           context:
             include:
                 - stages.decompose.outputs.summary
@@ -812,6 +928,9 @@ graph:
             risk_level: medium
             boundary: multi-domain-audit
           params:
+            max_model_calls: "4"
+            max_total_model_calls: "6"
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Audit Decision, Coverage, Branch Selection Review, Pruned Branch Review, Tool Allowlist Review, Blocking Findings, Branch Blockers, Join Conflicts, Missing Worker Artifacts, Safety Notes, Token Discipline, Cost Attribution, Evidence Gaps, and Recommendation.
             review_scope: Check decomposition fit, selected branch coverage, branch_selection_reason, pruned_branches, per_branch_tool_allowlists, unsafe tool assumptions, missing worker artifacts, cross-domain conflicts, cost attribution, and token-heavy handoffs.
           input:
@@ -877,10 +996,11 @@ graph:
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
+            verification_mode: command
             allow_unknown: "false"
           routes:
             fail: revise
-            pass: final-report
+            pass: office-delivery-route
             warning: operator-check
           position:
             x: 2600
@@ -892,16 +1012,39 @@ graph:
           params:
             prompt: Review the active branches, pruned branches, per-branch tool allowlists, join conflicts, missing worker artifacts, integrated report, audit decision, cost attribution, and unresolved risks before final handoff.
           next:
-            - final-report
+            - office-delivery-route
           position:
             x: 2900
             "y": 210
+        - name: office-delivery-route
+          node_type: condition
+          agent: ""
+          skill: ""
+          condition: stages.decompose.outputs.office_delivery_required == true
+          routes:
+            "false": final-report
+            "true": office-delivery
+          position:
+            x: 3200
+            "y": 360
+        - name: office-delivery
+          node_type: sub_workflow
+          agent: ""
+          skill: ""
+          params:
+            workflow: docs-review-publish
+            request: stages.aggregate.outputs.integrated_report
+          next:
+            - final-report
+          position:
+            x: 3500
+            "y": 240
         - name: final-report
           node_type: skill
           agent: chat
           skill: execution-plan
           model:
-            provider: backup
+            provider: primary
             max_tokens: 750
             temperature: 0.1
           execution:
@@ -909,14 +1052,22 @@ graph:
             risk_level: low
             boundary: final-handoff
           params:
-            output_contract: Emit sections named Final Handoff, Active Domains, Pruned Domains, What Was Done, Evidence, Branch Blockers, Join Conflicts, Cost Attribution, Quality Decision, Remaining Risks, Recommended Next Workflow, and Next Steps.
-            purpose: Produce a concise ordinary-user handoff while preserving artifact refs for expert inspection.
+            max_model_calls: "3"
+            max_total_model_calls: "4"
+            require_workspace_mutation: "true"
+            tools: file_tools/read_file,file_tools/write_file
+            output_contract: 必须把最终交付报告写入 docs/unified-delivery.md（已存在时先读取再用 write_file 覆盖），内容包含本次实际变更、验证命令与结果、残余风险，禁止保留占位内容或模板原文；随后 Emit sections named Final Handoff, Active Domains, Pruned Domains, What Was Done, Evidence, Office Deliverables, Branch Blockers, Join Conflicts, Cost Attribution, Quality Decision, Remaining Risks, Recommended Next Workflow, and Next Steps. Office Deliverables must list the nested workflow run and real artifact refs when requested, or state that no Office file was requested.
+            purpose: Produce a concise ordinary-user handoff while preserving artifact refs for expert inspection. Include the verified Office child-workflow result when formal documents were requested.
             token_policy: Keep the final response short and reference artifacts instead of copying branch reports.
           input:
             active_branches: stages.join.outputs.active_branches
             audit_summary: stages.audit.outputs.summary
             integrated_summary: stages.aggregate.outputs.summary
             join_conflicts: stages.aggregate.outputs.join_conflicts
+            office_delivery_reason: stages.decompose.outputs.office_delivery_reason
+            office_delivery_required: stages.decompose.outputs.office_delivery_required
+            office_delivery_run: stages.office-delivery.outputs.sub_run_id
+            office_delivery_summary: stages.office-delivery.outputs.summary
             quality_status: stages.quality.outputs.quality_status
           outputs:
             final: result.output
@@ -939,11 +1090,16 @@ graph:
               ref: result.output
               contains: Next Steps
               expected: final report gives concrete next steps
+            - name: has-office-deliverables
+              ref: result.output
+              contains: Office Deliverables
+              expected: final report lists verified Office artifacts or states that they were not requested
           context:
             include:
                 - stages.join.outputs.active_branches
                 - stages.aggregate.outputs.summary
                 - stages.audit.outputs.summary
+                - stages.office-delivery.outputs.summary
                 - stages.quality.outputs.quality_status
             exclude:
                 - raw_tool_logs
@@ -972,6 +1128,10 @@ graph:
             risk_level: medium
             boundary: revision-plan
           params:
+            max_model_calls: "4"
+            max_total_model_calls: "6"
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Revision Plan, Missing Evidence, Branch Blockers, Join Conflicts, Missing Worker Artifacts, Minimal Branch Rerun, Verification Needed, and Handoff.
             purpose: Convert quality failures into a bounded repair plan without rerunning unrelated domains.
             token_policy: Reference active branches and artifact refs; do not copy full branch reports.

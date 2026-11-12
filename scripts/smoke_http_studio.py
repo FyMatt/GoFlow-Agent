@@ -121,7 +121,6 @@ def write_smoke_runtime_config(runtime_home: Path) -> Path:
             base_url: ${{GOFLOW_BASE_URL}}
             api_key: ${{GOFLOW_API_KEY}}
             model: ${{GOFLOW_MODEL}}
-            fallback_provider: backup
             timeout: 10s
             temperature: 0
             max_tokens: 128
@@ -410,41 +409,30 @@ def main() -> int:
             stderr=subprocess.STDOUT,
         )
         wait_for_server(base_url, proc, args.timeout)
-        smoke_endpoint(base_url, "/console", ["GoFlow Console", "Agent Workbench", "/assets/styles.css", "/assets/styles-enhanced.css", "/assets/app.js"])
-        smoke_endpoint(base_url, "/workflows", ["GoFlow Console", "Workflows", "/assets/styles.css", "/assets/styles-enhanced.css", "/assets/app.js"])
-        smoke_endpoint(base_url, "/assets/app.js", ["renderWorkflows", "renderCatalog", "renderSettings", "renderMemory"])
+        shell_needles = [
+            "本地智能体工作流平台",
+            "GoFlow",
+            "任务",
+            "工作流",
+            "资源",
+            "设置",
+            "/assets/styles.css",
+            "/assets/styles-workbench.css",
+            "/assets/app.js",
+        ]
+        smoke_endpoint(base_url, "/console", shell_needles)
+        smoke_endpoint(base_url, "/workflows", shell_needles)
+        smoke_endpoint(base_url, "/assets/app.js", ["renderWorkflows", "renderCatalog", "renderSettings"])
         smoke_endpoint(
             base_url,
             "/assets/views/chat.js",
             [
                 "runHistoryLazyPanelsHTML",
                 "data-history-lazy-stack",
-                "fetchWorkflowRun(run.id, options.summary ? { summary: true } : {})",
+                "fetchRun(run, options.summary ? { summary: true } : {})",
                 "include_content: true, limit: 12",
-            ],
-        )
-        smoke_endpoint(
-            base_url,
-            "/assets/views/memory.js",
-            [
-                "renderMemory",
-                "fetchArtifactObjects",
-                "memory-artifact-form",
-                "memory-artifact-index",
-                "data-artifact-open",
-                "memory-artifact-load-button",
-                "memory-solution-governance",
-                "data-solution-supersede",
-            ],
-        )
-        smoke_endpoint(
-            base_url,
-            "/assets/views/status.js",
-            [
-                "summarizeMCPPressure",
-                "status-mcp",
-                "queued_calls",
-                "available_call_slots",
+                "requires_execution_target",
+                "target_id: targetID",
             ],
         )
         smoke_endpoint(
@@ -483,13 +471,11 @@ def main() -> int:
             "/assets/views/catalog.js",
             [
                 "renderCatalog",
-                "resource",
-                "kit",
-                "resource-starter-panel",
-                "resource-relation-panel",
-                "resource-override-paths",
-                "resource-dependency-picker",
-                "data-resource-dependency-choice",
+                "subagent",
+                "/api/resources/mcp",
+                "resource-kind-nav",
+                "resource-simple-form",
+                "data-import-resource",
             ],
         )
         smoke_endpoint(
@@ -499,25 +485,12 @@ def main() -> int:
                 "workflow.nodeTypeOverridePath",
                 "workflow.expressionFunctionOverridePath",
                 "workflow.templateResourceAgent",
-                "status.mcpTitle",
-                "status.metric.tools",
                 "settings.updateCheckTitle",
                 "settings.updateAvailableTitle",
                 "settings.updateCheckDisabledTitle",
                 "settings.updateIntegrityReady",
                 "settings.updateAssetChecksums",
                 "settings.updateVerifySteps",
-                "catalog.relationTitle",
-                "catalog.starterCreateFull",
-                "catalog.toolScaffolds",
-                "catalog.dependencyPickerTitle",
-                "catalog.dependencySkillTitle",
-                "catalog.starterFlowTitle",
-                "memory.recentArtifacts",
-                "memory.artifactLoading",
-                "memory.loadArtifact",
-                "memory.solutionSupersede",
-                "memory.solutionGraph",
                 "workflow.contextContractTitle",
                 "workflow.contextInclude",
                 "workflow.contextMaxTokens",
@@ -526,6 +499,7 @@ def main() -> int:
                 "chat.runHistoryLazyTitle",
                 "chat.runHistoryLazySummaryFirst",
                 "chat.runHistoryLazyLoad",
+                "chat.executionContextTarget",
             ],
         )
         smoke_endpoint(
@@ -537,37 +511,18 @@ def main() -> int:
                 "workflow-template-resource-row",
                 "resource-relation-card",
                 "resource-starter-step",
-                "status-mcp-server",
-                "status-mcp-bar",
                 "settings-update-check-card",
                 "settings-update-integrity",
                 "settings-update-verify",
                 "workflow-context-contract",
                 "workflow-resource-picker",
                 "workflow-resource-card",
-                "resource-dependency-picker",
                 "resource-dependency-card",
                 "resource-starter-flow",
                 "content-visibility",
-                "memory-artifact-index",
-                "memory-artifact-load-button",
-                "memory-artifact-body",
-                "memory-solution-governance",
-                "memory-solution-supersede",
                 "run-history-lazy-stack",
                 "run-history-lazy-panel",
                 "run-history-lazy-timeline",
-            ],
-        )
-        smoke_endpoint(
-            base_url,
-            "/assets/styles-enhanced.css",
-            [
-                "GoFlow Agent - Enhanced UI Styles",
-                "--primary: #0d9488",
-                "--canvas-surface-bg",
-                "--workflow-node-selected-shadow",
-                ":root[data-theme='dark']",
             ],
         )
         session = smoke_json_endpoint(base_url, "/api/session", ["active_agent", "mode"])
@@ -612,20 +567,23 @@ def main() -> int:
         if "chat" not in json.dumps(session):
             raise AssertionError(f"/api/session did not include chat context: {session!r}")
         family_kinds = {family.get("kind") for family in resources.get("families", [])}
-        for required_family in ("agent", "skill", "kit"):
+        for required_family in ("agent", "subagent", "workflow", "skill", "tool", "mcp"):
             if required_family not in family_kinds:
                 raise AssertionError(f"/api/resources missing {required_family!r} family: {resources!r}")
+        for hidden_family in ("provider", "workflow_template", "workflow_schema", "policy_rule", "team_template", "kit"):
+            if hidden_family in family_kinds:
+                raise AssertionError(f"/api/resources leaked legacy {hidden_family!r} family: {resources!r}")
         for required_node_type in ("agent", "skill", "tool", "condition", "quality_gate", "checkpoint"):
             assert_named("/api/workflow-options node_types", options.get("node_types", []), required_node_type)
         for required_executor in ("plan-fix-audit", "skill-chain"):
             executor = assert_named("/api/workflow-options workflow_executors", options.get("workflow_executors", []), required_executor)
             if executor.get("source") != "legacy_executor" or not executor.get("legacy") or not executor.get("compatibility"):
                 raise AssertionError(f"workflow executor missing legacy compatibility metadata: {executor!r}")
-        readonly_tool = assert_named("/api/resources/tools/scaffolds", tool_scaffolds, "python-container-readonly")
-        if readonly_tool.get("isolation") != "container" or readonly_tool.get("workspace_mount") != "ro":
-            raise AssertionError(f"readonly tool scaffold missing container read-only defaults: {readonly_tool!r}")
-        if not readonly_tool.get("default_image") or not readonly_tool.get("default_isolation_options"):
-            raise AssertionError(f"readonly tool scaffold missing image/isolation defaults: {readonly_tool!r}")
+        local_tool = assert_named("/api/resources/tools/scaffolds", tool_scaffolds, "python-local")
+        if local_tool.get("isolation") != "auto":
+            raise AssertionError(f"local tool scaffold must use native automatic isolation: {local_tool!r}")
+        if not local_tool.get("safety_guards") or not local_tool.get("generated_paths"):
+            raise AssertionError(f"local tool scaffold missing safety or output metadata: {local_tool!r}")
         multi_domain = assert_named("/api/resources/kits/scaffolds", kit_scaffolds, "multi-domain-agent")
         if not multi_domain.get("recommended_workflow") or not multi_domain.get("recommended_agent"):
             raise AssertionError(f"multi-domain kit scaffold missing recommendations: {multi_domain!r}")
@@ -633,12 +591,12 @@ def main() -> int:
             raise AssertionError(f"multi-domain kit scaffold lost linked resources: {multi_domain!r}")
         tool_detail = smoke_json_endpoint(
             base_url,
-            "/api/resources/tools/scaffolds/python-container-readonly?name=smoke-reader",
+            "/api/resources/tools/scaffolds/python-local?name=smoke-reader",
             ["name", "document"],
         )
         tool_doc = tool_detail.get("document") or {}
-        if tool_doc.get("isolation") != "container" or tool_doc.get("isolation_options", {}).get("workspace_mount") != "ro":
-            raise AssertionError(f"tool scaffold document missing container isolation defaults: {tool_detail!r}")
+        if tool_doc.get("isolation") != "auto":
+            raise AssertionError(f"tool scaffold document must use native automatic isolation: {tool_detail!r}")
         materialized = post_json_endpoint(
             base_url,
             "/api/resources/kits/scaffolds/agent-framework?materialize=1",
@@ -668,9 +626,9 @@ def main() -> int:
         if not isinstance(saved_kits, list):
             raise AssertionError(f"/api/kits should return a list after materialization: {saved_kits!r}")
         assert_named("/api/kits", saved_kits, "smoke-agent-framework")
-        saved_tool = smoke_json_endpoint(base_url, "/api/resources/tools/smoke-agent-framework-helper", ["name", "isolation", "isolation_options"])
-        if saved_tool.get("isolation") != "container" or saved_tool.get("isolation_options", {}).get("workspace_mount") != "ro":
-            raise AssertionError(f"materialized helper tool lost container sandbox defaults: {saved_tool!r}")
+        saved_tool = smoke_json_endpoint(base_url, "/api/resources/tools/smoke-agent-framework-helper", ["name", "isolation"])
+        if saved_tool.get("isolation") != "auto":
+            raise AssertionError(f"materialized helper tool must use native automatic isolation: {saved_tool!r}")
         print(f"HTTP Studio smoke passed at {base_url}")
         return 0
     finally:

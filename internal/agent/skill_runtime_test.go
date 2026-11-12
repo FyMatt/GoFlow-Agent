@@ -9,6 +9,7 @@ import (
 	"slices"
 	"sort"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -48,6 +49,51 @@ func (s stubSkillManager) MatchWithDiagnostics(string) (*schema.Skill, schema.Sk
 type stubLLMClient struct {
 	responses []schema.ChatResponse
 	calls     int
+}
+
+func TestMergeBufferedTextEventsPersistsOneModelResponseEvent(t *testing.T) {
+	events := []schema.StreamEvent{
+		{Type: schema.StreamEventText, Content: "hello"},
+		{Type: schema.StreamEventText, Content: " "},
+		{Type: schema.StreamEventText, Content: "world"},
+	}
+	merged := mergeBufferedTextEvents(events)
+	if len(merged) != 1 || merged[0].Content != "hello world" {
+		t.Fatalf("expected one merged text event, got %#v", merged)
+	}
+}
+
+func TestRuntimeRunStreamClearsAuditFromPreviousTask(t *testing.T) {
+	llm := &stubLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Content: "first"}},
+		{Message: schema.Message{Content: "second"}},
+	}}
+	cfg := &config.Config{
+		DefaultAgent: "chat",
+		Session:      config.SessionConfig{MaxHistory: 8},
+		Providers:    map[string]config.LLMConfig{"primary": {Model: "test-model"}},
+		Agents: map[string]config.AgentProfile{
+			"chat": {Name: "Chat", Provider: "primary", Mode: "chat", Model: "test-model", MaxIterations: 1, ToolPolicy: config.ToolPolicyAllow},
+		},
+	}
+	audit := runtime.NewAuditLogger(true, false)
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"primary": llm}, stubSkillManager{}, &stubRuntimeMCP{}, session.New(8), audit)
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	ctx := WithAgentTarget(context.Background(), "chat")
+	first, err := runtimeRef.RunStream(ctx, "first task", nil)
+	if err != nil || len(first.AuditTrail) == 0 {
+		t.Fatalf("first run audit: result=%#v err=%v", first, err)
+	}
+	firstCount := len(first.AuditTrail)
+	second, err := runtimeRef.RunStream(ctx, "second task", nil)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(second.AuditTrail) != firstCount {
+		t.Fatalf("expected task-scoped audit trail, first=%d second=%d trail=%#v", firstCount, len(second.AuditTrail), second.AuditTrail)
+	}
 }
 
 type scriptedLLMCall struct {
@@ -264,6 +310,46 @@ func TestRunStreamContinuesModelOutputLimit(t *testing.T) {
 	}
 }
 
+func TestRunStreamContinuesOutputWithoutInjectingEmptyAssistantMessage(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{
+			Message: schema.Message{Role: "assistant", ProviderFields: map[string]json.RawMessage{
+				"reasoning_content": json.RawMessage(`"private reasoning only"`),
+			}},
+			StopReason: schema.StopReasonLength,
+		}},
+		{response: schema.ChatResponse{Message: schema.Message{Role: "assistant", Content: "completed output"}, StopReason: schema.StopReasonStop}},
+	}}
+	mcp := &stubRuntimeMCP{}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "write the full plan", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Incomplete || result.Output != "completed output" || result.ContinuationCount != 1 {
+		t.Fatalf("unexpected continuation result: %#v", result)
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("expected two requests, got %d", len(llm.requests))
+	}
+	for _, message := range llm.requests[1].Messages {
+		if strings.EqualFold(strings.TrimSpace(message.Role), "assistant") && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			t.Fatalf("continuation request contains invalid empty assistant message: %#v", llm.requests[1].Messages)
+		}
+	}
+	last := llm.requests[1].Messages[len(llm.requests[1].Messages)-1]
+	if last.Role != "user" || !strings.Contains(last.Content, "write the full plan") || !strings.Contains(last.Content, "Continue") {
+		t.Fatalf("expected the continuation instruction to preserve the original user request, got %#v", last)
+	}
+}
+
 func TestRunStreamMarksIncompleteAfterContinuationLimit(t *testing.T) {
 	llm := &stubLLMClient{responses: []schema.ChatResponse{
 		{Message: schema.Message{Role: "assistant", Content: "part 1"}, StopReason: schema.StopReasonMaxTokens},
@@ -361,11 +447,14 @@ func lastStreamEventOfType(events []schema.StreamEvent, eventType schema.StreamE
 }
 
 type stubRuntimeMCP struct {
+	mu          sync.Mutex
 	tools       []schema.Tool
 	calls       int
 	result      schema.ToolResult
 	err         error
 	callResults map[string]schema.ToolResult
+	workspace   string
+	taskScope   schema.TaskWorkspaceScope
 }
 
 func toolNamesForTest(tools []schema.Tool) []string {
@@ -385,6 +474,12 @@ func (s *stubRuntimeMCP) RefreshTools(context.Context) ([]schema.Tool, error) {
 }
 
 func (s *stubRuntimeMCP) CallTool(_ context.Context, name string, _ []byte) (schema.ToolResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.callToolLocked(name)
+}
+
+func (s *stubRuntimeMCP) callToolLocked(name string) (schema.ToolResult, error) {
 	s.calls++
 	if s.err != nil {
 		return schema.ToolResult{}, s.err
@@ -398,6 +493,21 @@ func (s *stubRuntimeMCP) CallTool(_ context.Context, name string, _ []byte) (sch
 		return s.result, nil
 	}
 	return schema.ToolResult{Content: "ok"}, nil
+}
+
+func (s *stubRuntimeMCP) CallToolInWorkspace(ctx context.Context, name string, arguments []byte, workspaceRoot string) (schema.ToolResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.workspace = workspaceRoot
+	return s.callToolLocked(name)
+}
+
+func (s *stubRuntimeMCP) CallToolInTaskWorkspace(ctx context.Context, name string, arguments []byte, scope schema.TaskWorkspaceScope) (schema.ToolResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskScope = scope
+	s.workspace = scope.Workspace
+	return s.callToolLocked(name)
 }
 
 func (s *stubRuntimeMCP) HealthStatus(context.Context) map[string]string {
@@ -539,7 +649,7 @@ func TestRunStreamNudgesImplementationAfterBroadReadContext(t *testing.T) {
 	}
 	second := llm.requests[1]
 	last := second.Messages[len(second.Messages)-1]
-	if last.Role != "user" || !strings.Contains(last.Content, "Enough workspace context has been gathered") || !strings.Contains(last.Content, "make the smallest safe write/exec changes next") {
+	if last.Role != "user" || !strings.Contains(last.Content, "Enough workspace context has been gathered") || !strings.Contains(last.Content, "make the smallest safe file write next") {
 		t.Fatalf("expected action nudge as final second-request message, got %#v", last)
 	}
 	if !slices.Contains(statuses, "enough context gathered; nudging model to act") {
@@ -602,7 +712,7 @@ func TestActionNudgeTriggersAfterTwoReadResults(t *testing.T) {
 		t.Fatalf("expected one read result to avoid early nudge, got ok=%t nudge=%q", ok, nudge)
 	}
 	nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 1, Valid: 1}, 1)
-	if !ok || !strings.Contains(nudge, "make the smallest safe write/exec changes next") || !strings.Contains(nudge, "without acting") {
+	if !ok || !strings.Contains(nudge, "make the smallest safe file write next") || !strings.Contains(nudge, "without acting") {
 		t.Fatalf("expected implementation nudge after two read results, ok=%t nudge=%q", ok, nudge)
 	}
 }
@@ -613,8 +723,43 @@ func TestActionNudgeTriggersEarlierAfterDiscoveryAndContentRead(t *testing.T) {
 		Mode:             "fix",
 		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
 	}, "fix", nil, "extend this project")
-	if nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 2, DiscoverySeen: true, ContentReadCalls: 1, Valid: 2}, 2); !ok || !strings.Contains(nudge, "make the smallest safe write/exec changes next") {
+	if nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 2, DiscoverySeen: true, ContentReadCalls: 1, Valid: 2}, 2); !ok || !strings.Contains(nudge, "make the smallest safe file write next") {
 		t.Fatalf("expected earlier action nudge after discovery plus content read, ok=%t nudge=%q", ok, nudge)
+	}
+}
+
+func TestActionNudgeEscalatesWhenImplementationStillHasNoWrite(t *testing.T) {
+	tracker := newActionNudgeTracker(config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite, config.ToolKindExec},
+	}, "fix", nil, "调整留言按钮间距")
+	if _, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 2, DiscoverySeen: true, ContentReadCalls: 1, Valid: 2}, 2); !ok {
+		t.Fatal("expected initial implementation nudge")
+	}
+	if nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 1, Valid: 1}, 1); ok || nudge != "" {
+		t.Fatalf("expected one post-nudge batch to remain tolerated, got ok=%t nudge=%q", ok, nudge)
+	}
+	nudge, ok := tracker.Next(toolCallBatchProfile{Mutating: true, ExecCalls: 1, Valid: 1}, 1)
+	if !ok || !strings.Contains(nudge, "Do not call more read, search, hash, or validation tools") || !strings.Contains(nudge, "apply the smallest safe patch now") {
+		t.Fatalf("expected stalled implementation escalation after exec without a write, ok=%t nudge=%q", ok, nudge)
+	}
+}
+
+func TestActionNudgeStopsAfterSuccessfulWrite(t *testing.T) {
+	tracker := newActionNudgeTracker(config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+	}, "fix", nil, "修改页面样式")
+	if _, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 2, DiscoverySeen: true, ContentReadCalls: 1, Valid: 2}, 2); !ok {
+		t.Fatal("expected initial implementation nudge")
+	}
+	if nudge, ok := tracker.Next(toolCallBatchProfile{Mutating: true, WriteCalls: 1, Valid: 1}, 1); ok || nudge != "" {
+		t.Fatalf("successful write must stop implementation nudges, got ok=%t nudge=%q", ok, nudge)
+	}
+	if nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 1, Valid: 1}, 1); ok || nudge != "" {
+		t.Fatalf("successful write must keep later read verification quiet, got ok=%t nudge=%q", ok, nudge)
 	}
 }
 
@@ -1455,6 +1600,50 @@ func TestRunStreamReturnsBudgetSummaryWhenFinalTurnStillCallsTool(t *testing.T) 
 	}
 }
 
+func TestRunStreamFallsBackToLocalBudgetSummaryWhenSummaryRequestFails(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-2", Name: "read_file", Arguments: []byte(`{"path":"b.txt"}`)}}}},
+		{err: fmt.Errorf("provider temporarily unavailable")},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "read files then summarize", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(true, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected local recovery when summary request fails, got %v", err)
+	}
+	if !result.Incomplete || result.StopReason != schema.StopReasonIterationBudget {
+		t.Fatalf("expected recoverable iteration-budget result, got %#v", result)
+	}
+	if !strings.Contains(result.Output, "Tool iteration budget reached") {
+		t.Fatalf("expected local budget summary, got %#v", result)
+	}
+	if len(result.ToolResults) != 1 {
+		t.Fatalf("expected completed tool evidence to be preserved, got %#v", result.ToolResults)
+	}
+	foundAudit := false
+	for _, entry := range result.AuditTrail {
+		if entry.Outcome == "iteration_budget_summary_error" {
+			foundAudit = true
+			break
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("expected summary failure to remain auditable, got %#v", result.AuditTrail)
+	}
+}
+
 func TestRunStreamAllowsFinalTurnMutationToReachApproval(t *testing.T) {
 	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
 		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"calculator.py"}`)}}}},
@@ -1811,6 +2000,46 @@ func TestRuntimeRunStreamAddsVerifierPassForFixMode(t *testing.T) {
 	}
 	if !seenVerifyStage {
 		t.Fatalf("expected verifier task stage event, got %#v", events)
+	}
+}
+
+func TestRuntimeRunStreamSkipsVerifierWhileToolApprovalIsPending(t *testing.T) {
+	fixerLLM := &verifierPassTestLLMClient{streamResponse: schema.ChatResponse{
+		ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"note.txt","content":"hello"}`)}},
+	}}
+	auditorLLM := &verifierPassTestLLMClient{chatResponse: schema.ChatResponse{
+		Message: schema.Message{Content: "verifier should wait until completion"},
+	}}
+	state := session.New(4)
+	cfg := &config.Config{
+		DefaultAgent: "fixer",
+		Agents: map[string]config.AgentProfile{
+			"fixer": {
+				Name: "Fixer", Provider: "fixer", Mode: "fix", Model: "test-model", MaxIterations: 2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm,
+			},
+			"auditor": {
+				Name: "Auditor", Provider: "auditor", Mode: "audit", Model: "test-model", MaxIterations: 2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow,
+			},
+		},
+		Verifier: config.VerifierConfig{Enabled: true, Agent: "auditor", Modes: []string{"fix"}, MaxTokens: 128},
+	}
+	mcpClient := &stubRuntimeMCP{tools: []schema.Tool{{Name: "write_file", Kind: "write"}}}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"fixer": fixerLLM, "auditor": auditorLLM}, stubSkillManager{}, mcpClient, state, runtime.NewAuditLogger(true, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	runID := runtimeRef.StartAgentRun("write a note")
+	result, err := runtimeRef.RunStream(WithAgentRunID(context.Background(), runID), "write a note", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !agentResultAwaitingToolApproval(result) {
+		t.Fatalf("expected suspended approval result, got %#v", result)
+	}
+	if len(auditorLLM.chatRequests) != 0 {
+		t.Fatalf("expected verifier to wait for resumed completion, got %d calls", len(auditorLLM.chatRequests))
 	}
 }
 

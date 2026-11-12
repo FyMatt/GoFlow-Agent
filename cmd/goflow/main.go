@@ -31,6 +31,7 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/internal/memory"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/internal/skill"
+	"github.com/FyMatt/GoFlow-Agent/internal/version"
 	"github.com/FyMatt/GoFlow-Agent/internal/workspace"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 	"golang.org/x/term"
@@ -83,6 +84,19 @@ var newApprovalInputReader = func(input io.Reader) approvalInputReader {
 }
 
 func main() {
+	if handled, exitCode, err := runNativeSandboxCLI(os.Args[1:]); handled {
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "native sandbox launcher error: %v\n", err)
+			os.Exit(1)
+		}
+		if exitCode != 0 {
+			os.Exit(exitCode)
+		}
+		return
+	}
+	if runEarlyCLICommand(os.Args[1:], os.Stdout) {
+		return
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
@@ -92,6 +106,13 @@ func main() {
 		os.Exit(1)
 	}
 	applyStartupEnvDefaults(runtimeInfo)
+	if handled, maintenanceErr := runDataMaintenance(runtimeInfo.Root, os.Args[1:], os.Stdout); handled {
+		if maintenanceErr != nil {
+			fmt.Fprintf(os.Stderr, "data maintenance error: %v\n", maintenanceErr)
+			os.Exit(1)
+		}
+		return
+	}
 	paths, err := resolvePathSettingsWithDefault(runtimeInfo.Root, os.Args[1:], defaultConfigPathForRuntime(runtimeInfo))
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "resolve paths error: %v\n", err)
@@ -123,49 +144,57 @@ func main() {
 	mcpManager := app.MCPClient
 
 	if strings.TrimSpace(paths.HTTPAddr) != "" {
-		server := &http.Server{
-			Addr: paths.HTTPAddr,
-			Handler: apipkg.NewServerWithWorkspaceRebinder(agentRuntime, workspaceState, func(ctx context.Context, path string) (*agent.Runtime, *workspaceLifecycle, error) {
-				appMu.Lock()
-				activeApp := currentApp
-				appMu.Unlock()
-				if activeApp == nil || activeApp.Config == nil {
-					return nil, nil, fmt.Errorf("runtime app is not available")
-				}
-				newApp, err := apppkg.Bootstrap(ctx, apppkg.BootstrapOptions{
-					RuntimeHome:   activeApp.Config.RuntimeHome,
-					WorkspaceRoot: path,
-					ConfigPath:    activeApp.ConfigPath,
-				})
-				if err != nil {
+		apiServer := apipkg.NewServerWithWorkspaceRebinder(agentRuntime, workspaceState, func(ctx context.Context, path string) (*agent.Runtime, *workspaceLifecycle, error) {
+			appMu.Lock()
+			activeApp := currentApp
+			appMu.Unlock()
+			if activeApp == nil || activeApp.Config == nil {
+				return nil, nil, fmt.Errorf("runtime app is not available")
+			}
+			newApp, err := apppkg.Bootstrap(ctx, apppkg.BootstrapOptions{
+				RuntimeHome:   activeApp.Config.RuntimeHome,
+				WorkspaceRoot: path,
+				ConfigPath:    activeApp.ConfigPath,
+			})
+			if err != nil {
+				return nil, nil, err
+			}
+			newWorkspace := newWorkspaceLifecycle(path, true)
+			newApp.Runtime.SetWorkspaceConfirmed(newWorkspace.Confirmed())
+			appMu.Lock()
+			oldApp := currentApp
+			appMu.Unlock()
+			if oldApp != nil {
+				if err := oldApp.SaveSession(); err != nil {
+					_ = newApp.Close()
 					return nil, nil, err
 				}
-				newWorkspace := newWorkspaceLifecycle(path, true)
-				newApp.Runtime.SetWorkspaceConfirmed(newWorkspace.Confirmed())
-				appMu.Lock()
-				oldApp := currentApp
-				appMu.Unlock()
-				if oldApp != nil {
-					if err := oldApp.SaveSession(); err != nil {
-						_ = newApp.Close()
-						return nil, nil, err
-					}
-					if err := oldApp.Close(); err != nil {
-						_ = newApp.Close()
-						return nil, nil, err
-					}
+				if err := oldApp.Close(); err != nil {
+					_ = newApp.Close()
+					return nil, nil, err
 				}
-				appMu.Lock()
-				currentApp = newApp
-				appMu.Unlock()
-				return newApp.Runtime, newWorkspace, nil
-			}),
+			}
+			appMu.Lock()
+			currentApp = newApp
+			appMu.Unlock()
+			return newApp.Runtime, newWorkspace, nil
+		}).WithSingleUserToken(cfg.HTTP.Token)
+		if err := apiServer.StartScheduler(ctx, app.ScheduleStore); err != nil {
+			fmt.Fprintf(os.Stderr, "start scheduler error: %v\n", err)
+			os.Exit(1)
+		}
+		server := &http.Server{
+			Addr:    paths.HTTPAddr,
+			Handler: apiServer,
 		}
 		consoleURL := displayHTTPURL(paths.HTTPAddr, "/console")
 		workflowURL := displayHTTPURL(paths.HTTPAddr, "/workflows")
 		fmt.Printf("GoFlow HTTP API ready. runtime=%s workspace=%s addr=%s\n", cfg.RuntimeHome, workspaceState.DisplayRoot(), paths.HTTPAddr)
 		fmt.Printf("Open Web Studio: %s\n", consoleURL)
 		fmt.Printf("Workflow Studio: %s\n", workflowURL)
+		if strings.TrimSpace(cfg.HTTP.Token) != "" {
+			fmt.Println("Single-user HTTP authentication is enabled. Use Authorization: Bearer or a one-time ?access_token=... browser bootstrap.")
+		}
 		fmt.Println("Note: this local server uses plain HTTP, not HTTPS.")
 		fmt.Println("Press Ctrl+C to stop the HTTP server.")
 		if err := runHTTPServer(ctx, server, os.Stdout); err != nil {
@@ -354,6 +383,31 @@ func main() {
 
 	if err := lineReader.Err(); err != nil {
 		fmt.Fprintf(os.Stderr, "input error: %v\n", err)
+	}
+}
+
+func runEarlyCLICommand(args []string, output io.Writer) bool {
+	if len(args) != 1 {
+		return false
+	}
+	switch strings.ToLower(strings.TrimSpace(args[0])) {
+	case "--version", "version":
+		fmt.Fprintf(output, "GoFlow %s\n", version.Version)
+		return true
+	case "--help", "-h", "help":
+		fmt.Fprint(output, `GoFlow 本地智能体工作流平台
+
+用法:
+  goflow [--config PATH] [--workspace PATH] [--http ADDRESS]
+  goflow --backup-data
+  goflow --restore-data BACKUP.zip
+  goflow --version
+
+默认启动本地交互模式；设置 --http 后启动页面工作台。
+`)
+		return true
+	default:
+		return false
 	}
 }
 
@@ -1133,23 +1187,21 @@ func defaultConfigPathForRuntime(info runtimeHomeInfo) string {
 }
 
 func applyStartupEnvDefaults(info runtimeHomeInfo) {
-	applyBackupProviderEnvDefaults()
 	if !info.BinaryArchive || strings.TrimSpace(info.Root) == "" {
 		return
 	}
 	setEnvDefault("GOFLOW_FILE_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("file_tools")))
 	setEnvDefault("GOFLOW_WEB_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("web_tools")))
 	setEnvDefault("GOFLOW_NETWORK_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("network_tools")))
+	setEnvDefault("GOFLOW_OFFICE_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("office_tools")))
+	setEnvDefault("GOFLOW_COMMAND_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("command_tools")))
+	setEnvDefault("GOFLOW_SKILL_RUNNER_CMD", filepath.Join(info.Root, "bin", executableName("skill_runner")))
+	setEnvDefault("GOFLOW_HOST_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("host_tools")))
+	setEnvDefault("GOFLOW_SSH_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("ssh_tools")))
+	setEnvDefault("GOFLOW_NOTIFICATION_TOOLS_CMD", filepath.Join(info.Root, "bin", executableName("notification_tools")))
 	setEnvDefault("GOFLOW_PYTHON_CMD", defaultPythonCommand())
 	setEnvDefault("GOFLOW_PYTHON_NOTES_PATH", filepath.Join(info.Root, "mcp_servers", "python_notes.py"))
 }
-
-func applyBackupProviderEnvDefaults() {
-	setEnvDefault("GOFLOW_BACKUP_BASE_URL", os.Getenv("GOFLOW_BASE_URL"))
-	setEnvDefault("GOFLOW_BACKUP_API_KEY", os.Getenv("GOFLOW_API_KEY"))
-	setEnvDefault("GOFLOW_BACKUP_MODEL", os.Getenv("GOFLOW_MODEL"))
-}
-
 func setEnvDefault(key, value string) {
 	if strings.TrimSpace(os.Getenv(key)) != "" || strings.TrimSpace(value) == "" {
 		return
@@ -1241,9 +1293,17 @@ func resolvePathSettingsWithDefault(runtimeHome string, args []string, defaultCo
 	return pathSettings{
 		ConfigPath:        filepath.Clean(configPath),
 		WorkspaceRoot:     filepath.Clean(workspaceRoot),
-		HTTPAddr:          strings.TrimSpace(httpAddr),
+		HTTPAddr:          normalizeHTTPListenAddr(httpAddr),
 		WorkspaceExplicit: workspaceExplicit,
 	}, nil
+}
+
+func normalizeHTTPListenAddr(addr string) string {
+	addr = strings.TrimSpace(addr)
+	if strings.HasPrefix(addr, ":") {
+		return "127.0.0.1" + addr
+	}
+	return addr
 }
 
 func handleCommand(ctx context.Context, input string, skillManager *skill.Manager, mcpClient interfaces.MCPClient, agentRuntime *agent.Runtime, workspaceStates ...*workspaceLifecycle) bool {
@@ -3035,18 +3095,17 @@ type cliKitDocument struct {
 }
 
 type cliKitVerticalPack struct {
-	Domain         string   `yaml:"domain"`
-	Maturity       string   `yaml:"maturity"`
-	Summary        string   `yaml:"summary"`
-	SupportedTasks []string `yaml:"supported_tasks"`
-	RequiredInputs []string `yaml:"required_inputs"`
-	ToolBoundaries []string `yaml:"tool_boundaries"`
-	QualityGates   []string `yaml:"quality_gates"`
-	Evidence       []string `yaml:"evidence_artifacts"`
-	SimpleMode     []string `yaml:"simple_mode"`
-	ExpertMode     []string `yaml:"expert_mode"`
-	TokenStrategy  []string `yaml:"token_strategy"`
-	ModelRoutes    struct {
+	Domain               string   `yaml:"domain"`
+	Maturity             string   `yaml:"maturity"`
+	Summary              string   `yaml:"summary"`
+	SupportedTasks       []string `yaml:"supported_tasks"`
+	RequiredInputs       []string `yaml:"required_inputs"`
+	ToolBoundaries       []string `yaml:"tool_boundaries"`
+	QualityGates         []string `yaml:"quality_gates"`
+	Evidence             []string `yaml:"evidence_artifacts"`
+	PresentationGuidance []string `yaml:"presentation_guidance"`
+	TokenStrategy        []string `yaml:"token_strategy"`
+	ModelRoutes          struct {
 		Strong   []string `yaml:"strong"`
 		Worker   []string `yaml:"worker"`
 		Verifier []string `yaml:"verifier"`
@@ -4722,8 +4781,7 @@ func writeKitVerticalPackSection(b *strings.Builder, pack cliKitVerticalPack) {
 	writeKitVerticalPackList(b, "boundaries", pack.ToolBoundaries, 3)
 	writeKitVerticalPackList(b, "quality_gates", pack.QualityGates, 3)
 	writeKitVerticalPackList(b, "evidence", pack.Evidence, 3)
-	writeKitVerticalPackList(b, "simple_mode", pack.SimpleMode, 2)
-	writeKitVerticalPackList(b, "expert_mode", pack.ExpertMode, 2)
+	writeKitVerticalPackList(b, "presentation_guidance", pack.PresentationGuidance, 4)
 	writeKitVerticalPackList(b, "token_strategy", pack.TokenStrategy, 3)
 	writeKitVerticalPackList(b, "strong_model", pack.ModelRoutes.Strong, 3)
 	writeKitVerticalPackList(b, "worker_model", pack.ModelRoutes.Worker, 3)
@@ -4758,8 +4816,7 @@ func cliKitVerticalPackHasContent(pack cliKitVerticalPack) bool {
 		len(compactCLIStringList(pack.ToolBoundaries)) > 0 ||
 		len(compactCLIStringList(pack.QualityGates)) > 0 ||
 		len(compactCLIStringList(pack.Evidence)) > 0 ||
-		len(compactCLIStringList(pack.SimpleMode)) > 0 ||
-		len(compactCLIStringList(pack.ExpertMode)) > 0 ||
+		len(compactCLIStringList(pack.PresentationGuidance)) > 0 ||
 		len(compactCLIStringList(pack.TokenStrategy)) > 0 ||
 		len(compactCLIStringList(pack.ModelRoutes.Strong)) > 0 ||
 		len(compactCLIStringList(pack.ModelRoutes.Worker)) > 0 ||
@@ -6207,42 +6264,10 @@ func buildCLIMCPServerRiskMap(refs []config.MCPServerRef) map[string]cliMCPServe
 				AppContainer:    false,
 				LifecycleOnly:   true,
 			}
-		case "container":
-			risk.RiskLevel = "medium"
-			risk.IsolationLevel = "container_configured"
-			risk.Sandboxed = true
-			risk.RequiresSandbox = false
-			risk.SandboxFeatures = []string{"container_runtime", "filesystem_mount_policy", "privilege_reduction"}
-			risk.MissingSandboxFeatures = nil
-			if cliContainerNetworkEnforced(ref.IsolationOptions, ref.NetworkDisabled) {
-				risk.SandboxFeatures = append(risk.SandboxFeatures, "network_policy")
-			} else {
-				risk.MissingSandboxFeatures = append(risk.MissingSandboxFeatures, "network_policy")
-			}
-			if cliContainerResourceLimited(ref.IsolationOptions) {
-				risk.SandboxFeatures = append(risk.SandboxFeatures, "resource_limits")
-			} else {
-				risk.MissingSandboxFeatures = append(risk.MissingSandboxFeatures, "resource_limits")
-			}
-			if cliContainerNetworkEnforced(ref.IsolationOptions, ref.NetworkDisabled) && cliContainerResourceLimited(ref.IsolationOptions) {
-				risk.RiskLevel = "low"
-			}
 		}
 		out[name] = risk
 	}
 	return out
-}
-
-func cliContainerNetworkEnforced(options map[string]string, networkDisabled bool) bool {
-	network := strings.ToLower(strings.TrimSpace(options["network"]))
-	if network == "" || network == "default" {
-		return networkDisabled
-	}
-	return network == "disabled" || network == "none"
-}
-
-func cliContainerResourceLimited(options map[string]string) bool {
-	return strings.TrimSpace(options["memory"]) != "" || strings.TrimSpace(options["cpus"]) != "" || strings.TrimSpace(options["pids_limit"]) != ""
 }
 
 func buildCLIToolRiskProfile(tool schema.Tool, server cliMCPServerRisk) cliToolRisk {
@@ -6395,6 +6420,7 @@ func formatToolName(tool schema.Tool) string {
 
 type cliStreamRenderer struct {
 	printedText         bool
+	printedReasoning    bool
 	traceEnabled        bool
 	announcedToolCalls  map[string]toolAnnouncement
 	streamedContent     strings.Builder
@@ -6431,9 +6457,20 @@ type writeBatchItem struct {
 func (r *cliStreamRenderer) Handle(event schema.StreamEvent) error {
 	switch event.Type {
 	case schema.StreamEventText:
+		if r.printedReasoning {
+			r.ensureLineBreak()
+			r.printedReasoning = false
+		}
 		fmt.Print(event.Content)
 		r.printedText = true
 		r.streamedContent.WriteString(event.Content)
+	case schema.StreamEventReasoning:
+		if !r.printedReasoning {
+			r.ensureLineBreak()
+			fmt.Printf("%s ", styleLabel("[thinking]"))
+			r.printedReasoning = true
+		}
+		fmt.Print(event.Content)
 	case schema.StreamEventFinalMessage:
 		if strings.TrimSpace(event.Content) == "" {
 			return nil
@@ -6510,6 +6547,21 @@ func (r *cliStreamRenderer) Handle(event schema.StreamEvent) error {
 		fmt.Printf("%s %s requires confirmation %s\n", styleStatus("[approval]", "approval"), event.ToolName, styleLabel(summary))
 	case schema.StreamEventTokenUsage:
 		r.recordTokenUsage(event)
+		if event.OutputKind != "" || event.PromptTokens != 0 || event.OutputTokens != 0 || event.CachedTokens != 0 {
+			r.ensureLineBreak()
+			kind := strings.TrimSpace(event.OutputKind)
+			if kind == "" {
+				kind = "unknown"
+			}
+			fmt.Printf("%s in=%d out=%d cached=%d kind=%s", styleLabel("[call]"), event.PromptTokens, event.OutputTokens, event.CachedTokens, kind)
+			if event.CacheHitRate > 0 {
+				fmt.Printf(" cache_hit=%.0f%%", event.CacheHitRate*100)
+			}
+			if strings.TrimSpace(event.ToolName) != "" {
+				fmt.Printf(" tools=%s", event.ToolName)
+			}
+			fmt.Println()
+		}
 	case schema.StreamEventPromptBudget:
 		r.printPromptBudget(event)
 	case schema.StreamEventTaskStage:

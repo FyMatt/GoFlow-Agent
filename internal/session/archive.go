@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/FyMatt/GoFlow-Agent/internal/persistence"
 )
 
 const sessionArchiveSuffix = ".full.json.gz"
@@ -48,13 +50,12 @@ func writeFullSessionArchive(sessionPath string, snapshot Snapshot) error {
 	if err := temp.Close(); err != nil {
 		return err
 	}
-	_ = os.Remove(archivePath)
 	if err := fullSessionArchiveRename(tempPath, archivePath); err != nil {
 		data, readErr := os.ReadFile(tempPath)
 		if readErr != nil {
 			return errors.Join(err, readErr)
 		}
-		if writeErr := os.WriteFile(archivePath, data, 0o644); writeErr != nil {
+		if writeErr := persistence.WriteFileAtomic(archivePath, data, 0o644); writeErr != nil {
 			return errors.Join(err, writeErr)
 		}
 		return nil

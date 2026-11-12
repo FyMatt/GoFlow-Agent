@@ -1,122 +1,45 @@
 import { escapeHTML, request } from "./api.js";
 import {
-  normalizeRuntimeWorkflowRuns,
-  normalizeWorkflowRunList,
-  pendingApprovalCount,
-  setRuntimeVisibleApprovalCount,
-  visibleApprovalCountFromActions
+  normalizeRuntimeWorkflowRuns
 } from "./approval_counts.js";
-import { applyStaticTranslations, currentLanguage, localizedText, setLanguage, t } from "./i18n.js";
-import { notifyViewRendered, setupOnboarding } from "./onboarding.js";
-import { renderOverview } from "./views/overview.js";
-import { renderChat } from "./views/chat.js";
-import { renderWorkspace } from "./views/workspace.js";
-import { renderWorkflows } from "./views/workflows.js";
-import { renderApprovals } from "./views/approvals.js";
-import { renderCatalog } from "./views/catalog.js";
-import { renderMemory } from "./views/memory.js";
-import { renderStatus } from "./views/status.js";
-import { renderSettings } from "./views/settings.js";
+import { icon, navIcon, viewIcon } from "./icons.js";
+import { applyStaticTranslations, currentLanguage, localizedText, t } from "./i18n.js";
 
 const views = {
-  overview: { title: "view.overview.title", eyebrow: "view.overview.eyebrow", render: renderOverview },
-  playground: { title: "view.playground.title", eyebrow: "view.playground.eyebrow", render: renderChat },
-  workspace: { title: "view.workspace.title", eyebrow: "view.workspace.eyebrow", render: renderWorkspace },
-  workflows: { title: "view.workflows.title", eyebrow: "view.workflows.eyebrow", render: renderWorkflows },
-  approvals: { title: "view.approvals.title", eyebrow: "view.approvals.eyebrow", render: renderApprovals },
-  catalog: { title: "view.catalog.title", eyebrow: "view.catalog.eyebrow", render: renderCatalog },
-  memory: { title: "view.memory.title", eyebrow: "view.memory.eyebrow", render: renderMemory },
-  status: { title: "view.status.title", eyebrow: "view.status.eyebrow", render: renderStatus },
-  settings: { title: "view.settings.title", eyebrow: "view.settings.eyebrow", render: renderSettings }
+  playground: { title: "view.playground.title", eyebrow: "view.playground.eyebrow", module: "./views/chat.js", exportName: "renderChat" },
+  workflows: { title: "view.workflows.title", eyebrow: "view.workflows.eyebrow", module: "./views/workflows.js", exportName: "renderWorkflows" },
+  catalog: { title: "view.catalog.title", eyebrow: "view.catalog.eyebrow", module: "./views/catalog.js", exportName: "renderCatalog" },
+  usage: { title: "view.usage.title", eyebrow: "view.usage.eyebrow", module: "./views/usage.js", exportName: "renderUsage" },
+  settings: { title: "view.settings.title", eyebrow: "view.settings.eyebrow", module: "./views/settings.js", exportName: "renderSettings" }
 };
 
 const themeStorageKey = "goflow.theme";
 const sidebarStorageKey = "goflow.sidebar.collapsed";
-const experienceModeStorageKey = "goflow.experienceMode";
 
 const app = document.getElementById("app");
 const shellRoot = document.querySelector("[data-app-shell]");
 const sectionTitle = document.getElementById("sectionTitle");
 const sectionEyebrow = document.getElementById("sectionEyebrow");
-const runtimePill = document.getElementById("runtimePill");
-const sideStatus = document.getElementById("sideStatus");
-const languageSelect = document.getElementById("languageSelect");
-const themeToggle = document.getElementById("themeToggle");
-const experienceToggle = document.getElementById("experienceToggle");
-const tourToggle = document.getElementById("tourToggle");
 const sidebarToggle = document.getElementById("sidebarToggle");
 const navButtons = Array.from(document.querySelectorAll(".nav button[data-view]"));
 
 let runtime = null;
-let configDiagnostics = null;
 let theme = normalizeTheme(document.documentElement.dataset.theme || localStorage.getItem(themeStorageKey));
 let runtimePollTimer = null;
 let runtimePollInFlight = false;
-let configDiagnosticsLastFetch = 0;
-let runtimeShellSignature = "";
 let runtimeEventSignature = "";
-let approvalBadgeSignature = "";
-let approvalBadgeLastFetch = 0;
-let approvalBadgeResolvedCount = null;
 let sidebarCollapsed = loadSidebarCollapsed();
-let experienceMode = loadExperienceMode();
-const configDiagnosticsRefreshMs = 8000;
-const approvalBadgeRefreshMs = 10000;
+let showSequence = 0;
 const userScrollIntentWindowMs = 420;
-const shellConfigDiagnosticsPath = "/api/config/diagnostics?include_optional=0";
 
 setupGlobalScrollIntentTracking();
-window.addEventListener("goflow:config-diagnostics", event => {
-  const diagnostics = event.detail && typeof event.detail === "object" ? event.detail : null;
-  if (!diagnostics) return;
-  configDiagnostics = diagnostics;
-  configDiagnosticsLastFetch = Date.now();
-  const approvalCount = approvalBadgeResolvedCount ?? (runtime ? pendingApprovalCount(runtime) : 0);
-  if (runtime) setRuntimeVisibleApprovalCount(runtime, approvalCount);
-  if (runtime) sideStatus.innerHTML = renderSideStatus(runtime, approvalCount, configDiagnostics);
-  updateSettingsNavBadge(configDiagnostics);
-  runtimeShellSignature = runtime ? runtimeShellStateSignature(runtime, approvalCount, configDiagnostics) : runtimeShellSignature;
-});
-
-setupOnboarding({
-  trigger: tourToggle,
-  overlay: document.getElementById("tourOverlay"),
-  popover: document.querySelector("#tourOverlay .tour-popover"),
-  badge: document.getElementById("tourBadge"),
-  counter: document.getElementById("tourStepCounter"),
-  title: document.getElementById("tourTitle"),
-  body: document.getElementById("tourBody"),
-  meta: document.getElementById("tourMeta"),
-  prev: document.getElementById("tourPrev"),
-  next: document.getElementById("tourNext"),
-  skip: document.getElementById("tourSkip"),
-  contentRoot: document.body,
-  t
-});
-
 applyTheme(theme);
-applyExperienceMode(experienceMode, { persist: false, notify: false });
 updateDocumentLanguage();
 renderAllNavButtons();
 setSidebarCollapsed(sidebarCollapsed, { persist: false });
 
 async function refreshRuntime() {
   runtime = await request("/api/runtime");
-  configDiagnostics = await refreshConfigDiagnostics(configDiagnostics).catch(() => configDiagnostics);
-  const approvalSignature = approvalBadgeStateSignature(runtime);
-  const approvalCount = approvalSignature === approvalBadgeSignature && approvalBadgeResolvedCount !== null
-    ? approvalBadgeResolvedCount
-    : pendingApprovalCount(runtime);
-  setRuntimeVisibleApprovalCount(runtime, approvalCount);
-  const shellSignature = runtimeShellStateSignature(runtime, approvalCount, configDiagnostics);
-  if (shellSignature !== runtimeShellSignature) {
-    runtimeShellSignature = shellSignature;
-    runtimePill.textContent = runtimePillText(runtime);
-    sideStatus.innerHTML = renderSideStatus(runtime, approvalCount, configDiagnostics);
-    updateApprovalNavBadge(approvalCount);
-    updateSettingsNavBadge(configDiagnostics);
-  }
-  scheduleApprovalBadgeRefresh(runtime, approvalSignature);
   const nextEventSignature = runtimeViewEventSignature(runtime);
   if (nextEventSignature !== runtimeEventSignature) {
     runtimeEventSignature = nextEventSignature;
@@ -159,17 +82,6 @@ function setupGlobalScrollIntentTracking() {
   };
 }
 
-async function refreshConfigDiagnostics(fallback = null) {
-  const now = Date.now();
-  if (fallback && now - configDiagnosticsLastFetch < configDiagnosticsRefreshMs) return fallback;
-  configDiagnosticsLastFetch = now;
-  try {
-    return await request(shellConfigDiagnosticsPath);
-  } catch (error) {
-    return { __error: error.message || String(error) };
-  }
-}
-
 function startRuntimeAutoRefresh() {
   if (runtimePollTimer) return;
   runtimePollTimer = window.setInterval(async () => {
@@ -184,99 +96,6 @@ function startRuntimeAutoRefresh() {
       runtimePollInFlight = false;
     }
   }, 5000);
-}
-
-function renderSideStatus(runtime, approvalCount = pendingApprovalCount(runtime), diagnostics = configDiagnostics) {
-  const rows = [
-    [t("runtime.workspace"), shellDisplayValue(runtime.workspace?.display || t("common.none")), ""],
-    [t("runtime.trace"), runtime.trace ? t("common.on") : t("common.off"), ""],
-    [t("runtime.pending"), approvalCount, approvalCount ? "warn" : ""],
-    [t("runtime.tools"), runtime.tools?.length || 0, ""],
-    [t("runtime.config"), configStatusText(diagnostics), configStatusTone(diagnostics)]
-  ];
-  return `<div class="side-status-card">${rows.map(([label, value, tone]) => `
-    <div class="side-status-row ${escapeHTML(tone || "")}">
-      <span>${escapeHTML(label)}</span>
-      <strong>${escapeHTML(value)}</strong>
-    </div>`).join("")}</div>`;
-}
-
-function runtimePillText(snapshot = {}) {
-  return [
-    shellDisplayValue(snapshot.active_agent || "-"),
-    shellModeLabel(snapshot.mode || "-"),
-    shellDisplayValue(snapshot.version || "dev")
-  ].join(" / ");
-}
-
-function shellModeLabel(value) {
-  const raw = String(value || "").trim();
-  if (!raw || raw === "-") return raw || "-";
-  const key = `catalog.mode.${raw}`;
-  const translated = t(key);
-  return translated === key ? shellDisplayValue(raw) : translated;
-}
-
-function configStatusText(diagnostics) {
-  if (diagnostics?.__error) return t("runtime.configUnavailable");
-  if (diagnostics?.restart_required) return t("runtime.configRestart");
-  const status = String(diagnostics?.status || "").toLowerCase();
-  const counts = configDiagnosticCounts(diagnostics);
-  const hasItemDiagnostics = Array.isArray(diagnostics?.items) && diagnostics.items.length > 0;
-  if (status === "warning" && hasItemDiagnostics && !counts.attention) return t("runtime.configOk");
-  if (status === "error" || status === "warning") return t("runtime.configCheck");
-  if (status === "ok") return t("runtime.configOk");
-  return t("runtime.configUnknown");
-}
-
-function configStatusTone(diagnostics) {
-  if (diagnostics?.__error) return "bad";
-  if (diagnostics?.restart_required) return "warn";
-  const status = String(diagnostics?.status || "").toLowerCase();
-  const counts = configDiagnosticCounts(diagnostics);
-  const hasItemDiagnostics = Array.isArray(diagnostics?.items) && diagnostics.items.length > 0;
-  if (status === "warning" && hasItemDiagnostics && !counts.attention) return "";
-  if (status === "error" || status === "warning") return "warn";
-  return "";
-}
-
-async function refreshApprovalBadges(snapshot) {
-  const payload = await request("/api/workflow-runs");
-  if (runtime !== snapshot) return;
-  const runs = normalizeWorkflowRunList(payload);
-  const pendingTools = Array.isArray(snapshot?.session?.pending_approvals)
-    ? snapshot.session.pending_approvals
-    : [];
-  const count = await visibleApprovalCountFromActions(pendingTools, runs);
-  setRuntimeVisibleApprovalCount(snapshot, count);
-  sideStatus.innerHTML = renderSideStatus(snapshot, count, configDiagnostics);
-  updateApprovalNavBadge(count);
-  updateSettingsNavBadge(configDiagnostics);
-  runtimeShellSignature = runtimeShellStateSignature(snapshot, count, configDiagnostics);
-  approvalBadgeSignature = approvalBadgeStateSignature(snapshot);
-  approvalBadgeResolvedCount = count;
-  window.dispatchEvent(new CustomEvent("goflow:runtime", { detail: snapshot }));
-}
-
-function scheduleApprovalBadgeRefresh(snapshot, signature = approvalBadgeStateSignature(snapshot)) {
-  const now = Date.now();
-  if (signature === approvalBadgeSignature && now - approvalBadgeLastFetch < approvalBadgeRefreshMs) return;
-  approvalBadgeLastFetch = now;
-  refreshApprovalBadges(snapshot).catch(() => {});
-}
-
-function runtimeShellStateSignature(snapshot, approvalCount, diagnostics) {
-  return [
-    snapshot?.active_agent || "",
-    snapshot?.mode || "",
-    snapshot?.version || "",
-    snapshot?.workspace?.display || snapshot?.workspace?.root || "",
-    snapshot?.trace ? "trace" : "no-trace",
-    snapshot?.tools?.length || 0,
-    approvalCount || 0,
-    configStatusText(diagnostics),
-    configStatusTone(diagnostics)
-  ].join("|");
 }
 
 function runtimeViewEventSignature(snapshot) {
@@ -328,24 +147,6 @@ function runtimeViewEventSignature(snapshot) {
   ].join("|");
 }
 
-function approvalBadgeStateSignature(snapshot) {
-  const pendingTools = Array.isArray(snapshot?.session?.pending_approvals)
-    ? snapshot.session.pending_approvals.map(item => [
-      item?.id || item?.call_id || item?.tool_call_id || "",
-      item?.tool_name || "",
-      item?.workflow_name || "",
-      item?.stage || item?.stage_name || ""
-    ].join(":")).join(",")
-    : "";
-  const runs = normalizeRuntimeWorkflowRuns(snapshot).slice(0, 32).map(run => [
-    run?.id || "",
-    run?.status || "",
-    run?.next_stage || "",
-    run?.pending_call_id || ""
-  ].join(":")).join(",");
-  return `${pendingTools}|${runs}`;
-}
-
 function normalizeRuntimeAgentRuns(snapshot) {
   const value = snapshot?.session?.agent_runs;
   if (Array.isArray(value)) return value;
@@ -375,83 +176,6 @@ function runtimeRunEventMarker(run = {}) {
   return `${events.length}:${lastSeq || ""}`;
 }
 
-function updateApprovalNavBadge(runtime) {
-  const button = document.querySelector('.nav button[data-view="approvals"]');
-  if (!button) return;
-  const count = typeof runtime === "number" ? runtime : pendingApprovalCount(runtime);
-  const label = t("nav.approvals");
-  renderNavButton(button, {
-    badge: count ? String(count) : "",
-    badgeClass: "nav-badge",
-    ariaLabel: count ? `${label}: ${t("approvals.count", { count })}` : label
-  });
-}
-
-function updateSettingsNavBadge(diagnostics = configDiagnostics) {
-  const button = document.querySelector('.nav button[data-view="settings"]');
-  if (!button) return;
-  const label = t("nav.settings");
-  const counts = configDiagnosticCounts(diagnostics);
-  const status = String(diagnostics?.status || "").toLowerCase();
-  const hasItemDiagnostics = Array.isArray(diagnostics?.items) && diagnostics.items.length > 0;
-  const statusNeedsAttention = status === "error" || (status === "warning" && (!hasItemDiagnostics || counts.attention > 0));
-  const needsAttention = Boolean(
-    diagnostics?.restart_required ||
-    diagnostics?.__error ||
-    counts.errors ||
-    counts.warnings ||
-    statusNeedsAttention
-  );
-  const badgeValue = counts.errors || counts.warnings || (diagnostics?.restart_required ? "!" : counts.total || "!");
-  const badgeTone = counts.errors || diagnostics?.__error || status === "error"
-    ? "bad"
-    : counts.warnings || diagnostics?.restart_required || statusNeedsAttention
-      ? "warn"
-      : "info";
-  renderNavButton(button, {
-    badge: needsAttention ? String(badgeValue) : "",
-    badgeClass: needsAttention ? `nav-badge nav-badge-config nav-badge-config-${badgeTone}` : "",
-    ariaLabel: needsAttention
-      ? `${label}: ${configStatusText(diagnostics)}, ${configDiagnosticCountLabel(counts)}`
-      : label
-  });
-}
-
-function configDiagnosticCounts(diagnostics = {}) {
-  const source = diagnostics?.diagnostics || diagnostics?.diagnostic_counts || diagnostics?.counts || diagnostics?.summary?.diagnostics || {};
-  const items = Array.isArray(diagnostics?.items) ? diagnostics.items : [];
-  const computed = configDiagnosticComputedCounts(items);
-  const hasItems = items.length > 0;
-  const errors = hasItems
-    ? computed.errors
-    : firstFiniteNumber(source.errors, source.error, source.error_count, diagnostics?.errors, diagnostics?.error, diagnostics?.error_count, computed.errors);
-  const warnings = hasItems
-    ? computed.warnings
-    : firstFiniteNumber(source.warnings, source.warning, source.warn, source.warning_count, diagnostics?.warnings, diagnostics?.warning, diagnostics?.warning_count, computed.warnings);
-  const info = hasItems
-    ? computed.info
-    : firstFiniteNumber(source.info, source.infos, source.information, source.info_count, diagnostics?.info, diagnostics?.infos, diagnostics?.info_count, computed.info);
-  return {
-    total: firstFiniteNumber(source.total, source.count, diagnostics?.total, diagnostics?.count, diagnostics?.diagnostics_count, computed.total),
-    info,
-    warnings,
-    errors,
-    optional: computed.optional,
-    attention: errors + warnings
-  };
-}
-
-function configDiagnosticCountLabel(counts) {
-  return t("settings.navDiagnosticCounts", {
-    total: counts.total,
-    attention: counts.attention,
-    errors: counts.errors,
-    warnings: counts.warnings,
-    info: counts.info,
-    optional: counts.optional
-  });
-}
-
 function shellDisplayValue(value) {
   const text = String(value || "").trim();
   if (!text) return "";
@@ -463,67 +187,8 @@ function shellDisplayValue(value) {
   return localizedText(text);
 }
 
-function configDiagnosticComputedCounts(items = []) {
-  return items.reduce((acc, item) => {
-    const severity = String(item?.severity || "info").toLowerCase();
-    const optional = isOptionalConfigDiagnostic(item);
-    const actionable = isActionableConfigDiagnostic(item);
-    if (optional) acc.optional += 1;
-    if (severity === "error" && actionable) acc.errors += 1;
-    else if ((severity === "warning" || severity === "warn") && actionable) acc.warnings += 1;
-    else acc.info += 1;
-    acc.total += 1;
-    return acc;
-  }, { total: 0, info: 0, warnings: 0, errors: 0, optional: 0 });
-}
-
-function isOptionalConfigDiagnostic(item = {}) {
-  const severity = String(item.severity || "info").toLowerCase();
-  const code = String(item.code || "");
-  const category = String(item.category || "").toLowerCase();
-  const optional = diagnosticBooleanFlag(item.optional);
-  const nonActionable = diagnosticBooleanFlag(item.actionable) === false;
-  if (optional || category === "optional" || category === "optional_extension") return true;
-  if (severity === "info" && nonActionable) return true;
-  return severity === "info" && (code === "module_dir_empty" || code === "config_load_ok");
-}
-
-function isActionableConfigDiagnostic(item = {}) {
-  if (!item || item.code === "config_load_ok") return false;
-  if (isOptionalConfigDiagnostic(item)) return false;
-  if (isSecurityGuidanceConfigDiagnostic(item)) return false;
-  return diagnosticBooleanFlag(item.actionable) !== false;
-}
-
-function isSecurityGuidanceConfigDiagnostic(item = {}) {
-  const code = String(item.code || "").toLowerCase();
-  if (!code) return false;
-  if (code.startsWith("tool_risk_policy")) return true;
-  if (code.startsWith("mcp_isolation") || code.startsWith("mcp_container")) return true;
-  if (code.includes("_sandbox") || code.includes("sandboxed")) return true;
-  const targetKind = String(item.target_kind || "").toLowerCase();
-  return targetKind === "mcp_server" && String(item.field || "").toLowerCase().includes("isolation");
-}
-
-function diagnosticBooleanFlag(value) {
-  if (typeof value === "boolean") return value;
-  if (typeof value === "string") {
-    const normalized = value.trim().toLowerCase();
-    if (normalized === "true") return true;
-    if (normalized === "false") return false;
-  }
-  return undefined;
-}
-
-function firstFiniteNumber(...values) {
-  for (const value of values) {
-    const number = Number(value);
-    if (Number.isFinite(number)) return number;
-  }
-  return 0;
-}
-
 async function show(viewName) {
+  const sequence = ++showSequence;
   clearTransientHandlers();
   const resolvedViewName = views[viewName] ? viewName : defaultView();
   const view = views[resolvedViewName] || views.workflows;
@@ -531,24 +196,34 @@ async function show(viewName) {
   updateDocumentLanguage();
   applyStaticTranslations();
   renderAllNavButtons();
-  updateThemeToggle();
-  updateExperienceToggle();
   updateSidebarToggle();
-  sectionTitle.textContent = t(view.title);
+  sectionTitle.innerHTML = `<span class="section-title-icon">${icon(viewIcon(resolvedViewName))}</span><span>${escapeHTML(t(view.title))}</span>`;
   sectionEyebrow.textContent = t(view.eyebrow);
   document.title = `${t(view.title)} - GoFlow`;
   app.dataset.view = resolvedViewName;
+  app.classList.remove("view-ready");
   app.innerHTML = `<div class="panel loading-panel">${t("common.loading")}</div>`;
   try {
-    const current = await refreshRuntime();
-    if (current && typeof current === "object" && configDiagnostics && typeof configDiagnostics === "object") {
-      current.config_diagnostics = configDiagnostics;
-    }
-    await view.render(app, current, refreshRuntime);
-    notifyViewRendered(resolvedViewName);
+    const [current, render] = await Promise.all([refreshRuntime(), loadViewRenderer(view)]);
+    if (sequence !== showSequence) return;
+    await render(app, current, refreshRuntime);
+    if (sequence !== showSequence) return;
+    requestAnimationFrame(() => {
+      if (sequence === showSequence) app.classList.add("view-ready");
+    });
   } catch (error) {
     app.innerHTML = `<div class="panel"><h2>${t("common.errorTitle")}</h2><p class="muted">${escapeHTML(shellDisplayValue(error?.message || String(error || "")))}</p></div>`;
+    app.classList.add("view-ready");
   }
+}
+
+async function loadViewRenderer(view) {
+  if (view.render) return view.render;
+  const loaded = await import(view.module);
+  const render = loaded?.[view.exportName];
+  if (typeof render !== "function") throw new Error(`View module ${view.module} does not export ${view.exportName}.`);
+  view.render = render;
+  return render;
 }
 
 function normalizeTheme(value) {
@@ -562,103 +237,34 @@ function applyTheme(nextTheme) {
   localStorage.setItem(themeStorageKey, theme);
 }
 
-function currentTheme() {
-  return theme;
-}
-
-function updateThemeToggle() {
-  if (!themeToggle) return;
-  const nextTheme = currentTheme() === "dark" ? "light" : "dark";
-  const label = t(`theme.switchTo.${nextTheme}`);
-  themeToggle.textContent = label;
-  themeToggle.setAttribute("aria-label", label);
-  themeToggle.setAttribute("title", `${t("theme.current")}: ${t(`theme.${currentTheme()}`)}`);
-}
-
 function updateDocumentLanguage() {
   document.documentElement.lang = currentLanguage() === "zh" ? "zh-CN" : "en";
 }
 
-function toggleTheme() {
-  applyTheme(currentTheme() === "dark" ? "light" : "dark");
-  updateThemeToggle();
-}
-
-function loadExperienceMode() {
-  try {
-    return localStorage.getItem(experienceModeStorageKey) === "expert" ? "expert" : "simple";
-  } catch {
-    return "simple";
-  }
-}
-
-function applyExperienceMode(nextMode, options = {}) {
-  experienceMode = nextMode === "expert" ? "expert" : "simple";
-  shellRoot?.classList.toggle("expert-experience", experienceMode === "expert");
-  shellRoot?.classList.toggle("simple-experience", experienceMode !== "expert");
-  document.documentElement.dataset.experience = experienceMode;
-  if (options.persist !== false) {
-    try {
-      localStorage.setItem(experienceModeStorageKey, experienceMode);
-    } catch {
-      // Mode persistence is optional; the visible session still updates.
-    }
-  }
-  updateExperienceToggle();
-  if (options.notify !== false) {
-    window.dispatchEvent(new CustomEvent("goflow:experience-mode", {
-      detail: { mode: experienceMode, expert: experienceMode === "expert" }
-    }));
-  }
-}
-
-function updateExperienceToggle() {
-  if (!experienceToggle) return;
-  const active = experienceMode === "expert" ? "expert" : "simple";
-  experienceToggle.querySelectorAll("[data-experience-mode]").forEach(button => {
-    const mode = button.dataset.experienceMode === "expert" ? "expert" : "simple";
-    const selected = mode === active;
-    button.classList.toggle("active", selected);
-    button.setAttribute("aria-pressed", selected ? "true" : "false");
-    button.setAttribute("title", t(mode === "expert" ? "experience.expertHelp" : "experience.simpleHelp"));
-  });
-  experienceToggle.setAttribute("data-current-mode", active);
-}
-
 navButtons.forEach(button => {
   button.addEventListener("click", () => {
+    shellRoot?.classList.remove("mobile-nav-open");
     location.hash = button.dataset.view;
   });
 });
 
 window.addEventListener("hashchange", () => show(location.hash.slice(1) || defaultView()));
 
-languageSelect.value = currentLanguage();
-languageSelect.addEventListener("change", () => {
-  setLanguage(languageSelect.value);
-  updateDocumentLanguage();
-  renderAllNavButtons();
-  updateThemeToggle();
-  updateSidebarToggle();
-  show(location.hash.slice(1) || defaultView());
-});
-
-themeToggle?.addEventListener("click", () => {
-  toggleTheme();
-});
-
-experienceToggle?.addEventListener("click", event => {
-  const button = event.target instanceof Element ? event.target.closest("[data-experience-mode]") : null;
-  if (!button) return;
-  applyExperienceMode(button.dataset.experienceMode === "expert" ? "expert" : "simple");
+window.addEventListener("goflow:set-theme", event => {
+  applyTheme(event.detail?.theme);
 });
 
 sidebarToggle?.addEventListener("click", () => {
+  if (window.matchMedia("(max-width: 700px)").matches) {
+    const expanded = shellRoot?.classList.toggle("mobile-nav-open") || false;
+    sidebarToggle.setAttribute("aria-expanded", String(expanded));
+    return;
+  }
   toggleSidebarCollapsed();
 });
 
 function defaultView() {
-  return location.pathname.startsWith("/workflows") ? "workflows" : "overview";
+  return location.pathname.startsWith("/workflows") ? "workflows" : "playground";
 }
 
 function clearTransientHandlers() {
@@ -668,14 +274,11 @@ function clearTransientHandlers() {
   window.onmouseup = null;
 }
 
-updateThemeToggle();
 startRuntimeAutoRefresh();
 show(location.hash.slice(1) || defaultView());
 
 function renderAllNavButtons() {
   navButtons.forEach(button => renderNavButton(button));
-  updateApprovalNavBadge(approvalBadgeResolvedCount ?? runtime ?? 0);
-  updateSettingsNavBadge(configDiagnostics);
 }
 
 function renderNavButton(button, options = {}) {
@@ -684,7 +287,7 @@ function renderNavButton(button, options = {}) {
   const badge = String(options.badge || "").trim();
   const badgeClass = String(options.badgeClass || "nav-badge").trim();
   button.innerHTML = `
-    <span class="nav-icon" aria-hidden="true">${navButtonIcon(button.dataset.icon || button.dataset.view || "")}</span>
+    <span class="nav-icon" aria-hidden="true">${navIcon(button.dataset.icon || button.dataset.view || "")}</span>
     <span class="nav-label">${escapeHTML(label)}</span>
     ${badge ? `<span class="${escapeHTML(badgeClass)}">${escapeHTML(badge)}</span>` : ""}
   `;
@@ -734,29 +337,11 @@ function updateSidebarToggle() {
   sidebarToggle.setAttribute("title", label);
   sidebarToggle.setAttribute("aria-pressed", sidebarCollapsed ? "true" : "false");
   sidebarToggle.setAttribute("aria-expanded", expanded ? "true" : "false");
+  updateSidebarToggleIcon();
 }
 
-function navButtonIcon(kind) {
-  switch (String(kind || "").trim().toLowerCase()) {
-    case "overview":
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 12h7V4H4v8Zm9 8h7v-6h-7v6Zm0-10h7V4h-7v6ZM4 20h7v-4H4v4Z"></path></svg>`;
-    case "workflows":
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="6" cy="6" r="2"></circle><circle cx="18" cy="6" r="2"></circle><circle cx="6" cy="18" r="2"></circle><path d="M8 6h8M6 8v8M8 18h8"></path></svg>`;
-    case "catalog":
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M5 4h10l4 4v12H5z"></path><path d="M15 4v4h4"></path><path d="M8 12h8M8 16h6"></path></svg>`;
-    case "playground":
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6v12l10-6-10-6Z"></path><path d="M4 6h1M4 12h1M4 18h1"></path></svg>`;
-    case "approvals":
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7 4v5c0 4.2-2.5 8.1-7 9-4.5-.9-7-4.8-7-9V7l7-4Z"></path><path d="m9.5 12 1.7 1.7 3.8-4"></path></svg>`;
-    case "status":
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M4 19h16"></path><path d="M7 16V8"></path><path d="M12 16V5"></path><path d="M17 16v-4"></path></svg>`;
-    case "memory":
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M7 7a5 5 0 0 1 10 0v9H7V7Z"></path><path d="M9 16v2a3 3 0 0 0 6 0v-2"></path><path d="M10 10h4M10 13h4"></path></svg>`;
-    case "workspace":
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7.5 12 4l9 3.5V19l-9 3-9-3V7.5Z"></path><path d="M12 4v18"></path><path d="m3 7.5 9 3 9-3"></path></svg>`;
-    case "settings":
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="3"></circle><path d="M19.4 15a1.7 1.7 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.8-.3 1.7 1.7 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.2a1.7 1.7 0 0 0-1-1.5 1.7 1.7 0 0 0-1.8.3l-.1.1a2 2 0 0 1-2.8-2.8l.1-.1a1.7 1.7 0 0 0 .3-1.8 1.7 1.7 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.2a1.7 1.7 0 0 0 1.5-1 1.7 1.7 0 0 0-.3-1.8l-.1-.1a2 2 0 0 1 2.8-2.8l.1.1a1.7 1.7 0 0 0 1.8.3h.1a1.7 1.7 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.2a1.7 1.7 0 0 0 1 1.5h.1a1.7 1.7 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.7 1.7 0 0 0-.3 1.8v.1a1.7 1.7 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.2a1.7 1.7 0 0 0-1.5 1Z"></path></svg>`;
-    default:
-      return `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="9"></circle><path d="M12 8v4l2.5 2.5"></path></svg>`;
-  }
+function updateSidebarToggleIcon() {
+  const mark = sidebarToggle?.querySelector(".sidebar-toggle-icon");
+  if (!mark) return;
+  mark.innerHTML = icon(sidebarCollapsed ? "chevrons-right" : "panel-left");
 }

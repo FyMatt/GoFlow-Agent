@@ -1,6 +1,28 @@
 # 工作流图
 
+报告阶段可显式设置 `params.verify_evidence_hashes: "true"`，配合 `retry.max_attempts: 2`。执行器会拒绝长度错误或未获当前运行成功采集结果支持的内联 SHA-256 主张，并仅重试报告节点，把失败原因反馈给模型。无内联哈希而引用证据索引时不加载历史正文。安全评估与事件调查的最终报告已启用此检查；旧资源默认不变。
+
+该检查针对 SHA-256 形式的长十六进制值及带 SHA256 标签的值；SSH 的 Base64 主机指纹须与实际采集元数据一致。持久化到对象存储的采集结果按需回读，只保留哈希元数据参与校验。不验证全部自然语言事实、文件与哈希的语义配对或采集后文件是否改变。报告仍须保留来源、采集时间和覆盖限制，无法核实的值应引用索引而非补猜。
+
+复杂项目交付在初次验证和修复后复验之后均设置本地质量分流：缺少实际检查命令、失败或未知的验证会直接进入修复或最终质量门；有通过证据才调用独立审计。整个流程保留一次修复闭环，仍未解决的问题以阻塞状态和最终报告交付，不会无限重试。最终报告禁用工具，并启用上述哈希校验。
+
+修复节点取得批准计划，按原任务授权修复具体阻塞项和未完成产物，不重复执行初次实施的已关闭分片调度。既有测试断言仍受保护；初次实施的依赖调度和复验门禁保留。格式检查不能只看退出码：`gofmt -l` 列出文件即未通过。race 环境限制只能豁免对应检查，不能把明确失败的整份报告改判通过。
+
+变更分片中的 `mode` 描述未来实施操作，不是规划节点当前的权限。规划仍只读；存在后续必需修改时，完整计划必须声明相应的 `write` 分片，不能只交一个查找分片。未实施的写入分片会使当前实施阶段保持可继续状态，而不会直接进入验证。续跑保留分片合同和实际进度；未结束检查点里的失败记录仍保留，但不会锁死后续修补。
+
+运行页会显示实际最终报告，不把产物说明当作正文。文本文件变更显示文件路径与新增、删除行数；进程启动结果提供经过校验的预览网址，停止后明确标注不可预览。需要任务结束后继续浏览时，请明确要求保留服务运行。运行总计与用量图表使用持久化模型用量账本，不依赖显示时间线的保留条数。
+
 [English](./workflows.md) | [简体中文](./workflows.zh-CN.md)
+
+## 运行质量与恢复
+
+`plan-implement-audit` 在初始门禁失败后，先记录修订说明，再执行一次有界修复、复测、复审和最终门禁。再次失败不会跳回修复造成无限循环；允许输出最终报告也不代表质量通过。
+
+计划明确列出的样式、模板和测试文件都必须保留在切片中，不能因为存在根目录源码而忽略其余目标。精确补丁零匹配表示零写入，不能把旧项目的冒烟测试通过当成本次需求完成。审计复用真实命令结果并进行有界只读检查，未请求的既有风险单列提示。
+
+“继续执行”保留同一运行的上下文、已完成动作与工具结果；“重试运行”创建新尝试。已有阶段的完成时间不应随后续检查点反复变化，尚未完成的阶段不应写入完成时间。新模板与技能主要作用于新运行，不能期待固定历史资源的旧运行自动获得全部修复。
+
+日常启停、预览实例管理和清理边界见[本机操作与维护](./local-operations.zh-CN.md)。
 
 GoFlow 支持两类工作流：
 
@@ -25,7 +47,6 @@ GoFlow 支持两类工作流：
 完整案例：
 
 - `examples/extension-workflow`：紧凑的 Python MCP server、只读 Agent、自定义 Skill 和图工作流示例。
-- `examples/binary-analysis-kit`：更完整的 materialized kit 示例，工作流会把 Team 上下文传给计划 Skill，再经过 Policy Gate，最后进入报告或修订分支。
 
 ## 创建与运行
 
@@ -68,15 +89,10 @@ Studio 可以：
 - 保存到 `workflows/<name>/workflow.yaml`。
 - 运行 workflow 并显示 stage、token、approval、artifact、diff 和事件流。
 
-Workflow Studio 有两种编辑模式：
-
-- **简洁模式** 是默认模式，面向普通用户。它把界面集中在画布、起步模板、
-  任务卡片、资源选择、常用输入输出预设和可视化走向配置上；高级配置分区、
-  原始路由映射、上下文契约、执行顺序细节和运行调试面板默认隐藏。
-- **专家模式** 会记住用户选择，面向开发者和进阶操作者。它恢复完整节点库、
-  全部配置分区、原始参数、routes/cases 映射、上下文契约、输入输出映射、
-  执行顺序预览和运行诊断。它不会改变 workflow schema，只是把同一套图模型的
-  更多字段暴露出来。
+Workflow Studio 只有一个面向任务的编辑界面。画布、紧凑节点面板、校验、
+测试运行和属性检查器保持在主路径中；不常用字段通过当前编辑器里的折叠区
+逐步展开，不需要全局模式切换。选中对应节点后，已有工作流仍可访问完整字段，
+复杂能力不会因为界面简化而丢失。
 
 为了让右侧节点配置面板更容易上手，Studio 现在还支持：
 - 在“节点元数据”里直接套用默认配置或示例配置到当前节点。
@@ -157,7 +173,7 @@ Web Studio 会从 `/api/workflow-options` 读取节点字段元数据。配置�
 | `skill` | 指定这个阶段使用哪个可复用流程 | `execution-plan`、`code-writing`、`code-audit`、`web-vulnerability-research` |
 | `tool` | 给 tool 节点指定优先工具提示 | `file_tools/write_file`、`web_tools/fetch_page_assets`、`python_notes/binary_strings` |
 | `input` | 把上游输出映射成本阶段输入 | `plan: stages.plan.outputs.plan`、`target: workflow.input` |
-| `outputs` | 给下游发布稳定变量名 | `summary: result.summary`、`report: result.output`、`findings: result.findings` |
+| `outputs` | 给下游发布稳定变量名 | `summary: result.summary`、`report: result.output`、`findings: result.findings`、`decision: result.first_line` |
 | `params` | 节点参数、团队名、规则名、表单字段、输出契约 | `team: software-task-team`、`rule: risk_at_least`、`fields: target:string:Target:required` |
 | `artifacts` | 声明报告、证据、diff 等可回放产物 | `name: audit-report, kind: report, ref: result.output` |
 | `acceptance_criteria` | 给质量门禁和回放声明验收检查 | `name: has-risk, ref: result.output, contains: risk` |
@@ -172,7 +188,7 @@ Web Studio 会从 `/api/workflow-options` 读取节点字段元数据。配置�
 - `stages.<stage>.outputs.<name>`：上游阶段声明的输出。
 - `stages.<stage>.output_values.<name>`：可用时保留 JSON 类型的上游输出。
 - `stages.<stage>.result.output`：兼容旧图的上游原始输出。
-- `result.output`、`result.summary`、`result.findings`、`result.tool_results`、`result.changes`、`result.verification`：当前执行阶段可用于 `outputs`、artifact 和验收条件的结果引用。
+- `result.output`、`result.first_line`、`result.summary`、`result.findings`、`result.tool_results`、`result.changes`、`result.verification`：当前执行阶段可用于 `outputs`、artifact 和验收条件的结果引用。`result.first_line` 是第一行，可用 `equals` 检查机器可读的整体结论。
 
 推荐写法：
 
@@ -529,21 +545,33 @@ next: [next-stage]
 
 ### `tool`
 
-用于强提示某个阶段优先使用某个 MCP 工具。注意：`tool` 只是提示和元数据，不会绕过 Agent 权限。
+使用 `tool_mode: connected` 可以把一个 MCP 工具连接在两个带模型的节点之间。上游智能体会拿到该工具的完整输入 Schema，生成结构化参数，并在自身权限与审批策略下执行；工具节点不再调用第二次模型，只发布 `tool_result`、`tool_results`、`artifact_ref` 和 `artifact_hash` 给下游。
 
 ```yaml
-- name: write-report
-  node_type: tool
+- name: plan-report
+  node_type: agent
   agent: fixer
   skill: code-writing
+  next: [write-report]
+- name: write-report
+  node_type: tool
   tool: file_tools/write_file
-  input:
-    report: stages.audit.outputs.audit_report
-  approval: true
+  params:
+    tool_mode: connected
   outputs:
+    tool_result: result.output
     tool_results: result.tool_results
-  next: [end]
+  next: [review]
+- name: review
+  node_type: agent
+  agent: auditor
+  skill: code-audit
+  input:
+    write_result: stages.write-report.outputs.tool_result
+    artifact: stages.write-report.outputs.artifact_ref
 ```
+
+没有设置 `tool_mode: connected` 的旧工具节点继续使用兼容的 assisted 行为，并仍需自己的 `agent` 与 `skill`。
 
 常见工具：
 
@@ -668,6 +696,14 @@ next: [next-stage]
 ```
 
 建议上游执行节点声明 `acceptance_criteria` 和 `artifacts`，否则质量门禁只能基于有限上下文判断。
+
+`require_verification: "true"` 的旧工作流未声明模式时，默认采用 `verification_mode: command`，要求实际执行成功的测试、构建或静态检查命令，报告中的“已通过”不能替代执行证据。其他领域可显式声明 `verification_mode: tool`，并用 `verification_tools` 列出逗号分隔的验证工具；`required_tools` 会增加必需工具。每个工具都必须有成功完成的调用、调用 ID，以及返回内容或持久化证据。`botany/check_specimen` 等限定名称保留服务端身份；此模式不要求软件测试命令。声明验证工具不会授予调用权限。
+
+执行阶段能力只由参数启用，与工作流名、领域名无关。`require_workspace_mutation: "true"` 要求本阶段的真实修改证据，模型声称修改的文件名和前一阶段的修改均不能代替。`change_slice_policy` 取 `off`、`required` 或 `if_missing`。`seed_plan_intake: "true"` 显式添加框架规划提示，并以 `resource_helper` 标明来源，不冒充模型或工具证据。`use_change_slice_scheduler: "true"` 要求 `approved_plan_scope: "true"` 和 `approval: true`，仍须用户批准并受原有工具权限限制。布尔能力只接受 `"true"` 或 `"false"`。未配置的阶段不自动补写业务文件、报告、测试、Office 文档或网页样式；资源阶段必须通过获准工具执行所需写入。
+
+请求公开技术文档时，规划与验证可以在 Agent、Skill 和用户授权边界内使用 `web_tools/web_search`、`web_tools/fetch_url`、`web_tools/research_snapshot`，记录来源 URL、产品/版本和抓取时间。明确要求仅本地、离线或仅使用既有证据时不得联网；不得向公共服务上传私有日志、凭据、配置或源码。查询新文档不代表获准扫描目标、访问主机或修改文件。
+
+`verification_any_tools` 可在 `verification_mode: tool` 下声明非空的限定工具名列表（`server/tool`），要求至少一个工具实际成功执行，适合离线文件、网页或 SSH 等替代证据来源。与 `verification_tools` 同时声明时，仍要求全部必需工具加至少一个替代工具成功。采集证据不等于完整领域覆盖，其他质量门禁失败仍然有效；这两个参数都不授予工具访问权限。
 
 ### `parallel` 与 `join`
 
@@ -892,11 +928,11 @@ stages:
 - 框架二开：`framework-extension-team`
 - 通用兜底：`general-worker`
 
-普通模式主要展示需求录入、选中的领域、质量状态和最终交接；专家模式会展开 `active_branches_ref`、`wait_for_ref`、branch contracts、模型路由、上下文预算、artifact refs 和 `team_template_ref`。这样它不是固定跑所有领域，而是用强模型做拆解和质量控制，用低成本 worker 做边界执行，避免为了工程化而浪费 token。用户可以从它开始 fork，再替换其中的领域 worker、团队模板引用、技能、工具或门禁规则。
+任务页面会突出需求录入、选中的领域、质量状态和最终交接；`active_branches_ref`、`wait_for_ref`、branch contracts、模型路由、上下文预算、artifact refs 和 `team_template_ref` 等细节会在对应任务或工作流详情中按需展开。这样不会固定运行所有团队，也能保留拆解、审计和并行执行能力。
 
-`complex-project-delivery` 是复杂实现任务的推荐模板。它会把用户输入先转换为需求分析、功能需求、验收标准和项目计划，并通过检查点等待用户确认。确认后进入可持久运行的交付循环：每轮选择一个计划切片实现、验证、审查并更新计划，直到迭代输出声明 `PROJECT_COMPLETE`。循环结束后会执行整体验证，并输出包含已交付需求、变更文件、验证证据、剩余风险和产物引用的最终完成报告。需要工程化拆分、并行执行、最终汇总的复杂任务，可以使用 `engineering-parallel-delivery`：强模型节点负责任务拆解、汇总和审计，轻量模型节点执行小切片，并用 `model.max_tokens`、`context.max_tokens`、`context.prompt_max_tokens`、`context.request_max_tokens`、`context.inputs_max_tokens`、`context.parameters_max_tokens` 和摘要/产物引用控制 token。边界清晰但仍需要完整交付闭环的任务，可以优先使用 `plan-implement-audit`。
+`complex-project-delivery` 是复杂实现任务的推荐模板。它会生成一次有边界的交付计划并通过检查点等待用户确认，确认后执行精确修改，并行运行测试、构建和静态检查，再由独立审计节点核对需求、Diff 和工具证据。质量门不接受模型自述作为强证据，失败会进入恢复路径。各阶段通过 `context.max_tokens`、`context.prompt_max_tokens`、摘要和产物引用控制上下文。边界清晰但仍需要完整交付闭环的任务，可以优先使用 `plan-implement-audit`。
 
-复杂工程任务建议采用“质量优先的省 token”模式：强模型先拆成有归属边界的小任务，worker 阶段使用 `worker_contract: engineering_v1` 产出稳定 JSON 字段（`summary`、`changed_files`、`evidence`、`verification`、`blockers`、`next_actions`），并把完整报告保存为 artifact；汇总和审计阶段只消费摘要、变更文件、验证结果、阻塞项和 artifact 引用。这样普通用户在普通模式里主要选择模板、资源和预设，二开开发者在专家模式里再调整模型路由、上下文引用、prompt 预算、输出映射、验收条件和运行诊断。
+复杂工程任务建议采用“质量优先的省 token”模式：强模型先拆成有归属边界的小任务，worker 阶段使用 `worker_contract: engineering_v1` 产出稳定 JSON 字段（`summary`、`changed_files`、`evidence`、`verification`、`blockers`、`next_actions`），并把完整报告保存为 artifact；汇总和审计阶段只消费摘要、变更文件、验证结果、阻塞项和 artifact 引用。任务页面默认突出模板、资源、质量状态和最终结果，模型路由、上下文引用、prompt 预算、输出映射、验收条件和运行诊断在相关任务或工作流详情中按需展开。
 
 工作流模板列表会返回可视化选择器需要的构成信息：`node_types`、`agents`、`skills`、`tools`、`team_templates`、`policy_rules`、`has_control_flow`、`has_data_flow`、`has_approval` 和 `has_quality_gate`。Studio 会把这些字段展示成“节点构成、引用资源、能力标签”，让用户在应用模板前就知道它会创建什么、依赖哪些资源、是否包含分支、数据传递、审批或质量门禁。
 
@@ -1022,3 +1058,20 @@ Tool approval 来自 Agent profile 和 tool policy。一个阶段开始后，工
 5. 用 `outputs` 和 `input` 传递关键结果。
 6. 为长任务加入 checkpoint、quality gate 和 retry。
 7. 先用小任务试跑，再放到复杂任务中。
+
+## 循环节点与阶段共用会话
+
+`for_each` 节点重复执行一个 body 阶段，适合逐来源抓取、逐文件检查等隔离场景：
+
+```yaml
+- name: per-source
+  node_type: for_each
+  params:
+    stage: fetch-source
+    items_ref: stages.catalog.outputs.urls
+```
+
+每次迭代使用独立上下文，父阶段只接收 body 阶段的结构化输出。
+
+阶段参数 `share_conversation: "true"` 可让该阶段复用上一阶段的转录（默认关闭）。
+实测在现有阶段结构下会增加输入，仅在明确需要连续上下文时启用。

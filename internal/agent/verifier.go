@@ -61,12 +61,13 @@ func (r *Runtime) maybeRunVerifierPass(ctx context.Context, request string, resu
 	}
 	started := time.Now()
 	chatRequest := schema.ChatRequest{
-		Model:       target.route.Model,
-		System:      verifierSystemPrompt(),
-		Messages:    []schema.Message{{Role: "user", Content: buildVerifierPrompt(request, *result)}},
-		Tools:       nil,
-		Temperature: target.profile.Temperature,
-		MaxTokens:   r.cfg.Verifier.MaxTokens,
+		Model:           target.route.Model,
+		System:          verifierSystemPrompt(),
+		Messages:        []schema.Message{{Role: "user", Content: buildVerifierPrompt(request, *result)}},
+		Tools:           nil,
+		Temperature:     target.profile.Temperature,
+		MaxTokens:       r.cfg.Verifier.MaxTokens,
+		ReasoningEffort: runControlsFromContext(ctx, r).ReasoningEffort,
 	}
 	emitPromptBudget(handler, r.session, verifierID, target.mode, chatRequest, nil, 0)
 	resp, err := target.llm.Chat(ctx, chatRequest)
@@ -79,7 +80,7 @@ func (r *Runtime) maybeRunVerifierPass(ctx context.Context, request string, resu
 		}
 		return nil
 	}
-	emitTokenUsage(handler, r.session, verifierID, "audit", resp.Usage)
+	emitTokenUsage(handler, r.session, verifierID, "audit", resp)
 	verificationText := strings.TrimSpace(resp.Message.Content)
 	if verificationText == "" {
 		return nil
@@ -89,7 +90,7 @@ func (r *Runtime) maybeRunVerifierPass(ctx context.Context, request string, resu
 		_ = handler(schema.StreamEvent{Type: schema.StreamEventText, Content: "\n\n" + block, AgentID: verifierID, Mode: "audit"})
 	}
 	result.Output = strings.TrimSpace(result.Output) + "\n\n" + block
-	result.Verification = append(result.Verification, schema.Verification{Kind: "verifier", Status: inferVerifierStatus(verificationText), Detail: verificationText})
+	result.Verification = append(result.Verification, schema.Verification{Kind: "verifier", Status: VerifierStatus(verificationText), Detail: verificationText})
 	result.Structured = append(result.Structured, schema.StructuredSection{Title: "Verifier", Kind: "verification", Summary: verificationText})
 	if r.audit != nil {
 		r.audit.Record(schema.AuditEntry{Type: "verifier_pass", AgentID: verifierID, Outcome: "completed", Detail: verificationText, DurationMs: time.Since(started).Milliseconds(), PromptTokens: resp.Usage.PromptTokens, OutputTokens: resp.Usage.OutputTokens, CachedTokens: resp.Usage.CachedTokens})
@@ -120,7 +121,7 @@ func (r *Runtime) effectiveVerifierTarget() (verifierTarget, bool) {
 		return verifierTarget{}, false
 	}
 	agentID := strings.TrimSpace(r.cfg.Verifier.Agent)
-	runner, ok := r.runners[agentID]
+	runner, ok := r.agentRunner(agentID)
 	if !ok {
 		return verifierTarget{}, false
 	}
@@ -211,6 +212,9 @@ func buildVerifierPrompt(request string, result schema.AgentResult) string {
 			}
 			fmt.Fprintf(&b, "- %s (%s): %s\n", toolResult.ToolName, status, truncateSummary(toolResult.Content))
 		}
+		b.WriteString("\nRecent detailed tool evidence (bounded; omitted content is not evidence of failure):\n")
+		b.WriteString(workflowGraphPreservedToolObservations(result.ToolResults))
+		b.WriteString("\n")
 	}
 	b.WriteString("\nReturn exactly this compact structure:\n")
 	b.WriteString("Status: pass | warn | fail\n")
@@ -233,7 +237,29 @@ func formatVerifierBlock(content string) string {
 	return "Verification pass:\n" + strings.TrimSpace(content)
 }
 
-func inferVerifierStatus(content string) string {
+// VerifierStatus honors explicit verdicts rather than treating the Risks label
+// itself as a warning. Multiple contradictory verdicts use the stricter one.
+func VerifierStatus(content string) string {
+	explicit := ""
+	for _, line := range strings.Split(content, "\n") {
+		line = strings.ToLower(strings.TrimSpace(line))
+		if !strings.HasPrefix(line, "status:") {
+			continue
+		}
+		switch strings.TrimSpace(strings.TrimPrefix(line, "status:")) {
+		case "fail", "failed":
+			return "failed"
+		case "warn", "warning":
+			explicit = "warning"
+		case "pass", "passed":
+			if explicit == "" {
+				explicit = "passed"
+			}
+		}
+	}
+	if explicit != "" {
+		return explicit
+	}
 	lower := strings.ToLower(content)
 	switch {
 	case strings.Contains(lower, "status: fail"), strings.Contains(lower, "failed"), strings.Contains(lower, "blocker"), strings.Contains(lower, "critical"):

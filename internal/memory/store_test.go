@@ -3,10 +3,177 @@ package memory
 import (
 	"context"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestRebuildFilesRespectsGitIgnoreAndIncludesUntrackedFiles(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{
+		"tracked.txt":   "tracked",
+		"untracked.txt": "untracked",
+		"ignored.log":   "ignored",
+		"local.tmp":     "local-only",
+		".gitignore":    "*.log\n",
+		".goflowignore": "*.tmp\n",
+	} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	for _, args := range [][]string{{"init"}, {"add", "tracked.txt", ".gitignore", ".goflowignore"}} {
+		command := exec.Command("git", args...)
+		command.Dir = root
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v output=%s", args, err, output)
+		}
+	}
+	store := NewStore(root)
+	index, err := store.RebuildFiles(context.Background())
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	paths := make(map[string]bool)
+	for _, item := range index.Files {
+		paths[item.Path] = true
+	}
+	if !paths["tracked.txt"] || !paths["untracked.txt"] || !paths[".gitignore"] {
+		t.Fatalf("expected tracked and untracked files, got %#v", paths)
+	}
+	if paths["ignored.log"] {
+		t.Fatalf("ignored file was indexed: %#v", paths)
+	}
+	if paths["local.tmp"] {
+		t.Fatalf(".goflowignore file was indexed: %#v", paths)
+	}
+}
+
+func TestRebuildFilesNonGitFallbackRespectsGoFlowIgnore(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".goflowignore"), []byte("generated/\n*.cache\n"), 0o644); err != nil {
+		t.Fatalf("write ignore: %v", err)
+	}
+	if err := os.MkdirAll(filepath.Join(root, "generated"), 0o755); err != nil {
+		t.Fatalf("mkdir generated: %v", err)
+	}
+	for name, content := range map[string]string{"keep.txt": "keep", "skip.cache": "skip", "generated/out.txt": "skip"} {
+		if err := os.WriteFile(filepath.Join(root, filepath.FromSlash(name)), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	index, err := NewStore(root).RebuildFiles(context.Background())
+	if err != nil {
+		t.Fatalf("rebuild: %v", err)
+	}
+	paths := make(map[string]bool)
+	for _, item := range index.Files {
+		paths[item.Path] = true
+	}
+	if !paths["keep.txt"] || paths["skip.cache"] || paths["generated/out.txt"] {
+		t.Fatalf("unexpected fallback index %#v", paths)
+	}
+}
+
+func TestRebuildFilesFallsBackForIgnoredNestedWorkspace(t *testing.T) {
+	repository := t.TempDir()
+	for _, args := range [][]string{{"init"}} {
+		command := exec.Command("git", args...)
+		command.Dir = repository
+		if output, err := command.CombinedOutput(); err != nil {
+			t.Skipf("git is unavailable: %v (%s)", err, output)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(repository, ".gitignore"), []byte("workspace/\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	workspace := filepath.Join(repository, "workspace")
+	if err := os.MkdirAll(workspace, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "main.go"), []byte("package main\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	index, err := NewStore(workspace).RebuildFiles(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(index.Files) != 1 || index.Files[0].Path != "main.go" {
+		t.Fatalf("ignored nested workspace was not indexed: %#v", index.Files)
+	}
+}
+
+func TestEnsureFreshFileIndexConsumesDirtyMarker(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "before.txt"), []byte("before"), 0o644); err != nil {
+		t.Fatalf("write initial file: %v", err)
+	}
+	store := NewStore(root)
+	if _, err := store.RebuildFiles(context.Background()); err != nil {
+		t.Fatalf("initial rebuild: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "after.txt"), []byte("after"), 0o644); err != nil {
+		t.Fatalf("write changed file: %v", err)
+	}
+	dirty := filepath.Join(root, fileIndexDirtyRelativePath)
+	if err := os.WriteFile(dirty, []byte("file_tools\n"), 0o644); err != nil {
+		t.Fatalf("write dirty marker: %v", err)
+	}
+	index, rebuilt, err := store.EnsureFreshFileIndex(context.Background())
+	if err != nil || !rebuilt {
+		t.Fatalf("refresh dirty index: rebuilt=%t err=%v", rebuilt, err)
+	}
+	if _, err := os.Stat(dirty); !os.IsNotExist(err) {
+		t.Fatalf("dirty marker was not consumed: %v", err)
+	}
+	found := false
+	for _, item := range index.Files {
+		found = found || item.Path == "after.txt"
+	}
+	if !found {
+		t.Fatalf("refreshed index missing changed file: %#v", index.Files)
+	}
+}
+
+func TestEnsureFreshFileIndexAppliesChangedPathsIncrementally(t *testing.T) {
+	root := t.TempDir()
+	for name, content := range map[string]string{"a.go": "package a\n", "b.go": "package b\n"} {
+		if err := os.WriteFile(filepath.Join(root, name), []byte(content), 0o644); err != nil {
+			t.Fatalf("write %s: %v", name, err)
+		}
+	}
+	store := NewStore(root)
+	initial, err := store.RebuildFiles(context.Background())
+	if err != nil || len(initial.Files) != 2 {
+		t.Fatalf("initial rebuild: index=%#v err=%v", initial, err)
+	}
+	oldA, _ := fileSummaryByPath(initial, "a.go")
+	oldB, _ := fileSummaryByPath(initial, "b.go")
+	if err := os.WriteFile(filepath.Join(root, "a.go"), []byte("package a\n\nfunc Changed() {}\n"), 0o644); err != nil {
+		t.Fatalf("change a.go: %v", err)
+	}
+	dirty := filepath.Join(root, fileIndexDirtyRelativePath)
+	if err := os.WriteFile(dirty, []byte("a.go\n"), 0o644); err != nil {
+		t.Fatalf("write dirty paths: %v", err)
+	}
+	updated, rebuilt, err := store.EnsureFreshFileIndex(context.Background())
+	if err != nil || !rebuilt {
+		t.Fatalf("incremental refresh: rebuilt=%t err=%v", rebuilt, err)
+	}
+	newA, _ := fileSummaryByPath(updated, "a.go")
+	newB, _ := fileSummaryByPath(updated, "b.go")
+	if newA.Hash == "" || newA.Hash == oldA.Hash {
+		t.Fatalf("a.go was not refreshed: %#v", newA)
+	}
+	if newB.Hash != oldB.Hash {
+		t.Fatalf("unrelated b.go changed during incremental refresh: before=%#v after=%#v", oldB, newB)
+	}
+	if _, err := os.Stat(dirty); !os.IsNotExist(err) {
+		t.Fatalf("dirty marker was not consumed: %v", err)
+	}
+}
 
 func TestStoreProjectTaskSearchAndDashboard(t *testing.T) {
 	root := t.TempDir()
@@ -69,6 +236,12 @@ func TestStoreRebuildFilesIndexesSummaries(t *testing.T) {
 	}
 	if err := os.WriteFile(filepath.Join(root, ".goflow", "session.json"), []byte("{}"), 0o644); err != nil {
 		t.Fatalf("WriteFile .goflow: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("API_KEY=workspace-secret\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile .env: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "deploy.key"), []byte("private-key-material\n"), 0o600); err != nil {
+		t.Fatalf("WriteFile deploy.key: %v", err)
 	}
 	store := NewStore(root)
 	index, err := store.RebuildFiles(context.Background())

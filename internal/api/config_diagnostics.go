@@ -8,7 +8,6 @@ import (
 	"reflect"
 	"regexp"
 	"sort"
-	"strconv"
 	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
@@ -20,6 +19,7 @@ type configDiagnosticsResponse struct {
 	Status          string                  `json:"status"`
 	ConfigPath      string                  `json:"config_path,omitempty"`
 	RuntimeHome     string                  `json:"runtime_home,omitempty"`
+	DataRoot        string                  `json:"data_root,omitempty"`
 	WorkspaceRoot   string                  `json:"workspace_root,omitempty"`
 	RestartRequired bool                    `json:"restart_required,omitempty"`
 	Apply           configApplySummary      `json:"apply"`
@@ -111,6 +111,7 @@ func ConfigDiagnostics(runtimeRef *agent.Runtime, workspaceState interface{ Root
 		return resp
 	}
 	resp.RuntimeHome = runtimeRef.RuntimeHome()
+	resp.DataRoot = runtimeRef.DataRoot()
 	resp.ConfigPath = runtimeRef.ConfigPath()
 	resp.WorkspaceRoot = runtimeRef.WorkspaceRoot()
 	if strings.TrimSpace(resp.ConfigPath) == "" && strings.TrimSpace(resp.RuntimeHome) != "" {
@@ -126,7 +127,7 @@ func ConfigDiagnostics(runtimeRef *agent.Runtime, workspaceState interface{ Root
 			resp.WorkspaceRoot = cwd
 		}
 	}
-	resp.Modules = configModuleSummaries(resp.RuntimeHome)
+	resp.Modules = configModuleSummaries(resp.RuntimeHome, resp.DataRoot)
 	resp.inspectModuleFiles()
 	cfg, err := config.LoadForWorkspace(resp.ConfigPath, resp.WorkspaceRoot)
 	if err != nil {
@@ -157,7 +158,7 @@ func ConfigDiagnostics(runtimeRef *agent.Runtime, workspaceState interface{ Root
 	return resp
 }
 
-func configModuleSummaries(runtimeHome string) []configModuleSummary {
+func configModuleSummaries(runtimeHome, dataRoot string) []configModuleSummary {
 	if strings.TrimSpace(runtimeHome) == "" {
 		return nil
 	}
@@ -187,6 +188,23 @@ func configModuleSummaries(runtimeHome string) []configModuleSummary {
 	for _, item := range kinds {
 		files := listConfigModuleFiles(item.path, item.manifest, item.extensions...)
 		out = append(out, configModuleSummary{Kind: item.kind, Root: item.path, Files: files})
+	}
+	if strings.TrimSpace(dataRoot) != "" && !sameAPIPath(runtimeHome, dataRoot) {
+		userKinds := []struct {
+			kind     string
+			path     string
+			manifest string
+		}{
+			{kind: "user_providers", path: filepath.Join(dataRoot, "resources", "providers")},
+			{kind: "user_agents", path: filepath.Join(dataRoot, "resources", "agents")},
+			{kind: "user_mcp", path: filepath.Join(dataRoot, "resources", "mcp")},
+			{kind: "user_workflows", path: filepath.Join(dataRoot, "resources", "workflows"), manifest: "workflow.yaml"},
+			{kind: "user_skills", path: filepath.Join(dataRoot, "resources", "skills"), manifest: "SKILL.md"},
+		}
+		for _, item := range userKinds {
+			files := listConfigModuleFiles(item.path, item.manifest)
+			out = append(out, configModuleSummary{Kind: item.kind, Root: item.path, Files: files})
+		}
 	}
 	return out
 }
@@ -642,51 +660,35 @@ var configLoadDiagnosticPatterns = []struct {
 	},
 	{
 		code:           "mcp_isolation_invalid",
-		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation "[^"]+" is invalid; expected none, process_group, windows_job, windows_restricted_token, linux_cgroup, linux_netns, or container$`),
+		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation "[^"]+" is invalid; expected auto, native_strong, process_group, windows_job, windows_restricted_token, linux_cgroup, or linux_netns$`),
 		targetKind:     "mcp_server",
 		targetGroup:    1,
 		field:          "isolation",
-		recommendation: "set isolation to none, process_group, windows_job, windows_restricted_token, linux_cgroup, linux_netns, or container",
+		recommendation: "set isolation to auto, native_strong, process_group, windows_job, windows_restricted_token, linux_cgroup, linux_netns, or a trusted built-in boundary",
 	},
 	{
-		code:           "mcp_windows_appcontainer_unimplemented",
-		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation "[^"]+" is not supported; use isolation: container for the supported Docker/Podman sandbox boundary$`),
+		code:           "mcp_native_isolation_internal",
+		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation "[^"]+" is managed internally; use isolation: auto or native_strong$`),
 		targetKind:     "mcp_server",
 		targetGroup:    1,
 		field:          "isolation",
-		recommendation: "use isolation: container for the supported enforceable sandbox boundary; AppContainer-like values are intentionally rejected",
+		recommendation: "set isolation to auto; use native_strong only when the host capability probe succeeds",
 	},
 	{
 		code:           "mcp_isolation_options_unsupported",
-		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation_options are only supported with linux_cgroup, linux_netns, or container$`),
+		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation_options are only supported with linux_cgroup or linux_netns$`),
 		targetKind:     "mcp_server",
 		targetGroup:    1,
 		field:          "isolation_options",
-		recommendation: "remove isolation_options or switch isolation to linux_cgroup, linux_netns, or container",
+		recommendation: "remove isolation_options or switch isolation to linux_cgroup or linux_netns",
 	},
 	{
-		code:           "mcp_container_image_missing",
-		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation container requires isolation_options\.image$|^mcp server ([^\s]+) isolation_options\.image is required for container isolation$`),
+		code:           "mcp_container_isolation_removed",
+		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation "container" has been removed; use isolation: auto or native_strong$`),
 		targetKind:     "mcp_server",
 		targetGroup:    1,
-		field:          "isolation_options.image",
-		recommendation: "set isolation_options.image to a trusted, version-pinned Docker/Podman image",
-	},
-	{
-		code:           "mcp_container_network_conflict",
-		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation_options\.network conflicts with network_disabled; use disabled/none or clear network_disabled$`),
-		targetKind:     "mcp_server",
-		targetGroup:    1,
-		field:          "isolation_options.network",
-		recommendation: "set isolation_options.network to disabled/none when network_disabled is true, or clear network_disabled for an explicitly networked container",
-	},
-	{
-		code:           "mcp_container_option_invalid",
-		pattern:        regexp.MustCompile(`^mcp server ([^\s]+) isolation_options\.([^\s]+) is invalid`),
-		targetKind:     "mcp_server",
-		targetGroup:    1,
-		field:          "isolation_options",
-		recommendation: "fix the invalid isolation_options field according to the container, linux_cgroup, or linux_netns option schema",
+		field:          "isolation",
+		recommendation: "replace the removed mode with isolation: auto; GoFlow will choose the available native boundary",
 	},
 }
 
@@ -702,15 +704,7 @@ func (r *configDiagnosticsResponse) addConfigLoadFailureDiagnostics(err error, p
 			continue
 		}
 		target := patternMatchGroup(matches, item.targetGroup)
-		if target == "" && item.code == "mcp_container_image_missing" {
-			target = patternMatchGroup(matches, 2)
-		}
 		field := item.field
-		if item.code == "mcp_container_option_invalid" {
-			if option := patternMatchGroup(matches, 2); option != "" {
-				field = "isolation_options." + option
-			}
-		}
 		r.addDiagnosticFor("error", item.code, message, path, item.targetKind, target, field, item.recommendation)
 		return
 	}
@@ -804,7 +798,7 @@ func (r *configDiagnosticsResponse) checkToolRiskPolicyDiagnostics(cfg *config.C
 		r.addDiagnosticFor("warning", "tool_risk_policy_remember_allowed", "tool_risk_policy requires approval for unsandboxed risky tools but still allows approve-and-remember", "", "tool_risk_policy", "tool_risk_policy", "disable_remember_for_unsandboxed_risky_tools", "set disable_remember_for_unsandboxed_risky_tools: true when approve-and-remember should not persist approval for unsandboxed risky tools")
 	}
 	if policy.RejectUnsandboxedRiskyTools {
-		r.addDiagnosticFor("warning", "tool_risk_policy_reject_unsandboxed", "tool_risk_policy rejects unsandboxed risky tools before execution", "", "tool_risk_policy", "tool_risk_policy", "reject_unsandboxed_risky_tools", "enable this only for deployments that require enforced sandbox boundaries such as container, or linux_netns for network-only tools")
+		r.addDiagnosticFor("warning", "tool_risk_policy_reject_unsandboxed", "tool_risk_policy rejects unsandboxed risky tools before execution", "", "tool_risk_policy", "tool_risk_policy", "reject_unsandboxed_risky_tools", "enable this only when native_strong is available, or linux_netns is sufficient for network-only tools")
 	}
 	for _, server := range cfg.MCP {
 		if !server.Enabled {
@@ -819,16 +813,16 @@ func (r *configDiagnosticsResponse) checkToolRiskPolicyDiagnostics(cfg *config.C
 			isolation = "none"
 		}
 		switch isolation {
-		case "container":
-			r.addDiagnosticFor("info", "tool_risk_policy_mcp_broad_sandbox", "mcp server "+name+" uses container isolation, which satisfies tool_risk_policy for write, exec, network, and unknown-kind tools", "", "mcp_server", name, "isolation", "still review image provenance, mounts, network mode, and resource limits before trusting the container boundary")
+		case "native_strong":
+			r.addDiagnosticFor("info", "tool_risk_policy_mcp_broad_sandbox", "mcp server "+name+" uses the native strong sandbox, which satisfies the broad tool risk boundary", "", "mcp_server", name, "isolation", "keep the native capability probe and malicious-fixture checks enabled")
 		case "linux_netns":
-			r.addDiagnosticFor("info", "tool_risk_policy_mcp_network_sandbox", "mcp server "+name+" uses linux_netns, which satisfies tool_risk_policy for network-kind tools only", "", "mcp_server", name, "isolation", "linux_netns satisfies tool_risk_policy for network-kind tools only; use isolation: container when this server exposes write, exec, or unknown-kind tools that also need a broad sandbox boundary")
+			r.addDiagnosticFor("info", "tool_risk_policy_mcp_network_sandbox", "mcp server "+name+" uses linux_netns, which satisfies tool_risk_policy for network-kind tools only", "", "mcp_server", name, "isolation", "linux_netns covers network-kind tools only; use native_strong when write, exec, or unknown-kind tools also need a broad boundary")
 		default:
 			message := "tool_risk_policy will treat risky tools from mcp server " + name + " as unsandboxed because isolation " + isolation + " is not a broad sandbox boundary"
-			recommendation := "use isolation: container for a broad enforced boundary, or linux_netns only for network-only tools on Linux"
+			recommendation := "use isolation: auto or native_strong for a broad boundary, or linux_netns only for network-only tools on Linux"
 			if policy.RejectUnsandboxedRiskyTools {
 				message = "tool_risk_policy strict rejection can block risky tools from mcp server " + name + " because isolation " + isolation + " is not a broad sandbox boundary"
-				recommendation = "switch this server to isolation: container before enabling reject_unsandboxed_risky_tools if its tools must run"
+				recommendation = "switch this server to isolation: auto or native_strong before enabling strict rejection"
 			}
 			r.addDiagnosticFor("warning", "tool_risk_policy_mcp_unsandboxed", message, "", "mcp_server", name, "isolation", recommendation)
 		}
@@ -935,10 +929,9 @@ func (r *configDiagnosticsResponse) checkMCPDiagnostics(cfg *config.Config) {
 			name = "unnamed"
 		}
 		isolation := strings.ToLower(strings.TrimSpace(server.Isolation))
-		options := normalizedIsolationOptions(server.IsolationOptions)
-		networkEnforced := (isolation == "container" && containerSummaryNetworkMode(options["network"], server.NetworkDisabled) == "none") || isolation == "linux_netns"
+		networkEnforced := isolation == "native_strong" || isolation == "linux_netns"
 		if server.NetworkDisabled && !networkEnforced {
-			r.addDiagnosticFor("warning", "mcp_network_disabled_advisory", "mcp server "+name+" sets network_disabled; this is an advisory declaration and does not install OS-level network filtering", "", "mcp_server", name, "network_disabled", "use isolation: container with network disabled or isolation: linux_netns when the host supports it to enforce network egress blocking")
+			r.addDiagnosticFor("warning", "mcp_network_disabled_advisory", "mcp server "+name+" sets network_disabled; this is an advisory declaration and does not install OS-level network filtering", "", "mcp_server", name, "network_disabled", "use isolation: auto/native_strong or linux_netns when the host supports it")
 		}
 		if len(sortedTrimmedStrings(server.EnvAllowlist)) == 0 {
 			r.addDiagnosticFor("info", "mcp_env_allowlist_implicit_minimal", "mcp server "+name+" has no env_allowlist; only minimal platform variables plus GOFLOW_WORKSPACE_ROOT are passed to the child process", "", "mcp_server", name, "env_allowlist", "leave env_allowlist empty for maximum isolation, or explicitly add only required names such as PATH, HOME, proxy variables, or runtime cache paths")
@@ -953,102 +946,20 @@ func (r *configDiagnosticsResponse) checkMCPDiagnostics(cfg *config.Config) {
 		}
 		switch isolation {
 		case "", "none":
-			r.addDiagnosticFor("info", "mcp_isolation_none", "mcp server "+name+" has no process isolation adapter configured; workspace/tool policy boundaries still apply", "", "mcp_server", name, "isolation", "use container isolation for untrusted MCP servers, or keep none only for trusted local tools")
+			r.addDiagnosticFor("info", "mcp_isolation_none", "mcp server "+name+" has no process isolation adapter configured; workspace/tool policy boundaries still apply", "", "mcp_server", name, "isolation", "use isolation: auto for untrusted MCP servers, or keep none only for trusted local tools")
 		case "process_group":
-			r.addDiagnosticFor("info", "mcp_isolation_lifecycle_only", "mcp server "+name+" uses process_group lifecycle isolation; this is not a filesystem, network, privilege, or container sandbox", "", "mcp_server", name, "isolation", "use isolation: container when the tool needs a real filesystem or privilege boundary")
+			r.addDiagnosticFor("info", "mcp_isolation_lifecycle_only", "mcp server "+name+" uses process_group lifecycle isolation; this is not a filesystem, network, or privilege sandbox", "", "mcp_server", name, "isolation", "use isolation: auto or native_strong when the tool needs a real boundary")
 		case "windows_job":
-			r.addDiagnosticFor("info", "mcp_isolation_lifecycle_only", "mcp server "+name+" uses windows_job lifecycle isolation; this is not a filesystem, network, privilege, or container sandbox", "", "mcp_server", name, "isolation", "use isolation: container when the tool needs a real filesystem or privilege boundary")
-			r.addDiagnosticFor("info", "mcp_windows_job_lifecycle_only", "mcp server "+name+" uses a Windows Job Object for process-tree cleanup only; restricted tokens are not enabled", "", "mcp_server", name, "isolation", "treat windows_job as lifecycle cleanup only; use isolation: container when the tool needs a real Windows permission boundary")
+			r.addDiagnosticFor("info", "mcp_isolation_lifecycle_only", "mcp server "+name+" uses windows_job lifecycle isolation; this is not a filesystem, network, or privilege sandbox", "", "mcp_server", name, "isolation", "use isolation: auto or native_strong when the tool needs a real boundary")
+			r.addDiagnosticFor("info", "mcp_windows_job_lifecycle_only", "mcp server "+name+" uses a Windows Job Object for process-tree cleanup only; restricted tokens are not enabled", "", "mcp_server", name, "isolation", "use isolation: auto or native_strong when a Windows permission boundary is required")
 		case "windows_restricted_token":
-			r.addDiagnosticFor("info", "mcp_windows_restricted_token", "mcp server "+name+" uses a Windows restricted token with low integrity for privilege reduction plus Job Object lifecycle cleanup", "", "mcp_server", name, "isolation", "treat this as privilege reduction and process-tree cleanup only; use container isolation when filesystem or network boundaries are required")
+			r.addDiagnosticFor("info", "mcp_windows_restricted_token", "mcp server "+name+" uses a Windows restricted token with low integrity for privilege reduction plus Job Object lifecycle cleanup", "", "mcp_server", name, "isolation", "use native_strong when filesystem and network boundaries are also required")
 		case "linux_cgroup":
-			r.addDiagnosticFor("info", "mcp_isolation_resource_only", "mcp server "+name+" uses linux_cgroup resource controls; this does not restrict filesystem access, network access, or privileges", "", "mcp_server", name, "isolation", "combine resource controls with container isolation or another filesystem/network boundary for untrusted tools")
+			r.addDiagnosticFor("info", "mcp_isolation_resource_only", "mcp server "+name+" uses linux_cgroup resource controls; this does not restrict filesystem access, network access, or privileges", "", "mcp_server", name, "isolation", "use native_strong for the full Linux boundary")
 		case "linux_netns":
-			r.addDiagnosticFor("info", "mcp_isolation_network_only", "mcp server "+name+" uses linux_netns network namespace isolation; this restricts network egress but does not restrict filesystem access or privileges", "", "mcp_server", name, "isolation", "combine linux_netns with container isolation or host sandboxing when filesystem or privilege boundaries are required")
+			r.addDiagnosticFor("info", "mcp_isolation_network_only", "mcp server "+name+" uses linux_netns network namespace isolation; this restricts network egress but does not restrict filesystem access or privileges", "", "mcp_server", name, "isolation", "use native_strong when filesystem or privilege boundaries are required")
 		case "container":
-			if networkEnforced {
-				r.addDiagnosticFor("info", "mcp_isolation_container", "mcp server "+name+" uses container isolation with network disabled; effective boundary still depends on image, mounts, runtime policy, and configured resource limits", "", "mcp_server", name, "isolation", "review image provenance, workspace mount mode, resource limits, and capability settings before trusting this boundary")
-			} else {
-				r.addDiagnosticFor("warning", "mcp_isolation_container_network_open", "mcp server "+name+" uses container isolation but network egress is not disabled", "", "mcp_server", name, "isolation_options.network", "set isolation_options.network to disabled or set network_disabled: true unless this tool needs outbound network access")
-			}
-			image := strings.TrimSpace(options["image"])
-			imageReferenceType := containerImageReferenceType(image)
-			imageDetails := map[string]string{
-				"image_reference_type": imageReferenceType,
-				"digest_pinned":        strconv.FormatBool(imageReferenceType == "digest"),
-			}
-			if image != "" {
-				imageDetails["image"] = image
-			}
-			productionProfile := strings.EqualFold(strings.TrimSpace(server.IsolationProfile), "production")
-			if containerImageUsesFloatingTag(image) {
-				r.addDiagnosticForDetails("warning", "mcp_container_image_floating_tag", "mcp server "+name+" container image is not pinned to a stable tag or digest", "", "mcp_server", name, "isolation_options.image", "pin the image to a versioned tag or digest, for example image: repo/tool:1.2.3 or image: repo/tool@sha256:...", imageDetails)
-			} else if image != "" && !containerImageUsesDigestPinning(image) {
-				r.addDiagnosticForDetails("warning", "mcp_container_image_not_digest_pinned", "mcp server "+name+" container image is not pinned by digest", "", "mcp_server", name, "isolation_options.image", "pin the image to an immutable digest for production, for example image: repo/tool@sha256:...", imageDetails)
-			}
-			if productionProfile && image != "" && !containerImageUsesDigestPinning(image) {
-				r.addDiagnosticForDetails("warning", "mcp_container_production_image_not_digest_pinned", "mcp server "+name+" uses the production container profile without a digest-pinned image", "", "mcp_server", name, "isolation_options.image", "production-profile MCP containers should use image@sha256:... references and pre-pulled trusted images", imageDetails)
-			}
-			pullPolicy := strings.ToLower(strings.TrimSpace(options["pull_policy"]))
-			if productionProfile && pullPolicy != "never" {
-				details := cloneStringMap(imageDetails)
-				details["pull_policy"] = pullPolicy
-				if pullPolicy == "" {
-					details["pull_policy"] = "runtime_default"
-				}
-				r.addDiagnosticForDetails("warning", "mcp_container_production_pull_policy_not_never", "mcp server "+name+" uses the production container profile without pull_policy: never", "", "mcp_server", name, "isolation_options.pull_policy", "set isolation_options.pull_policy: never for production-profile MCP containers after pre-pulling trusted digest-pinned images", details)
-			}
-			if strings.EqualFold(containerSummaryNetworkMode(options["network"], server.NetworkDisabled), "host") {
-				r.addDiagnosticFor("warning", "mcp_container_host_network", "mcp server "+name+" container uses host networking", "", "mcp_server", name, "isolation_options.network", "avoid network: host for MCP servers unless the tool explicitly requires host networking and the operator accepts that boundary")
-			}
-			workspaceMount := strings.ToLower(strings.TrimSpace(options["workspace_mount"]))
-			if workspaceMount == "" {
-				workspaceMount = "rw"
-			}
-			if workspaceMount == "rw" || workspaceMount == "readwrite" {
-				r.addDiagnosticFor("warning", "mcp_container_workspace_rw", "mcp server "+name+" mounts the workspace read-write inside the container", "", "mcp_server", name, "isolation_options.workspace_mount", "use workspace_mount: ro for read-only tools, workspace_mount: none when workspace access is unnecessary, or keep rw only for tools that must write files")
-			}
-			if !containerResourceLimitsComplete(options) {
-				r.addDiagnosticFor("warning", "mcp_container_resource_limits_missing", "mcp server "+name+" container resource limits are incomplete", "", "mcp_server", name, "isolation_options", "set isolation_options.memory, isolation_options.memory_swap, isolation_options.cpus, and isolation_options.pids_limit to bound runaway or compromised tool processes")
-			}
-			if strings.TrimSpace(options["pull_policy"]) == "" {
-				r.addDiagnosticFor("info", "mcp_container_pull_policy_missing", "mcp server "+name+" container does not set an image pull policy", "", "mcp_server", name, "isolation_options.pull_policy", "set isolation_options.pull_policy to missing for normal use or never for production environments that pre-pull trusted images")
-			}
-			user := strings.TrimSpace(options["user"])
-			if user == "" && !containerHasWritableMounts(options) {
-				r.addDiagnosticFor("info", "mcp_container_user_missing", "mcp server "+name+" container does not set a non-root user", "", "mcp_server", name, "isolation_options.user", "set isolation_options.user to a non-root UID:GID supported by the image when the MCP server does not need root")
-			} else if user != "" && !containerUserLooksNonRoot(user) {
-				r.addDiagnosticFor("warning", "mcp_container_user_root", "mcp server "+name+" container explicitly runs as root", "", "mcp_server", name, "isolation_options.user", "set isolation_options.user to a non-root UID:GID, or remove the explicit root user only when writable bind mounts require host-compatible permissions")
-			}
-			if !optionEnabled(options["no_new_privileges"]) {
-				r.addDiagnosticFor("info", "mcp_container_no_new_privileges_missing", "mcp server "+name+" container does not set no_new_privileges", "", "mcp_server", name, "isolation_options.no_new_privileges", "set isolation_options.no_new_privileges: true when the MCP server does not need privilege transitions")
-			}
-			if !containerCapDropIncludesAll(options["cap_drop"]) {
-				r.addDiagnosticFor("info", "mcp_container_cap_drop_missing", "mcp server "+name+" container does not drop all Linux capabilities", "", "mcp_server", name, "isolation_options.cap_drop", "set isolation_options.cap_drop: all when the MCP server does not need Linux capabilities")
-			}
-			if !optionEnabled(options["readonly_rootfs"]) {
-				r.addDiagnosticFor("info", "mcp_container_readonly_rootfs_missing", "mcp server "+name+" container root filesystem is not marked read-only", "", "mcp_server", name, "isolation_options.readonly_rootfs", "set isolation_options.readonly_rootfs: true when the image does not need to write outside declared mounts")
-			} else if strings.TrimSpace(options["tmpfs"]) == "" {
-				r.addDiagnosticFor("info", "mcp_container_tmpfs_missing", "mcp server "+name+" container has readonly_rootfs enabled without declared tmpfs scratch paths", "", "mcp_server", name, "isolation_options.tmpfs", "add isolation_options.tmpfs for intentional writable scratch paths such as /tmp:rw,noexec,nosuid,size=64m when the MCP server needs temporary files")
-			}
-			if !optionEnabled(options["init"]) {
-				r.addDiagnosticFor("info", "mcp_container_init_missing", "mcp server "+name+" container does not enable an init process", "", "mcp_server", name, "isolation_options.init", "set isolation_options.init: true when the MCP server may spawn child processes that need reaping")
-			}
-			if !strings.EqualFold(strings.TrimSpace(options["ipc"]), "none") {
-				r.addDiagnosticFor("info", "mcp_container_ipc_not_isolated", "mcp server "+name+" container does not explicitly disable IPC sharing", "", "mcp_server", name, "isolation_options.ipc", "set isolation_options.ipc: none for ordinary MCP tools that do not need shared memory or host IPC")
-			}
-			if !containerUserNamespaceConfigured(options["userns"]) {
-				r.addDiagnosticFor("info", "mcp_container_userns_missing", "mcp server "+name+" container does not configure a user namespace", "", "mcp_server", name, "isolation_options.userns", "set isolation_options.userns: auto or nomap on compatible Docker/Podman runtimes to reduce host UID/GID exposure")
-			}
-			toolSource := strings.TrimSpace(options["tool_source"])
-			toolTarget := strings.TrimSpace(options["tool_target"])
-			if (toolSource == "") != (toolTarget == "") {
-				r.addDiagnosticFor("error", "mcp_container_tool_mount_incomplete", "mcp server "+name+" container tool mount sets only one of tool_source or tool_target", "", "mcp_server", name, "isolation_options.tool_source", "set both isolation_options.tool_source and isolation_options.tool_target, or remove both when no single-tool bind mount is needed")
-			}
-			toolMount := strings.ToLower(strings.TrimSpace(options["tool_mount"]))
-			if toolMount == "rw" || toolMount == "readwrite" {
-				r.addDiagnosticFor("warning", "mcp_container_tool_mount_rw", "mcp server "+name+" mounts the generated tool file read-write inside the container", "", "mcp_server", name, "isolation_options.tool_mount", "use tool_mount: ro for generated MCP tool files unless the container must modify the tool file itself")
-			}
+			r.addDiagnosticFor("error", "mcp_container_isolation_removed", "mcp server "+name+" still uses removed container isolation", "", "mcp_server", name, "isolation", "replace it with isolation: auto or native_strong")
 		}
 	}
 }
@@ -1066,81 +977,6 @@ func shellLikeCommand(command string) bool {
 	default:
 		return false
 	}
-}
-
-func containerImageUsesFloatingTag(image string) bool {
-	return containerImageReferenceType(image) == "floating"
-}
-
-func containerImageUsesDigestPinning(image string) bool {
-	return containerImageReferenceType(image) == "digest"
-}
-
-func containerImageReferenceType(image string) string {
-	image = strings.TrimSpace(image)
-	if image == "" {
-		return "missing"
-	}
-	if strings.Contains(strings.ToLower(image), "@sha256:") {
-		return "digest"
-	}
-	last := image
-	if idx := strings.LastIndex(last, "/"); idx >= 0 {
-		last = last[idx+1:]
-	}
-	tagIndex := strings.LastIndex(last, ":")
-	if tagIndex < 0 || tagIndex == len(last)-1 {
-		return "floating"
-	}
-	if strings.EqualFold(last[tagIndex+1:], "latest") {
-		return "floating"
-	}
-	return "version_tag"
-}
-
-func containerHasWritableMounts(options map[string]string) bool {
-	workspaceMount := strings.ToLower(strings.TrimSpace(options["workspace_mount"]))
-	if workspaceMount == "" {
-		workspaceMount = "rw"
-	}
-	if workspaceMount == "rw" || workspaceMount == "readwrite" {
-		return true
-	}
-	toolMount := strings.ToLower(strings.TrimSpace(options["tool_mount"]))
-	return toolMount == "rw" || toolMount == "readwrite"
-}
-
-func containerResourceLimitsComplete(options map[string]string) bool {
-	return strings.TrimSpace(options["memory"]) != "" &&
-		strings.TrimSpace(options["memory_swap"]) != "" &&
-		strings.TrimSpace(options["cpus"]) != "" &&
-		strings.TrimSpace(options["pids_limit"]) != ""
-}
-
-func containerCapDropIncludesAll(value string) bool {
-	for _, item := range strings.FieldsFunc(value, func(r rune) bool {
-		return r == ',' || r == ';' || r == '\n' || r == '\r' || r == ' ' || r == '\t'
-	}) {
-		if strings.EqualFold(strings.TrimSpace(item), "all") {
-			return true
-		}
-	}
-	return false
-}
-
-func containerUserLooksNonRoot(value string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	user, _, _ := strings.Cut(value, ":")
-	return !containerUserIdentityLooksRoot(user)
-}
-
-func containerUserIdentityLooksRoot(value string) bool {
-	value = strings.ToLower(strings.TrimSpace(value))
-	if value == "" || value == "root" {
-		return true
-	}
-	id, err := strconv.ParseUint(value, 10, 64)
-	return err == nil && id == 0
 }
 
 func (r *configDiagnosticsResponse) checkWorkflowDiagnostics(runtimeRef *agent.Runtime, cfg *config.Config) {
@@ -1311,11 +1147,16 @@ func sameProviderConfig(runtimeRef interface {
 		if !ok {
 			return false
 		}
-		if !reflect.DeepEqual(current, providers[name]) {
+		if !reflect.DeepEqual(normalizedProviderConfigForComparison(current), normalizedProviderConfigForComparison(providers[name])) {
 			return false
 		}
 	}
 	return true
+}
+
+func normalizedProviderConfigForComparison(provider config.LLMConfig) config.LLMConfig {
+	provider.WireAPI = normalizeProviderWireAPI(provider.WireAPI)
+	return provider
 }
 
 func sameAgentConfig(runtimeRef interface {
@@ -1331,11 +1172,19 @@ func sameAgentConfig(runtimeRef interface {
 		if !ok {
 			return false
 		}
-		if !reflect.DeepEqual(current, agents[name]) {
+		if !reflect.DeepEqual(normalizedAgentProfileForComparison(current), normalizedAgentProfileForComparison(agents[name])) {
 			return false
 		}
 	}
 	return true
+}
+
+func normalizedAgentProfileForComparison(profile config.AgentProfile) config.AgentProfile {
+	profile.Kind = strings.ToLower(strings.TrimSpace(profile.Kind))
+	if profile.Kind == "" {
+		profile.Kind = config.AgentKindAgent
+	}
+	return profile
 }
 
 func sameMCPServerConfig(runtimeRef interface {

@@ -1,23 +1,34 @@
 package session
 
 import (
+	"encoding/json"
 	"fmt"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
 const (
-	maxWorkflowRuns      = 20
-	maxWorkflowRunEvents = 200
-	maxWorkflowRunText   = 8192
+	maxWorkflowRuns           = 20
+	maxWorkflowRunEvents      = 200
+	maxWorkflowToolOperations = 360
+	maxWorkflowRunText        = 8192
 )
 
 // WorkflowRunStartOptions carries metadata for a new workflow run.
 type WorkflowRunStartOptions struct {
-	RetryOf string
+	RetryOf         string
+	TargetID        string
+	ScheduleID      string
+	ScheduleJobID   string
+	ResourcePins    []ResourcePin
+	Attachments     []schema.AttachmentRef
+	ReasoningEffort string
+	PermissionMode  string
 }
 
 // StartWorkflowRun creates a bounded, session-persisted workflow run record.
@@ -27,6 +38,26 @@ func (s *State) StartWorkflowRun(name, request string) string {
 
 // StartWorkflowRunWithOptions creates a bounded run record with retry metadata.
 func (s *State) StartWorkflowRunWithOptions(name, request string, opts WorkflowRunStartOptions) string {
+	id, _ := s.StartWorkflowRunWithOptionsDurable(name, request, opts)
+	return id
+}
+
+// StartWorkflowRunWithOptionsDurable persists a new run before its id is
+// exposed to event streams or background-run discovery.
+func (s *State) StartWorkflowRunWithOptionsDurable(name, request string, opts WorkflowRunStartOptions) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	id := s.startWorkflowRunWithOptions(name, request, opts)
+	if id == "" {
+		return "", nil
+	}
+	return id, s.PersistConfigured()
+}
+
+func (s *State) startWorkflowRunWithOptions(name, request string, opts WorkflowRunStartOptions) string {
 	if s == nil {
 		return ""
 	}
@@ -45,14 +76,21 @@ func (s *State) StartWorkflowRunWithOptions(name, request string, opts WorkflowR
 	}
 	id := uniqueWorkflowRunID(s.workflowRuns, name, now)
 	run := WorkflowRunSnapshot{
-		ID:        id,
-		Name:      strings.TrimSpace(name),
-		Status:    "running",
-		Request:   trimWorkflowRunText(request),
-		StartedAt: timestamp,
-		UpdatedAt: timestamp,
-		RetryOf:   retryOf,
-		Attempt:   attempt,
+		ID:              id,
+		Name:            strings.TrimSpace(name),
+		Status:          "running",
+		Request:         trimWorkflowRunText(request),
+		StartedAt:       timestamp,
+		UpdatedAt:       timestamp,
+		RetryOf:         retryOf,
+		TargetID:        normalizeRunTargetID(opts.TargetID),
+		Attempt:         attempt,
+		ScheduleID:      strings.TrimSpace(opts.ScheduleID),
+		ScheduleJobID:   strings.TrimSpace(opts.ScheduleJobID),
+		ResourcePins:    CopyResourcePins(opts.ResourcePins),
+		Attachments:     append([]schema.AttachmentRef(nil), opts.Attachments...),
+		ReasoningEffort: strings.TrimSpace(opts.ReasoningEffort),
+		PermissionMode:  strings.TrimSpace(opts.PermissionMode),
 		Events: []WorkflowRunEventSnapshot{{
 			Seq:            1,
 			At:             timestamp,
@@ -70,16 +108,38 @@ func (s *State) StartWorkflowRunWithOptions(name, request string, opts WorkflowR
 		s.workflowRuns = append([]WorkflowRunSnapshot(nil), s.workflowRuns[:maxWorkflowRuns]...)
 	}
 	s.workflow = WorkflowSnapshot{
-		RunID:   id,
-		Name:    run.Name,
-		Status:  run.Status,
-		Request: run.Request,
+		RunID:        id,
+		Name:         run.Name,
+		Status:       run.Status,
+		Request:      run.Request,
+		TargetID:     run.TargetID,
+		ResourcePins: CopyResourcePins(run.ResourcePins),
 	}
 	return id
 }
 
 // StartWorkflowRunFromSnapshot attaches a run id to an already-suspended workflow snapshot.
 func (s *State) StartWorkflowRunFromSnapshot(snapshot WorkflowSnapshot) string {
+	id, _ := s.StartWorkflowRunFromSnapshotDurable(snapshot)
+	return id
+}
+
+// StartWorkflowRunFromSnapshotDurable persists an attached suspended run
+// before callers publish the resumed run id.
+func (s *State) StartWorkflowRunFromSnapshotDurable(snapshot WorkflowSnapshot) (string, error) {
+	if s == nil {
+		return "", nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	id := s.startWorkflowRunFromSnapshot(snapshot)
+	if id == "" {
+		return "", nil
+	}
+	return id, s.PersistConfigured()
+}
+
+func (s *State) startWorkflowRunFromSnapshot(snapshot WorkflowSnapshot) string {
 	if s == nil {
 		return ""
 	}
@@ -105,6 +165,7 @@ func (s *State) StartWorkflowRunFromSnapshot(snapshot WorkflowSnapshot) string {
 		StartedAt:                timestamp,
 		UpdatedAt:                timestamp,
 		Attempt:                  1,
+		TargetID:                 normalizeRunTargetID(snapshot.TargetID),
 		NextStage:                strings.TrimSpace(snapshot.NextStage),
 		Summary:                  trimWorkflowRunText(snapshot.Summary),
 		ApprovalPrompt:           trimWorkflowRunText(snapshot.LastApproval),
@@ -122,6 +183,7 @@ func (s *State) StartWorkflowRunFromSnapshot(snapshot WorkflowSnapshot) string {
 		PendingSubWorkflowName:   strings.TrimSpace(snapshot.PendingSubWorkflowName),
 		PendingSubWorkflowRunID:  strings.TrimSpace(snapshot.PendingSubWorkflowRunID),
 		PendingSubWorkflowStatus: strings.TrimSpace(snapshot.PendingSubWorkflowStatus),
+		ResourcePins:             CopyResourcePins(snapshot.ResourcePins),
 	}
 	run = normalizeWorkflowRunPendingArgumentsLocked(s.artifactStore, run)
 	s.workflowRuns = append([]WorkflowRunSnapshot{run}, s.workflowRuns...)
@@ -134,6 +196,26 @@ func (s *State) StartWorkflowRunFromSnapshot(snapshot WorkflowSnapshot) string {
 
 // RequestWorkflowRunCancel marks a running workflow as cancellation-requested.
 func (s *State) RequestWorkflowRunCancel(runID, reason string) (WorkflowRunSnapshot, bool) {
+	run, ok, _ := s.RequestWorkflowRunCancelDurable(runID, reason)
+	return run, ok
+}
+
+// RequestWorkflowRunCancelDurable persists the cancellation request before it
+// becomes visible through task polling.
+func (s *State) RequestWorkflowRunCancelDurable(runID, reason string) (WorkflowRunSnapshot, bool, error) {
+	if s == nil {
+		return WorkflowRunSnapshot{}, false, nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	run, ok := s.requestWorkflowRunCancel(runID, reason)
+	if !ok {
+		return run, false, nil
+	}
+	return run, true, s.PersistConfigured()
+}
+
+func (s *State) requestWorkflowRunCancel(runID, reason string) (WorkflowRunSnapshot, bool) {
 	if s == nil || strings.TrimSpace(runID) == "" {
 		return WorkflowRunSnapshot{}, false
 	}
@@ -167,6 +249,26 @@ func (s *State) RequestWorkflowRunCancel(runID, reason string) (WorkflowRunSnaps
 
 // CancelWorkflowRun marks a workflow run as cancelled.
 func (s *State) CancelWorkflowRun(runID, reason string) (WorkflowRunSnapshot, bool) {
+	run, ok, _ := s.CancelWorkflowRunDurable(runID, reason)
+	return run, ok
+}
+
+// CancelWorkflowRunDurable persists terminal cancellation and cleared pending
+// execution context before task polling observes it.
+func (s *State) CancelWorkflowRunDurable(runID, reason string) (WorkflowRunSnapshot, bool, error) {
+	if s == nil {
+		return WorkflowRunSnapshot{}, false, nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	run, ok := s.cancelWorkflowRun(runID, reason)
+	if !ok {
+		return run, false, nil
+	}
+	return run, true, s.PersistConfigured()
+}
+
+func (s *State) cancelWorkflowRun(runID, reason string) (WorkflowRunSnapshot, bool) {
 	if s == nil || strings.TrimSpace(runID) == "" {
 		return WorkflowRunSnapshot{}, false
 	}
@@ -235,6 +337,22 @@ func (s *State) CancelWorkflowRun(runID, reason string) (WorkflowRunSnapshot, bo
 
 // UpdateWorkflowRunState merges the current workflow snapshot into its run record.
 func (s *State) UpdateWorkflowRunState(snapshot WorkflowSnapshot) {
+	_ = s.UpdateWorkflowRunStateDurable(snapshot)
+}
+
+// UpdateWorkflowRunStateDurable persists a resumable workflow snapshot before
+// callers expose its new status or pending context.
+func (s *State) UpdateWorkflowRunStateDurable(snapshot WorkflowSnapshot) error {
+	if s == nil || strings.TrimSpace(snapshot.RunID) == "" {
+		return nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	s.updateWorkflowRunState(snapshot)
+	return s.PersistConfigured()
+}
+
+func (s *State) updateWorkflowRunState(snapshot WorkflowSnapshot) {
 	if s == nil || strings.TrimSpace(snapshot.RunID) == "" {
 		return
 	}
@@ -285,9 +403,12 @@ func (s *State) UpdateWorkflowRunState(snapshot WorkflowSnapshot) {
 	run.PendingSubWorkflowName = strings.TrimSpace(snapshot.PendingSubWorkflowName)
 	run.PendingSubWorkflowRunID = strings.TrimSpace(snapshot.PendingSubWorkflowRunID)
 	run.PendingSubWorkflowStatus = strings.TrimSpace(snapshot.PendingSubWorkflowStatus)
+	run = normalizeWorkflowRunApprovalState(run)
 	run = normalizeWorkflowRunPendingArgumentsLocked(s.artifactStore, run)
 	if isTerminalWorkflowStatus(run.Status) && strings.TrimSpace(run.CompletedAt) == "" {
 		run.CompletedAt = now
+	} else if strings.EqualFold(run.Status, "running") {
+		run.CompletedAt = ""
 	}
 	if strings.EqualFold(run.Status, "cancelled") && strings.TrimSpace(run.CancelledAt) == "" {
 		run.CancelledAt = now
@@ -297,6 +418,249 @@ func (s *State) UpdateWorkflowRunState(snapshot WorkflowSnapshot) {
 
 // CompleteWorkflowRun records the final or suspended result returned by a workflow.
 func (s *State) CompleteWorkflowRun(runID, status, summary, nextStage, approvalPrompt string, pendingFields []schema.WorkflowInputField, stages []WorkflowRunStageSnapshot) {
+	_ = s.CompleteWorkflowRunDurable(runID, status, summary, nextStage, approvalPrompt, pendingFields, stages)
+}
+
+// CompleteWorkflowRunDurable persists terminal results and durable pause gates
+// before their actions and evidence are returned to the operator.
+func (s *State) CompleteWorkflowRunDurable(runID, status, summary, nextStage, approvalPrompt string, pendingFields []schema.WorkflowInputField, stages []WorkflowRunStageSnapshot) error {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	s.completeWorkflowRun(runID, status, summary, nextStage, approvalPrompt, pendingFields, stages)
+	return s.PersistConfigured()
+}
+
+// UpdateWorkflowRunChangeSlicesDurable persists a compiled plan before the
+// workflow reaches its terminal transition. Existing execution state for the
+// same contract is retained so a retry cannot reset completed work.
+func (s *State) UpdateWorkflowRunChangeSlicesDurable(runID string, slices []WorkflowChangeSliceSnapshot) error {
+	if s == nil || strings.TrimSpace(runID) == "" || len(slices) == 0 {
+		return nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	s.mu.Lock()
+	index := s.workflowRunIndexLocked(runID)
+	if index < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("workflow run not found: %s", runID)
+	}
+	run := s.workflowRuns[index]
+	run.ChangeSlices = mergeWorkflowChangeSliceState(run.ChangeSlices, slices)
+	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
+	s.workflowRuns[index] = run
+	s.mu.Unlock()
+	return s.PersistConfigured()
+}
+
+// ReplaceWorkflowRunChangeSlicesDurable persists an already validated state
+// transition such as planned -> running. Unlike plan updates, it must not
+// merge the previous status back over the requested transition.
+// IncrementWorkflowRunStageCall counts one model call for a stage and returns the
+// new total. The count is stored on the run, so it survives event trimming.
+func (s *State) IncrementWorkflowRunStageCall(runID, stage string) int {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return 0
+	}
+	stage = strings.TrimSpace(stage)
+	if stage == "" {
+		stage = "_"
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := s.workflowRunIndexLocked(runID)
+	if index < 0 {
+		return 0
+	}
+	run := s.workflowRuns[index]
+	if run.StageCalls == nil {
+		run.StageCalls = make(map[string]int, 8)
+	}
+	run.StageCalls[stage]++
+	count := run.StageCalls[stage]
+	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
+	s.workflowRuns[index] = run
+	return count
+}
+
+// WorkflowRunStageCallCount returns the durable per-stage model-call count.
+func (s *State) WorkflowRunStageCallCount(runID, stage string) int {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return 0
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := s.workflowRunIndexLocked(runID)
+	if index < 0 {
+		return 0
+	}
+	return s.workflowRuns[index].StageCalls[strings.TrimSpace(stage)]
+}
+
+// WorkflowRunChangeSlices returns a copy of the run's change slices.
+func (s *State) WorkflowRunChangeSlices(runID string) []WorkflowChangeSliceSnapshot {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	index := s.workflowRunIndexLocked(runID)
+	if index < 0 {
+		return nil
+	}
+	return copyWorkflowChangeSlices(s.workflowRuns[index].ChangeSlices)
+}
+
+func (s *State) ReplaceWorkflowRunChangeSlicesDurable(runID string, slices []WorkflowChangeSliceSnapshot) error {
+	if s == nil || strings.TrimSpace(runID) == "" || len(slices) == 0 {
+		return nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	s.mu.Lock()
+	index := s.workflowRunIndexLocked(runID)
+	if index < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("workflow run not found: %s", runID)
+	}
+	run := s.workflowRuns[index]
+	run.ChangeSlices = copyWorkflowChangeSlices(slices)
+	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
+	s.workflowRuns[index] = run
+	s.mu.Unlock()
+	return s.PersistConfigured()
+}
+
+// AdvanceWorkflowRunChangeSlicesDurable applies one completed stage's
+// evidence without waiting for the workflow's final result to be persisted.
+func (s *State) AdvanceWorkflowRunChangeSlicesDurable(runID string, stage WorkflowRunStageSnapshot) error {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	s.mu.Lock()
+	index := s.workflowRunIndexLocked(runID)
+	if index < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("workflow run not found: %s", runID)
+	}
+	run := s.workflowRuns[index]
+	run.ChangeSlices = mergeWorkflowRunChangeSlices(run.ChangeSlices, []WorkflowRunStageSnapshot{stage})
+	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
+	s.workflowRuns[index] = run
+	s.mu.Unlock()
+	return s.PersistConfigured()
+}
+
+// MarkWorkflowRunChangeSliceFilesDurable records successful writes observed
+// during a stage. A slice becomes implemented only after every declared target
+// file has been observed, which allows dependent writes in the same stage.
+func (s *State) MarkWorkflowRunChangeSliceFilesDurable(runID, stage, sliceID string, paths []string) error {
+	if s == nil || strings.TrimSpace(runID) == "" || strings.TrimSpace(sliceID) == "" || len(paths) == 0 {
+		return nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	s.mu.Lock()
+	index := s.workflowRunIndexLocked(runID)
+	if index < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("workflow run not found: %s", runID)
+	}
+	run := s.workflowRuns[index]
+	found := false
+	for i := range run.ChangeSlices {
+		if run.ChangeSlices[i].ID != strings.TrimSpace(sliceID) {
+			continue
+		}
+		found = true
+		item := &run.ChangeSlices[i]
+		if item.Status != "running" && item.Status != "pending" && item.Status != "planned" {
+			break
+		}
+		for _, path := range paths {
+			path = normalizeWorkflowChangeSlicePath(path)
+			if path == "" || containsWorkflowChangeSlicePath(item.ChangedFiles, path) {
+				continue
+			}
+			if !ChangeSliceTargetsCover(item.TargetFiles, path) && item.Status != "running" && item.Status != "pending" && item.Status != "planned" {
+				continue
+			}
+			item.ChangedFiles = append(item.ChangedFiles, path)
+		}
+		if item.Status == "pending" || item.Status == "planned" {
+			item.Status = "running"
+		}
+		if workflowChangeSliceTargetsObserved(*item) {
+			item.Status = "implemented"
+			item.BlockedReason = ""
+		}
+		if strings.TrimSpace(stage) != "" {
+			item.EvidenceStages = appendUniqueWorkflowString(item.EvidenceStages, stage)
+		}
+		break
+	}
+	if !found {
+		s.mu.Unlock()
+		return fmt.Errorf("change slice %s was not found", sliceID)
+	}
+	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
+	s.workflowRuns[index] = run
+	s.mu.Unlock()
+	return s.PersistConfigured()
+}
+
+// BlockWorkflowRunChangeSliceDurable records a failed execution so dependent
+// slices remain blocked until an operator explicitly resets the plan.
+func (s *State) BlockWorkflowRunChangeSliceDurable(runID, stage, sliceID, reason string) error {
+	if s == nil || strings.TrimSpace(runID) == "" || strings.TrimSpace(sliceID) == "" {
+		return nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	s.mu.Lock()
+	index := s.workflowRunIndexLocked(runID)
+	if index < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("workflow run not found: %s", runID)
+	}
+	run := s.workflowRuns[index]
+	found := false
+	for i := range run.ChangeSlices {
+		if run.ChangeSlices[i].ID != strings.TrimSpace(sliceID) {
+			continue
+		}
+		found = true
+		item := &run.ChangeSlices[i]
+		status := strings.ToLower(strings.TrimSpace(item.Status))
+		if status != "running" && status != "pending" && status != "planned" {
+			break
+		}
+		item.Status = "blocked"
+		item.BlockedReason = trimWorkflowRunText(reason)
+		if item.BlockedReason == "" {
+			item.BlockedReason = "slice execution failed"
+		}
+		if strings.TrimSpace(stage) != "" {
+			item.EvidenceStages = appendUniqueWorkflowString(item.EvidenceStages, stage)
+		}
+		break
+	}
+	if !found {
+		s.mu.Unlock()
+		return fmt.Errorf("change slice %s was not found", sliceID)
+	}
+	run.UpdatedAt = workflowRunTimestamp(time.Now().UTC())
+	s.workflowRuns[index] = run
+	s.mu.Unlock()
+	return s.PersistConfigured()
+}
+
+func (s *State) completeWorkflowRun(runID, status, summary, nextStage, approvalPrompt string, pendingFields []schema.WorkflowInputField, stages []WorkflowRunStageSnapshot) {
 	if s == nil || strings.TrimSpace(runID) == "" {
 		return
 	}
@@ -346,6 +710,7 @@ func (s *State) CompleteWorkflowRun(runID, status, summary, nextStage, approvalP
 		run.CompletedStages = enrichWorkflowRunStageBudgets(run.CompletedStages, run.Events)
 		run.CompletedStages = s.normalizeWorkflowRunStagePayloadsLocked(run.ID, run.Name, run.CompletedStages)
 		run.CompletedStages = s.externalizeWorkflowRunStageArtifactsLocked(run.CompletedStages, now)
+		run.ChangeSlices = mergeWorkflowRunChangeSlices(run.ChangeSlices, run.CompletedStages)
 		run.Artifacts = workflowRunArtifacts(run.CompletedStages)
 	}
 	s.mergeWorkflowSchemaFromRunLocked(run)
@@ -353,7 +718,51 @@ func (s *State) CompleteWorkflowRun(runID, status, summary, nextStage, approvalP
 }
 
 // AppendWorkflowRunEvent adds a bounded replay event to an existing run record.
+func (s *State) CheckpointWorkflowRunStages(runID string, stages []WorkflowRunStageSnapshot) error {
+	if s == nil || strings.TrimSpace(runID) == "" || len(stages) == 0 {
+		return nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	s.mu.Lock()
+	index := s.workflowRunIndexLocked(runID)
+	if index < 0 {
+		s.mu.Unlock()
+		return fmt.Errorf("workflow run not found: %s", runID)
+	}
+	run := s.workflowRuns[index]
+	now := workflowRunTimestamp(time.Now().UTC())
+	run.CompletedStages = enrichWorkflowRunStages(run, stages, now)
+	run.CompletedStages = enrichWorkflowRunStageBudgets(run.CompletedStages, run.Events)
+	run.CompletedStages = s.normalizeWorkflowRunStagePayloadsLocked(run.ID, run.Name, run.CompletedStages)
+	run.CompletedStages = s.externalizeWorkflowRunStageArtifactsLocked(run.CompletedStages, now)
+	run.Artifacts = workflowRunArtifacts(run.CompletedStages)
+	s.workflowRuns[index] = run
+	s.mu.Unlock()
+	return s.PersistConfigured()
+}
+
 func (s *State) AppendWorkflowRunEvent(runID string, event WorkflowRunEventSnapshot) {
+	_ = s.AppendWorkflowRunEventDurable(runID, event)
+}
+
+// AppendWorkflowRunEventDurable records an event and persists externally
+// visible transitions before the caller publishes them. High-frequency model
+// text chunks remain in memory until the next transition or normal save.
+func (s *State) AppendWorkflowRunEventDurable(runID string, event WorkflowRunEventSnapshot) error {
+	if s == nil || strings.TrimSpace(runID) == "" {
+		return nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	s.appendWorkflowRunEvent(runID, event)
+	if !workflowRunEventRequiresDurability(event) {
+		return nil
+	}
+	return s.PersistConfigured()
+}
+
+func (s *State) appendWorkflowRunEvent(runID string, event WorkflowRunEventSnapshot) {
 	if s == nil || strings.TrimSpace(runID) == "" {
 		return
 	}
@@ -371,10 +780,195 @@ func (s *State) AppendWorkflowRunEvent(runID string, event WorkflowRunEventSnaps
 	}
 	run := s.workflowRuns[index]
 	event = s.normalizeWorkflowRunEventLocked(runID, run.Name, event)
+	if strings.EqualFold(event.Type, "token_usage") {
+		if run.UsageRecords == nil {
+			run.UsageRecords = append([]UsageRecord(nil), WorkflowUsageRecords(run)...)
+		}
+		if event.Seq == 0 {
+			event.Seq = nextWorkflowRunEventSeq(run.Events)
+		}
+		record := UsageRecord{RunID: run.ID, RunType: "workflow", Seq: event.Seq, At: event.At, AgentID: event.AgentID, Stage: event.Stage, PromptTokens: maxInt(event.PromptTokens, event.BudgetReportedPromptTokens), OutputTokens: maxInt(event.OutputTokens, event.BudgetOutputTokens), CachedTokens: maxInt(event.CachedTokens, event.BudgetCachedTokens)}
+		run.UsageRecords = append(run.UsageRecords, record)
+		s.usageRecords = append(s.usageRecords, record)
+	}
 	run.Events = appendWorkflowRunEventLocked(run.Events, event)
+	if status := strings.TrimSpace(event.WorkflowStatus); status != "" {
+		run.Status = status
+	}
+	if nextStage := strings.TrimSpace(event.NextStage); nextStage != "" {
+		run.NextStage = nextStage
+	}
 	run.UpdatedAt = now
+	if isTerminalWorkflowStatus(run.Status) && strings.TrimSpace(run.CompletedAt) == "" {
+		run.CompletedAt = now
+	}
 	run = updateWorkflowRunBudgetSummary(run)
 	s.workflowRuns[index] = run
+}
+
+func workflowRunEventRequiresDurability(event WorkflowRunEventSnapshot) bool {
+	switch strings.ToLower(strings.TrimSpace(event.Type)) {
+	case "", "text", "delta", "token", "message", "final_message", "prompt_budget", "reasoning":
+		return false
+	default:
+		return true
+	}
+}
+
+// ReconcileInterruptedWorkflowRuns restores saved incomplete/provider waits and
+// marks other process-owned active work interrupted. Durable input/approval
+// waits retain their resume metadata.
+func (s *State) ReconcileInterruptedWorkflowRuns() (int, error) {
+	if s == nil {
+		return 0, nil
+	}
+	s.workflowPersistMu.Lock()
+	defer s.workflowPersistMu.Unlock()
+	now := workflowRunTimestamp(time.Now().UTC())
+	count := 0
+	s.mu.Lock()
+	for i := range s.workflowRuns {
+		run := s.workflowRuns[i]
+		status := strings.ToLower(strings.TrimSpace(run.Status))
+		if status == "running" || (status == "interrupted" && workflowRunInterruptedByRestart(run)) {
+			if checkpoint, ok := workflowProviderWaitCheckpoint(run); ok {
+				run.CompletedStages = append(run.CompletedStages, checkpoint)
+			}
+		}
+		if stage, reason, resumable := resumableIncompleteWorkflowStage(run); resumable && (status == "running" || status == "cancelling" || (status == "interrupted" && workflowRunInterruptedByRestart(run))) {
+			run.ChangeSlices = recoverWorkflowChangeSlices(run.ChangeSlices)
+			run.Status = "paused_need_more_budget"
+			run.NextStage = stage
+			run.UpdatedAt = now
+			run.CompletedAt = ""
+			run.ApprovalPrompt = reason
+			if strings.TrimSpace(run.Summary) == "" || strings.Contains(strings.ToLower(run.Summary), "interrupted by process restart") {
+				run.Summary = "workflow pause restored after process restart; continue the saved incomplete stage"
+			}
+			run.Events = appendWorkflowRunEventLocked(run.Events, s.normalizeWorkflowRunEventLocked(run.ID, run.Name, WorkflowRunEventSnapshot{
+				At:             now,
+				Type:           "workflow_pause_restored",
+				Stage:          stage,
+				Content:        reason,
+				WorkflowName:   run.Name,
+				WorkflowStatus: run.Status,
+				NextStage:      stage,
+				Reason:         "process_restart_recovery",
+				Severity:       "warning",
+				NeedsAction:    true,
+				Suspended:      true,
+				Incomplete:     true,
+			}))
+			s.workflowRuns[i] = run
+			if s.workflow.RunID == run.ID {
+				s.workflow.Status = run.Status
+				s.workflow.NextStage = run.NextStage
+				s.workflow.Summary = run.Summary
+				s.workflow.LastApproval = run.ApprovalPrompt
+			}
+			count++
+			continue
+		}
+		if status != "running" && status != "cancelling" {
+			continue
+		}
+		run.ChangeSlices = recoverWorkflowChangeSlices(run.ChangeSlices)
+		run.Status = "interrupted"
+		run.UpdatedAt = now
+		run.CompletedAt = now
+		run.Summary = "workflow interrupted by process restart; retry from the saved request"
+		run.Events = appendWorkflowRunEventLocked(run.Events, s.normalizeWorkflowRunEventLocked(run.ID, run.Name, WorkflowRunEventSnapshot{
+			At:             now,
+			Type:           "workflow_interrupted",
+			Stage:          run.NextStage,
+			Content:        run.Summary,
+			WorkflowName:   run.Name,
+			WorkflowStatus: run.Status,
+			NextStage:      run.NextStage,
+			Reason:         "process_restart",
+			Severity:       "warning",
+			NeedsAction:    true,
+			Suspended:      true,
+		}))
+		s.workflowRuns[i] = run
+		if s.workflow.RunID == run.ID {
+			s.workflow.Status = run.Status
+			s.workflow.Summary = run.Summary
+		}
+		count++
+	}
+	s.mu.Unlock()
+	if count == 0 {
+		return 0, nil
+	}
+	return count, s.PersistConfigured()
+}
+
+// A provider wait has no new tool effect to replay. Preserve this explicit
+// checkpoint even if the process stopped before a partial stage result existed.
+func workflowProviderWaitCheckpoint(run WorkflowRunSnapshot) (WorkflowRunStageSnapshot, bool) {
+	target := strings.TrimSpace(run.NextStage)
+	if target == "" {
+		return WorkflowRunStageSnapshot{}, false
+	}
+	for _, stage := range run.CompletedStages {
+		if strings.EqualFold(stage.Stage, target) {
+			return WorkflowRunStageSnapshot{}, false
+		}
+	}
+	for _, operation := range run.ToolOperations {
+		if operation.Status == WorkflowToolOperationStarted {
+			return WorkflowRunStageSnapshot{}, false
+		}
+	}
+	for i := len(run.Events) - 1; i >= 0; i-- {
+		event := run.Events[i]
+		if !strings.EqualFold(event.Stage, target) || event.Type == "workflow_interrupted" {
+			continue
+		}
+		if event.Type != "status" || (event.Reason != "provider_request_started" && event.Reason != "provider_response_connected" && event.Reason != "provider_request_retry") {
+			return WorkflowRunStageSnapshot{}, false
+		}
+		reason := "process stopped while waiting for provider response; continue the saved stage without replaying completed stages"
+		return WorkflowRunStageSnapshot{
+			Stage: target, AgentID: event.AgentID, Status: "incomplete",
+			Result:   schema.AgentResult{AgentID: event.AgentID, Incomplete: true, IncompleteReason: reason},
+			Metadata: map[string]string{"incomplete": "true", "incomplete_reason": reason, "checkpoint": "provider_wait"},
+		}, true
+	}
+	return WorkflowRunStageSnapshot{}, false
+}
+
+func resumableIncompleteWorkflowStage(run WorkflowRunSnapshot) (string, string, bool) {
+	target := strings.TrimSpace(run.NextStage)
+	for index := len(run.CompletedStages) - 1; index >= 0; index-- {
+		stage := run.CompletedStages[index]
+		if target != "" && !strings.EqualFold(strings.TrimSpace(stage.Stage), target) {
+			continue
+		}
+		if !stage.Result.Incomplete && !strings.EqualFold(strings.TrimSpace(stage.Status), "incomplete") && !strings.EqualFold(strings.TrimSpace(stage.Metadata["incomplete"]), "true") {
+			continue
+		}
+		reason := strings.TrimSpace(stage.Result.IncompleteReason)
+		if reason == "" {
+			reason = strings.TrimSpace(stage.Metadata["incomplete_reason"])
+		}
+		if reason == "" {
+			reason = "workflow stage is incomplete and can continue from the saved evidence"
+		}
+		return strings.TrimSpace(stage.Stage), reason, true
+	}
+	return "", "", false
+}
+
+func workflowRunInterruptedByRestart(run WorkflowRunSnapshot) bool {
+	for index := len(run.Events) - 1; index >= 0; index-- {
+		event := run.Events[index]
+		if strings.EqualFold(strings.TrimSpace(event.Type), "workflow_interrupted") {
+			return strings.EqualFold(strings.TrimSpace(event.Reason), "process_restart")
+		}
+	}
+	return false
 }
 
 // WorkflowRuns returns a newest-first copy of recent workflow runs.
@@ -485,7 +1079,7 @@ func workflowRunTimestamp(t time.Time) string {
 
 func isTerminalWorkflowStatus(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
-	case "completed", "denied", "failed", "blocked", "cancelled", "canceled":
+	case "completed", "denied", "failed", "blocked", "cancelled", "canceled", "interrupted":
 		return true
 	default:
 		return false
@@ -661,10 +1255,20 @@ func updateWorkflowRunBudgetSummary(run WorkflowRunSnapshot) WorkflowRunSnapshot
 	run.BudgetArtifactSavedTokens = artifactSavedTokens
 	run.BudgetSkillSavedTokens = skillSavedTokens
 	run.BudgetToolSchemaSavedTokens = toolSchemaSavedTokens
+	if records := run.UsageRecords; len(records) > 0 {
+		reportedPromptTokens, outputTokens, cachedTokens = 0, 0, 0
+		for _, record := range records {
+			reportedPromptTokens += record.PromptTokens
+			outputTokens += record.OutputTokens
+			cachedTokens += record.CachedTokens
+		}
+		llmCalls = maxInt(llmCalls, len(records))
+	}
 	run.BudgetReportedPromptTokens = reportedPromptTokens
+	run.BudgetPromptTokens = maxInt(run.BudgetPromptTokens, reportedPromptTokens)
 	run.BudgetOutputTokens = outputTokens
 	run.BudgetCachedTokens = cachedTokens
-	run.BudgetTotalTokens = promptTokens + outputTokens
+	run.BudgetTotalTokens = maxInt(promptTokens, reportedPromptTokens) + outputTokens
 	run.BudgetLLMCalls = llmCalls
 	run.BudgetContinuations = continuations
 	run.BudgetEstimatedInputCost = estimatedInputCost
@@ -1107,12 +1711,19 @@ func copyWorkflowRunSnapshots(runs []WorkflowRunSnapshot) []WorkflowRunSnapshot 
 }
 
 func copyWorkflowRunSnapshot(run WorkflowRunSnapshot) WorkflowRunSnapshot {
+	run.UsageRecords = append([]UsageRecord(nil), run.UsageRecords...)
+	run = normalizeWorkflowRunApprovalState(run)
+	run.TargetID = normalizeRunTargetID(run.TargetID)
+	run.ResourcePins = CopyResourcePins(run.ResourcePins)
+	run.Attachments = append([]schema.AttachmentRef(nil), run.Attachments...)
 	if run.PendingToolRisk != nil {
 		risk := copyToolRiskProfile(*run.PendingToolRisk)
 		run.PendingToolRisk = &risk
 	}
 	run.PendingResponseMessage = schema.CopyMessage(run.PendingResponseMessage)
 	run.CompletedStages = copyWorkflowRunStageSnapshots(run.CompletedStages)
+	run.ToolOperations = copyWorkflowToolOperations(run.ToolOperations)
+	run.ChangeSlices = copyWorkflowChangeSlices(run.ChangeSlices)
 	run = updateWorkflowRunBudgetSummary(run)
 	if len(run.Events) > 0 {
 		run.Events = append([]WorkflowRunEventSnapshot(nil), run.Events...)
@@ -1127,6 +1738,20 @@ func copyWorkflowRunSnapshot(run WorkflowRunSnapshot) WorkflowRunSnapshot {
 	run.PendingFields = copyWorkflowInputFields(run.PendingFields)
 	run.Artifacts = copyWorkflowRunArtifacts(run.Artifacts)
 	return run
+}
+
+func normalizeWorkflowRunApprovalState(run WorkflowRunSnapshot) WorkflowRunSnapshot {
+	if strings.EqualFold(strings.TrimSpace(run.Status), "running") && strings.TrimSpace(run.PendingCallID) != "" {
+		run.Status = "awaiting_tool_approval"
+	}
+	return run
+}
+
+func copyWorkflowToolOperations(items []WorkflowToolOperationSnapshot) []WorkflowToolOperationSnapshot {
+	if len(items) == 0 {
+		return nil
+	}
+	return append([]WorkflowToolOperationSnapshot(nil), items...)
 }
 
 func copyWorkflowInputFields(fields []schema.WorkflowInputField) []schema.WorkflowInputField {
@@ -1198,11 +1823,344 @@ func copyWorkflowRunStageSnapshots(stages []WorkflowRunStageSnapshot) []Workflow
 		copied[i].Outputs = copyWorkflowRunStringMap(stage.Outputs)
 		copied[i].OutputValues = copyWorkflowRunAnyMap(stage.OutputValues)
 		copied[i].Metadata = copyWorkflowRunStringMap(stage.Metadata)
+		copied[i].ChangeSlices = copyWorkflowChangeSlices(stage.ChangeSlices)
 		copied[i].Result = copyAgentResult(stage.Result)
 		copied[i].Artifacts = copyWorkflowRunArtifacts(stage.Artifacts)
 		copied[i].Acceptance = copyWorkflowRunAcceptance(stage.Acceptance)
 	}
 	return copied
+}
+
+func copyWorkflowChangeSlices(items []WorkflowChangeSliceSnapshot) []WorkflowChangeSliceSnapshot {
+	if len(items) == 0 {
+		return nil
+	}
+	out := make([]WorkflowChangeSliceSnapshot, len(items))
+	for i, item := range items {
+		out[i] = item
+		out[i].ExecutionMode = strings.ToLower(strings.TrimSpace(item.ExecutionMode))
+		out[i].DependsOn = append([]string(nil), item.DependsOn...)
+		out[i].InputFiles = append([]string(nil), item.InputFiles...)
+		out[i].InputHashes = copyWorkflowRunStringMap(item.InputHashes)
+		out[i].TargetFiles = append([]string(nil), item.TargetFiles...)
+		out[i].VerificationCommands = append([]string(nil), item.VerificationCommands...)
+		out[i].EvidenceStages = append([]string(nil), item.EvidenceStages...)
+		out[i].ChangedFiles = append([]string(nil), item.ChangedFiles...)
+	}
+	return out
+}
+
+func mergeWorkflowChangeSliceState(existing, planned []WorkflowChangeSliceSnapshot) []WorkflowChangeSliceSnapshot {
+	old := make(map[string]WorkflowChangeSliceSnapshot, len(existing))
+	for _, item := range existing {
+		old[item.ID] = item
+	}
+	out := copyWorkflowChangeSlices(planned)
+	for i := range out {
+		if previous, ok := old[out[i].ID]; ok && previous.ContractHash == out[i].ContractHash {
+			out[i].Status = previous.Status
+			out[i].BlockedReason = previous.BlockedReason
+			out[i].Attempt = previous.Attempt
+			out[i].EvidenceStages = append([]string(nil), previous.EvidenceStages...)
+			out[i].ChangedFiles = append([]string(nil), previous.ChangedFiles...)
+		}
+		if strings.TrimSpace(out[i].Status) == "" {
+			out[i].Status = "planned"
+		}
+	}
+	return out
+}
+
+func normalizeWorkflowChangeSlicePath(path string) string {
+	path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+	if path == "." || path == ".." || filepath.IsAbs(path) || strings.HasPrefix(path, "../") {
+		return ""
+	}
+	return path
+}
+
+func containsWorkflowChangeSlicePath(paths []string, wanted string) bool {
+	wanted = normalizeWorkflowChangeSlicePath(wanted)
+	if wanted == "" {
+		return false
+	}
+	for _, path := range paths {
+		if normalizeWorkflowChangeSlicePath(path) == wanted {
+			return true
+		}
+	}
+	return false
+}
+
+// ChangeSliceTargetCovers reports whether a planned target includes path.
+// File targets cover the exact file and same-directory siblings; directory
+// targets cover every workspace-relative file beneath them.
+func ChangeSliceTargetCovers(target, path string) bool {
+	target = normalizeWorkflowChangeSlicePath(target)
+	path = normalizeWorkflowChangeSlicePath(path)
+	if target == "" || path == "" {
+		return false
+	}
+	if target == path || strings.HasPrefix(path, target+"/") {
+		return true
+	}
+	targetDir := filepath.ToSlash(filepath.Dir(target))
+	pathDir := filepath.ToSlash(filepath.Dir(path))
+	return targetDir != "." && targetDir == pathDir
+}
+
+func ChangeSliceTargetsCover(targets []string, path string) bool {
+	for _, target := range targets {
+		if ChangeSliceTargetCovers(target, path) {
+			return true
+		}
+	}
+	return false
+}
+
+func ChangeSliceTargetsOverlap(left, right []string) bool {
+	for _, a := range left {
+		for _, b := range right {
+			if ChangeSliceTargetCovers(a, b) || ChangeSliceTargetCovers(b, a) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func workflowChangeSliceTargetObserved(slice WorkflowChangeSliceSnapshot, target string) bool {
+	target = normalizeWorkflowChangeSlicePath(target)
+	if target == "" {
+		return false
+	}
+	if containsWorkflowChangeSlicePath(slice.ChangedFiles, target) {
+		return true
+	}
+	for _, changed := range slice.ChangedFiles {
+		changed = normalizeWorkflowChangeSlicePath(changed)
+		if changed != "" && strings.HasPrefix(changed, target+"/") {
+			return true
+		}
+	}
+	return false
+}
+
+func workflowChangeSliceTargetsObserved(slice WorkflowChangeSliceSnapshot) bool {
+	if len(slice.TargetFiles) == 0 {
+		return false
+	}
+	for _, target := range slice.TargetFiles {
+		if !workflowChangeSliceTargetObserved(slice, target) {
+			return false
+		}
+	}
+	return true
+}
+
+func mergeWorkflowRunChangeSlices(existing []WorkflowChangeSliceSnapshot, stages []WorkflowRunStageSnapshot) []WorkflowChangeSliceSnapshot {
+	var planned []WorkflowChangeSliceSnapshot
+	for _, stage := range stages {
+		if len(stage.ChangeSlices) > 0 {
+			planned = copyWorkflowChangeSlices(stage.ChangeSlices)
+			break
+		}
+	}
+	if len(planned) == 0 {
+		return copyWorkflowChangeSlices(existing)
+	}
+	old := make(map[string]WorkflowChangeSliceSnapshot, len(existing))
+	for _, item := range existing {
+		old[item.ID] = item
+	}
+	for i := range planned {
+		if previous, ok := old[planned[i].ID]; ok && previous.ContractHash == planned[i].ContractHash {
+			planned[i].Status = previous.Status
+			planned[i].BlockedReason = previous.BlockedReason
+			planned[i].Attempt = previous.Attempt
+			planned[i].EvidenceStages = append([]string(nil), previous.EvidenceStages...)
+			planned[i].ChangedFiles = append([]string(nil), previous.ChangedFiles...)
+		}
+		if strings.TrimSpace(planned[i].Status) == "" {
+			planned[i].Status = "planned"
+		}
+	}
+	for _, stage := range stages {
+		name := strings.ToLower(strings.TrimSpace(stage.Stage))
+		status := strings.ToLower(strings.TrimSpace(stage.Status))
+		if workflowChangeSliceStageFailed(status, stage) && (workflowChangeSliceImplementationStage(name) || workflowChangeSliceVerificationStage(name)) {
+			for i := range planned {
+				if planned[i].Status != "verified" {
+					planned[i].Status = "blocked"
+					planned[i].BlockedReason = fmt.Sprintf("stage %s failed before this slice was verified", stage.Stage)
+					planned[i].EvidenceStages = appendUniqueWorkflowString(planned[i].EvidenceStages, stage.Stage)
+				}
+			}
+			continue
+		}
+		if !workflowChangeSliceStagePassed(status, stage) {
+			continue
+		}
+		for i := range planned {
+			switch {
+			case name == "plan" && workflowChangeSliceReadEvidence(planned[i], stage):
+				planned[i].Status = "verified"
+				planned[i].EvidenceStages = appendUniqueWorkflowString(planned[i].EvidenceStages, stage.Stage)
+			case workflowChangeSliceVerificationStage(name):
+				if planned[i].Status == "implemented" {
+					planned[i].Status = "verified"
+					planned[i].EvidenceStages = appendUniqueWorkflowString(planned[i].EvidenceStages, stage.Stage)
+				}
+			case workflowChangeSliceImplementationStage(name) && workflowChangeSliceChangedByStage(planned[i], stage):
+				planned[i].Status = "implemented"
+				planned[i].BlockedReason = ""
+				planned[i].EvidenceStages = appendUniqueWorkflowString(planned[i].EvidenceStages, stage.Stage)
+			}
+		}
+	}
+	return planned
+}
+
+func recoverWorkflowChangeSlices(slices []WorkflowChangeSliceSnapshot) []WorkflowChangeSliceSnapshot {
+	out := copyWorkflowChangeSlices(slices)
+	for i := range out {
+		if strings.EqualFold(strings.TrimSpace(out[i].Status), "running") {
+			out[i].Status = "pending"
+			out[i].BlockedReason = ""
+		}
+	}
+	return out
+}
+
+func workflowChangeSliceChangedByStage(slice WorkflowChangeSliceSnapshot, stage WorkflowRunStageSnapshot) bool {
+	if slice.Status == "verified" {
+		return false
+	}
+	files := workflowStageChangedFiles(stage)
+	if len(files) == 0 {
+		return false
+	}
+	for _, target := range slice.TargetFiles {
+		if _, ok := files[normalizeWorkflowChangeSlicePath(target)]; ok {
+			return true
+		}
+		for file := range files {
+			if ChangeSliceTargetCovers(target, file) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func workflowStageChangedFiles(stage WorkflowRunStageSnapshot) map[string]struct{} {
+	files := make(map[string]struct{})
+	changes := append([]schema.Change(nil), stage.Result.Changes...)
+	for _, change := range changes {
+		for _, file := range change.Files {
+			file = filepath.ToSlash(filepath.Clean(strings.TrimSpace(file)))
+			if file != "" && file != "." && file != ".." && !strings.HasPrefix(file, "../") && !filepath.IsAbs(file) {
+				files[file] = struct{}{}
+			}
+		}
+	}
+	return files
+}
+
+func workflowChangeSliceReadEvidence(slice WorkflowChangeSliceSnapshot, stage WorkflowRunStageSnapshot) bool {
+	if !strings.EqualFold(strings.TrimSpace(slice.ExecutionMode), "read") {
+		return false
+	}
+	if len(slice.InputFiles) == 0 {
+		return true
+	}
+	evidence := make(map[string]string)
+	for _, result := range stage.Result.ToolResults {
+		if result.IsError || result.Denied {
+			continue
+		}
+		var payload map[string]any
+		if json.Unmarshal([]byte(result.Content), &payload) != nil {
+			continue
+		}
+		path, _ := payload["relative_path"].(string)
+		hash, _ := payload["sha256"].(string)
+		path = filepath.ToSlash(filepath.Clean(strings.TrimSpace(path)))
+		hash = strings.TrimSpace(hash)
+		if path != "" && len(hash) == 64 {
+			evidence[path] = hash
+		}
+	}
+	for _, input := range slice.InputFiles {
+		path := filepath.ToSlash(filepath.Clean(strings.TrimSpace(input)))
+		if evidence[path] == "" || evidence[path] != slice.InputHashes[input] {
+			return false
+		}
+	}
+	return true
+}
+
+func workflowChangeSliceImplementationStage(name string) bool {
+	switch name {
+	case "implement", "implementation", "fix", "remediate", "repair":
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowChangeSliceVerificationStage(name string) bool {
+	switch name {
+	case "verify", "verification", "recovery-verify", "final-verify":
+		return true
+	default:
+		return false
+	}
+}
+
+func workflowChangeSliceStagePassed(status string, stage WorkflowRunStageSnapshot) bool {
+	switch status {
+	case "completed", "passed", "success", "succeeded":
+	default:
+		return false
+	}
+	return !workflowChangeSliceStageFailed(status, stage)
+}
+
+func workflowChangeSliceStageFailed(status string, stage WorkflowRunStageSnapshot) bool {
+	switch status {
+	case "failed", "blocked", "cancelled", "error":
+		return true
+	}
+	if status == "incomplete" || stage.Result.Incomplete {
+		return false
+	}
+	for _, verification := range stage.Result.Verification {
+		switch strings.ToLower(strings.TrimSpace(verification.Status)) {
+		case "failed", "blocked", "error":
+			return true
+		}
+	}
+	for _, acceptance := range stage.Acceptance {
+		switch strings.ToLower(strings.TrimSpace(acceptance.Status)) {
+		case "failed", "fail", "blocked":
+			return true
+		}
+	}
+	return false
+}
+
+func appendUniqueWorkflowString(values []string, value string) []string {
+	value = strings.TrimSpace(value)
+	if value == "" {
+		return values
+	}
+	for _, existing := range values {
+		if existing == value {
+			return values
+		}
+	}
+	return append(values, value)
 }
 
 func copyWorkflowRunAcceptance(items []WorkflowRunAcceptanceSnapshot) []WorkflowRunAcceptanceSnapshot {
@@ -1264,8 +2222,16 @@ func enrichWorkflowRunStages(run WorkflowRunSnapshot, stages []WorkflowRunStageS
 		if strings.TrimSpace(stage.StartedAt) == "" {
 			stage.StartedAt = run.StartedAt
 		}
-		if strings.TrimSpace(stage.CompletedAt) == "" {
-			stage.CompletedAt = completedAt
+		switch strings.ToLower(strings.TrimSpace(stage.Status)) {
+		case "incomplete", "running", "pending", "awaiting_approval", "awaiting_input", "paused_need_more_budget":
+			stage.CompletedAt = ""
+		default:
+			if strings.TrimSpace(stage.CompletedAt) == "" && !old.Result.Incomplete && !strings.EqualFold(old.Status, "incomplete") {
+				stage.CompletedAt = old.CompletedAt
+			}
+			if strings.TrimSpace(stage.CompletedAt) == "" {
+				stage.CompletedAt = completedAt
+			}
 		}
 		if strings.TrimSpace(stage.Summary) == "" {
 			stage.Summary = trimWorkflowRunText(stage.Result.Output)
@@ -1376,17 +2342,10 @@ func (s *State) externalizeWorkflowRunArtifactLocked(artifact WorkflowRunArtifac
 func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRunArtifact {
 	stageName := strings.TrimSpace(stage.Stage)
 	artifacts := declaredWorkflowRunStageArtifacts(stageName, stage.Artifacts)
-	if strings.TrimSpace(stage.Result.Output) != "" {
-		artifacts = append(artifacts, WorkflowRunArtifact{
-			ID:      workflowArtifactID(stageName, "output", len(artifacts)+1),
-			Stage:   stageName,
-			Kind:    "output",
-			Title:   "Stage output",
-			Summary: trimWorkflowRunText(stage.Result.Output),
-			Content: stage.Result.Output,
-		})
-	}
 	for _, result := range stage.Result.ToolResults {
+		if !publishToolResultArtifact(result) {
+			continue
+		}
 		title := strings.TrimSpace(result.ToolName)
 		if title == "" {
 			title = "Tool result"
@@ -1408,11 +2367,17 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 		})
 	}
 	for _, section := range stage.Result.Structured {
+		if !publishStructuredArtifact(section.Kind) {
+			continue
+		}
 		content := section.Summary
 		if strings.TrimSpace(content) == "" && len(section.Items) > 0 {
 			content = strings.Join(section.Items, "\n")
 		}
 		if strings.TrimSpace(content) == "" {
+			continue
+		}
+		if workflowArtifactHasContent(artifacts, content) {
 			continue
 		}
 		title := strings.TrimSpace(section.Title)
@@ -1470,11 +2435,17 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 		})
 	}
 	for _, verification := range stage.Result.Verification {
+		if !publishVerificationArtifact(verification.Kind) {
+			continue
+		}
 		content := strings.TrimSpace(verification.Detail)
 		if content == "" {
 			content = strings.TrimSpace(verification.Kind + " " + verification.Status)
 		}
 		if content == "" {
+			continue
+		}
+		if workflowArtifactHasContent(artifacts, content) {
 			continue
 		}
 		artifacts = append(artifacts, WorkflowRunArtifact{
@@ -1490,6 +2461,9 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 		})
 	}
 	for _, acceptance := range stage.Acceptance {
+		if !publishAcceptanceArtifact(acceptance.Status) {
+			continue
+		}
 		content := strings.TrimSpace(acceptance.Reason)
 		if content == "" {
 			content = strings.TrimSpace(acceptance.Actual)
@@ -1512,7 +2486,30 @@ func buildWorkflowRunStageArtifacts(stage WorkflowRunStageSnapshot) []WorkflowRu
 			}),
 		})
 	}
+	if len(artifacts) == 0 && strings.TrimSpace(stage.Result.Output) != "" {
+		artifacts = append(artifacts, WorkflowRunArtifact{
+			ID:      workflowArtifactID(stageName, "output", 1),
+			Stage:   stageName,
+			Kind:    "output",
+			Title:   "阶段结果",
+			Summary: trimWorkflowRunText(stage.Result.Output),
+			Content: stage.Result.Output,
+		})
+	}
 	return enrichWorkflowRunStageArtifacts(stage, artifacts)
+}
+
+func workflowArtifactHasContent(artifacts []WorkflowRunArtifact, content string) bool {
+	content = strings.TrimSpace(content)
+	if content == "" {
+		return false
+	}
+	for _, artifact := range artifacts {
+		if strings.TrimSpace(artifact.Content) == content {
+			return true
+		}
+	}
+	return false
 }
 
 func declaredWorkflowRunStageArtifacts(stageName string, artifacts []WorkflowRunArtifact) []WorkflowRunArtifact {
@@ -1716,7 +2713,10 @@ func fallbackWorkflowArtifactTitle(value, fallback string) string {
 		return fallback
 	}
 	if len(value) > 80 {
-		return value[:80]
+		value = value[:80]
+		for !utf8.ValidString(value) {
+			value = value[:len(value)-1]
+		}
 	}
 	return value
 }

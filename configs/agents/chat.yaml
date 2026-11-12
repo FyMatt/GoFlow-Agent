@@ -1,6 +1,7 @@
 chat:
-  name: Chat
-  description: Handles ordinary user requests and can route into planner/fixer/auditor flows when needed.
+  kind: agent
+  name: 通用任务智能体
+  description: 处理日常需求，并在需要时转交给规划、实现或审计流程。
   provider: primary
   mode: chat
   tool_policy: confirm

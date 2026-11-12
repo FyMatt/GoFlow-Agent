@@ -2,8 +2,8 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: task-decomposition-plan
-title: Task Decomposition Plan
-description: Decompose a complex request into a reviewable workflow graph candidate with contracts, risks, artifacts, and acceptance criteria before execution.
+title: 复杂任务拆解计划
+description: 执行前将复杂需求拆解为可评审的工作流草案，明确契约、风险、产物和验收标准。
 category: planning
 tags:
     - planning
@@ -31,6 +31,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Plan Graph Candidate, Phases, Dependencies, Risk Labels, Required Workspace Access, Required Tools, Suggested Agents, Suggested Skills, Expected Artifacts, Acceptance Criteria, Checkpoints, and Failure Modes.
             purpose: Turn the original request into a normalized plan graph candidate before implementation.
             quality_bar: Every executable node must have required inputs, expected outputs, artifacts, retry/failure guidance, and acceptance criteria.
@@ -70,6 +72,8 @@ graph:
           agent: auditor
           skill: code-audit
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Review Decision, Risks, Missing Evidence, Required Changes, and Recommendation. Include the word approved only if the candidate is ready to materialize.
             review_scope: Review the candidate for missing dependencies, unsafe tool access, weak acceptance criteria, missing evidence, missing human checkpoints, and unclear handoffs.
           input:
@@ -112,6 +116,7 @@ graph:
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
+            verification_mode: command
           routes:
             fail: clarify-scope
             pass: materialize-candidate
@@ -135,6 +140,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit Final Workflow Draft, Node Contracts, Data Flow, Approval Gates, Evidence Plan, Handoff Summary, and Next Steps. Include a YAML skeleton with name, description, and stages.
             purpose: Produce a final workflow graph draft that can be copied into workflows/<name>/workflow.yaml or saved as a workflow template resource.
           input:

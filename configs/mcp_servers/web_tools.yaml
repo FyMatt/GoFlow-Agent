@@ -6,10 +6,11 @@ mcp_servers:
       - run
       - ./mcp_servers/web_tools
     enabled: true
+    optional: true
     timeout: 30s
     workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP, GOFLOW_BROWSER_PATH]
-    isolation: process_group
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, ProgramFiles, "ProgramFiles(x86)", TMP, TEMP, GOPATH, GOCACHE, GOMODCACHE, GOFLOW_BROWSER_PATH, GOFLOW_RESEARCH_CACHE_DIR, GOFLOW_RESEARCH_ALLOW_LOCAL, GOFLOW_WORKSPACE_ROOT]
+    isolation: auto
     restart_limit: 3
     cooldown: 10s
     max_concurrent_calls: 1

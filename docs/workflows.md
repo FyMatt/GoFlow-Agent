@@ -1,6 +1,28 @@
 # Workflow Graphs
 
+Report stages can opt into `params.verify_evidence_hashes: "true"` with `retry.max_attempts: 2`. Invalid-length or unsupported inline SHA-256 claims reject the result and retry only the report, including the validation reason in the next request. Index-only reports avoid historical payload hydration. The security assessment and incident investigation final stages enable this check; legacy resources remain unchanged.
+
+This validates long hexadecimal and SHA256-labeled values against successful observations in the current run. Base64 SSH host fingerprints must match observed metadata. Externalized tool results are read on demand and reduced to hash metadata for validation. It does not certify all narrative facts, the semantic pairing of filenames with hashes, or whether a file changed after collection. Preserve provenance, capture times and coverage limits; reference the evidence index instead of guessing unverifiable values.
+
+Complex project delivery uses local quality routing after initial verification and recovery verification. Missing executed-check evidence, failed checks and unknown results route directly to repair or final quality; independent audit runs only after verification passes. One bounded repair cycle remains. Unresolved delivery ends blocked with a final report rather than retrying indefinitely. The final report disables tools and enables the hash validation above.
+
+Repair receives the approved plan and operates within the original task authorization, addressing blockers and unfinished deliverables without replaying the initial closed-slice scheduler. Existing test assertions remain protected; initial dependency scheduling and recovery verification remain enabled. Nonempty `gofmt -l` output fails quality even with exit code zero. A race infrastructure waiver applies only to the isolated check, never to a failed aggregate report.
+
+Slice `mode` describes future execution, not the planning node's current permissions. Planning remains read-only; required downstream mutations need explicit write slices in the complete plan. Unimplemented write slices keep implementation resumable instead of advancing to verification. Continuation retains approved contracts and observed progress. Failures remain visible in incomplete checkpoints without locking out further corrective work.
+
+The run page displays the actual final report rather than artifact descriptions. Text-file changes include paths and added/deleted line counts. Managed services expose validated preview links; stopped services are labeled unavailable. Explicitly request that a service remain running for manual preview. Run totals and usage charts use durable reported model usage independently of timeline retention.
+
 [English](./workflows.md) | [简体中文](./workflows.zh-CN.md)
+
+## Quality and recovery
+
+After an initial gate failure, `plan-implement-audit` records required revisions, performs one bounded repair, verifies it, audits it and evaluates a final gate. A second failure does not route back into an infinite repair loop. Approval to produce a report is not a quality approval.
+
+Explicitly planned stylesheets, templates and tests remain in the change slices even when root-level source files exist. A zero-match patch writes nothing, and passing pre-existing smoke tests does not establish requirement completion. Audit stages inspect real execution evidence with bounded reads rather than inventing another test suite.
+
+Continue preserves the same run and its tool observations; retry starts a new attempt. Completed-stage timestamps survive later checkpoints, while incomplete stages have no completion timestamp. Updated templates primarily apply to new runs; pinned historical resources are not silently rewritten.
+
+See [local operations](./local-operations.md) for service shutdown, preview ownership and cleanup boundaries.
 
 GoFlow supports two workflow styles:
 
@@ -47,9 +69,6 @@ For end-to-end custom extensions, see:
 - `examples/extension-workflow`: a compact Python MCP server, read-only agent,
   custom skill, and graph workflow that composes the custom stage with a
   built-in audit stage.
-- `examples/binary-analysis-kit`: a fuller materialized kit whose workflow
-  passes data from a team context into a planning skill, through a policy gate,
-  and then into either a report or revision branch.
 
 ## Visual Workflow Studio
 
@@ -85,18 +104,12 @@ The Studio can:
 - save custom graphs back to `workflows/<name>/workflow.yaml`
 - run the selected workflow through the same HTTP workflow endpoint and display stage/token/approval stream events
 
-Workflow Studio has two authoring modes:
-
-- **Simple mode** is the default. It is for ordinary users and keeps the
-  authoring surface focused on the canvas, starter templates, task cards,
-  resource pickers, quick input/output presets, and visual flow controls.
-  Advanced inspector tabs, raw route maps, context contracts, execution-order
-  internals, and run/debug panels stay hidden.
-- **Expert mode** is persistent and intended for developers or advanced
-  operators. It restores the full node library, all inspector tabs, raw params,
-  route/case maps, context contracts, input/output maps, execution-order
-  preview, and run diagnostics. It does not change the workflow schema; it only
-  exposes more of the same graph model.
+Workflow Studio uses one task-oriented authoring surface. The canvas, compact
+node palette, validation, test-run, and inspector controls stay visible; less
+common fields use local collapsed sections and never require a global mode
+switch. Existing graph fields remain available when the relevant node is
+selected, so complex workflows keep their full behavior without making the
+first screen harder to use.
 
 For faster authoring in the right-side inspector:
 
@@ -135,7 +148,7 @@ Visual node metadata can also be saved:
 node_type: tool
 tool: file_tools/write_file
 params:
-  goal: update project files
+  tool_mode: connected
 ```
 
 `start` and `end` nodes are visual-only. `condition`, `switch`, `router`,
@@ -147,8 +160,10 @@ workflow, publish input variables, pause for approval, or block the workflow.
 For repeat nodes, `params.stage` is the controlled body stage and `next` is the
 stage that runs after the repeat exits; these are intentionally different
 relationships in both the runtime and the Studio canvas.
-Executable body/stage nodes still need an `agent` and `skill`; `tool` and
-`params` are included in the stage prompt as metadata.
+Executable body/stage nodes still need an `agent` and `skill`, except a
+`tool_mode: connected` tool node. A connected tool node receives the matching
+tool call from its direct upstream Agent/Skill node and publishes the result and
+artifact reference without running another model stage.
 
 Built-in workflows are shown for reference but cannot be overwritten or deleted.
 Built-in workflow templates are file-backed resources embedded from
@@ -159,8 +174,8 @@ catalog powers CLI `/workflow-templates`, Studio workflow template pickers, and
 
 The first Studio baseline intentionally keeps the frontend dependency-free:
 assets live under `internal/api/web` and are embedded into the Go binary. This
-keeps release archives and Docker images self-contained while still allowing the
-web UI to grow by adding separate view modules.
+keeps native release archives self-contained while still allowing the web UI to
+grow by adding separate view modules.
 
 ## Stage Schema
 
@@ -243,7 +258,7 @@ Fields:
   `verification`, `blockers`, and `next_actions`. The runtime extracts those
   keys as stable outputs when the model returns JSON.
 - `stage.input`: optional map of input names to references such as `workflow.input`, `stages.plan.outputs.summary`, `stages.plan.outputs.<name>`, or `stages.plan.result.output`.
-- `stage.outputs`: optional map of output names to result references such as `result.output`, `result.summary`, `result.findings`, `result.tool_results`, `result.changes`, `result.verification`, or JSON keys returned by the model such as `result.changed_files` and `result.blockers`.
+- `stage.outputs`: optional map of output names to result references such as `result.output`, `result.first_line`, `result.summary`, `result.findings`, `result.tool_results`, `result.changes`, `result.verification`, or JSON keys returned by the model such as `result.changed_files` and `result.blockers`. `result.first_line` returns the first output line and can be checked with `equals` for an explicit overall verdict.
 - `stage.context`: optional context and prompt budget contract. `include`,
   `exclude`, and `max_tokens` select and cap upstream context. Expert budget
   fields `prompt_max_tokens`, `request_max_tokens`, `inputs_max_tokens`, and
@@ -302,9 +317,9 @@ guide:
 | `agent` | Which configured Agent profile runs an executable stage | `planner`, `software-engineer`, `web-security-researcher`, `binary-analyst` |
 | `skill` | Which reusable procedure guides the stage | `execution-plan`, `code-writing`, `code-audit`, `web-vulnerability-research` |
 | `tool` | Preferred MCP tool metadata for a tool-focused stage | `file_tools/write_file`, `web_tools/fetch_page_assets`, `python_notes/binary_strings` |
-| `model` | Optional stage route and output budget override | `provider: primary`, `provider: backup`, `max_tokens: 900` |
+| `model` | Optional stage route and output budget override | `provider: primary`, `model: deployment-model` (replace with a model supported by the Provider), `max_tokens: 900` |
 | `input` | Map local input names to workflow references or literals | `plan: stages.plan.outputs.plan`, `target: workflow.input` |
-| `outputs` | Publish stable names for later stages | `summary: result.summary`, `report: result.output`, `findings: result.findings` |
+| `outputs` | Publish stable names for later stages | `summary: result.summary`, `report: result.output`, `findings: result.findings`, `decision: result.first_line` |
 | `params` | Stable node settings, output contracts, team names, form metadata | `worker_contract: engineering_v1`, `rule: risk_at_least`, `fields: target:string:Target:required` |
 | `context` | Selected context and prompt budget controls | `include: [previous.summary]`, `prompt_max_tokens: 4200` |
 | `artifacts` | Mark first-class deliverables for replay/UI | `name: audit-report, kind: report, ref: result.output` |
@@ -338,12 +353,13 @@ Practical authoring pattern:
 5. Declare final reports, findings, diffs, or evidence as artifacts so replay
    and Studio do not have to parse prose.
 
-For complex engineering tasks, the built-in `engineering-parallel-delivery`
-template applies the same rule at model-routing level: a stronger route
-decomposes the task and audits the integrated result, while cheaper worker
-routes execute bounded slices in parallel with tight `context.max_tokens` and
-`model.max_tokens` budgets. This improves reliability without copying full
-history, raw logs, or large file contents into every worker prompt.
+For complex engineering tasks, the built-in `complex-project-delivery`
+template applies the same rule at model-routing level: a strong planning route
+defines bounded work and acceptance checks, implementation makes the controlled
+change, and independent test, build, and lint workers verify it in parallel
+with tight `context.max_tokens` and `model.max_tokens` budgets. The
+`engineering_v1` worker contract and artifact-first handoff keep full history,
+raw logs, and large file contents out of downstream prompts.
 
 Use the quality-first token pattern for complex work:
 
@@ -356,10 +372,10 @@ Use the quality-first token pattern for complex work:
 4. Strong aggregate/audit stage: merge worker evidence, detect conflicts, and
    gate on acceptance, verification, and evidence before the final handoff.
 
-Studio keeps this usable for both audiences. Simple mode exposes templates,
-task cards, resource pickers, context presets, and run status. Expert mode
-shows model routes, raw maps, context include/exclude lists, prompt budget
-fields, artifacts, acceptance criteria, and run diagnostics for developers.
+The same surface supports both quick starts and complex work: templates,
+resource pickers, context presets, run status, model routes, raw maps, prompt
+budgets, artifacts, acceptance criteria, and diagnostics appear at the point
+where they are relevant instead of behind a persistent mode choice.
 
 ## How To Use Each Node Type
 
@@ -482,23 +498,39 @@ Good for:
 
 ### `tool`
 
-Use this when the stage should strongly prefer one MCP tool, but remember:
-`tool` is guidance and metadata, not a permission override. Agent policy still
-decides whether the tool can run and whether approval is required.
+Use `tool_mode: connected` to place one MCP tool between model-backed nodes. The
+upstream model receives that tool's exact input schema, generates structured
+arguments, and executes it under the upstream agent's permission and approval
+policy. The tool node then forwards `tool_result`, `tool_results`,
+`artifact_ref`, and `artifact_hash` to downstream nodes without a second model
+call.
 
 ```yaml
-- name: write-report
-  node_type: tool
+- name: plan-report
+  node_type: agent
   agent: fixer
   skill: code-writing
+  next: [write-report]
+- name: write-report
+  node_type: tool
   tool: file_tools/write_file
-  input:
-    report: stages.audit.outputs.audit_report
-  approval: true
+  params:
+    tool_mode: connected
   outputs:
+    tool_result: result.output
     tool_results: result.tool_results
-  next: [end]
+  next: [review]
+- name: review
+  node_type: agent
+  agent: auditor
+  skill: code-audit
+  input:
+    write_result: stages.write-report.outputs.tool_result
+    artifact: stages.write-report.outputs.artifact_ref
 ```
+
+Existing tool nodes without `tool_mode: connected` retain the legacy assisted
+behavior and still require their own `agent` and `skill`.
 
 Common tool names:
 
@@ -918,7 +950,7 @@ the pending tool is an unsandboxed write/exec/network/unknown-kind tool,
 one-time `approve_tool` and `deny_tool` remain available. A tool is treated as
 sandboxed for this policy only when the runtime
 `tool_risk_policy.recognized_sandbox_boundaries` field includes a matching
-boundary for that tool kind, for example `container` for broad risky tools or
+boundary for that tool kind, for example `native_strong` for broad risky tools or
 `linux_netns` for network-kind tools only. If a legacy or corrupted run lacks
 resumable context, `/actions` marks approval actions unavailable and Studio
 should offer retry or cancel.
@@ -1156,11 +1188,45 @@ Useful `quality_gate` params:
 - `stage` / `stages`: optional stage name or comma-separated stage names to
   evaluate. Empty means all completed stages.
 - `require_acceptance`: fail when no acceptance checks were recorded.
-- `require_verification`: fail when no verification results were recorded.
+- `require_verification`: require verification evidence; without an explicit mode,
+  legacy gates default to `verification_mode: command`.
+- `verification_mode: command`: require a successful executed test, build or lint
+  command. A report saying that checks passed does not satisfy this contract.
+- `verification_mode: tool`: use successful completed calls to every tool listed
+  in `verification_tools` (comma-separated). `required_tools` adds further required
+  calls. Each call needs a call ID and returned content or persisted evidence;
+  qualified names such as `botany/check_specimen` retain their server identity.
+  Tool mode does not require software test commands.
+- `verification_any_tools`: in tool mode, require at least one successful call
+  from a nonempty list of qualified `server/tool` names. Use it for alternative
+  offline, web or SSH evidence sources. When combined with `verification_tools`,
+  every all-required tool and at least one alternative must succeed. This proves
+  collection evidence, not complete domain coverage; other gate failures still
+  apply. Neither field grants tool access.
 - `require_evidence`: fail when no declared evidence artifacts were recorded.
 - `min_score`: fail when the derived quality score is below this number.
 - `allow_unknown`: set to `false` to fail on unknown acceptance/verification
   statuses.
+
+Executable stage capabilities are opt-in parameters, independent of workflow or
+domain names. `require_workspace_mutation: "true"` requires execution evidence of
+workspace changes in that stage; reported filenames or an earlier stage's edits
+are insufficient. `change_slice_policy` accepts `off`, `required`, or `if_missing`.
+`seed_plan_intake: "true"` adds explicitly labeled framework guidance, recorded as
+`resource_helper`, rather than tool or model evidence. `use_change_slice_scheduler:
+"true"` requires `approved_plan_scope: "true"` and `approval: true`; none of these
+declarations grants tools or bypasses user approval. Boolean capabilities accept
+only `"true"` or `"false"`. Unconfigured stages do not synthesize business files,
+reports, tests, office documents, or web styling. Resource-defined stages must
+perform requested writes through their permitted tools.
+
+Planning and verification may use `web_tools/web_search`, `web_tools/fetch_url`
+and `web_tools/research_snapshot` for requested public technical documentation,
+subject to the agent, skill and user boundaries. Record source URL, product/version
+and fetch time. Honor local-only, offline and supplied-evidence-only requests;
+never upload private logs, credentials, configuration or source code to public
+services. Looking up fresh documentation does not authorize target scanning or
+changes to hosts or workspace files.
 
 The gate output variables include `quality_status`, `score`,
 `acceptance_total`, `acceptance_failed`, `verification_total`,
@@ -1719,11 +1785,11 @@ and any custom metadata file path.
 
 `/api/workflow-templates` returns reusable graph blueprints such as
 `multi-domain-intake-router`, `complex-project-delivery`,
-`engineering-parallel-delivery`, `task-decomposition-plan`, `plan-implement-audit`, `plan-fix-audit`,
+`task-decomposition-plan`, `plan-implement-audit`, `plan-fix-audit`,
 `software-quality-gate`, `web-research-risk`,
 `security-audit-evidence-gate`, `parallel-research-review`, `binary-triage`,
-`docs-review-publish`, `operations-runbook`, `customer-support-triage`,
-`human-input-security-review`, and `software-team-review-gate`. The item
+`authorized-red-team-validation`, `docs-review-publish`, `operations-runbook`,
+`customer-support-triage`, and `software-team-review-gate`. The item
 endpoint returns the full graph document so a Studio can clone it into
 `/api/workflow-graphs/{name}`.
 
@@ -1766,15 +1832,6 @@ runs final validation and produces a completion report with delivered
 requirements, changed files, verification evidence, residual risks, and artifact
 references.
 
-`engineering-parallel-delivery` is the recommended template for complex
-engineering work where quality should come from orchestration rather than one
-large prompt. It uses a strong planning route to decompose the task into owned
-work slices, fans out bounded worker stages on cheaper routes, joins their
-reports, audits the integrated result, and keeps both `model.max_tokens` and
-`context.max_tokens` tight so workers exchange summaries and artifact refs
-instead of raw logs or full history. Warnings or failures route through a
-compact resolver pass before the final handoff.
-
 `plan-implement-audit` is the recommended template for a bounded delivery task
 that still needs a full handoff: clarify, plan, implement, verify, audit,
 quality gate, and final report.
@@ -1804,7 +1861,7 @@ versioned like any other resource:
 ```bash
 curl -s -X POST http://127.0.0.1:8080/api/resources/workflow-templates/my-security-review/fork \
   -H "Content-Type: application/json" \
-  -d '{"source":"human-input-security-review","title":"My Security Review"}'
+  -d '{"source":"security-audit-evidence-gate","title":"My Security Review"}'
 ```
 
 Saved custom templates use a versioned v2 envelope:
@@ -2726,3 +2783,23 @@ During pauses:
 8. Match `skill` to the intended output shape.
 9. Run the workflow once on a small request and inspect `/status`, `/session`, and Workflow Studio runtime diagnostics during approval or readiness pauses.
 
+
+## Loop nodes and shared stage conversation
+
+A `for_each` node repeats one body stage, which suits per-source fetching or
+per-file inspection with isolated contexts:
+
+```yaml
+- name: per-source
+  node_type: for_each
+  params:
+    stage: fetch-source
+    items_ref: stages.catalog.outputs.urls
+```
+
+Each iteration runs with its own context; the parent only receives the body
+stage's structured output.
+
+The stage parameter `share_conversation: "true"` lets a stage continue the
+previous stage's transcript. It is off by default: measured runs paid more input
+than they saved, so enable it only when continuity is the point.

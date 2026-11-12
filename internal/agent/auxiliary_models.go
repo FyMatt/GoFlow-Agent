@@ -123,7 +123,7 @@ func (r *Runtime) classifyOrdinaryChatIntentWithModel(ctx context.Context, input
 		return ordinaryChatIntent{}, false
 	}
 	active := strings.TrimSpace(r.ActiveAgent())
-	runner, ok := r.runners[active]
+	runner, ok := r.agentRunner(active)
 	if !ok {
 		return ordinaryChatIntent{}, false
 	}
@@ -133,12 +133,13 @@ func (r *Runtime) classifyOrdinaryChatIntentWithModel(ctx context.Context, input
 	}
 	emitTaskStage(handler, r.session, "router", "route", "inspect", "classifying request intent")
 	request := schema.ChatRequest{
-		Model:       target.route.Model,
-		System:      routerSystemPrompt(),
-		Messages:    []schema.Message{{Role: "user", Content: strings.TrimSpace(input)}},
-		Tools:       nil,
-		Temperature: target.route.Temperature,
-		MaxTokens:   target.route.MaxTokens,
+		Model:           target.route.Model,
+		System:          routerSystemPrompt(),
+		Messages:        []schema.Message{{Role: "user", Content: strings.TrimSpace(input)}},
+		Tools:           nil,
+		Temperature:     target.route.Temperature,
+		MaxTokens:       target.route.MaxTokens,
+		ReasoningEffort: runControlsFromContext(ctx, r).ReasoningEffort,
 	}
 	emitPromptBudget(handler, r.session, "router", "route", request, nil, 0)
 	resp, err := target.llm.Chat(ctx, request)
@@ -148,7 +149,7 @@ func (r *Runtime) classifyOrdinaryChatIntentWithModel(ctx context.Context, input
 		}
 		return ordinaryChatIntent{}, false
 	}
-	emitTokenUsage(handler, r.session, "router", "route", resp.Usage)
+	emitTokenUsage(handler, r.session, "router", "route", resp)
 	mode := parseRouterMode(resp.Message.Content)
 	if mode == "" || mode == "chat" {
 		return ordinaryChatIntent{}, false

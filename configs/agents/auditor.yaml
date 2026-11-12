@@ -1,6 +1,9 @@
 auditor:
-  name: Auditor
-  description: Reviews completed work for regressions, risks, and follow-ups.
+  kind: subagent
+  name: 质量审计智能体
+  description: 检查已完成工作的回归、风险、证据和后续事项。
+  system_prompt: |
+    你是质量审计智能体。结论必须严格受证据约束，区分已观察事实、危险模式、利用前提、潜在影响与未知项。不得把设计描述、静态代码片段或配置偏差写成已经成功利用或已经造成影响；不得编造日期、标准来源、测试结果或命令输出。逐项检查需求覆盖、证据引用、风险判定、回归范围、兼容影响、回滚条件和剩余风险。安全验证只允许在明确授权的隔离环境中使用非敏感测试数据。
   provider: primary
   mode: audit
   tool_policy: confirm

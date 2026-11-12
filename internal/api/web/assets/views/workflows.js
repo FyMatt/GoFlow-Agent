@@ -1,6 +1,8 @@
 import { checkWorkspaceRequirement, escapeHTML, fetchWorkflowRun, fetchWorkflowRunActions, fetchWorkflowRuns, renderSafeMarkdown, request, startWorkflowRun, streamWorkflowRunEvents, submitWorkflowRunInput, workflowRunEventsURL } from "../api.js";
+import { icon } from "../icons.js";
 import { currentLanguage, localizedText, t } from "../i18n.js";
 import { loadResourceCapabilities, resourceAction, resourceActionLabel, resourceActionMethod, resourceActionPath, resourceCapability } from "../resource_actions.js";
+import { formatTokenText } from "../token_format.js";
 
 const executableTypes = new Set(["agent", "skill", "tool", "team", "custom"]);
 const controlTypes = new Set(["condition", "switch", "router", "policy_guard", "guard", "quality_gate", "quality_guard", "quality-guard", "parallel", "join", "input_gate", "checkpoint", "for_each", "loop", "sub_workflow"]);
@@ -14,20 +16,28 @@ const expressionAssistFieldOrder = ["condition", "policy", "switch_on"];
 const workflowStudioRunKey = "goflow.workflowStudio.activeRun";
 const defaultWorkflowStudioEventReconnectMS = 2200;
 const workflowInspectorWidthStorageKey = "goflow.workflow.inspectorWidth";
-const workflowInspectorWidthBounds = { min: 340, max: 720, defaultValue: 440 };
+const workflowInspectorWidthBounds = { min: 300, max: 560, defaultValue: 360 };
 const workflowLeftRailCollapsedStorageKey = "goflow.workflow.leftRailCollapsed";
 const workflowArtifactDraftStorageKey = "goflow.workflow.artifactDraft";
-const workflowExpertModeStorageKey = "goflow.workflow.expertMode";
-const workflowSimpleNodeTypes = new Set(["start", "agent", "skill", "tool", "condition", "checkpoint", "loop", "end"]);
+const workflowToolDraftStorageKey = "goflow.workflow.toolDraft";
+const workflowSimpleNodeTypes = new Set(["agent", "tool", "condition", "parallel", "checkpoint", "sub_workflow", "end"]);
+const builtinWorkflowTitles = {
+  "complex-project-delivery": "复杂项目交付",
+  "multi-domain-intake-router": "多领域任务分流",
+  "plan-fix-audit": "规划、修复与审计",
+  "plan-implement-audit": "规划、实现与审计",
+  "skill-chain": "技能链协作",
+  "task-decomposition-plan": "复杂任务拆解"
+};
 const workflowNodeMetrics = {
-  regularWidth: 392,
-  regularHeight: 158,
-  compactWidth: 332,
-  compactHeight: 122,
-  minCanvasWidth: 1560,
-  minCanvasHeight: 980,
-  leftPadding: 180,
-  topPadding: 150,
+  regularWidth: 340,
+  regularHeight: 176,
+  compactWidth: 290,
+  compactHeight: 128,
+  minCanvasWidth: 1280,
+  minCanvasHeight: 820,
+  leftPadding: 120,
+  topPadding: 100,
   edgeAnchorGap: 6,
   edgeRouteRun: 54,
   edgeObstacleGap: 30,
@@ -60,7 +70,7 @@ const state = {
   nodePaletteFilter: "",
   inspectorTab: "overview",
   sidePane: "settings",
-  expertMode: workflowExpertModeEnabled(),
+  advancedOpen: workflowAdvancedOpenByDefault(),
   stageRecommendationNotice: null,
   hoveredControlStage: "",
   resourcePickerExpanded: {},
@@ -123,9 +133,10 @@ function setWorkflowInspectorWidth(root, width) {
 
 function workflowLeftRailCollapsed() {
   try {
-    return localStorage.getItem(workflowLeftRailCollapsedStorageKey) === "1";
+    const saved = localStorage.getItem(workflowLeftRailCollapsedStorageKey);
+    return saved === null ? true : saved === "1";
   } catch {
-    return false;
+    return true;
   }
 }
 
@@ -133,6 +144,10 @@ function setWorkflowLeftRailCollapsed(root, collapsed) {
   const next = !!collapsed;
   const studio = root.querySelector(".studio");
   studio?.classList.toggle("left-rail-collapsed", next);
+  const rail = root.querySelector(".studio-left");
+  rail?.setAttribute("aria-hidden", next ? "true" : "false");
+  if (next) rail?.setAttribute("inert", "");
+  else rail?.removeAttribute("inert");
   const button = root.querySelector("#toggleWorkflowLeftRail");
   if (button) {
     const label = next ? t("workflow.expandLeftRail") : t("workflow.collapseLeftRail");
@@ -141,51 +156,56 @@ function setWorkflowLeftRailCollapsed(root, collapsed) {
     button.setAttribute("aria-pressed", next ? "true" : "false");
     button.innerHTML = leftRailToggleIcon(next);
   }
+  const toolbarButton = root.querySelector("#workflowLibraryToggle");
+  if (toolbarButton) toolbarButton.setAttribute("aria-expanded", next ? "false" : "true");
   try {
     localStorage.setItem(workflowLeftRailCollapsedStorageKey, next ? "1" : "0");
   } catch {
     // Layout preference is optional.
   }
+  syncWorkflowDrawerBackdrop(root);
 }
 
-function workflowExpertModeEnabled() {
-  const shell = document.querySelector("[data-app-shell]");
-  if (shell?.classList.contains("expert-experience")) return true;
-  if (shell?.classList.contains("simple-experience")) return false;
-  if (document.documentElement.dataset.experience) return document.documentElement.dataset.experience === "expert";
-  try {
-    return localStorage.getItem(workflowExpertModeStorageKey) === "1";
-  } catch {
-    return false;
-  }
+function setWorkflowInspectorOpen(root, open) {
+  const studio = root.querySelector(".studio");
+  const inspector = root.querySelector(".studio-right");
+  const next = !!open;
+  studio?.classList.toggle("inspector-open", next);
+  inspector?.setAttribute("aria-hidden", next ? "false" : "true");
+  if (next) inspector?.removeAttribute("inert");
+  else inspector?.setAttribute("inert", "");
+  root.querySelector("#workflowInspectorToggle")?.setAttribute("aria-expanded", next ? "true" : "false");
+  syncWorkflowDrawerBackdrop(root);
+}
+
+function syncWorkflowDrawerBackdrop(root) {
+  const studio = root.querySelector(".studio");
+  const backdrop = root.querySelector("#workflowDrawerBackdrop");
+  if (!studio || !backdrop) return;
+  const open = !studio.classList.contains("left-rail-collapsed") || studio.classList.contains("inspector-open");
+  backdrop.classList.toggle("hidden", !open);
+}
+
+function closeWorkflowDrawers(root) {
+  setWorkflowLeftRailCollapsed(root, true);
+  setWorkflowInspectorOpen(root, false);
+}
+
+function workflowAdvancedOpenByDefault() {
+  return false;
 }
 
 function workflowSimpleInspectorTabIDs() {
   return ["overview"];
 }
 
-function setWorkflowExpertMode(root, enabled, options = {}) {
-  state.expertMode = !!enabled;
-  try {
-    localStorage.setItem(workflowExpertModeStorageKey, state.expertMode ? "1" : "0");
-    localStorage.setItem("goflow.experienceMode", state.expertMode ? "expert" : "simple");
-  } catch {
-    // UI mode persistence is optional.
-  }
-  const shell = document.querySelector("[data-app-shell]");
-  shell?.classList.toggle("expert-experience", state.expertMode);
-  shell?.classList.toggle("simple-experience", !state.expertMode);
-  document.documentElement.dataset.experience = state.expertMode ? "expert" : "simple";
-  document.querySelectorAll("[data-experience-mode]").forEach(button => {
-    const active = button.dataset.experienceMode === (state.expertMode ? "expert" : "simple");
-    button.classList.toggle("active", active);
-    button.setAttribute("aria-pressed", active ? "true" : "false");
-  });
-  if (!state.expertMode && !workflowSimpleInspectorTabIDs().includes(state.inspectorTab)) {
+function setWorkflowAdvancedOpen(root, enabled, options = {}) {
+  state.advancedOpen = !!enabled;
+  if (!state.advancedOpen && !workflowSimpleInspectorTabIDs().includes(state.inspectorTab)) {
     state.inspectorTab = "overview";
   }
   renderWorkflowInspectorTabs(root);
-  applyWorkflowExperienceMode(root);
+  applyWorkflowAdvancedState(root);
   refreshNodePalette(root);
   renderStageForm(root);
   renderExecutionOrder(root);
@@ -193,30 +213,19 @@ function setWorkflowExpertMode(root, enabled, options = {}) {
   if (options.repaint !== false) scheduleWorkflowRepaint(root);
 }
 
-function applyWorkflowExperienceMode(root) {
+function applyWorkflowAdvancedState(root) {
   const studio = root.querySelector(".studio");
-  studio?.classList.toggle("expert-mode", !!state.expertMode);
-  studio?.classList.toggle("simple-mode", !state.expertMode);
-  const toggle = root.querySelector("#workflowExpertMode");
+  studio?.classList.toggle("advanced-open", !!state.advancedOpen);
+  studio?.classList.toggle("advanced-closed", !state.advancedOpen);
+  const toggle = root.querySelector("#workflowAdvancedToggle");
   if (toggle) {
-    toggle.checked = !!state.expertMode;
-    toggle.setAttribute("aria-checked", state.expertMode ? "true" : "false");
+    toggle.textContent = t(state.advancedOpen ? "workflow.hideAdvancedSettings" : "workflow.showAdvancedSettings");
+    toggle.setAttribute("aria-expanded", state.advancedOpen ? "true" : "false");
   }
-  const badge = root.querySelector("#workflowModeBadge");
-  if (badge) {
-    badge.textContent = state.expertMode ? t("workflow.modeExpertBadge") : t("workflow.modeSimpleBadge");
-    badge.className = `badge ${state.expertMode ? "info" : "good"}`;
-  }
-  const label = root.querySelector("#workflowModeLabel");
-  if (label) label.textContent = state.expertMode ? t("workflow.modeExpert") : t("workflow.modeSimple");
-  const help = root.querySelector("#workflowModeHelp");
-  if (help) help.textContent = state.expertMode ? t("workflow.modeExpertHelp") : t("workflow.modeSimpleHelp");
 }
 
 function leftRailToggleIcon(collapsed) {
-  return collapsed
-    ? `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8 5h10v14H8V5Zm2 2v10h6V7h-6ZM5 7h2v10H5V7Zm7 5 3-3v6l-3-3Z"/></svg>`
-    : `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M6 5h10v14H6V5Zm2 2v10h6V7H8Zm9 0h2v10h-2V7Zm-5 5-3 3V9l3 3Z"/></svg>`;
+  return icon(collapsed ? "chevrons-right" : "panel-left");
 }
 
 function bindWorkflowInspectorResizer(root) {
@@ -270,7 +279,8 @@ function bindWorkflowInspectorResizer(root) {
 
 export async function renderWorkflows(root) {
   state.activeRoot = root;
-  state.expertMode = workflowExpertModeEnabled();
+  state.advancedOpen = workflowAdvancedOpenByDefault();
+  const collapseLeftRail = workflowLeftRailCollapsed() || window.matchMedia("(max-width: 700px)").matches;
   const [options, resourceCapabilities] = await Promise.all([
     request("/api/workflow-options"),
     loadResourceCapabilities()
@@ -279,8 +289,9 @@ export async function renderWorkflows(root) {
   state.resourceCapabilities = resourceCapabilities;
   state.workflowTemplates = normalizeWorkflowTemplateSummaries(state.options.templates);
   root.innerHTML = `
-    <div class="studio ${state.expertMode ? "expert-mode" : "simple-mode"}">
-      <aside class="studio-left" aria-label="${escapeHTML(t("workflow.leftRail"))}">
+    <div class="studio ${state.advancedOpen ? "advanced-open" : "advanced-closed"}">
+      <button id="workflowDrawerBackdrop" type="button" class="workflow-drawer-backdrop hidden" aria-label="${escapeHTML(t("common.close"))}"></button>
+      <aside id="workflowLibraryDrawer" class="studio-left" aria-label="${escapeHTML(t("workflow.leftRail"))}">
         <div class="workflow-left-rail-head">
           <div>
             <strong>${escapeHTML(t("workflow.leftRailTitle"))}</strong>
@@ -299,7 +310,7 @@ export async function renderWorkflows(root) {
             return `<button type="button" data-quick-node="${escapeHTML(type)}" title="${escapeHTML(`${label} - ${help}`)}" aria-label="${escapeHTML(`${label}: ${help}`)}">${nodeIcon(type)}<span>${escapeHTML(shortLabel)}</span></button>`;
           }).join("")}
         </div>
-        <div class="panel flat workflow-list-panel" data-tour-id="workflow-library-list">
+        <div class="panel flat workflow-list-panel">
           <div class="panel-head">
             <h2>${t("workflow.workflows")}</h2>
             <button id="newGraph" type="button">${t("workflow.new")}</button>
@@ -320,7 +331,7 @@ export async function renderWorkflows(root) {
           </div>
           <div id="workflowTemplateList" class="workflow-template-list"></div>
         </div>
-        <div class="panel flat workflow-palette-panel" data-tour-id="workflow-palette">
+        <div class="panel flat workflow-palette-panel">
           <div class="panel-head">
             <div>
               <h2>${t("workflow.library")}</h2>
@@ -341,6 +352,10 @@ export async function renderWorkflows(root) {
       <section class="workflow-board" aria-label="${escapeHTML(t("workflow.canvasArea"))}">
         <div class="board-toolbar">
           <div class="workflow-board-title">
+            <div id="graphDisplayTitle" class="workflow-display-title hidden">
+              <strong id="graphDisplayTitleText"></strong>
+              <small id="graphDisplayTitleID"></small>
+            </div>
             <input id="graphName" class="title-input" aria-label="${escapeHTML(t("workflow.graphName"))}" placeholder="${escapeHTML(t("workflow.graphNamePlaceholder"))}">
             <input id="graphDescription" class="description-input" aria-label="${escapeHTML(t("workflow.graphDescription"))}" placeholder="${escapeHTML(t("workflow.graphDescriptionPlaceholder"))}">
           </div>
@@ -352,7 +367,7 @@ export async function renderWorkflows(root) {
             </div>
             <div class="workflow-canvas-runner-form">
               <textarea id="runInput" aria-label="${escapeHTML(t("workflow.runInputLabel"))}" placeholder="${escapeHTML(t("workflow.runInputPlaceholder"))}"></textarea>
-              <button id="runGraph" type="button" class="primary workflow-run-button">${t("workflow.run")}</button>
+              <button id="runGraph" type="button" class="primary workflow-run-button icon-text">${icon("send")}<span>${t("workflow.run")}</span></button>
             </div>
             <div class="workflow-canvas-live-panel">
               <span id="workflowRuntimeBadge" class="badge">${t("workflow.runtimeIdle")}</span>
@@ -361,45 +376,55 @@ export async function renderWorkflows(root) {
             </div>
           </section>
           <div class="toolbar workflow-board-actions">
-            <div class="workflow-toolbar-group compact" aria-label="${escapeHTML(t("workflow.zoomControls"))}">
-              <button id="zoomOut" type="button" class="icon-button" title="${escapeHTML(t("workflow.zoomOut"))}" aria-label="${escapeHTML(t("workflow.zoomOut"))}">-</button>
-              <span id="zoomLabel" class="badge">100%</span>
-              <button id="zoomIn" type="button" class="icon-button" title="${escapeHTML(t("workflow.zoomIn"))}" aria-label="${escapeHTML(t("workflow.zoomIn"))}">+</button>
-              <button id="zoomFit" type="button">${t("workflow.zoomFit")}</button>
-              <button id="zoomReset" type="button">${t("workflow.zoomReset")}</button>
-            </div>
-            <div class="workflow-toolbar-group" aria-label="${escapeHTML(t("workflow.layoutControls"))}">
-              <button id="autoLayoutGraph" type="button">${t("workflow.autoLayout")}</button>
-              <button id="focusCanvas" type="button">${t("workflow.focusMode")}</button>
-            </div>
+            <button id="workflowLibraryToggle" type="button" class="icon-button workflow-library-toggle" aria-controls="workflowLibraryDrawer" aria-expanded="false" title="${escapeHTML(t("workflow.leftRailTitle"))}" aria-label="${escapeHTML(t("workflow.leftRailTitle"))}">
+              ${icon("panel-left")}
+            </button>
             <div class="workflow-toolbar-group workflow-toolbar-status" aria-label="${escapeHTML(t("workflow.statusControls"))}">
               <span id="stageCount" class="badge" aria-live="polite"></span>
               <span id="workflowReadinessBadge" class="workflow-readiness-badge neutral" aria-live="polite"></span>
             </div>
             <div class="workflow-toolbar-group" aria-label="${escapeHTML(t("workflow.fileControls"))}">
-              <button id="validateGraph" type="button">${t("workflow.validateGraph")}</button>
-              <button id="importGraph" type="button">${workflowResourceActionLabel("import", t("workflow.importGraph"))}</button>
-              <button id="exportGraph" type="button">${workflowResourceActionLabel("export", t("workflow.exportGraph"))}</button>
-              <input id="importGraphFile" class="hidden" type="file" accept=".json,.yaml,.yml,application/json,application/x-yaml,text/yaml,text/plain" aria-label="${escapeHTML(t("workflow.importFileLabel"))}">
+              <button id="validateGraph" type="button" class="workflow-toolbar-command icon-text" title="${escapeHTML(t("workflow.validateGraph"))}">
+                ${icon("check")}<span>${t("workflow.validateGraph")}</span>
+              </button>
             </div>
             <div class="workflow-toolbar-group workflow-toolbar-primary" aria-label="${escapeHTML(t("workflow.saveControls"))}">
-              <button id="saveGraph" type="button" class="primary">${t("workflow.save")}</button>
-              <button id="deleteGraph" type="button" class="danger">${t("workflow.delete")}</button>
+              <button id="saveGraph" type="button" class="primary workflow-toolbar-command icon-text" title="${escapeHTML(t("workflow.save"))}">
+                ${icon("save")}<span>${t("workflow.save")}</span>
+              </button>
             </div>
+            <button id="workflowInspectorToggle" type="button" class="icon-button workflow-inspector-toggle" aria-controls="workflowInspectorDrawer" aria-expanded="false" title="${escapeHTML(t("workflow.settings"))}" aria-label="${escapeHTML(t("workflow.settings"))}">
+              ${icon("panel-right")}
+            </button>
+            <details class="workflow-toolbar-more">
+              <summary class="icon-button" title="${escapeHTML(t("nav.more"))}" aria-label="${escapeHTML(t("nav.more"))}">
+                ${icon("more-horizontal")}
+              </summary>
+              <div class="workflow-toolbar-more-menu">
+                <div class="workflow-toolbar-more-zoom" aria-label="${escapeHTML(t("workflow.zoomControls"))}">
+                  <button id="zoomOut" type="button" class="icon-button" title="${escapeHTML(t("workflow.zoomOut"))}" aria-label="${escapeHTML(t("workflow.zoomOut"))}">${icon("zoom-out")}</button>
+                  <span id="zoomLabel" class="badge">100%</span>
+                  <button id="zoomIn" type="button" class="icon-button" title="${escapeHTML(t("workflow.zoomIn"))}" aria-label="${escapeHTML(t("workflow.zoomIn"))}">${icon("zoom-in")}</button>
+                </div>
+                <button id="zoomFit" type="button">${t("workflow.zoomFit")}</button>
+                <button id="zoomReset" type="button">${t("workflow.zoomReset")}</button>
+                <button id="autoLayoutGraph" type="button">${t("workflow.autoLayout")}</button>
+                <button id="focusCanvas" type="button">${t("workflow.focusMode")}</button>
+                <button id="importGraph" type="button">${workflowResourceActionLabel("import", t("workflow.importGraph"))}</button>
+                <button id="exportGraph" type="button">${workflowResourceActionLabel("export", t("workflow.exportGraph"))}</button>
+                <button id="deleteGraph" type="button" class="danger">${t("workflow.delete")}</button>
+              </div>
+              <input id="importGraphFile" class="hidden" type="file" accept=".json,.yaml,.yml,application/json,application/x-yaml,text/yaml,text/plain" aria-label="${escapeHTML(t("workflow.importFileLabel"))}">
+            </details>
           </div>
         </div>
         <div id="workflowBoardStatus" class="workflow-board-status hidden">
           <div id="workflowValidationPanel" class="workflow-validation-panel hidden" aria-live="polite"></div>
           <div id="workflowTransferPanel" class="workflow-validation-panel workflow-transfer-panel hidden" aria-live="polite"></div>
         </div>
-        <div id="canvas" class="canvas" data-tour-id="workflow-canvas" tabindex="0" aria-label="${escapeHTML(t("workflow.canvasAria"))}" aria-keyshortcuts="Escape Delete Backspace">
+        <div id="canvas" class="canvas" tabindex="0" aria-label="${escapeHTML(t("workflow.canvasAria"))}" aria-keyshortcuts="Escape Delete Backspace">
           <div id="canvasSpace" class="canvas-space">
             <div id="canvasSurface" class="canvas-surface">
-            <div class="canvas-guide" data-tour-id="workflow-canvas-guide">
-              <strong>${t("workflow.canvasPanHint")}</strong>
-              <span>${t("workflow.canvasZoomHint")}</span>
-              <span>${t("workflow.canvasExecutionHint")}</span>
-            </div>
               <div id="workflowCanvasRunDock" class="workflow-canvas-run-dock hidden" aria-live="polite"></div>
               <svg id="edges" aria-hidden="true">
                 <defs><marker id="arrow" markerWidth="10" markerHeight="10" refX="9" refY="5" orient="auto" markerUnits="userSpaceOnUse"><path d="M1,1 L9,5 L1,9 Z" fill="currentColor"/></marker></defs>
@@ -411,22 +436,19 @@ export async function renderWorkflows(root) {
       </section>
 
       <div id="workflowInspectorResizer" class="workflow-inspector-resizer" role="separator" aria-orientation="vertical" aria-controls="stageForm" aria-label="${escapeHTML(t("workflow.inspectorResize"))}" tabindex="0"></div>
-      <aside class="studio-right" aria-label="${escapeHTML(t("workflow.inspectorRail"))}">
-        <div class="panel flat workflow-inspector-panel" data-tour-id="workflow-inspector">
+      <aside id="workflowInspectorDrawer" class="studio-right" aria-hidden="true" aria-label="${escapeHTML(t("workflow.inspectorRail"))}" inert>
+        <div class="panel flat workflow-inspector-panel">
           <div class="workflow-inspector-head">
             <div class="workflow-inspector-title">
               <h2>${t("workflow.settings")}</h2>
               <span id="stageSelectionBadge" class="badge neutral">${t("workflow.noSelection")}</span>
             </div>
-            <label class="workflow-mode-toggle" title="${escapeHTML(t("workflow.modeToggle"))}">
-              <input id="workflowExpertMode" type="checkbox" ${state.expertMode ? "checked" : ""} role="switch" aria-label="${escapeHTML(t("workflow.modeToggle"))}" aria-describedby="workflowModeHelp">
-              <span aria-hidden="true"></span>
-              <em id="workflowModeLabel">${escapeHTML(state.expertMode ? t("workflow.modeExpert") : t("workflow.modeSimple"))}</em>
-            </label>
-          </div>
-          <div class="workflow-mode-note">
-            <span id="workflowModeBadge" class="badge ${state.expertMode ? "info" : "good"}">${escapeHTML(state.expertMode ? t("workflow.modeExpertBadge") : t("workflow.modeSimpleBadge"))}</span>
-            <small id="workflowModeHelp">${escapeHTML(state.expertMode ? t("workflow.modeExpertHelp") : t("workflow.modeSimpleHelp"))}</small>
+            <div class="workflow-inspector-head-actions">
+              <button id="workflowAdvancedToggle" type="button" class="ghost-button" aria-expanded="${state.advancedOpen ? "true" : "false"}">${escapeHTML(t(state.advancedOpen ? "workflow.hideAdvancedSettings" : "workflow.showAdvancedSettings"))}</button>
+              <button id="workflowInspectorClose" type="button" class="icon-button" title="${escapeHTML(t("common.close"))}" aria-label="${escapeHTML(t("common.close"))}">
+                <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6 6 18"/></svg>
+              </button>
+            </div>
           </div>
           <div class="workflow-side-switch" role="tablist" aria-label="${escapeHTML(t("workflow.sidePaneTabs"))}">
             <button id="workflowSideTabSettings" type="button" data-workflow-side-pane="settings" role="tab" aria-controls="workflowSettingsPane">${escapeHTML(t("workflow.settings"))}</button>
@@ -467,13 +489,18 @@ export async function renderWorkflows(root) {
                 ${nodeTypeOptions().map(option => `<option value="${escapeHTML(option.type)}">${escapeHTML(nodeTypeLabel(option))}</option>`).join("")}
               </select></label>
               <div id="stageNodeTypeMeta" data-stage-field="node_type" class="workflow-node-type-meta hidden"></div>
-              <label data-stage-field="name"><span>${t("workflow.stageName")}</span><input id="stageName"></label>
+              <label data-stage-field="name"><span>${t("workflow.stageCompatibilityId")}</span><input id="stageName"><small class="workflow-field-hint">${t("workflow.stageCompatibilityIdHelp")}</small></label>
               <label data-stage-field="agent"><span>${t("workflow.agent")}</span><select id="stageAgent"></select></label>
               <div id="stageAgentPicker" data-stage-field="agent" class="workflow-resource-picker hidden"></div>
               <label data-stage-field="skill"><span>${t("workflow.skill")}</span><select id="stageSkill"></select></label>
               <div id="stageSkillPicker" data-stage-field="skill" class="workflow-resource-picker hidden"></div>
               <label data-stage-field="tool"><span>${t("workflow.toolMetadata")}</span><select id="stageTool"></select></label>
               <div id="stageToolPicker" data-stage-field="tool" class="workflow-resource-picker hidden"></div>
+              <label data-stage-field="tool_mode"><span>${t("workflow.toolMode")}</span><select id="stageToolMode">
+                <option value="connected">${t("workflow.toolModeConnected")}</option>
+                <option value="assisted">${t("workflow.toolModeAssisted")}</option>
+              </select><small class="workflow-field-hint">${t("workflow.toolModeHelp")}</small></label>
+              <div id="stageToolSchema" data-stage-field="tool" class="workflow-tool-schema hidden"></div>
               <label data-stage-field="team_template"><span>${t("workflow.teamTemplate")}</span><select id="stageParamTeam"></select></label>
               <div id="stageTeamTemplatePicker" data-stage-field="team_template" class="workflow-resource-picker hidden"></div>
               <div id="stageTeamTemplatePreview" data-stage-field="team_template" class="workflow-team-template-preview hidden"></div>
@@ -598,7 +625,7 @@ export async function renderWorkflows(root) {
                     <label><span>${t("workflow.contextMaxTokens")}</span><input id="stageContextMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("4000")}"><small class="workflow-field-hint">${t("workflow.contextMaxTokensHelp")}</small></label>
                     <label class="check workflow-context-retrieval"><input id="stageContextRetrievalEnabled" type="checkbox"> ${t("workflow.contextRetrievalEnabled")}</label>
                   </div>
-                  <div class="workflow-context-budget-grid expert-mode-section">
+                  <div class="workflow-context-budget-grid advanced-only-section">
                     <label><span>${t("workflow.contextPromptMaxTokens")}</span><input id="stageContextPromptMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("6000")}"><small class="workflow-field-hint">${t("workflow.contextPromptMaxTokensHelp")}</small></label>
                     <label><span>${t("workflow.contextRequestMaxTokens")}</span><input id="stageContextRequestMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("1200")}"><small class="workflow-field-hint">${t("workflow.contextRequestMaxTokensHelp")}</small></label>
                     <label><span>${t("workflow.contextInputsMaxTokens")}</span><input id="stageContextInputsMaxTokens" type="number" min="0" step="100" placeholder="${examplePlaceholder("1600")}"><small class="workflow-field-hint">${t("workflow.contextInputsMaxTokensHelp")}</small></label>
@@ -652,7 +679,7 @@ export async function renderWorkflows(root) {
             </details>
           </div>
           </section>
-          <section id="workflowRuntimePane" class="workflow-side-pane workflow-runtime-pane hidden" role="tabpanel" aria-labelledby="workflowSideTabRuntime" data-tour-id="workflow-run-preview">
+          <section id="workflowRuntimePane" class="workflow-side-pane workflow-runtime-pane hidden" role="tabpanel" aria-labelledby="workflowSideTabRuntime">
             <div class="workflow-run-panel">
               <div class="workflow-run-head">
                 <div>
@@ -681,15 +708,22 @@ export async function renderWorkflows(root) {
 
   hydrateWorkflowInspectorV2(root);
   applyWorkflowInspectorWidth(root);
-  setWorkflowLeftRailCollapsed(root, workflowLeftRailCollapsed());
+  setWorkflowLeftRailCollapsed(root, collapseLeftRail);
   await loadWorkflowList();
   await loadWorkflowTemplates();
   await openRequestedWorkflow();
-  openArtifactDraftForWorkflow();
   if (!state.graph.stages.length) createPresetGraph();
+  openRequestedToolDraft();
+  openArtifactDraftForWorkflow();
   bind(root);
   bindWorkflowShortcuts();
-  renderAll(root);
+  renderLoadedWorkflowGraph(root);
+  if (state.openConnectedToolInspector) {
+    state.openConnectedToolInspector = false;
+    setWorkflowLeftRailCollapsed(root, true);
+    setWorkflowInspectorTab(root, "overview", { render: true });
+    setWorkflowInspectorOpen(root, true);
+  }
   restoreWorkflowStudioRuntime(root).catch(() => {});
   window.addEventListener("goflow:view-dispose", () => stopWorkflowStudioEventStream(), { once: true });
 }
@@ -757,7 +791,7 @@ function createExpressionAssistState() {
 }
 
 function quickNodeTypes() {
-  return ["agent", "skill", "tool", "condition", "checkpoint", "end"];
+  return ["agent", "tool", "condition", "parallel", "checkpoint", "sub_workflow", "end"];
 }
 
 function quickNodeShortLabel(type, fallback = "") {
@@ -774,7 +808,7 @@ function workflowInspectorTabs() {
     { id: "flow", label: t("workflow.inspectorTab.flow") },
     { id: "advanced", label: t("workflow.inspectorTab.advanced") }
   ];
-  if (state.expertMode) return tabs;
+  if (state.advancedOpen) return tabs;
   const simple = new Set(workflowSimpleInspectorTabIDs());
   return tabs.filter(tab => simple.has(tab.id));
 }
@@ -906,7 +940,7 @@ function workflowInspectorPanelMatchesTab(panel, tab) {
   if (!panel?.id) return false;
   if (panel.id === `workflowInspectorPanel-${tab}`) return true;
   if (tab === "advanced" && panel.id === "stageAdvancedPanel") return true;
-  if (state.expertMode && tab === "outputs" && panel.id === "stageArtifactsPanel") return true;
+  if (state.advancedOpen && tab === "outputs" && panel.id === "stageArtifactsPanel") return true;
   return false;
 }
 
@@ -1069,7 +1103,10 @@ function ingestRuntimeEvent(event) {
   if (previousStage && previousStage !== stageRuntime.name) markStageRuntimeComplete(previousStage);
   state.runtime.currentStage = stageRuntime.name;
   state.runtime.lastStage = stageRuntime.name;
-  if (previousStage !== stageRuntime.name) invalidateWorkflowRuntimeActions();
+  if (previousStage !== stageRuntime.name) {
+    invalidateWorkflowRuntimeActions();
+    selectWorkflowRuntimeStage(stageRuntime.name);
+  }
   state.runtime.route = deriveRoute(stageRuntime);
   const existingStageRuntime = state.runtime.stageDetails[stageRuntime.name] || {};
   const mergedStageRuntime = {
@@ -1097,6 +1134,18 @@ function ingestRuntimeEvent(event) {
       state.runtime.finalStage = stageRuntime.name;
     }
   }
+  return true;
+}
+
+function selectWorkflowRuntimeStage(stageName) {
+  const name = String(stageName || "").trim();
+  if (!name) return false;
+  const index = state.graph.stages.findIndex(stage => stage.name === name);
+  if (index < 0 || state.selected === index) return false;
+  state.selected = index;
+  state.inspectorTab = "overview";
+  state.sidePane = "settings";
+  state.runtime.autoSelectionPending = true;
   return true;
 }
 
@@ -1156,6 +1205,19 @@ function workflowRuntimeReasonText(...values) {
     if (value === null || value === undefined || value === "") continue;
     const raw = String(formatRuntimeValue(value) || "").trim();
     if (!raw || raw === "[object Object]") continue;
+    if (currentLanguage() === "zh") {
+      const localizedReasons = {
+        budget_hard_limit_hit: "已达到预算硬上限",
+        budget_soft_limit_hit: "已达到预算提醒阈值",
+        prompt_budget_hard_limit_hit: "输入提示已达到预算硬上限",
+        output_budget_hard_limit_hit: "输出内容已达到预算硬上限",
+        max_iterations_reached: "已达到最大执行轮次",
+        approval_required: "需要用户审批后继续",
+        tool_approval_required: "工具调用需要用户审批"
+      };
+      const localized = localizedReasons[raw.toLowerCase()];
+      if (localized) return localized;
+    }
     if (workflowLooksTechnical(raw)) return raw;
     return workflowDisplayText(raw);
   }
@@ -2919,16 +2981,26 @@ function revealWorkflowCurrentStage(root) {
   if (!workflowRuntimeHasActiveCurrentStage() || state.dragging || state.panning || state.connecting) return;
   const stageName = state.runtime.currentStage || "";
   const surface = root.querySelector("#canvasSurface");
+  const canvas = root.querySelector("#canvas");
   const node = workflowCanvasNodeElement(surface, stageName);
-  if (!node) return;
+  if (!node || !canvas) return;
   const now = Date.now();
   const key = `${state.runtime.runID || ""}:${stageName}`;
   if (state.runtime.lastRevealKey === key && now - Number(state.runtime.lastRevealAt || 0) < 5000) return;
   state.runtime.lastRevealKey = key;
   state.runtime.lastRevealAt = now;
-  node.scrollIntoView({
-    block: "nearest",
-    inline: "nearest",
+  const canvasRect = canvas.getBoundingClientRect();
+  const nodeRect = node.getBoundingClientRect();
+  const margin = 24;
+  let left = canvas.scrollLeft;
+  let top = canvas.scrollTop;
+  if (nodeRect.left < canvasRect.left + margin) left -= canvasRect.left + margin - nodeRect.left;
+  if (nodeRect.right > canvasRect.right - margin) left += nodeRect.right - (canvasRect.right - margin);
+  if (nodeRect.top < canvasRect.top + margin) top -= canvasRect.top + margin - nodeRect.top;
+  if (nodeRect.bottom > canvasRect.bottom - margin) top += nodeRect.bottom - (canvasRect.bottom - margin);
+  canvas.scrollTo({
+    left: Math.max(0, left),
+    top: Math.max(0, top),
     behavior: prefersReducedMotion() ? "auto" : "smooth"
   });
 }
@@ -3055,7 +3127,7 @@ function renderSelectedStageRuntime(root) {
   const nextHTML = `
     <div class="workflow-stage-runtime-head">
       <strong>${t("workflow.runtimeDetailTitle")}</strong>
-      <span>${escapeHTML(stage.name || "")}</span>
+      <span>${escapeHTML(workflowStageDisplayName(stage.name || ""))}</span>
       <button type="button" class="ghost-button workflow-stage-detail-load" data-stage-runtime-load="${escapeHTML(stageName)}">${escapeHTML(detailState.loaded ? t("workflow.runtimeDetailRefresh") : t("workflow.runtimeDetailLoad"))}</button>
     </div>
     <div class="workflow-stage-runtime-explain ${escapeHTML(explanation.tone)}">
@@ -3166,46 +3238,44 @@ function workflowStageRuntimeProjectDeliveryPanel(stage = {}, runtime = {}) {
   );
   if (stageName === "plan") {
     return workflowProjectDeliveryPanel("project-plan", t("workflow.runtimeProject.projectPlan"), t("workflow.runtimeProject.projectPlanHelp"), [
-      [t("workflow.runtimeProject.projectPlan"), value(["project_plan"], ["Project Plan"])],
-      [t("workflow.runtimeProject.workSlices"), value(["work_slices"], ["Work Slices"])],
-      [t("workflow.runtimeProject.verificationStrategy"), value(["verification_strategy"], ["Verification Strategy"])],
+      [t("workflow.runtimeProject.projectPlan"), value(["plan"], ["Delivery Plan"])],
+      [t("workflow.runtimeProject.workSlices"), value(["change_slices"], ["Change Slices"])],
+      [t("workflow.runtimeProject.verificationStrategy"), value(["verification_commands"], ["Verification Commands"])],
       [t("workflow.runtimeProject.definitionOfDone"), value(["definition_of_done"], ["Definition of Done"])]
     ]);
   }
-  if (stageName === "iteration" || stageName === "delivery-loop") {
+  if (stageName === "implement") {
     return workflowProjectDeliveryPanel("iteration", t("workflow.runtimeProject.iteration"), t("workflow.runtimeProject.iterationHelp"), [
-      [t("workflow.runtimeProject.currentIteration"), value(["iteration_number", "iteration_count"], ["Iteration Number"])],
-      [t("workflow.runtimeProject.selectedSlice"), value(["selected_work_slice"], ["Selected Work Slice"])],
-      [t("workflow.runtimeProject.implementationSummary"), value(["implementation_summary"], ["Implementation Summary"], ["summary"])],
-      [t("workflow.runtimeProject.verificationPerformed"), value(["verification"], ["Verification Performed"])],
-      [t("workflow.runtimeProject.planUpdate"), value(["plan_update"], ["Plan Update"])],
-      [t("workflow.runtimeProject.remainingWork"), value(["remaining_work", "blockers"], ["Remaining Work"])],
-      [t("workflow.runtimeProject.completionDecision"), value(["completion_decision", "complete"], ["Completion Decision"], ["summary"])]
+      [t("workflow.runtimeProject.implementationSummary"), value(["implementation"], ["Change Summary"], ["summary"])],
+      [t("workflow.runtimeProject.filesChanged"), value(["changed_files", "changes"], ["Files Changed"])],
+      [t("workflow.runtimeProject.requirementsCoverage"), value(["requirements_covered"], ["Requirements Covered"])],
+      [t("workflow.runtimeProject.verificationPerformed"), value(["verification"], ["Verification Attempted"])],
+      [t("workflow.runtimeProject.residualRisks"), value(["remaining_risks", "blockers"], ["Remaining Risks"])]
     ]);
   }
-  if (stageName === "loop-quality" || stageName === "operator-review" || stageName === "recovery-plan") {
+  if (stageName === "quality" || stageName === "recovery") {
     return workflowProjectDeliveryPanel("remaining-work", t("workflow.runtimeProject.remainingWork"), t("workflow.runtimeProject.remainingWorkHelp"), [
       [t("workflow.runtimeProject.qualityStatus"), value(["quality_status"], ["Quality Status"])],
-      [t("workflow.runtimeProject.remainingWork"), value(["remaining_work", "failures", "blockers"], ["Remaining Work", "Failed Iterations", "Missing Evidence"])],
-      [t("workflow.runtimeProject.nextAction"), value(["next_actions", "next_action"], ["Recommended Next Action", "User Decision Needed"])],
-      [t("workflow.runtimeProject.planUpdate"), value(["updated_plan"], ["Updated Plan", "Recovery Decision"])]
+      [t("workflow.runtimeProject.remainingWork"), value(["failures", "blockers"], ["Failed Checks"])],
+      [t("workflow.runtimeProject.nextAction"), value(["next_actions", "next_action"], ["Safe Next Slice", "Operator Decision"])],
+      [t("workflow.runtimeProject.planUpdate"), value(["recovery"], ["Recovery Status", "Verification Needed"])]
     ]);
   }
-  if (stageName === "final-validation") {
+  if (stageName === "test" || stageName === "lint" || stageName === "audit") {
     return workflowProjectDeliveryPanel("final-validation", t("workflow.runtimeProject.finalValidation"), t("workflow.runtimeProject.finalValidationHelp"), [
-      [t("workflow.runtimeProject.finalValidationResult"), value(["final_validation_result"], ["Final Validation Result"], ["final_validation"])],
+      [t("workflow.runtimeProject.finalValidationResult"), value(["test_report", "lint_report", "audit"], ["Test Result", "Lint Result", "Audit Decision"], ["summary"])],
       [t("workflow.runtimeProject.commandsRun"), value(["commands_run"], ["Commands Run"], ["verification"])],
       [t("workflow.runtimeProject.requirementsCoverage"), value(["requirements_coverage"], ["Requirements Coverage"])],
-      [t("workflow.runtimeProject.failures"), value(["failures"], ["Failures"])],
-      [t("workflow.runtimeProject.residualRisks"), value(["residual_risks"], ["Residual Risks"])]
+      [t("workflow.runtimeProject.failures"), value(["failures", "findings"], ["Failure Evidence", "Blocking Findings", "Findings"])],
+      [t("workflow.runtimeProject.residualRisks"), value(["residual_risks"], ["Residual Risk", "Residual Risks"])]
     ]);
   }
   if (stageName === "final-report") {
     return workflowProjectDeliveryPanel("final-report", t("workflow.runtimeProject.finalReport"), t("workflow.runtimeProject.finalReportHelp"), [
-      [t("workflow.runtimeProject.completionSummary"), value(["completion_summary"], ["Completion Summary"], ["final_report", "summary"])],
-      [t("workflow.runtimeProject.requirementsDelivered"), value(["requirements_delivered"], ["Requirements Delivered"])],
+      [t("workflow.runtimeProject.completionSummary"), value(["delivery_status"], ["Delivery Status"], ["final_report", "summary"])],
+      [t("workflow.runtimeProject.requirementsDelivered"), value(["changes_delivered"], ["Changes Delivered"])],
       [t("workflow.runtimeProject.filesChanged"), value(["changed_files", "changes"], ["Files Changed"])],
-      [t("workflow.runtimeProject.verificationEvidence"), value(["verification_evidence"], ["Verification Evidence"], ["verification"])],
+      [t("workflow.runtimeProject.verificationEvidence"), value(["verification_evidence"], ["Test Evidence", "Lint Evidence"], ["verification"])],
       [t("workflow.runtimeProject.residualRisks"), value(["residual_risks"], ["Residual Risks"])],
       [t("workflow.runtimeProject.artifactReferences"), value(["artifact_references"], ["Artifact References"])]
     ]);
@@ -3247,8 +3317,14 @@ function workflowStageRuntimeProjectDeliveryText(runtime = {}) {
     runtime.result?.output,
     runtime.outputs?.raw_output,
     runtime.outputs?.output,
+    runtime.outputs?.plan,
     runtime.outputs?.project_plan,
+    runtime.outputs?.implementation,
     runtime.outputs?.iteration_report,
+    runtime.outputs?.test_report,
+    runtime.outputs?.lint_report,
+    runtime.outputs?.audit,
+    runtime.outputs?.recovery,
     runtime.outputs?.final_validation,
     runtime.outputs?.final_report,
     runtime.outputs?.summary,
@@ -3819,8 +3895,7 @@ function workflowNumber(value) {
 
 function workflowTokenCountText(value) {
   const number = Number(value || 0);
-  if (!Number.isFinite(number) || number <= 0) return "-";
-  return `${number.toLocaleString()} ${t("chat.tokens")}`;
+  return formatTokenText(number, t("chat.tokens"), { allowZero: false });
 }
 
 function workflowCostText(value, currency = "") {
@@ -4042,9 +4117,7 @@ function nodeLibraryGroups() {
 
 function filteredNodeTypeOptions() {
   const filter = normalizeNodePaletteSearch(state.nodePaletteFilter);
-  const options = state.expertMode
-    ? nodeTypeOptions()
-    : nodeTypeOptions().filter(option => workflowSimpleNodeTypes.has(option.type));
+  const options = nodeTypeOptions().filter(option => workflowSimpleNodeTypes.has(option.type));
   if (!filter) return options;
   return options.filter(option => normalizeNodePaletteSearch(nodePaletteSearchText(option)).includes(filter));
 }
@@ -4244,6 +4317,49 @@ async function openRequestedWorkflow() {
   }
 }
 
+function openRequestedToolDraft() {
+  const raw = localStorage.getItem(workflowToolDraftStorageKey);
+  if (!raw) return;
+  localStorage.removeItem(workflowToolDraftStorageKey);
+  let draft;
+  try {
+    draft = JSON.parse(raw);
+  } catch {
+    return;
+  }
+  const toolName = String(draft?.name || "").trim();
+  if (!toolName) return;
+  let sourceIndex = Number.isInteger(state.selected) ? state.selected : -1;
+  if (!workflowStageCanGenerateConnectedToolCall(state.graph.stages[sourceIndex])) {
+    sourceIndex = state.graph.stages.findLastIndex(workflowStageCanGenerateConnectedToolCall);
+  }
+  const source = sourceIndex >= 0 ? state.graph.stages[sourceIndex] : null;
+  const previousNext = source && Array.isArray(source.next) ? [...source.next] : [];
+  const x = Number(source?.position?.x || 120) + 360;
+  const y = Number(source?.position?.y || 160);
+  addStageFromTemplate("tool", x, y);
+  const toolStage = selectedStage();
+  toolStage.tool = toolName;
+  toolStage.params = { ...(toolStage.params || {}), tool_mode: "connected" };
+  toolStage.outputs = { tool_result: "result.output", tool_results: "result.tool_results", ...(toolStage.outputs || {}) };
+  if (source) {
+    source.next = [toolStage.name];
+    toolStage.next = previousNext.filter(name => name !== toolStage.name);
+  }
+  state.openConnectedToolInspector = true;
+  state.graphValidation = null;
+  state.graphTransfer = null;
+}
+
+function workflowStageCanGenerateConnectedToolCall(stage) {
+  return ["agent", "skill", "custom"].includes(normalizedNodeType(stage));
+}
+
+function workflowToolMode(stage) {
+  const mode = String(stage?.params?.tool_mode || stage?.params?.["tool.mode"] || "").trim().toLowerCase();
+  return ["connected", "connected_call", "connected_tool", "upstream", "edge"].includes(mode) ? "connected" : "assisted";
+}
+
 function bind(root) {
   const canvas = root.querySelector("#canvas");
   bindWorkflowInspectorResizer(root);
@@ -4265,19 +4381,9 @@ function bind(root) {
   root.querySelector("#zoomFit").onclick = () => fitCanvas(root);
   root.querySelector("#autoLayoutGraph").onclick = () => autoLayoutGraph(root);
   root.querySelector("#focusCanvas").onclick = () => toggleWorkflowFocusMode(root);
-  root.querySelector("#workflowExpertMode")?.addEventListener("change", event => {
-    setWorkflowExpertMode(root, !!event.target.checked);
+  root.querySelector("#workflowAdvancedToggle")?.addEventListener("click", () => {
+    setWorkflowAdvancedOpen(root, !state.advancedOpen);
   });
-  const handleExperienceMode = event => {
-    const expert = event.detail?.mode === "expert" || event.detail?.expert === true;
-    if (state.activeRoot === root && state.expertMode !== expert) {
-      setWorkflowExpertMode(root, expert);
-    }
-  };
-  window.addEventListener("goflow:experience-mode", handleExperienceMode);
-  window.addEventListener("goflow:view-dispose", () => {
-    window.removeEventListener("goflow:experience-mode", handleExperienceMode);
-  }, { once: true });
   root.querySelector("#toggleWorkflowLeftRail").onclick = () => {
     const studio = root.querySelector(".studio");
     setWorkflowLeftRailCollapsed(root, !studio?.classList.contains("left-rail-collapsed"));
@@ -4286,6 +4392,26 @@ function bind(root) {
       centerGraphInViewport(root);
     }, 50);
   };
+  root.querySelector("#workflowLibraryToggle")?.addEventListener("click", () => {
+    const studio = root.querySelector(".studio");
+    const open = studio?.classList.contains("left-rail-collapsed") !== false;
+    if (open) setWorkflowInspectorOpen(root, false);
+    setWorkflowLeftRailCollapsed(root, !open);
+  });
+  root.querySelector("#workflowInspectorToggle")?.addEventListener("click", () => {
+    const studio = root.querySelector(".studio");
+    const open = !studio?.classList.contains("inspector-open");
+    if (open) setWorkflowLeftRailCollapsed(root, true);
+    setWorkflowInspectorOpen(root, open);
+  });
+  root.querySelector("#workflowInspectorClose")?.addEventListener("click", () => setWorkflowInspectorOpen(root, false));
+  root.querySelector("#workflowDrawerBackdrop")?.addEventListener("click", () => closeWorkflowDrawers(root));
+  root.addEventListener("keydown", event => {
+    if (event.key !== "Escape") return;
+    const studio = root.querySelector(".studio");
+    if (studio?.classList.contains("left-rail-collapsed") && !studio?.classList.contains("inspector-open")) return;
+    closeWorkflowDrawers(root);
+  });
   root.querySelector("#workflowInspectorTabs").addEventListener("click", event => {
     const button = event.target instanceof Element ? event.target.closest("[data-workflow-inspector-tab]") : null;
     if (!button) return;
@@ -4336,7 +4462,7 @@ function bind(root) {
       addStageFromTemplate(quickButton.dataset.emptyQuickNode || "agent", point.x, point.y);
       clearWorkflowValidation(root);
       clearWorkflowTransfer(root);
-      renderAll(root);
+      renderLoadedWorkflowGraph(root);
       return;
     }
     const templateButton = event.target instanceof Element ? event.target.closest("[data-empty-open-templates]") : null;
@@ -4367,7 +4493,16 @@ function bind(root) {
   const palette = root.querySelector(".node-palette");
   palette.ondragstart = event => {
     const button = event.target.closest("button[data-template]");
-    if (button) event.dataTransfer.setData("text/plain", button.dataset.template);
+    if (!button || !event.dataTransfer) return;
+    const template = button.dataset.template || "";
+    event.dataTransfer.effectAllowed = "copy";
+    event.dataTransfer.setData("application/x-goflow-node", template);
+    event.dataTransfer.setData("text/plain", template);
+    button.classList.add("dragging");
+  };
+  palette.ondragend = event => {
+    event.target.closest("button[data-template]")?.classList.remove("dragging");
+    canvas.classList.remove("drop-ready");
   };
   palette.onclick = event => {
     const button = event.target.closest("button[data-template]");
@@ -4378,7 +4513,19 @@ function bind(root) {
     clearWorkflowTransfer(root);
     renderAll(root);
   };
-  canvas.ondragover = event => event.preventDefault();
+  canvas.ondragenter = event => {
+    event.preventDefault();
+    canvas.classList.add("drop-ready");
+  };
+  canvas.ondragover = event => {
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "copy";
+    canvas.classList.add("drop-ready");
+  };
+  canvas.ondragleave = event => {
+    const related = event.relatedTarget instanceof Node ? event.relatedTarget : null;
+    if (!related || !canvas.contains(related)) canvas.classList.remove("drop-ready");
+  };
   canvas.onwheel = event => {
     if (!event.ctrlKey && !event.metaKey) return;
     event.preventDefault();
@@ -4388,7 +4535,7 @@ function bind(root) {
   canvas.onmousedown = event => {
     if (event.button !== 0) return;
     const target = event.target instanceof Element ? event.target : null;
-    if (target?.closest(".flow-node, .node-port, .edge-action, button, input, textarea, select, .canvas-guide")) return;
+    if (target?.closest(".flow-node, .node-port, .edge-action, button, input, textarea, select")) return;
     if (state.connectSource) {
       state.connectSource = "";
       event.preventDefault();
@@ -4407,7 +4554,8 @@ function bind(root) {
   };
   canvas.ondrop = event => {
     event.preventDefault();
-    const template = event.dataTransfer.getData("text/plain");
+    canvas.classList.remove("drop-ready");
+    const template = event.dataTransfer?.getData("application/x-goflow-node") || event.dataTransfer?.getData("text/plain") || "";
     if (!template) return;
     const point = graphPoint(root, event);
     addStageFromTemplate(template, point.x, point.y);
@@ -4422,6 +4570,7 @@ function bind(root) {
     "stageAgent",
     "stageSkill",
     "stageTool",
+    "stageToolMode",
     "stageNext",
     "stageNextStrategy",
     "stageCondition",
@@ -4503,7 +4652,7 @@ function bind(root) {
     insertExpressionSuggestion(root, button.dataset.expressionSuggestion || "");
   });
   root.querySelector("#stageDataFlow").addEventListener("click", event => {
-    if (!state.expertMode) return;
+    if (!state.advancedOpen) return;
     const button = event.target instanceof Element ? event.target.closest("[data-copy-stage-ref]") : null;
     if (!button) return;
     addDataFlowReferenceToStageInput(root, button.dataset.copyStageRef || "");
@@ -4882,7 +5031,7 @@ function addStageFromTemplate(template, x, y) {
     start: { name: uniqueStageName("start"), node_type: "start" },
     agent: { name: uniqueStageName("agent"), node_type: "agent", agent: firstAgent, skill: firstSkill },
     skill: { name: uniqueStageName("skill"), node_type: "skill", agent: "planner", skill: firstSkill },
-    tool: { name: uniqueStageName("tool"), node_type: "tool", agent: "fixer", skill: "code-writing", tool: firstTool, approval: true },
+    tool: { name: uniqueStageName("tool"), node_type: "tool", tool: firstTool, params: { tool_mode: "connected" }, outputs: { tool_result: "result.output", tool_results: "result.tool_results" } },
     team: { name: uniqueStageName("team"), node_type: "team", agent: firstAgent, params: { team: firstTeamTemplate } },
     condition: { name: uniqueStageName("condition"), node_type: "condition", condition: `contains(previous.raw_output, "risk")`, routes: { true: "yes", false: "no" } },
     switch: { name: uniqueStageName("switch"), node_type: "switch", switch_on: "previous.summary", cases: { default: "next" } },
@@ -4900,8 +5049,9 @@ function addStageFromTemplate(template, x, y) {
   const base = remoteDefault || presets[template] || { name: uniqueStageName(template || "stage"), node_type: template || "custom" };
   if (base.name) base.name = uniqueStageName(base.name);
   if (!base.node_type) base.node_type = template || "custom";
-  if (executableTypes.has(base.node_type) && !base.agent) base.agent = firstAgent;
-  if (["agent", "skill", "tool", "custom"].includes(base.node_type) && !base.skill) base.skill = firstSkill;
+  const connectedTool = base.node_type === "tool" && workflowToolMode(base) === "connected";
+  if (executableTypes.has(base.node_type) && !base.agent && !connectedTool) base.agent = firstAgent;
+  if (["agent", "skill", "tool", "custom"].includes(base.node_type) && !base.skill && !connectedTool) base.skill = firstSkill;
   if (base.node_type === "tool" && !base.tool) base.tool = firstTool;
   state.graph.stages.push({
     ...base,
@@ -4978,7 +5128,6 @@ function applyStagePresetToSelection(root, source, nodeType) {
 
 function workflowNodeTypeChoices() {
   const options = nodeTypeOptions();
-  if (state.expertMode) return options;
   const selected = normalizedNodeType(selectedStage());
   return options.filter(option => workflowSimpleNodeTypes.has(option.type) || option.type === selected);
 }
@@ -4999,8 +5148,9 @@ function renderAll(root) {
   cancelScheduledWorkflowRepaint();
   applyWorkflowFocusMode(root);
   root.querySelector("#graphName").value = state.graph.name || "";
+  renderWorkflowDisplayTitle(root);
   root.querySelector("#graphDescription").value = state.graph.description || "";
-  applyWorkflowExperienceMode(root);
+  applyWorkflowAdvancedState(root);
   updateWorkflowToolbarStatus(root);
   updateZoomLabel(root);
   syncWorkflowSidePane(root);
@@ -5019,9 +5169,30 @@ function renderAll(root) {
   renderRuntime(root);
 }
 
+function renderWorkflowDisplayTitle(root) {
+  const shell = root.querySelector("#graphDisplayTitle");
+  const titleNode = root.querySelector("#graphDisplayTitleText");
+  const idNode = root.querySelector("#graphDisplayTitleID");
+  const nameInput = root.querySelector("#graphName");
+  if (!shell || !titleNode || !idNode || !nameInput) return;
+  const name = String(state.graph.name || "").trim();
+  const template = (state.workflowTemplates || []).find(item => item?.name === name);
+  const saved = (state.workflows || []).find(item => item?.name === name);
+  const displayName = localizedText(template?.title || saved?.title || builtinWorkflowTitles[name] || "");
+  const showLocalizedTitle = currentLanguage() === "zh" && displayName && displayName !== name;
+  shell.classList.toggle("hidden", !showLocalizedTitle);
+  nameInput.classList.toggle("hidden", showLocalizedTitle);
+  if (!showLocalizedTitle) return;
+  titleNode.textContent = displayName;
+  idNode.textContent = `${t("workflow.compatibilityId")}: ${name}`;
+}
+
 function toggleWorkflowFocusMode(root) {
   state.focusMode = !state.focusMode;
   applyWorkflowFocusMode(root);
+  if (state.focusMode) {
+    window.scrollTo({ top: 0, left: 0, behavior: "auto" });
+  }
   window.setTimeout(() => {
     applyCanvasGeometry(root);
     fitCanvas(root);
@@ -5070,7 +5241,16 @@ function scheduleWorkflowRuntimeRefresh(root, options = {}) {
     workflowRuntimeRefreshNeedsRender = false;
     workflowRuntimeRefreshNeedsRepaint = false;
     workflowRuntimeRefreshNeedsSave = false;
-    if (needsRender) renderRuntime(root);
+    if (needsRender) {
+      renderRuntime(root);
+      if (state.runtime.autoSelectionPending) {
+        state.runtime.autoSelectionPending = false;
+        renderStageForm(root);
+        setWorkflowLeftRailCollapsed(root, true);
+        setWorkflowInspectorOpen(root, true);
+        loadWorkflowStageRuntimeDetail(root, state.runtime.currentStage, { force: false }).catch(() => {});
+      }
+    }
     if (needsRepaint) scheduleWorkflowRepaint(root);
     if (needsSave) saveWorkflowStudioActiveRun();
   });
@@ -5149,7 +5329,8 @@ function renderWorkflowList(root) {
   for (const workflow of state.workflows || []) {
     const item = document.createElement("button");
     item.className = "flow-card" + (workflow.name === state.graph.name ? " active" : "");
-    item.innerHTML = `<strong>${escapeHTML(workflow.name)}</strong><span>${escapeHTML(localizedText(workflow.source || ""))} - ${workflow.stages || 0} ${t("workflow.stages")}</span>`;
+    const title = builtinWorkflowTitles[workflow.name] || workflow.name;
+    item.innerHTML = `<strong>${escapeHTML(title)}</strong>${title === workflow.name ? "" : `<code>${escapeHTML(workflow.name)}</code>`}<span>${escapeHTML(localizedText(workflow.source || ""))} - ${workflow.stages || 0} ${t("workflow.stages")}</span>`;
     item.onclick = async () => {
       const endpoint = workflowGraphDetailEndpoint(workflow.name, `/api/workflow-graphs/${encodeURIComponent(workflow.name)}`);
       if (!endpoint) return;
@@ -5159,7 +5340,8 @@ function renderWorkflowList(root) {
       state.connectSource = "";
       clearWorkflowValidation(root);
       clearWorkflowTransfer(root);
-      renderAll(root);
+      renderLoadedWorkflowGraph(root);
+      setWorkflowLeftRailCollapsed(root, true);
     };
     list.appendChild(item);
   }
@@ -5270,14 +5452,13 @@ function workflowTemplateRank(template) {
   const priority = {
     "multi-domain-intake-router": 0,
     "complex-project-delivery": 1,
-    "engineering-parallel-delivery": 2,
-    "plan-implement-audit": 3,
-    "agent-framework-extension": 4,
-    "task-decomposition-plan": 5,
-    "plan-fix-audit": 6,
-    "operations-runbook": 7,
-    "customer-support-triage": 8,
-    "software-team-review-gate": 9
+    "plan-implement-audit": 2,
+    "agent-framework-extension": 3,
+    "task-decomposition-plan": 4,
+    "plan-fix-audit": 5,
+    "operations-runbook": 6,
+    "customer-support-triage": 7,
+    "software-team-review-gate": 8
   };
   if (Object.prototype.hasOwnProperty.call(priority, name)) return priority[name];
   const category = String(template?.category || template?.source || "").toLowerCase();
@@ -5291,7 +5472,6 @@ function workflowTemplateBadge(template) {
   const name = workflowTemplateName(template);
   if (name === "multi-domain-intake-router") return { tone: "primary", label: t("workflow.templateDefaultStarter") };
   if (name === "complex-project-delivery") return { tone: "builder", label: t("workflow.templateComplexDelivery") };
-  if (name === "engineering-parallel-delivery") return { tone: "builder", label: t("workflow.templateParallelDelivery") };
   if (name === "plan-implement-audit") return { tone: "quality", label: t("workflow.templateDeliveryAudit") };
   if (name === "agent-framework-extension") return { tone: "builder", label: t("workflow.templateBuilderStarter") };
   if (name === "operations-runbook" || name === "customer-support-triage") return { tone: "domain", label: t("workflow.templateDomainStarter") };
@@ -5304,7 +5484,6 @@ function workflowTemplateBadge(template) {
 function workflowTemplateHint(template) {
   const name = workflowTemplateName(template);
   if (name === "multi-domain-intake-router") return t("workflow.templateDefaultStarterHint");
-  if (name === "engineering-parallel-delivery") return t("workflow.templateParallelDeliveryHint");
   if (name === "plan-implement-audit") return t("workflow.templateDeliveryAuditHint");
   if (name === "agent-framework-extension") return t("workflow.templateBuilderStarterHint");
   if (name === "operations-runbook") return t("workflow.templateOperationsStarterHint");
@@ -5368,7 +5547,6 @@ function renderCanvas(root) {
   keepGraphInsideCanvas();
   surface.querySelectorAll(".control-scope, .control-scope-label").forEach(item => item.remove());
   surface.querySelectorAll(".flow-node").forEach(node => node.remove());
-  const tourNodeIndex = Math.max(0, state.graph.stages.findIndex(stage => executableTypes.has(normalizedNodeType(stage))));
   for (const [index, stage] of state.graph.stages.entries()) {
     const nodeType = normalizedNodeType(stage);
     const canReceive = nodeType !== "start";
@@ -5382,7 +5560,6 @@ function renderCanvas(root) {
     const setupStatus = nodeSetupStatus(stage, nodeType);
     const node = document.createElement("div");
     node.dataset.stageName = stage.name;
-    node.dataset.tourId = index === tourNodeIndex ? "workflow-node-agent" : "";
     const isRuntimeCurrent = workflowRuntimeHasActiveCurrentStage() && state.runtime.currentStage === stage.name;
     node.dataset.runtimeLabel = isRuntimeCurrent
       ? (runtimeState === "waiting" ? t("workflow.nodeRuntime.currentWaiting") : t("workflow.nodeRuntime.currentRunning"))
@@ -5390,7 +5567,7 @@ function renderCanvas(root) {
     node.tabIndex = 0;
     node.setAttribute("role", "button");
     node.setAttribute("aria-keyshortcuts", "Escape Delete Backspace");
-    node.setAttribute("aria-label", `${nodeDisplayType(nodeType)} ${stage.name || t("workflow.noStage")} ${setupStatus.label}`);
+    node.setAttribute("aria-label", `${nodeDisplayType(nodeType)} ${workflowStageDisplayName(stage.name) || t("workflow.noStage")} ${setupStatus.label}`);
     node.title = workflowNodeCanvasTitle(stage, nodeType);
     node.className = `flow-node ${nodeType} ${category}` +
       (index === state.selected ? " selected" : "") +
@@ -5405,7 +5582,7 @@ function renderCanvas(root) {
     node.style.top = `${stage.position.y}px`;
     node.innerHTML = `
       ${canReceive ? `<span class="node-port port-in" title="${escapeHTML(t("workflow.dropConnection"))}"></span>` : ""}
-      ${canSend ? `<span class="node-port port-out" data-tour-id="${index === tourNodeIndex ? "workflow-connector" : ""}" title="${escapeHTML(t("workflow.dragToConnect"))}"></span>` : ""}
+      ${canSend ? `<span class="node-port port-out" title="${escapeHTML(t("workflow.dragToConnect"))}"></span>` : ""}
       <button type="button" class="node-delete" title="${escapeHTML(t("workflow.remove"))}" aria-label="${escapeHTML(t("workflow.remove"))}" aria-keyshortcuts="Enter Space" data-action-hint="${escapeHTML(t("workflow.remove"))}">
         <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v2"/><path d="M19 6l-1 14c-.1 1.1-1 2-2.1 2H8.1c-1.1 0-2-.9-2.1-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>
       </button>
@@ -5417,7 +5594,7 @@ function renderCanvas(root) {
             <span class="node-type">${escapeHTML(nodeDisplayType(nodeType))}</span>
             <span class="node-category-pill ${escapeHTML(category)}">${escapeHTML(categoryLabel)}</span>
           </div>
-          <div class="node-title">${escapeHTML(stage.name || t("workflow.noStage"))}</div>
+          <div class="node-title">${escapeHTML(workflowStageDisplayName(stage.name) || t("workflow.noStage"))}</div>
         </div>
       </div>
       <div class="node-meta">
@@ -5448,6 +5625,8 @@ function renderCanvas(root) {
       state.selected = index;
       renderStageForm(root);
       renderCanvas(root);
+      setWorkflowLeftRailCollapsed(root, true);
+      setWorkflowInspectorOpen(root, true);
     };
     node.onkeydown = event => {
       if (event.key === "Escape") {
@@ -5466,6 +5645,8 @@ function renderCanvas(root) {
       state.selected = index;
       renderStageForm(root);
       renderCanvas(root);
+      setWorkflowLeftRailCollapsed(root, true);
+      setWorkflowInspectorOpen(root, true);
     };
     node.onmouseenter = () => {
       showNodeRuntimePopover(root, node, stage, nodeType, runtime, runtimeState);
@@ -5561,6 +5742,7 @@ function drawEdges(root) {
     }
   }
   const slots = workflowEdgeSlots(edges);
+  const selectedStageName = state.graph.stages[state.selected]?.name || "";
   for (const edge of edges) {
     const geometry = edgeGeometry(edge, slots.get(workflowEdgeKey(edge)), rects);
     const runtimeRouteEdge = isRuntimeRouteEdge(edge.stage, edge.targetName);
@@ -5574,7 +5756,8 @@ function drawEdges(root) {
     if (semantic) surface.appendChild(edgeSemanticLabel(semantic, workflowEdgeAnnotationPoint(midpoint, "label"), edge.link));
     if (runtimeRouteEdge) surface.appendChild(edgeRuntimeLabel(edge.stage, edge.targetName, semantic ? workflowEdgeAnnotationPoint(midpoint, "runtime") : midpoint));
     if (!workflowLinkIsOnlyControlBody(edge.link)) {
-      surface.appendChild(edgeDeleteButton(root, edge.sourceName, edge.targetName, semantic ? workflowEdgeAnnotationPoint(midpoint, "delete") : midpoint, edge.link));
+      const relatedToSelection = selectedStageName === edge.sourceName || selectedStageName === edge.targetName;
+      surface.appendChild(edgeDeleteButton(root, edge.sourceName, edge.targetName, semantic ? workflowEdgeAnnotationPoint(midpoint, "delete") : midpoint, edge.link, relatedToSelection));
     }
   }
   if (state.connecting) {
@@ -5999,7 +6182,7 @@ function nodeRuntimePopover(stage, nodeType, runtime, runtimeState) {
       <span class="workflow-run-dot ${escapeHTML(runtimeState)}"></span>
       <div>
         <strong>${escapeHTML(statusLabel)}</strong>
-        <small>${escapeHTML(stage.name || t("workflow.noStage"))}</small>
+        <small>${escapeHTML(workflowStageDisplayName(stage.name) || t("workflow.noStage"))}</small>
       </div>
       ${isCurrent ? `<em>${escapeHTML(t("workflow.nodeRuntime.currentTag"))}</em>` : ""}
     </div>
@@ -6022,6 +6205,30 @@ function nodeRuntimeEvidenceChips(runtime) {
   if (!runtime) return "";
   const chips = [];
   const diagnostic = workflowRuntimeStageDiagnostic({}, runtime);
+  const priority = [];
+  if (diagnostic.executionBlocked) {
+    const mode = diagnostic.executionMode
+      ? ` · ${t("workflow.nodeRuntime.executionMode", { mode: truncateWorkflowText(diagnostic.executionMode, 24) })}`
+      : "";
+    priority.push(nodeRuntimeChipHTML(`${t("workflow.nodeRuntime.executionBlocked")}${mode}`, "bad"));
+  }
+  if (diagnostic.fileConflict) {
+    priority.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.fileConflict", { files: truncateWorkflowText(diagnostic.conflictFiles || diagnostic.conflictSourceRef || "", 32) }), "warn"));
+  }
+  if (diagnostic.patchArtifactWarning) {
+    priority.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.patchArtifact", { tools: truncateWorkflowText(diagnostic.directWriteTools || diagnostic.patchArtifactSourceRef || "", 32) }), "warn"));
+  }
+  if (diagnostic.qualityDetected) {
+    const qualityLabel = diagnostic.qualityStatus || (diagnostic.qualityFailed ? t("workflow.runtimeAcceptanceStatus.fail") : t("workflow.runtimeAcceptanceStatus.warn"));
+    priority.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.qualityStatus", { status: truncateWorkflowText(qualityLabel, 32) }), diagnostic.qualityFailed ? "bad" : "warn"));
+  }
+  if (diagnostic.modelEscalated) {
+    priority.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.modelEscalated"), "warn"));
+  }
+  if (diagnostic.contractCheck) {
+    priority.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.contractCheck", { check: truncateWorkflowText(diagnostic.contractCheck, 32) }), "warn"));
+  }
+  if (priority.length) return `<div class="node-runtime-evidence">${priority[0]}</div>`;
   if (diagnostic.incomplete) {
     chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.incomplete"), "warn"));
   }
@@ -6075,7 +6282,7 @@ function nodeRuntimeEvidenceChips(runtime) {
     chips.push(nodeRuntimeChipHTML(t("workflow.nodeRuntime.acceptance", { count: acceptance.length }), workflowAcceptanceToneFromItems(acceptance)));
   }
   if (!chips.length) return "";
-  return `<div class="node-runtime-evidence">${chips.slice(0, 4).join("")}</div>`;
+  return `<div class="node-runtime-evidence">${chips.slice(0, 1).join("")}</div>`;
 }
 
 function nodeRuntimeChipHTML(text, tone = "") {
@@ -6154,7 +6361,7 @@ function renderStageForm(root) {
       selectionBadge.className = "badge neutral";
     }
     updateWorkflowInspectorTabs(root, null, "");
-    applyWorkflowExperienceMode(root);
+    applyWorkflowAdvancedState(root);
     renderSelectedStageRuntime(root);
     return;
   }
@@ -6261,7 +6468,7 @@ function renderStageForm(root) {
   renderSelectedStageRuntime(root);
   updateWorkflowInspectorTabs(root, stage, nodeType);
   updateWorkflowInspectorEmptyPanels(root);
-  applyWorkflowExperienceMode(root);
+  applyWorkflowAdvancedState(root);
 }
 
 function updateWorkflowInspectorTabs(root, stage, nodeType) {
@@ -7082,8 +7289,8 @@ function applyAdvancedGuideExample(root, field) {
     const model = root.querySelector("#stageModelName");
     const maxTokens = root.querySelector("#stageModelMaxTokens");
     const temperature = root.querySelector("#stageModelTemperature");
-    if (provider && workflowProviderOptions().some(option => option.name === "backup")) provider.value = "backup";
-    if (model && !model.value) model.value = "small-worker";
+    if (provider && workflowProviderOptions().some(option => option.name === "primary")) provider.value = "primary";
+    if (model && !model.value) model.value = "gpt-5.5";
     if (maxTokens) maxTokens.value = "900";
     if (temperature) temperature.value = "0.1";
     syncStageFromForm(root);
@@ -7671,6 +7878,33 @@ function updateStageResourcePickers(root, stage = selectedStage(), nodeType = st
     }
     panel.innerHTML = renderStageResourcePicker(config);
   }
+  updateToolSchemaPreview(root, stage, nodeType);
+}
+
+function updateToolSchemaPreview(root, stage = selectedStage(), nodeType = stage ? normalizedNodeType(stage) : "") {
+  const panel = root.querySelector("#stageToolSchema");
+  if (!panel) return;
+  const option = nodeType === "tool" ? workflowResourceOptionByName("tool", stage?.tool) : null;
+  panel.classList.toggle("hidden", nodeType !== "tool" || !option);
+  if (nodeType !== "tool" || !option) {
+    panel.innerHTML = "";
+    return;
+  }
+  panel.innerHTML = renderToolSchemaPanelBody(stage, option);
+}
+
+function renderToolSchemaPanelBody(stage, option) {
+  const schema = option?.input_schema && typeof option.input_schema === "object" ? option.input_schema : null;
+  const properties = schema?.properties && typeof schema.properties === "object" ? schema.properties : {};
+  const required = new Set(Array.isArray(schema?.required) ? schema.required.map(String) : []);
+  const fields = Object.entries(properties).slice(0, 12);
+  return `
+    <div class="workflow-resource-picker-head">
+      <div><strong>${escapeHTML(t("workflow.toolSchemaTitle"))}</strong><span>${escapeHTML(t("workflow.toolSchemaHelp"))}</span></div>
+      <em>${escapeHTML(workflowToolMode(stage) === "connected" ? t("workflow.toolModeConnected") : t("workflow.toolModeAssisted"))}</em>
+    </div>
+    ${fields.length ? `<div class="workflow-tool-schema-fields">${fields.map(([name, field]) => `
+      <span><code>${escapeHTML(name)}</code><small>${escapeHTML(String(field?.type || "any"))}${required.has(name) ? ` · ${escapeHTML(t("workflow.nodeTypeRequired"))}` : ""}</small></span>`).join("")}</div>` : `<small>${escapeHTML(t("workflow.toolSchemaUnknown"))}</small>`}`;
 }
 
 function renderStageResourcePicker(config) {
@@ -7767,7 +8001,10 @@ function workflowResourceOptionByName(kind, name) {
 function workflowResourceOptions(kind) {
   if (kind === "agent") return (state.options?.agents || []).map(item => normalizeWorkflowResourceOption(item, "agent")).filter(item => item.name);
   if (kind === "skill") return (state.options?.skills || []).map(item => normalizeWorkflowResourceOption(item, "skill")).filter(item => item.name);
-  if (kind === "tool") return (state.options?.tools || []).map(item => normalizeWorkflowResourceOption(item, "tool")).filter(item => item.name);
+  if (kind === "tool") {
+    const catalog = Array.isArray(state.options?.tool_catalog) && state.options.tool_catalog.length ? state.options.tool_catalog : state.options?.tools || [];
+    return catalog.map(item => normalizeWorkflowResourceOption(item, "tool")).filter(item => item.name);
+  }
   if (kind === "team_template") return teamTemplateOptions().map(item => normalizeWorkflowResourceOption(item, "team_template")).filter(item => item.name);
   return [];
 }
@@ -7797,6 +8034,8 @@ function workflowResourceChips(option, kind) {
   const chips = [];
   if (option?.mode) chips.push(workflowDisplayValue(option.mode));
   if (option?.preferred_agent) chips.push(`${t("workflow.agent")}: ${workflowDisplayValue(option.preferred_agent)}`);
+  if (kind === "tool" && option?.server) chips.push(workflowDisplayValue(option.server));
+  if (kind === "tool" && option?.kind) chips.push(workflowDisplayValue(option.kind));
   if (kind === "team_template") {
     const source = option?.source === "custom" || option?.custom ? t("workflow.teamTemplateCustom") : t("workflow.teamTemplateBuiltIn");
     chips.push(source);
@@ -8390,7 +8629,7 @@ function updateStageGuidance(root, stage, nodeType) {
 function updateStageDataFlow(root, stage, nodeType) {
   const target = root.querySelector("#stageDataFlow");
   if (!target || !stage) return;
-  if (!state.expertMode) {
+  if (!state.advancedOpen) {
     updateSimpleStageDataFlow(target, stage, nodeType);
     return;
   }
@@ -8434,7 +8673,7 @@ function updateSimpleStageDataFlow(target, stage, nodeType) {
         <span>${escapeHTML(t("workflow.dataFlowKicker"))}</span>
         <strong>${escapeHTML(t("workflow.simpleAutoDataFlowTitle"))}</strong>
       </div>
-      <em>${escapeHTML(t("workflow.modeSimpleBadge"))}</em>
+      <em>${escapeHTML(t("workflow.managedBadge"))}</em>
     </div>
     <p class="workflow-stage-data-flow-policy">${escapeHTML(t("workflow.simpleAutoDataFlowHelp"))}</p>
     <div class="workflow-stage-data-flow-grid">
@@ -8514,12 +8753,12 @@ function updateStageOutputsMapBuilder(root, stage, nodeType) {
 }
 
 function renderDeveloperRawButton(target) {
-  if (!state.expertMode) return "";
+  if (!state.advancedOpen) return "";
   return `<button type="button" class="ghost-button workflow-task-open developer" data-stage-task-open-developer="${escapeHTML(target)}">${escapeHTML(t("workflow.openDeveloperFields"))}</button>`;
 }
 
 function renderExpertFlowActions(target = "") {
-  if (!state.expertMode) return "";
+  if (!state.advancedOpen) return "";
   return `<div class="workflow-task-actions">
       <button type="button" class="ghost-button workflow-task-open" data-stage-task-open-tab="flow">${escapeHTML(t("workflow.taskOpenFlow"))}</button>
       ${target ? `<button type="button" class="ghost-button workflow-task-open developer" data-stage-task-open-developer="${escapeHTML(target)}">${escapeHTML(t("workflow.openDeveloperFields"))}</button>` : ""}
@@ -9710,7 +9949,7 @@ function updateStagePlainSummary(root, stage, nodeType) {
         <span>${escapeHTML(nodeDisplayType(nodeType))}</span>
         <strong>${escapeHTML(t("workflow.stageSummaryTitle"))}</strong>
       </div>
-      <small>${escapeHTML(stage.name || t("workflow.stageName"))}</small>
+      <small>${escapeHTML(workflowStageDisplayName(stage.name) || t("workflow.stageName"))}</small>
     </div>
     <p>${escapeHTML(stageSummaryBody(stage, nodeType))}</p>
     <div class="workflow-stage-summary-facts">
@@ -9744,7 +9983,7 @@ function updateStageTaskEditor(root, stage, nodeType) {
       </div>
       <em id="stageTaskEditorStatus">${escapeHTML(t("workflow.taskEditorProgress", { ready, total }))}</em>
     </div>
-    ${state.expertMode && canRead ? renderStageRecommendedDefaults(stage, nodeType) : ""}
+    ${state.advancedOpen && canRead ? renderStageRecommendedDefaults(stage, nodeType) : ""}
     <div class="workflow-task-editor-grid">
       ${renderStageTaskSection("purpose", t("workflow.taskPurposeTitle"), t("workflow.taskPurposeHelp"), renderStageTaskPurpose(stage, nodeType))}
       ${actors.length ? renderStageTaskSection("actor", t("workflow.taskActorTitle"), t("workflow.taskActorHelp"), actors.map(renderStageTaskResourceBlock).join("")) : ""}
@@ -9768,16 +10007,16 @@ function renderStageTaskSection(kind, title, help, body) {
 }
 
 function renderStageTaskPurpose(stage, nodeType) {
-  if (!state.expertMode) {
+  if (!state.advancedOpen) {
     return `<div class="workflow-task-field-grid normal-purpose">
       <span class="workflow-task-readonly">
         <small>${escapeHTML(t("workflow.nodeType"))}</small>
         <strong>${escapeHTML(t("workflow.simpleNodeTypeManaged", { type: nodeDisplayType(nodeType) }))}</strong>
       </span>
-      <label>
-        <span>${escapeHTML(t("workflow.stageName"))}</span>
-        <input data-stage-task-field="name" value="${escapeHTML(stage.name || "")}" placeholder="${escapeHTML(t("workflow.taskNamePlaceholder"))}">
-      </label>
+      <span class="workflow-task-readonly">
+        <small>${escapeHTML(t("workflow.stageDisplayName"))}</small>
+        <strong>${escapeHTML(workflowStageDisplayName(stage.name) || t("workflow.noStage"))}</strong>
+      </span>
       ${stageFieldSet(nodeType, stage).has("approval") ? `<label class="check workflow-task-approval">
         <input type="checkbox" data-stage-task-field="approval" ${stage.approval ? "checked" : ""}>
         <span>${escapeHTML(t("workflow.requireApproval"))}</span>
@@ -9793,8 +10032,9 @@ function renderStageTaskPurpose(stage, nodeType) {
       </select>
     </label>
     <label>
-      <span>${escapeHTML(t("workflow.stageName"))}</span>
+      <span>${escapeHTML(t("workflow.stageCompatibilityId"))}</span>
       <input data-stage-task-field="name" value="${escapeHTML(stage.name || "")}" placeholder="${escapeHTML(t("workflow.taskNamePlaceholder"))}">
+      <small>${escapeHTML(t("workflow.stageCompatibilityIdHelp"))}</small>
     </label>
     ${stageFieldSet(nodeType, stage).has("approval") ? `<label class="check workflow-task-approval">
       <input type="checkbox" data-stage-task-field="approval" ${stage.approval ? "checked" : ""}>
@@ -9821,11 +10061,25 @@ function stageTaskResourceConfigs(stage, nodeType) {
 }
 
 function renderStageTaskResourceBlock(config) {
-  return `<div class="workflow-task-resource">${renderStageResourcePicker(config)}</div>`;
+  if (config.kind !== "tool") return `<div class="workflow-task-resource">${renderStageResourcePicker(config)}</div>`;
+  const stage = selectedStage();
+  const option = workflowResourceOptionByName("tool", config.selected);
+  return `<div class="workflow-task-resource">
+    ${renderStageResourcePicker(config)}
+    <label class="workflow-tool-mode-primary">
+      <span>${escapeHTML(t("workflow.toolMode"))}</span>
+      <select data-stage-task-field="param.tool_mode">
+        <option value="connected" ${workflowToolMode(stage) === "connected" ? "selected" : ""}>${escapeHTML(t("workflow.toolModeConnected"))}</option>
+        <option value="assisted" ${workflowToolMode(stage) === "assisted" ? "selected" : ""}>${escapeHTML(t("workflow.toolModeAssisted"))}</option>
+      </select>
+      <small>${escapeHTML(t("workflow.toolModeHelp"))}</small>
+    </label>
+    ${option ? `<div class="workflow-tool-schema">${renderToolSchemaPanelBody(stage, option)}</div>` : ""}
+  </div>`;
 }
 
 function renderStageTaskInput(stage, nodeType) {
-  if (!state.expertMode) {
+  if (!state.advancedOpen) {
     return renderStageTaskAutoPolicy(
       "input",
       t("workflow.autoContextPolicy"),
@@ -9838,7 +10092,7 @@ function renderStageTaskInput(stage, nodeType) {
   const selectedRefs = new Set(Object.values(stage.input || {}).map(value => String(value || "").trim()).filter(Boolean));
   const refs = canMap ? inputMapReferenceOptions(stage).slice(0, 6) : [];
   const context = normalizeStageContext(stage.context);
-  const contextPresetHTML = state.expertMode ? `<div class="workflow-task-chip-group">
+  const contextPresetHTML = state.advancedOpen ? `<div class="workflow-task-chip-group">
       <strong>${escapeHTML(t("workflow.contextPresetTitle"))}</strong>
       <div>${contextPresetOptions().map(option => renderStageTaskChip({
         label: option.label,
@@ -9862,12 +10116,12 @@ function renderStageTaskInput(stage, nodeType) {
       })).join("")}</div>
     </div>` : `<p class="workflow-task-muted">${escapeHTML(t("workflow.taskInputContextOnly"))}</p>`}
     ${contextPresetHTML}
-    ${state.expertMode ? `<button type="button" class="ghost-button workflow-task-open" data-stage-task-open-tab="inputs">${escapeHTML(t("workflow.taskOpenInputs"))}</button>` : ""}
+    ${state.advancedOpen ? `<button type="button" class="ghost-button workflow-task-open" data-stage-task-open-tab="inputs">${escapeHTML(t("workflow.taskOpenInputs"))}</button>` : ""}
   </div>`;
 }
 
 function renderStageTaskOutput(stage, nodeType) {
-  if (!state.expertMode) {
+  if (!state.advancedOpen) {
     return renderStageTaskAutoPolicy(
       "output",
       t("workflow.autoPublishPolicy"),
@@ -9898,12 +10152,12 @@ function renderStageTaskOutput(stage, nodeType) {
       <button type="button" class="ghost-button" data-stage-task-artifact="evidence">${escapeHTML(t("workflow.artifactGuideAddEvidence"))}</button>` : ""}
       ${canAcceptance ? `<button type="button" class="ghost-button" data-stage-task-acceptance="exists">${escapeHTML(t("workflow.acceptanceGuideAddExists"))}</button>` : ""}
     </div>` : ""}
-    ${state.expertMode ? `<button type="button" class="ghost-button workflow-task-open" data-stage-task-open-tab="outputs">${escapeHTML(t("workflow.taskOpenOutputs"))}</button>` : ""}
+    ${state.advancedOpen ? `<button type="button" class="ghost-button workflow-task-open" data-stage-task-open-tab="outputs">${escapeHTML(t("workflow.taskOpenOutputs"))}</button>` : ""}
   </div>`;
 }
 
 function renderStageTaskFlow(stage, nodeType) {
-  if (!state.expertMode) return renderStageTaskAutoFlow(stage, nodeType);
+  if (!state.advancedOpen) return renderStageTaskAutoFlow(stage, nodeType);
   if (nodeType === "end") {
     return `<p class="workflow-task-muted">${escapeHTML(t("workflow.taskFlowEnd"))}</p>`;
   }
@@ -10217,7 +10471,7 @@ function handleStageTaskEditorAction(root, button) {
 }
 
 function openWorkflowDeveloperFields(root, target = "") {
-  if (!state.expertMode) setWorkflowExpertMode(root, true, { repaint: false });
+  if (!state.advancedOpen) setWorkflowAdvancedOpen(root, true, { repaint: false });
   setWorkflowInspectorTab(root, "advanced", { render: true });
   const advanced = root.querySelector("#stageAdvancedPanel");
   const raw = root.querySelector("#stageAdvancedRawPanel");
@@ -10299,6 +10553,7 @@ function applyStageTaskEditorField(root, input) {
     const paramKey = field.slice("param.".length);
     setParamValue(stage.params, paramKey, value);
     if (paramKey === "items") delete stage.params.items_ref;
+    if (paramKey === "tool_mode") rerender = true;
   }
   refreshStageAfterTaskEditorEdit(root, rerender);
 }
@@ -10342,6 +10597,8 @@ function syncStageTaskRawFields(root, stage, nodeType) {
   ensureSelectOption(root.querySelector("#stageAgent"), stage.agent || "", stage.agent || "");
   ensureSelectOption(root.querySelector("#stageSkill"), stage.skill || "", stage.skill || "");
   ensureSelectOption(root.querySelector("#stageTool"), stage.tool || "", stage.tool || "");
+  const toolMode = root.querySelector("#stageToolMode");
+  if (toolMode) toolMode.value = workflowToolMode(stage);
   setValue("#stageNext", (stage.next || []).join(", "));
   setValue("#stageCondition", stage.condition || "");
   setValue("#stagePolicy", stage.policy || "");
@@ -10403,7 +10660,7 @@ function stageSetupPurposeStep(stage, nodeType) {
     status: ready ? "ready" : "todo",
     title: t("workflow.stageSetupPurposeTitle"),
     body: ready
-      ? t("workflow.stageSetupPurposeReady", { name: stage.name, type: nodeDisplayType(nodeType) })
+      ? t("workflow.stageSetupPurposeReady", { name: workflowStageDisplayName(stage.name), type: nodeDisplayType(nodeType) })
       : t("workflow.stageSetupPurposeTodo")
   };
 }
@@ -10863,6 +11120,18 @@ function stageFieldSet(nodeType, stage = selectedStage()) {
     if (nodeType === "team") {
       visible.add("team_template");
       visible.add("acceptance_criteria");
+    }
+  }
+
+  if (nodeType === "tool") {
+    visible.add("tool_mode");
+    visible.add("tool");
+    if (workflowToolMode(stage) === "connected") {
+      visible.delete("agent");
+      visible.delete("skill");
+    } else {
+      visible.add("agent");
+      visible.add("skill");
     }
   }
 
@@ -11944,7 +12213,12 @@ function edgeRoutePoints(from, to, obstacles = [], slot = {}) {
   const directRoute = direction === 1 && exit.x <= entry.x
     ? compactEdgeRoute([from, exit, { x: midX, y: from.y }, { x: midX, y: to.y }, entry, to])
     : null;
-  if (directRoute && edgeRouteIntersections(directRoute, obstacles) === 0) return directRoute;
+  if (directRoute && edgeRouteIntersections(directRoute, obstacles) === 0) {
+    // Keep nearly level links straight. This avoids a visible one-pixel dogleg
+    // when parallel nodes have slightly different heights.
+    if (Math.abs(from.y - to.y) <= 12) return [from, to];
+    return directRoute;
+  }
   const candidates = [];
   if (directRoute) {
     candidates.push(directRoute);
@@ -12053,7 +12327,9 @@ function edgeRouteScore(points, obstacles) {
   const intersections = edgeRouteIntersections(points, obstacles);
   const bends = Math.max(0, points.length - 2);
   const clearancePenalty = edgeRouteClearancePenalty(points, obstacles);
-  return intersections * 10000 + clearancePenalty + edgeRouteLength(points) + bends * 18;
+  // Intersections are forbidden, then prefer clearance, short paths and fewer
+  // bends. Length is deliberately weighted enough to avoid wide zig-zags.
+  return intersections * 100000 + clearancePenalty * 1.4 + edgeRouteLength(points) * 0.42 + bends * 12;
 }
 
 function edgeRouteIntersections(points, obstacles) {
@@ -12257,16 +12533,16 @@ function polylineMidpoint(points) {
   return points[points.length - 1];
 }
 
-function edgeDeleteButton(root, sourceName, targetName, point, link = null) {
+function edgeDeleteButton(root, sourceName, targetName, point, link = null, relatedToSelection = false) {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "edge-action";
+  button.className = `edge-action${relatedToSelection ? " is-related" : ""}`;
   const label = link?.labels?.length ? link.labels.join(" / ") : `${sourceName} -> ${targetName}`;
   button.title = `${t("workflow.deleteEdgeTitle")} ${label}`;
   button.setAttribute("aria-label", `${t("workflow.deleteEdge")}: ${sourceName} -> ${targetName}`);
   button.setAttribute("aria-keyshortcuts", "Enter Space");
   button.dataset.actionHint = t("workflow.deleteEdge");
-  button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4c0-1.1.9-2 2-2h4c1.1 0 2 .9 2 2v2"/><path d="M19 6l-1 14c-.1 1.1-1 2-2.1 2H8.1c-1.1 0-2-.9-2.1-2L5 6"/><path d="M10 11v6"/><path d="M14 11v6"/></svg>`;
+  button.innerHTML = `<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M8.5 8.5 6.8 6.8a3.4 3.4 0 0 0-4.8 4.8l3.1 3.1a3.4 3.4 0 0 0 4.8 0"/><path d="m15.5 15.5 1.7 1.7a3.4 3.4 0 0 0 4.8-4.8l-3.1-3.1a3.4 3.4 0 0 0-4.8 0"/><path d="m8 16 8-8"/></svg>`;
   button.style.left = `${point.x}px`;
   button.style.top = `${point.y}px`;
   button.onclick = event => {
@@ -13146,7 +13422,7 @@ function setWorkflowActionDisabled(button, disabled) {
 function workspaceRequirementOutput(requirement = {}) {
   const reason = localizedText(requirement.reason || t("chat.workspacePreflightReasonFallback"));
   const workspace = requirement.workspace?.display || requirement.workspace?.root || t("common.none");
-  return `${t("chat.workspacePreflightTitle")}\n${t("chat.workspacePreflightBody", { reason, workspace })}\n${t("chat.workspacePreflightAction")}: #workspace`;
+  return `${t("chat.workspacePreflightTitle")}\n${t("chat.workspacePreflightBody", { reason, workspace })}\n${t("chat.workspacePreflightAction")}: #settings`;
 }
 
 function workflowStudioEventsURL(response = {}) {
@@ -13182,6 +13458,7 @@ function applyWorkflowStudioRunSnapshot(run) {
     ? run.next_stage || state.runtime.currentStage || ""
     : "";
   if (previousStage !== state.runtime.currentStage || previousStatus !== state.runtime.workflowStatus) invalidateWorkflowRuntimeActions();
+  if (previousStage !== state.runtime.currentStage && state.runtime.currentStage) selectWorkflowRuntimeStage(state.runtime.currentStage);
   const pendingInput = workflowRuntimePendingInputFromRun(run);
   if (pendingInput) {
     const previousKey = workflowRuntimeInputKey(state.runtime.pendingInput);
@@ -13560,7 +13837,17 @@ function workflowStudioEventLogLine(event) {
   if (event.type === "workflow_result") return `${t("workflow.workflowEvent")} ${event.workflow_name || state.graph.name}: ${event.workflow_status || ""}`;
   if (event.type === "task_stage") return `${t("workflow.stageEvent")}: ${event.task_stage || event.stage || ""} ${event.content || ""}`.trim();
   if (event.type === "approval") return `${t("workflow.approvalRequired")}: ${event.tool_name || ""} ${event.arguments_summary || ""}`.trim();
-  if (event.type === "token_usage") return `${t("workflow.tokens")}: ${t("workflow.in")} ${event.prompt_tokens || 0}, ${t("workflow.out")} ${event.output_tokens || 0}`;
+  if (event.type === "token_usage") {
+    const kind = event.output_kind || event.outputKind || "";
+    const hit = Number(event.cache_hit_rate || event.cacheHitRate || 0);
+    const extras = [
+      kind,
+      hit > 0 ? `${Math.round(hit * 100)}%` : "",
+      event.tool_name || event.toolName || ""
+    ].filter(Boolean).join(" ");
+    return `${t("workflow.tokens")}: ${t("workflow.in")} ${event.prompt_tokens || 0}, ${t("workflow.out")} ${event.output_tokens || 0}, cached ${event.cached_tokens || 0}${extras ? ` (${extras})` : ""}`;
+  }
+  if (event.type === "reasoning") return "";
   const diagnostic = workflowRuntimeStageDiagnostic({}, event);
   const diagnosticText = workflowRuntimeDiagnosticText(diagnostic);
   if (diagnosticText || event.incomplete || event.needs_action || event.suspended) {
@@ -13825,6 +14112,9 @@ function nodeMetaLines(stage, nodeType) {
     const template = stage.params?.team || stage.params?.template || "";
     return [workflowDisplayValue(template ? teamTemplateTitle(template) : t("workflow.node.team")), isTruthyParam(stage.params?.execute) ? t("workflow.teamExecuteEnabled") : t("workflow.teamTemplateContextOnlyCard")];
   }
+  if (nodeType === "tool" && workflowToolMode(stage) === "connected") {
+    return [t("workflow.connectedToolUpstream"), workflowDisplayValue(stage.tool || t("workflow.noSkill"))];
+  }
   if (visualTypes.has(nodeType)) {
     return [nodeType === "start" ? t("workflow.node.startHelp") : t("workflow.node.endHelp"), workflowDisplayList(stage.next || []) || "-"];
   }
@@ -13849,7 +14139,7 @@ function nodeControlSummary(stage, nodeType) {
 }
 
 function workflowNodeCanvasTitle(stage, nodeType) {
-  const base = `${nodeDisplayType(nodeType)} ${stage.name || t("workflow.noStage")}`;
+  const base = `${nodeDisplayType(nodeType)} ${workflowStageDisplayName(stage.name) || t("workflow.noStage")}`;
   if (!controlTypes.has(nodeType)) return base;
   const groups = workflowControlScopeGroups(stage);
   if (!groups.length) return `${base} - ${t("workflow.controlScope.selectHint")}`;
@@ -13888,10 +14178,99 @@ function workflowDisplayList(values) {
 function workflowDisplayValue(value) {
   const text = String(value || "").trim();
   if (!text) return "";
+  const stageName = workflowStageDisplayName(text);
+  if (stageName !== text) return stageName;
   const translated = localizedText(text);
   if (translated !== text) return translated;
   if (workflowLooksTechnical(text)) return text;
   return translated;
+}
+
+function workflowStageDisplayName(value) {
+  const text = String(value || "").trim();
+  if (!text || currentLanguage() !== "zh") return text;
+  const labels = {
+    start: "开始",
+    end: "结束",
+    output: "输出结果",
+    intake: "接收需求",
+    clarify: "澄清需求",
+    "clarify-scope": "澄清范围",
+    decompose: "拆解任务",
+    "review-plan": "评审计划",
+    plan: "制定计划",
+    implement: "实现改动",
+    verify: "验证结果",
+    audit: "质量审计",
+    quality: "质量门禁",
+    "operator-review": "人工复核",
+    "operator-check": "人工确认",
+    revise: "修订改动",
+    "revision-summary": "修订总结",
+    "final-report": "最终报告",
+    "final-handoff": "最终交付",
+    "materialize-candidate": "生成流程草案",
+    "route-request": "任务分流",
+    "implementation-path": "开发实现路径",
+    "audit-path": "代码审计路径",
+    "vulnerability-path": "漏洞研究路径",
+    "web-security-path": "Web 安全路径",
+    "binary-analysis-path": "二进制分析路径",
+    "binary-risk-review": "二进制风险复核",
+    consolidate: "汇总结果",
+    dispatch: "分派任务",
+    "software-worker": "软件开发",
+    "web-security-worker": "Web 安全",
+    "security-worker": "网络安全",
+    "binary-worker": "二进制分析",
+    "docs-worker": "办公文档分析",
+    "office-delivery-route": "办公文档判断",
+    "office-delivery": "办公文档交付",
+    "ops-worker": "网络运维",
+    "support-worker": "问题支持",
+    "platform-worker": "平台扩展",
+    "general-worker": "通用处理",
+    join: "等待并行任务",
+    aggregate: "汇总多领域结果"
+  };
+  if (labels[text]) return labels[text];
+  const iteration = text.match(/^(.+)\[(\d+)\]$/);
+  if (iteration && labels[iteration[1]]) return `${labels[iteration[1]]} ${Number(iteration[2]) + 1}`;
+  const generated = workflowStageDisplayNameByTokens(text);
+  if (generated) return generated;
+  return text;
+}
+
+function workflowStageDisplayNameByTokens(value) {
+  const text = String(value || "").trim().toLowerCase();
+  if (!/^[a-z0-9]+(?:-[a-z0-9]+)+$/.test(text)) return "";
+  const tokens = text.split("-");
+  const labels = {
+    active: "有效", agent: "智能体", analysis: "分析", analyst: "分析智能体", apply: "执行", approval: "审批",
+    approve: "审批", artifact: "产物", audit: "审计", authorization: "授权", binary: "二进制",
+    blocked: "受阻", browser: "浏览器", build: "构建", change: "变更", check: "检查",
+    clarify: "澄清", clean: "无风险", code: "代码", collect: "收集", completion: "完成",
+    configuration: "配置", consolidate: "汇总", context: "上下文", customer: "用户", deep: "深入",
+    delivery: "交付", design: "设计", documentation: "文档", draft: "草案", evidence: "证据",
+    engineer: "工程智能体", execution: "实施", exploitability: "可利用性", extension: "扩展", final: "最终", finding: "发现", findings: "发现",
+    fix: "修复", format: "格式", framework: "平台", handoff: "交接", implementation: "实现",
+    implement: "实现", intake: "接收", inventory: "清单", join: "汇合", lint: "静态检查",
+    manager: "负责人", materialize: "生成资源", multi: "多", operations: "运维", operator: "人工",
+    output: "输出", plan: "计划", platform: "平台", post: "后置", privacy: "隐私",
+    publish: "发布", quality: "质量", readiness: "就绪性", recommendation: "建议", recover: "恢复",
+    recovery: "恢复", red: "红队", remediation: "修复", report: "报告", repository: "仓库",
+    research: "研究", researcher: "研究智能体", response: "答复", review: "复核", revise: "修订", revision: "修订",
+    risk: "风险", rollback: "回滚", runbook: "运行手册", safety: "安全", scope: "范围",
+    security: "安全", software: "软件", split: "分流", support: "支持", target: "目标",
+    team: "团队", test: "测试", triage: "分诊", validate: "验证", validation: "验证",
+    verification: "验证", verify: "验证", web: "Web", worker: "执行智能体", workflow: "工作流",
+    writing: "编写"
+  };
+  if (tokens[0] === "has" && tokens.slice(1).every(token => labels[token])) {
+    return `检查：${tokens.slice(1).map(token => labels[token]).join("")}`;
+  }
+  if (!tokens.every(token => labels[token])) return "";
+  return tokens.map(token => labels[token]).join("");
 }
 
 function workflowDisplayText(value) {
@@ -13925,6 +14304,14 @@ function workflowLooksTechnical(value) {
 
 function workflowGeneratedText(text) {
   if (currentLanguage() !== "zh") return "";
+  const sectionContract = String(text || "").trim().match(/^Emit sections named\s+(.+?)[。.]*$/i);
+  if (sectionContract) {
+    return `输出以下章节；英文标题是机器解析兼容标识，需在产物中保留：${sectionContract[1]}。`;
+  }
+  const compactContract = String(text || "").trim().match(/^Return compact JSON with\s+(.+?)[。.]*$/i);
+  if (compactContract) {
+    return `返回紧凑 JSON；以下英文字段是机器解析兼容标识，需原样保留：${compactContract[1]}。`;
+  }
   const normalized = String(text || "").trim().toLowerCase();
   if (!normalized || !/[a-z]/.test(normalized)) return "";
   const generated = workflowGeneratedZhText(normalized);
@@ -14112,6 +14499,35 @@ function autoLayoutGraph(root) {
   fitCanvas(root);
 }
 
+function renderLoadedWorkflowGraph(root) {
+  if (workflowGraphNeedsLayout(state.graph.stages || [])) {
+    autoLayoutGraph(root);
+    return;
+  }
+  renderAll(root);
+}
+
+function workflowGraphNeedsLayout(stages) {
+  const positioned = (stages || []).filter(stage => Number.isFinite(stage?.position?.x) && Number.isFinite(stage?.position?.y));
+  if (positioned.length !== (stages || []).length) return true;
+  const gap = 28;
+  for (let leftIndex = 0; leftIndex < positioned.length; leftIndex += 1) {
+    const left = positioned[leftIndex];
+    const leftType = normalizedNodeType(left);
+    const leftRight = left.position.x + workflowNodeWidth(leftType) + gap;
+    const leftBottom = left.position.y + workflowNodeHeight(leftType) + gap;
+    for (let rightIndex = leftIndex + 1; rightIndex < positioned.length; rightIndex += 1) {
+      const right = positioned[rightIndex];
+      const rightType = normalizedNodeType(right);
+      const rightRight = right.position.x + workflowNodeWidth(rightType) + gap;
+      const rightBottom = right.position.y + workflowNodeHeight(rightType) + gap;
+      const separated = leftRight <= right.position.x || rightRight <= left.position.x || leftBottom <= right.position.y || rightBottom <= left.position.y;
+      if (!separated) return true;
+    }
+  }
+  return false;
+}
+
 function workflowLayoutPlan(root, stages) {
   const canvas = root.querySelector("#canvas");
   const graph = workflowLayoutGraph(stages);
@@ -14120,8 +14536,8 @@ function workflowLayoutPlan(root, stages) {
   workflowLayoutAlignBranches(columns, graph);
   workflowRefineColumnOrder(columns, graph);
 
-  const xGap = 128;
-  const yGap = 84;
+  const xGap = 88;
+  const yGap = 64;
   const layoutColumns = columns.map(column => {
     const items = column.stages.map(stage => ({
       stage,
@@ -14366,10 +14782,40 @@ function fitCanvas(root) {
   const bounds = graphBounds();
   const availableWidth = Math.max(320, canvas.clientWidth - 64);
   const availableHeight = Math.max(260, canvas.clientHeight - 64);
-  const next = Math.min(1.35, availableWidth / bounds.width, availableHeight / bounds.height);
+  const fitted = Math.min(1.35, availableWidth / bounds.width, availableHeight / bounds.height);
+  const readableFloor = canvas.clientWidth <= 640 ? 0.75 : 0.65;
+  const next = Math.max(readableFloor, fitted);
   setCanvasZoom(root, next);
   applyCanvasGeometry(root);
+  if (fitted < readableFloor) {
+    centerWorkflowStageInViewport(root, preferredWorkflowFocusStage());
+    return;
+  }
   centerGraphInViewport(root);
+}
+
+function preferredWorkflowFocusStage() {
+  const stages = state.graph.stages || [];
+  const activeStage = workflowRuntimeHasActiveCurrentStage() ? state.runtime.currentStage : "";
+  if (activeStage && stages.some(stage => stage.name === activeStage)) return activeStage;
+  return stages[state.selected]?.name || stages[0]?.name || "";
+}
+
+function centerWorkflowStageInViewport(root, stageName) {
+  const canvas = root.querySelector("#canvas");
+  const space = root.querySelector("#canvasSpace");
+  const stage = (state.graph.stages || []).find(item => item.name === stageName);
+  if (!canvas || !stage) {
+    centerGraphInViewport(root);
+    return;
+  }
+  const nodeType = normalizedNodeType(stage);
+  const centerX = (stage.position.x + workflowNodeWidth(nodeType) / 2) * state.zoom;
+  const centerY = (stage.position.y + workflowNodeHeight(nodeType) / 2) * state.zoom;
+  const maxLeft = Math.max(0, (space?.scrollWidth || 0) - canvas.clientWidth);
+  const maxTop = Math.max(0, (space?.scrollHeight || 0) - canvas.clientHeight);
+  canvas.scrollLeft = clamp(centerX - canvas.clientWidth / 2, 0, maxLeft);
+  canvas.scrollTop = clamp(centerY - canvas.clientHeight / 2, 0, maxTop);
 }
 
 function centerGraphInViewport(root) {
@@ -14555,7 +15001,22 @@ function teamTemplateSummary(name) {
 
 function teamTemplateTitle(name) {
   const template = teamTemplateSummary(name);
-  return template?.title || template?.name || String(name || "");
+  const key = String(name || template?.name || "").trim();
+  if (currentLanguage() === "zh") {
+    const builtInTitles = {
+      "audit-security-team": "安全审计团队",
+      "binary-triage-team": "二进制风险初筛团队",
+      "customer-support-team": "用户支持团队",
+      "documentation-team": "办公文档交付团队",
+      "framework-extension-team": "平台扩展团队",
+      "operations-runbook-team": "运维执行团队",
+      "software-task-team": "软件交付团队",
+      "web-research-team": "网页研究与安全审查团队",
+      "internet-research-team": "互联网资料研究团队"
+    };
+    if (builtInTitles[key]) return builtInTitles[key];
+  }
+  return localizedText(template?.title || template?.name || key);
 }
 
 function teamTemplateOptionLabel(template) {
@@ -14585,6 +15046,7 @@ function dedicatedParamKeys(nodeType) {
   if (nodeType === "sub_workflow") ["workflow", "request"].forEach(key => keys.add(key));
   if (nodeType === "join") keys.add("wait_for");
   if (nodeType === "checkpoint") keys.add("prompt");
+  if (nodeType === "tool") ["tool_mode", "tool.mode"].forEach(key => keys.add(key));
   return keys;
 }
 
@@ -14616,6 +15078,8 @@ function applyDedicatedParamsFromForm(root, stage, nodeType) {
   }
   setParamValue(stage.params, "wait_for", nodeType === "join" ? root.querySelector("#stageParamWaitFor").value : "");
   setParamValue(stage.params, "prompt", nodeType === "checkpoint" ? root.querySelector("#stageParamPrompt").value : "");
+  setParamValue(stage.params, "tool_mode", nodeType === "tool" ? root.querySelector("#stageToolMode").value : "");
+  if (nodeType === "tool") delete stage.params["tool.mode"];
 }
 
 function setParamValue(params, key, value) {

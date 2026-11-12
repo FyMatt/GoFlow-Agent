@@ -2,86 +2,86 @@ kind: goflow.team_template_resource
 version: 2
 min_supported_version: 1
 name: web-research-team
-title: Web Research Team
+title: 网页研究与安全审查团队
 category: security
-description: Collect web source/runtime evidence, audit client/server evidence, and branch on risk.
+description: 收集网页源码和运行时证据，审查客户端与服务端风险，并按证据分流处理。
 tags: [web, research, assets, risk]
 recommended_workflow: web-research-risk
 recommended_entry_agent: web-security-researcher
 role_templates:
   - name: asset-collector
-    label: Asset Collector
+    label: 网页证据收集者
     agent: web-security-researcher
     skill: web-vulnerability-research
     responsibilities:
-      - fetch target page
-      - collect linked scripts and source evidence
-      - collect authorized browser DOM, form, link, script, signal, and screenshot evidence when scope allows
-      - record reachable surfaces without active exploitation
+      - 获取授权目标页面
+      - 收集引用脚本和源码证据
+      - 在范围允许时收集浏览器 DOM、表单、链接、脚本、信号和截图证据
+      - 在不主动利用的前提下记录可达攻击面
     tools: [web_tools/fetch_url, web_tools/fetch_page_assets, web_tools/browser_snapshot, web_tools/browser_probe_points]
     produces: [asset_inventory, browser_evidence, page_evidence]
   - name: js-reviewer
-    label: JavaScript Reviewer
+    label: JavaScript 审查者
     agent: auditor
     skill: code-audit
     responsibilities:
-      - inspect collected scripts
-      - identify risky sinks and sources
-      - separate evidence from speculation
+      - 检查已收集脚本
+      - 识别高风险输入源和危险调用点
+      - 区分已确认的证据与推测
     consumes: [asset_inventory, browser_evidence, page_evidence]
     produces: [client_findings]
   - name: risk-analyst
-    label: Risk Analyst
+    label: 风险分析者
     agent: auditor
     skill: vulnerability-research
     responsibilities:
-      - classify impact
-      - decide whether deeper verification is needed
-      - prepare remediation outline
+      - 对影响进行分类
+      - 判断是否需要更深入验证
+      - 准备修复建议提纲
     consumes: [client_findings]
     produces: [risk_decision, report]
 handoffs:
   - from: asset-collector
     to: js-reviewer
     kind: asset_handoff
-    subject: Fetched web evidence
+    subject: 已收集的网页证据
     artifacts: [asset_inventory, browser_evidence, page_evidence]
     blackboard: [request, evidence]
   - from: js-reviewer
     to: risk-analyst
     kind: finding_handoff
-    subject: Client-side findings
+    subject: 客户端安全发现
     artifacts: [client_findings]
     blackboard: [evidence, finding]
 blackboard_templates:
   - kind: request
-    title: Original request and constraints
+    title: 原始请求与约束
     owner_role: asset-collector
     status: open
     tags: [scope]
-    description: The user request, allowed scope, and assumptions that should survive handoffs.
+    description: 在角色交接中持续保留用户请求、授权范围和关键假设。
   - kind: plan
-    title: Working plan
+    title: 当前研究计划
     owner_role: asset-collector
     status: open
     tags: [plan]
-    description: Current executable plan, stage ordering, and known blockers.
+    description: 当前可执行计划、阶段顺序和已知阻塞项。
   - kind: evidence
-    title: Evidence and observations
+    title: 证据与观察
     owner_role: asset-collector
     status: open
     tags: [evidence]
-    description: Tool observations, source references, test output, or collected artifacts.
+    description: 网页源码、浏览器观察、来源引用和已收集产物。
   - kind: decision
-    title: Decisions and approvals
+    title: 决策与审批
     owner_role: asset-collector
     status: open
     tags: [decision]
-    description: Decisions made by agents or the operator, including approval gates.
+    description: 智能体或操作者作出的决策，包括主动验证审批结果。
   - kind: finding
-    title: Findings and risks
+    title: 发现与风险
     owner_role: asset-collector
     status: open
     tags: [risk]
-    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+    description: 漏洞信号、风险结论、剩余不确定性和未解决问题。
 output_contract: [asset_inventory, client_findings, risk_decision, report]

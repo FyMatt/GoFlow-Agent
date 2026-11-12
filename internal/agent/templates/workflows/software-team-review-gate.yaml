@@ -2,8 +2,8 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: software-team-review-gate
-title: Software Team Review Gate
-description: Run the reusable software task team, evaluate its approval quorum, and branch to handoff or revision.
+title: 软件团队复核门禁
+description: 运行可复用的软件任务团队，评估复核结果并转入交付或返工分支。
 category: software
 tags:
     - team
@@ -58,6 +58,7 @@ graph:
           agent: chat
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Team Review Status, Approved Work, Review Evidence, Approvers, Residual Risks, and Next Steps.
             purpose: Produce the final handoff after the team approval gate allows delivery.
           input:
@@ -92,6 +93,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Revision Required, Gate Status, Rejectors, Missing Evidence, Safe Revision Plan, and Next Steps.
             purpose: Produce a user-facing revision plan when the team approval gate denies delivery.
           input:

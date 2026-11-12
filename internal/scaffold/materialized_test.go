@@ -154,9 +154,7 @@ func TestRenderMaterializedToolConfigUsesEmbeddedTemplate(t *testing.T) {
 		"name: acme-helper",
 		"args:",
 		"- /goflow-tools/acme-helper.py",
-		"tool_source: " + filepath.ToSlash(filepath.Join(root, "mcp_servers", "acme-helper.py")),
-		"tool_target: /goflow-tools/acme-helper.py",
-		"isolation: container",
+		"isolation: auto",
 	} {
 		if !strings.Contains(content, want) {
 			t.Fatalf("expected tool config to contain %q, got:\n%s", want, content)

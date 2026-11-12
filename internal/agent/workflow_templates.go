@@ -43,6 +43,10 @@ type WorkflowTemplate struct {
 	Graph                   WorkflowGraphDocument `json:"graph" yaml:"graph"`
 }
 
+var legacyWorkflowTemplateAliases = map[string]string{
+	"human-input-security-review": "security-audit-evidence-gate",
+}
+
 // WorkflowNodeTypeOption describes a supported workflow node type for editors.
 type WorkflowNodeTypeOption struct {
 	Kind         string                       `json:"kind,omitempty" yaml:"kind,omitempty"`
@@ -137,7 +141,11 @@ func (w *WorkflowRunner) WorkflowTemplate(name string) (WorkflowTemplate, bool) 
 		return workflowTemplateWithGraphSummary(template), true
 	}
 	templates := builtInWorkflowTemplates()
-	template, ok := templates[normalizePersistedWorkflowName(name)]
+	templateName := normalizePersistedWorkflowName(name)
+	if replacement := legacyWorkflowTemplateAliases[templateName]; replacement != "" {
+		templateName = replacement
+	}
+	template, ok := templates[templateName]
 	if !ok {
 		return WorkflowTemplate{}, false
 	}

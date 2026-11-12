@@ -2,113 +2,113 @@ kind: goflow.team_template_resource
 version: 2
 min_supported_version: 1
 name: software-task-team
-title: Software Task Team
+title: 软件交付团队
 category: software
-description: Planner, implementer, auditor, and verifier pattern for code changes.
+description: 面向代码变更的规划、实现、审查、验证和最终交付协作模板。
 tags: [coding, plan, fix, audit]
 recommended_workflow: plan-fix-audit
 recommended_entry_agent: planner
 role_templates:
   - name: planner
-    label: Planner
+    label: 任务规划者
     agent: planner
     skill: execution-plan
     responsibilities:
-      - clarify task scope
-      - identify files and risks
-      - produce executable plan
+      - 澄清任务范围与验收标准
+      - 识别目标文件和实施风险
+      - 产出可执行、可验证的计划
     produces: [implementation_plan, risk_notes]
   - name: implementer
-    label: Implementer
+    label: 代码实现者
     agent: fixer
     skill: code-writing
     responsibilities:
-      - apply scoped changes
-      - run focused verification
-      - summarize changed files
+      - 按批准范围实施改动
+      - 运行聚焦验证
+      - 汇总变更文件和证据
     consumes: [implementation_plan]
     produces: [changes, verification]
   - name: reviewer
-    label: Reviewer
+    label: 质量审查者
     agent: auditor
     skill: code-audit
     responsibilities:
-      - review behavior changes
-      - find regressions
-      - check missing tests
+      - 审查行为变化
+      - 发现回归风险
+      - 检查缺失测试
     consumes: [changes, verification]
     produces: [review_findings]
   - name: reporter
-    label: Reporter
+    label: 交付报告者
     agent: chat
     skill: execution-plan
     responsibilities:
-      - summarize outcome
-      - surface residual risk
-      - prepare user handoff
+      - 汇总任务结果
+      - 说明剩余风险
+      - 准备面向用户的交付说明
     consumes: [review_findings, changes]
     produces: [final_handoff]
 handoffs:
   - from: planner
     to: implementer
     kind: plan_handoff
-    subject: Implementation plan
+    subject: 实施计划
     artifacts: [implementation_plan]
     blackboard: [plan, risk_notes]
   - from: implementer
     to: reviewer
     kind: review_request
-    subject: Changes ready for audit
+    subject: 待审查的代码变更
     artifacts: [changes, verification]
     blackboard: [changes, verification]
   - from: reviewer
     to: reporter
     kind: final_review
-    subject: Review findings
+    subject: 质量审查发现
     artifacts: [review_findings]
     blackboard: [findings, decisions]
 blackboard_templates:
   - kind: request
-    title: Original request and constraints
+    title: 原始请求与约束
     owner_role: planner
     status: open
     tags: [scope]
-    description: The user request, allowed scope, and assumptions that should survive handoffs.
+    description: 在角色交接中持续保留用户请求、允许范围和关键假设。
   - kind: plan
-    title: Working plan
+    title: 当前实施计划
     owner_role: planner
     status: open
     tags: [plan]
-    description: Current executable plan, stage ordering, and known blockers.
+    description: 当前可执行计划、阶段顺序和已知阻塞项。
   - kind: evidence
-    title: Evidence and observations
+    title: 证据与观察
     owner_role: planner
     status: open
     tags: [evidence]
-    description: Tool observations, source references, test output, or collected artifacts.
+    description: 工具观察、来源引用、测试输出和已收集产物。
   - kind: decision
-    title: Decisions and approvals
+    title: 决策与审批
     owner_role: planner
     status: open
     tags: [decision]
-    description: Decisions made by agents or the operator, including approval gates.
+    description: 智能体或操作者作出的决策，包括审批门禁结果。
   - kind: finding
-    title: Findings and risks
+    title: 发现与风险
     owner_role: planner
     status: open
     tags: [risk]
-    description: Bugs, vulnerabilities, regressions, or unresolved questions.
+    description: 缺陷、漏洞、回归风险和未解决问题。
 quorum_presets:
   - name: software-review
-    title: Planner and reviewer approval
-    description: Require planner and reviewer approval before handoff.
+    title: 规划与审查双重批准
+    description: 最终交付前必须由规划者和审查者共同批准。
     required: 2
     roles: [planner, reviewer]
     reject_blocks: true
     default: true
   - name: full-team
-    title: Full team approval
-    description: Require every software team role to approve.
+    title: 软件团队全员批准
+    description: 高影响变更必须由软件团队全部角色批准。
     required: 4
     roles: [planner, implementer, reviewer, reporter]
     reject_blocks: true

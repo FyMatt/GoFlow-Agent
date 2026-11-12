@@ -1,6 +1,8 @@
 package agent
 
 import (
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"strconv"
 	"strings"
@@ -11,9 +13,16 @@ import (
 )
 
 const (
-	toolResultPromptCompactThresholdBytes = 16 * 1024
-	toolResultPromptHeadBytes             = 6 * 1024
-	toolResultPromptTailBytes             = 3 * 1024
+	// Command output is disposable: compact it early. File reads are not —
+	// truncating a file or a JSON catalog made the model re-read or miss
+	// entries entirely (a research run lost S015-S017 and mis-hashed S004/S005),
+	// so reads keep a much higher threshold.
+	toolResultPromptCompactThresholdBytes = 2 * 1024
+	toolResultPromptHeadBytes             = 1400
+	toolResultPromptTailBytes             = 700
+	toolResultPromptReadThresholdBytes    = 8 * 1024
+	toolResultPromptReadHeadBytes         = 4 * 1024
+	toolResultPromptReadTailBytes         = 1024
 	toolResultPromptFocusedHeadBytes      = 4 * 1024
 	toolResultPromptFocusedTailBytes      = 2 * 1024
 	toolResultPromptCompactionMarker      = "[GoFlow compacted tool result for LLM context:"
@@ -27,11 +36,19 @@ func compactToolResultForPromptWithArtifact(result schema.ToolResult, artifactRe
 	content := result.Content
 	originalBytes := len([]byte(content))
 	classification := classifyToolResultPromptContent(result)
-	if originalBytes <= toolResultPromptCompactThresholdBytes && !classification.ForceCompact {
+	threshold := toolResultPromptCompactThresholdBytes
+	if isWorkspaceReadToolName(result.ToolName) {
+		threshold = toolResultPromptReadThresholdBytes
+	}
+	if originalBytes <= threshold && !classification.ForceCompact {
 		return content
 	}
 	headBytes := toolResultPromptHeadBytes
 	tailBytes := toolResultPromptTailBytes
+	if isWorkspaceReadToolName(result.ToolName) {
+		headBytes = toolResultPromptReadHeadBytes
+		tailBytes = toolResultPromptReadTailBytes
+	}
 	if classification.Focused {
 		headBytes = toolResultPromptFocusedHeadBytes
 		tailBytes = toolResultPromptFocusedTailBytes
@@ -68,6 +85,9 @@ func compactToolResultForPromptWithArtifact(result schema.ToolResult, artifactRe
 }
 
 func storeCompactedToolResultArtifact(state *session.State, result schema.ToolResult, agentID, mode string) string {
+	if strings.TrimSpace(result.ArtifactRef) != "" {
+		return result.ArtifactRef
+	}
 	if state == nil || !shouldCompactToolResultForPrompt(result) {
 		return ""
 	}
@@ -90,6 +110,57 @@ func storeCompactedToolResultArtifact(state *session.State, result schema.ToolRe
 	return artifact.Ref
 }
 
+// materializeToolResult creates one durable evidence record for every
+// non-empty tool result. Prompt compaction may reference it, but never owns
+// artifact creation, so resumed and Workflow paths preserve the same contract.
+func materializeToolResult(state *session.State, result schema.ToolResult, agentID, mode, workflowRunID, stage string) schema.ToolResult {
+	if strings.TrimSpace(result.Summary) == "" {
+		result.Summary = truncateSummary(result.Content)
+	}
+	result.ContentBytes = len([]byte(result.Content))
+	if strings.TrimSpace(result.Redaction) == "" {
+		result.Redaction = "none"
+	}
+	if strings.TrimSpace(result.ArtifactRetention) == "" {
+		result.ArtifactRetention = "session"
+	}
+	if len(result.Content) == 0 || state == nil || strings.TrimSpace(result.ArtifactRef) != "" {
+		return result
+	}
+	contentHash := sha256.Sum256([]byte(result.Content))
+	result.ArtifactHash = "sha256:" + hex.EncodeToString(contentHash[:])
+	artifact := state.AddArtifact(session.SessionArtifactSnapshot{
+		Kind:          "tool_result",
+		Title:         fallbackToolResultName(result.ToolName),
+		Summary:       result.Summary,
+		Content:       result.Content,
+		ToolName:      result.ToolName,
+		ToolCallID:    result.CallID,
+		AgentID:       agentID,
+		Mode:          mode,
+		WorkflowRunID: workflowRunID,
+		Stage:         stage,
+		ContentBytes:  result.ContentBytes,
+		Metadata: map[string]string{
+			"is_error":  strconv.FormatBool(result.IsError),
+			"denied":    strconv.FormatBool(result.Denied),
+			"suspended": strconv.FormatBool(result.Suspended),
+			"retention": result.ArtifactRetention,
+			"redaction": result.Redaction,
+		},
+	})
+	result.ArtifactRef = artifact.ArtifactRef
+	if strings.TrimSpace(result.ArtifactRef) == "" {
+		result.ArtifactRef = artifact.Ref
+	}
+	if strings.TrimSpace(result.ArtifactHash) == "" {
+		result.ArtifactHash = artifact.Hash
+	}
+	result.StoredBytes = artifact.StoredBytes
+	result.Truncated = artifact.Truncated
+	return result
+}
+
 func shouldCompactToolResultForPrompt(result schema.ToolResult) bool {
 	return len([]byte(result.Content)) > toolResultPromptCompactThresholdBytes || classifyToolResultPromptContent(result).ForceCompact
 }
@@ -103,13 +174,26 @@ func fallbackToolResultName(name string) string {
 }
 
 func toolResultPromptWasCompacted(content string) bool {
-	return strings.HasPrefix(content, toolResultPromptCompactionMarker)
+	return strings.HasPrefix(content, toolResultPromptCompactionMarker) || strings.Contains(content, "\n"+toolResultPromptCompactionMarker)
 }
 
 type toolResultPromptClassification struct {
 	ForceCompact bool
 	Focused      bool
 	Detail       string
+}
+
+// isWorkspaceReadToolName reports whether a tool result is file content rather
+// than command output. Reads must stay intact: a cut catalog or source file
+// silently loses records the task depends on.
+func isWorkspaceReadToolName(name string) bool {
+	lower := strings.ToLower(strings.TrimSpace(name))
+	for _, marker := range []string{"read_file", "read_files", "read_file_range"} {
+		if strings.Contains(lower, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 func classifyToolResultPromptContent(result schema.ToolResult) toolResultPromptClassification {

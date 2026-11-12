@@ -1,0 +1,176 @@
+name: security-assessment
+description: 授权非破坏性评估、候选发现复核与通知；覆盖不足如实记录，不自动修复目标。
+stages:
+  - name: start
+    node_type: start
+    next: [scope]
+  - name: scope
+    node_type: input_gate
+    params:
+      manual: "true"
+      prompt: 请确认目标或明确材料路径、允许的只读动作、时间范围及授权。不要填写密码或私钥；远程连接使用已保存 Target。此流程不包含破坏性验证或自动修复。
+      fields_json: '{"fields":[{"name":"scope","type":"textarea","label":"目标、材料与授权范围","required":true},{"name":"authorized","type":"boolean","label":"我确认拥有上述检查的授权","required":true},{"name":"channel_id","type":"text","label":"已配置通知通道（默认本地）","default":"local"}]}'
+    outputs:
+      scope: params.scope
+      authorized: params.authorized
+      channel_id: params.channel_id
+    next: [authorization]
+  - name: authorization
+    node_type: policy_guard
+    policy: stages.scope.outputs.authorized == true
+    params:
+      reason: 用户尚未确认授权范围，未执行任何目标检查。
+    routes:
+      allow: collect
+  - name: collect
+    node_type: skill
+    agent: security-researcher
+    skill: security-assessment
+    params:
+      tools: file_tools/read_file,file_tools/read_file_range,file_tools/write_file,web_tools/fetch_url,web_tools/browser_snapshot,web_tools/web_search,web_tools/research_snapshot
+      max_iterations: "8"
+      max_read_calls: "8"
+      require_json_output: "true"
+      required_json_keys: summary,decision,alert_required,severity,evidence_refs,findings,limitations,recommendations
+      output_schema_json: '{"type":"object","required":["alert_required","severity","evidence_refs"],"properties":{"alert_required":{"type":"boolean"},"severity":{"type":"string","enum":["info","warning","error","critical"]},"evidence_refs":{"type":"array","items":{"type":"string"}}}}'
+      purpose: 只处理用户确认的目标或材料，读取真实证据，区分候选、确认、误报和证据不足。没有适配的扫描器时如实说明覆盖不足。
+      output_contract: 输出 JSON，包含 summary、decision、alert_required（布尔值）、severity（info/warning/error/critical）、evidence_refs、findings、limitations、recommendations。中文请求的说明使用中文，字段名保持稳定。
+    input:
+      request: workflow.input
+      scope: stages.scope.outputs.scope
+    outputs:
+      report: result.output
+      decision: result.decision
+      alert_required: result.alert_required
+      evidence_refs: result.evidence_refs
+      summary: result.summary
+    artifacts:
+      - name: collection-report
+        kind: evidence
+        title: 授权评估证据
+        ref: result.output
+    acceptance_criteria:
+      - name: report-produced
+        ref: result.output
+        exists: true
+      - name: observations-recorded
+        ref: result.tool_results
+        exists: true
+    context:
+      include: [workflow.input, stages.scope.outputs.scope]
+      exclude: [raw_tool_logs, unrelated_session_history]
+      prompt_max_tokens: 6500
+      max_tokens: 3800
+    next: [alert-required]
+  - name: alert-required
+    node_type: condition
+    condition: stages.collect.outputs.alert_required == true
+    routes:
+      "true": notify
+      "false": review
+  - name: notify
+    node_type: skill
+    agent: security-researcher
+    skill: event-notification
+    approval: true
+    params:
+      tools: notification_tools/publish_event
+      max_iterations: "2"
+      require_json_output: "true"
+      required_json_keys: event_id,delivery_status
+      output_schema_json: '{"type":"object","required":["event_id","delivery_status"],"properties":{"event_id":{"type":"string","minLength":1},"delivery_status":{"type":"string","enum":["stored","delivered","failed","pending"]}}}'
+      output_contract: 使用用户配置的 channel_id 提交一次上游事件，未配置用 local。severity 仅允许 info/warning/error/critical。输出 event_id、delivery_status 和失败原因，不把本地存储写成外部送达。
+    input:
+      channel_id: stages.scope.outputs.channel_id
+      event: stages.collect.outputs.report
+      evidence_refs: stages.collect.outputs.evidence_refs
+    outputs:
+      receipt: result.output
+    artifacts:
+      - name: notification-receipt
+        kind: report
+        title: 通知投递结果
+        ref: result.output
+    acceptance_criteria:
+      - name: notification-tool-recorded
+        ref: result.tool_results
+        contains: '"tool_name":"notification_tools/publish_event"'
+    next: [review]
+  - name: review
+    node_type: skill
+    agent: auditor
+    skill: security-evidence-review
+    params:
+      tools: file_tools/read_file,file_tools/read_file_range
+      max_iterations: "4"
+      max_read_calls: "3"
+      require_json_output: "true"
+      required_json_keys: summary,decision,findings,evidence_refs,limitations,recommendations
+      output_contract: 输出 JSON，包含 summary、decision、findings、evidence_refs、limitations、recommendations。核对授权和每项结论来源，不以缺失证据认定安全，也不以无关既有风险扩展任务。
+    input:
+      request: workflow.input
+      scope: stages.scope.outputs.scope
+      report: stages.collect.outputs.report
+      evidence_refs: stages.collect.outputs.evidence_refs
+      notification: stages.notify.outputs.receipt
+    outputs:
+      report: result.output
+      decision: result.decision
+      summary: result.summary
+    artifacts:
+      - name: evidence-review
+        kind: report
+        title: 独立证据复核
+        ref: result.output
+    acceptance_criteria:
+      - name: review-produced
+        ref: result.output
+        exists: true
+    next: [quality]
+  - name: quality
+    node_type: quality_gate
+    params:
+      stages: collect,notify,review
+      require_acceptance: "true"
+      require_evidence: "true"
+      require_verification: "true"
+      verification_mode: tool
+      verification_any_tools: file_tools/read_file,web_tools/fetch_url,web_tools/browser_snapshot,web_tools/research_snapshot
+      allow_unknown: "false"
+      min_score: "80"
+    routes:
+      pass: report
+      warning: report
+      fail: report
+  - name: report
+    retry:
+      max_attempts: 2
+    node_type: skill
+    agent: security-researcher
+    skill: security-assessment
+    params:
+      disable_tools: "true"
+      max_iterations: "1"
+      verify_evidence_hashes: "true"
+      purpose: 根据实际证据生成最终完整中文报告，列出范围、发现、限制、建议及通知真实投递状态。门禁失败时明确未通过；疑似与确认分开，不编造攻击者身份、测试或处置成功。
+      output_contract: 输出完整中文 Markdown 报告，使用“评估结论、授权范围、已确认与待核实发现、证据与采集限制、修补与复测建议、通知状态”等中文标题。引用实际来源并保留覆盖不足。完整哈希以证据索引原值为准，正文引用对应条目，不重新抄写哈希。不要输出 JSON，不把说明模板、标题列表或待办建议当作已完成交付。
+    input:
+      request: workflow.input
+      scope: stages.scope.outputs.scope
+      assessment: stages.collect.outputs.report
+      review: stages.review.outputs.report
+      quality_status: stages.quality.outputs.quality_status
+      failures: stages.quality.outputs.failures
+      notification: stages.notify.outputs.receipt
+    artifacts:
+      - name: final-report
+        kind: report
+        title: 最终安全评估报告
+        ref: result.output
+    acceptance_criteria:
+      - name: final-report-produced
+        ref: result.output
+        exists: true
+    next: [end]
+  - name: end
+    node_type: end

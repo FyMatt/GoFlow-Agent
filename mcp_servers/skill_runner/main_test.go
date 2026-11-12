@@ -97,7 +97,7 @@ scripts:
     path: scripts/echo.go
     runtime: go
     output: json
-    timeout: 30s
+    timeout: 60s
     workspace_mount: none
     approval: required
     args_schema:

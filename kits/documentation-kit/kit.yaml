@@ -2,112 +2,136 @@ kind: goflow.kit
 version: 1
 min_supported_version: 1
 name: documentation-kit
-title: Documentation Kit
-description: Plan, update, review, and hand off technical documentation changes.
+title: 办公文档资源包
+description: 制作、编辑、转换和校验 Word、Excel、PPT 与 PDF，交付真实文件、PDF 和预览证据。
 category: documentation
-tags:
-    - docs
-    - writing
-    - review
+tags: [office, document, word, excel, powerpoint, pdf]
 agents:
-    - chat
-    - planner
-    - fixer
-    - auditor
-    - documentation-specialist
+  - documentation-specialist
+  - planner
+  - auditor
 providers:
-    - primary
+  - primary
 skills:
-    - execution-plan
-    - code-writing
-    - code-audit
+  - office-document-production
+  - execution-plan
+  - code-audit
 tools:
-    - file_tools/read_file
-    - file_tools/search_files
-    - file_tools/write_file
-    - python_notes/markdown_link_check
-    - python_notes/redaction_check
+  - office_tools/office_capabilities
+  - office_tools/create_docx
+  - office_tools/create_xlsx
+  - office_tools/create_pptx
+  - office_tools/create_pdf
+  - office_tools/inspect_office_document
+  - office_tools/validate_office_document
+  - office_tools/replace_office_text
+  - office_tools/fill_office_template
+  - office_tools/export_office_pdf
+  - office_tools/render_office_preview
+routing:
+  version: 1
+  enabled: true
+  priority: 10
+  match_terms:
+    - 办公文档
+    - 制作文档
+    - 生成报告
+    - 汇报材料
+    - 模板填充
+    - 文档校验
+    - word
+    - excel
+    - ppt
+    - powerpoint
+    - pdf
+  entry_workflow: docs-review-publish
+  required_tools:
+    - office_tools/fill_office_template
+    - office_tools/validate_office_document
+    - office_tools/export_office_pdf
 workflows:
-    - plan-fix-audit
+  - docs-review-publish
 workflow_templates:
-    - docs-review-publish
+  - docs-review-publish
 team_templates:
-    - documentation-team
+  - documentation-team
 policy_rules:
-    - expression
-    - team_approval_gate
+  - expression
+  - team_approval_gate
 examples:
-    - title: Refresh docs
-      description: Update docs and review for accuracy.
-      request: Update the setup documentation and verify commands are accurate.
-      workflow: docs-review-publish
-      agent: documentation-specialist
-    - title: Publish-ready handoff
-      description: Draft documentation changes and route them through review before publishing.
-      request: Rewrite the operator guide and produce a publish checklist.
-      workflow: docs-review-publish
-      agent: documentation-specialist
+  - title: 制作项目汇报材料
+    description: 根据项目资料生成可编辑报告、数据表和演示文稿，并同步导出 PDF。
+    request: 根据工作区中的项目资料制作一份中文项目总结 DOCX、一份包含统计公式的 XLSX 和一份 16:9 汇报 PPTX，完成校验后导出 PDF 和预览图。
+    workflow: docs-review-publish
+    agent: documentation-specialist
+  - title: 修改并复核现有文档
+    description: 在保留原文件备份和并发保护的前提下修改办公文档，再完成格式复核。
+    request: 修改指定 Word 报告中的过期名称，保留修改前备份，检查标题、表格和分页，并交付最终 DOCX、PDF 与预览图。
+    workflow: docs-review-publish
+    agent: documentation-specialist
 vertical_pack:
-    domain: documentation
-    maturity: production-ready
-    summary: Plans, edits, reviews, and prepares publish-ready technical documentation with audience fit, command accuracy, link integrity, bilingual parity, version/platform notes, redaction, and publish readiness checks.
-    supported_tasks:
-        - documentation planning
-        - guide updates
-        - command verification notes
-        - local Markdown link integrity review
-        - bilingual parity review
-        - version and platform note review
-        - publish checklist creation
-    required_inputs:
-        - target document
-        - audience
-        - desired change
-        - verification expectations
-        - version or platform scope
-    tool_boundaries:
-        - Read existing docs before edits.
-        - Write only scoped documentation files.
-        - Use markdown_link_check for local link and anchor integrity without network access.
-        - Run commands only when command accuracy verification is needed and approved.
-        - Use redaction_check before publishing docs that include logs, tokens, customer examples, or incident evidence.
-    safety_gates:
-        - Preserve existing bilingual conventions.
-        - Do not invent commands or behavior without source evidence.
-        - Flag stale version/platform references and missing publish approval.
-    quality_gates:
-        - Requires changed document summary.
-        - Requires audience fit, command accuracy, link integrity, bilingual parity, and redaction review.
-        - Requires publish checklist or residual gaps.
-    evidence_artifacts:
-        - documentation plan
-        - changed file summary
-        - link integrity report
-        - bilingual parity notes
-        - verification notes
-        - publish checklist
-    simple_mode:
-        - Show document target, audience, link integrity, command accuracy, bilingual parity, redaction status, and publish readiness.
-    expert_mode:
-        - Show raw diffs, validation commands, markdown_link_check output, redaction findings, version/platform notes, style constraints, and artifact refs.
-    token_strategy:
-        - Use document summaries before full reads.
-        - Pass section-level summaries into review.
-    model_routes:
-        strong:
-            - structure planning
-            - final accuracy review
-        worker:
-            - scoped doc edits
-            - link integrity scan
-            - checklist drafting
-        verifier:
-            - command and link review
-            - bilingual parity and publish readiness review
+  domain: office-document
+  maturity: production-ready
+  summary: 面向日常办公和复杂项目交付，自动制作、编辑、转换和校验 Word、Excel、PPT 与 PDF 文档。
+  supported_tasks:
+    - 中文报告、方案、制度和操作手册制作
+    - 数据清单、统计表、公式汇总和多工作表分析
+    - 16:9 项目汇报、培训和方案演示制作
+    - DOCX、XLSX、PPTX 转 PDF 和预览图
+    - 已有办公文档的精确文本修改和修改前备份
+    - 基于用户模板生成新文件并保留模板样式、母版、公式和未修改内容
+    - 将开发、网安、运维和研究结果转成正式需求、设计、评估、整改、巡检或研究报告
+    - 四类格式的结构、内容和可交付状态校验
+  required_inputs:
+    - 文档目标和目标读者
+    - 输入资料或数据来源
+    - 期望交付格式
+    - 指定模板或品牌要求（如有）
+    - 保存目录（可选）
+  tool_boundaries:
+    - 只能读写当前工作区内的文档和交付目录。
+    - 覆盖已有文件时必须校验原文件 SHA-256，并保留修改前备份。
+    - 基于模板生成时默认输出新文件，原模板保持不变；多处替换必须整批校验后原子提交。
+    - 文档转换按 WPS、Microsoft Office、LibreOffice 的可用能力自动选择，不接受任意脚本。
+    - 预览由本机办公套件和浏览器真实渲染，失败时返回明确原因。
+  safety_gates:
+    - 不执行文档中的宏、外部链接或嵌入脚本。
+    - 不覆盖并发修改，不将失败转换或空白预览标记为完成。
+    - 涉及敏感信息时只在用户指定工作区内处理，并在交付前提示脱敏检查。
+  quality_gates:
+    - 每个要求的格式都必须有非空、真实可打开的文件。
+    - 每个文件必须有结构检查、SHA-256 和格式专项校验结果。
+    - 要求 PDF 或预览时必须提供实际路径，不能用说明文本代替。
+    - Excel 计算结果必须保留可复算公式；PPT 必须检查 16:9 和文字可读性。
+  presentation_guidance:
+    - 展示目标读者、要求的交付格式、实际生成的文件路径与大小。
+    - 展示结构检查、格式校验、PDF 导出与预览图的真实结果，失败时给出原因。
+  evidence_artifacts:
+    - 文档需求与交付清单
+    - 模板或源文件清单、语义修改清单和未修改项说明
+    - 可编辑 DOCX、XLSX 或 PPTX 源文件
+    - PDF 交付文件
+    - 预览图
+    - 结构检查、格式校验、文件大小和 SHA-256
+  token_strategy:
+    - 先读取文件结构和文本摘要，仅在修改目标需要时加载相关内容。
+    - 工作流阶段只传递产物路径、结构摘要、哈希和校验结论，不内联完整二进制文件。
+  model_routes:
+    strong:
+      - 复杂内容组织、跨格式一致性和最终质量判断
+    worker:
+      - 文件创建、转换、精确修改和交付清单整理
+    verifier:
+      - 结构检查、格式校验、预览检查和交付完整性复核
+acceptance:
+  sample_request: 根据模板生成中文报告、数据表和演示文稿，校验后导出 PDF 与预览图。
+  deliverables: [deliverables/report.docx, deliverables/data.xlsx, deliverables/review.pptx, deliverables/report.pdf]
+  min_quality_score: 80
+
 metadata:
-    preset: documentation
-    recommended_agent: documentation-specialist
-    recommended_workflow: docs-review-publish
-    scaffold_preset: documentation
-    recommended_team: documentation-team
-    primary_skill: code-writing
+  preset: documentation
+  recommended_agent: documentation-specialist
+  recommended_workflow: docs-review-publish
+  scaffold_preset: documentation
+  recommended_team: documentation-team
+  primary_skill: office-document-production

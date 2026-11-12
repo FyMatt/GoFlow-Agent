@@ -1,0 +1,45 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: security-incident-kit
+title: 只读事件调查资源包
+description: 授权分诊、日志与状态关联、技术时间线、证据报告及通用事件通知；不自动清理或修补目标。
+category: security
+tags: [incident, evidence, readonly, notification]
+routing:
+  version: 1
+  match_terms: [安全事件调查, 入侵调查, 攻击日志分析, 入侵痕迹, 遭受攻击, incident investigation, compromise evidence]
+  entry_workflow: security-incident-investigation
+  required_tools: [file_tools/read_file]
+agents: [security-researcher, auditor]
+providers: [primary]
+skills: [security-incident-investigation, security-evidence-review, event-notification]
+tools:
+  - file_tools/read_file
+  - file_tools/read_file_range
+  - host_tools/host_diagnostic_snapshot
+  - host_tools/read_log_tail
+  - ssh_tools/ssh_host_key_scan
+  - ssh_tools/ssh_run_command
+  - notification_tools/publish_event
+workflows: [security-incident-investigation]
+metadata:
+  recommended_workflow: security-incident-investigation
+  acceptance_status: pending_real_model_and_host_acceptance
+vertical_pack:
+  domain: incident-investigation
+  maturity: guided
+  summary: 用户授权范围内的只读分诊与调查；明显风险先形成预警，完整报告区分事实、推测与缺失证据。
+  supported_tasks: [offline log triage, authorized local state review, allowlisted SSH investigation, evidence reporting]
+  required_inputs: [explicit scope, selected target or material path, time window, permitted actions]
+  tool_boundaries: [no arbitrary shell, no destructive validation, no remediation or containment, redact secrets]
+  safety_gates: [manual scope confirmation, normal tool approval, target fingerprint and command allowlist]
+  quality_gates: [traceable evidence, collection gaps reported, independent read-only review, notification receipt checked]
+  evidence_artifacts: [source references, collection timestamps, incident timeline, event delivery receipt, final report]
+  token_strategy: [bounded collection, incremental investigation, no full raw logs in prompts]
+examples:
+  - title: 授权离线日志调查
+    description: 提供明确的日志路径和时间范围，不连接未知主机。
+    request: 对我提供的日志进行入侵调查，区分事实与推测，必要时生成本地预警，不修改被调查系统。
+    workflow: security-incident-investigation
+    agent: security-researcher

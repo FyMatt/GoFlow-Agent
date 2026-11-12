@@ -44,6 +44,14 @@ ZH_ALLOWED_ASCII_TERMS = {
     "YAML",
 }
 ZH_ALLOWED_ASCII_LOWER = {term.lower() for term in ZH_ALLOWED_ASCII_TERMS}
+ZH_REQUIRED_CHINESE_KEYS = {
+    "chat.executionContextWorkspace",
+    "chat.executionContextTarget",
+    "chat.executionContextProvider",
+    "chat.executionContextModel",
+    "chat.executionContextPermission",
+    "chat.executionContextResources",
+}
 ZH_UNTRANSLATED_WORD_RE = re.compile(
     r"\b(Agent|Agents|Skill|Skills|Workflow|Workflows|Team|Teams|Policy|Policies|Kit|Kits|Tool|Tools|"
     r"Studio|Console|Resource|Resources|Provider|Providers|Node|Nodes|Stage|Stages|Settings|Workspace|"
@@ -155,6 +163,14 @@ def untranslated_zh_strings(values: dict[str, str]) -> list[str]:
     return issues
 
 
+def required_zh_strings_without_chinese(values: dict[str, str]) -> list[str]:
+    return [
+        f"  - {key}: {values.get(key, '<missing>')}"
+        for key in sorted(ZH_REQUIRED_CHINESE_KEYS)
+        if not any("\u4e00" <= ch <= "\u9fff" for ch in values.get(key, ""))
+    ]
+
+
 def static_key_references() -> dict[str, set[str]]:
     references: dict[str, set[str]] = {}
     for path in sorted(ASSET_ROOT.rglob("*.js")):
@@ -176,7 +192,8 @@ def main() -> int:
     missing_en = sorted(key for key in references if key not in en_keys)
     missing_zh = sorted(key for key in references if key not in zh_keys)
     untranslated_zh = untranslated_zh_strings(zh_strings)
-    if missing_en or missing_zh or untranslated_zh:
+    required_zh_missing = required_zh_strings_without_chinese(zh_strings)
+    if missing_en or missing_zh or untranslated_zh or required_zh_missing:
         lines = []
         if missing_en:
             lines.append("missing English keys:")
@@ -187,6 +204,9 @@ def main() -> int:
         if untranslated_zh:
             lines.append("Chinese values contain likely untranslated UI words:")
             lines.extend(untranslated_zh)
+        if required_zh_missing:
+            lines.append("Required Chinese UI labels do not contain Chinese text:")
+            lines.extend(required_zh_missing)
         raise AssertionError("\n".join(lines))
     print(f"web i18n validation passed ({len(references)} static keys checked)")
     return 0

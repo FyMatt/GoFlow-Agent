@@ -2,8 +2,8 @@ kind: goflow.kit
 version: 1
 min_supported_version: 1
 name: web-security-kit
-title: Web Security Research Kit
-description: Collect target pages and client assets, review web attack surface, classify risk, and produce defensive reports.
+title: Web 安全研究资源包
+description: 收集目标页面和前端资源，审查 Web 攻击面，判定风险并输出防御性报告。
 category: security
 tags:
     - web
@@ -38,7 +38,6 @@ workflow_templates:
     - web-research-risk
     - security-audit-evidence-gate
     - authorized-red-team-validation
-    - human-input-security-review
 team_templates:
     - web-research-team
     - audit-security-team
@@ -48,20 +47,20 @@ policy_rules:
     - ref_truthy
     - expression
 examples:
-    - title: Review a target URL
-      description: Fetch page source and linked client assets, then inspect for evidence-backed client-side risks.
-      request: Review https://example.com for client-side security risks within authorized scope.
+    - title: 审查目标网址
+      description: 获取页面源码和引用的前端资源，基于证据审查客户端风险。
+      request: 在已授权范围内审查 https://example.com 的客户端安全风险。
       workflow: web-research-risk
       agent: web-security-researcher
-    - title: Evidence-gated web report
-      description: Require scope, collected assets, findings, and final operator review before reporting.
-      request: Build an evidence-backed web security report for this authorized target.
+    - title: 证据门禁 Web 报告
+      description: 报告前必须具备授权范围、已收集资源、风险发现和操作者最终复核。
+      request: 为这个已授权目标生成有证据支撑的 Web 安全报告。
       workflow: security-audit-evidence-gate
       agent: security-researcher
 vertical_pack:
     domain: web-security
     maturity: production-ready
-    summary: Collects authorized source and browser-rendered web evidence, classifies client-side risk, and reports defensive findings with approval gates.
+    summary: 收集已授权的网页源码和浏览器渲染证据，判定客户端风险，并通过审批门禁输出防御性发现。
     supported_tasks:
         - authorized web target intake
         - page and asset collection
@@ -104,11 +103,10 @@ vertical_pack:
         - red-team validation plan
         - red-team validation evidence
         - blue-team handoff
-    simple_mode:
+    presentation_guidance:
         - Show target URL, allowed hosts, authorization checkbox, evidence status, risk level, and final report.
         - Hide payload and browser runtime details unless approval is needed.
         - Show whether red-team validation is approved, blocked, or complete.
-    expert_mode:
         - Show tool allowlists, browser evidence refs, context budgets, approval gates, route conditions, and raw workflow graph.
         - Show authorization boundary, allowed actions, blocked actions, canary evidence, and red/blue handoff refs.
     token_strategy:

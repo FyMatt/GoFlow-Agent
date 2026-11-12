@@ -4,11 +4,15 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
+	"net/url"
 	"sort"
 	"strings"
+	"sync/atomic"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/promptguard"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
 
@@ -16,10 +20,16 @@ import (
 type Registry struct {
 	providers map[string]interfaces.LLMClient
 	configs   map[string]config.LLMConfig
+	localOnly bool
 }
 
 // NewRegistry builds the configured provider set.
 func NewRegistry(defaultLLM config.LLMConfig, named map[string]config.LLMConfig) (*Registry, error) {
+	return NewRegistryWithPolicy(defaultLLM, named, false)
+}
+
+// NewRegistryWithPolicy builds providers with workspace egress policy.
+func NewRegistryWithPolicy(defaultLLM config.LLMConfig, named map[string]config.LLMConfig, localOnly bool) (*Registry, error) {
 	providers := make(map[string]interfaces.LLMClient)
 	configs := make(map[string]config.LLMConfig)
 	for name, cfg := range named {
@@ -39,7 +49,7 @@ func NewRegistry(defaultLLM config.LLMConfig, named map[string]config.LLMConfig)
 		providers[name] = client
 		configs[name] = defaultLLM
 	}
-	return &Registry{providers: providers, configs: configs}, nil
+	return &Registry{providers: providers, configs: configs, localOnly: localOnly}, nil
 }
 
 func buildClient(name string, cfg config.LLMConfig) (interfaces.LLMClient, error) {
@@ -168,13 +178,17 @@ type fallbackClient struct {
 	primaryName string
 	primary     interfaces.LLMClient
 	registry    *Registry
-	used        bool
+	used        atomic.Bool
 }
 
 func (c *fallbackClient) Chat(ctx context.Context, req schema.ChatRequest) (schema.ChatResponse, error) {
+	c.used.Store(false)
+	req, _ = promptguard.SanitizeChatRequest(req)
+	if err := c.ensureProviderAllowed(c.primaryName); err != nil {
+		return schema.ChatResponse{}, err
+	}
 	resp, err := c.primary.Chat(ctx, req)
 	if err == nil {
-		c.used = false
 		return resp, nil
 	}
 	if isProviderSetupRequired(err) {
@@ -184,17 +198,27 @@ func (c *fallbackClient) Chat(ctx context.Context, req schema.ChatRequest) (sche
 	if fallbackErr != nil {
 		return schema.ChatResponse{}, err
 	}
+	if fallbackName, ok := c.fallbackProviderName(); ok {
+		if err := c.ensureProviderAllowed(fallbackName); err != nil {
+			return schema.ChatResponse{}, err
+		}
+	}
 	resp, err = fallback.Chat(ctx, req)
 	if err == nil {
-		c.used = true
+		c.used.Store(true)
+		resp.FallbackUsed = true
 	}
 	return resp, err
 }
 
 func (c *fallbackClient) StreamChat(ctx context.Context, req schema.ChatRequest, handler interfaces.StreamHandler) (schema.ChatResponse, error) {
+	c.used.Store(false)
+	req, _ = promptguard.SanitizeChatRequest(req)
+	if err := c.ensureProviderAllowed(c.primaryName); err != nil {
+		return schema.ChatResponse{}, err
+	}
 	resp, err := c.primary.StreamChat(ctx, req, handler)
 	if err == nil {
-		c.used = false
 		return resp, nil
 	}
 	if isProviderSetupRequired(err) {
@@ -204,9 +228,15 @@ func (c *fallbackClient) StreamChat(ctx context.Context, req schema.ChatRequest,
 	if fallbackErr != nil {
 		return schema.ChatResponse{}, err
 	}
+	if fallbackName, ok := c.fallbackProviderName(); ok {
+		if err := c.ensureProviderAllowed(fallbackName); err != nil {
+			return schema.ChatResponse{}, err
+		}
+	}
 	resp, err = fallback.StreamChat(ctx, req, handler)
 	if err == nil {
-		c.used = true
+		c.used.Store(true)
+		resp.FallbackUsed = true
 	}
 	return resp, err
 }
@@ -219,8 +249,10 @@ func (c *fallbackClient) FallbackUsed() bool {
 	if c == nil {
 		return false
 	}
-	return c.used
+	return c.used.Load()
 }
+
+func (c *fallbackClient) FallbackUsageIsRequestScoped() bool { return true }
 
 func (c *fallbackClient) fallback() (interfaces.LLMClient, error) {
 	if c == nil || c.registry == nil {
@@ -235,4 +267,52 @@ func (c *fallbackClient) fallback() (interfaces.LLMClient, error) {
 		return nil, fmt.Errorf("fallback provider not found: %s", cfg.FallbackProvider)
 	}
 	return provider, nil
+}
+
+func (c *fallbackClient) fallbackProviderName() (string, bool) {
+	if c == nil || c.registry == nil {
+		return "", false
+	}
+	cfg, ok := c.registry.configs[c.primaryName]
+	if !ok || strings.TrimSpace(cfg.FallbackProvider) == "" {
+		return "", false
+	}
+	return strings.TrimSpace(cfg.FallbackProvider), true
+}
+
+func (c *fallbackClient) ensureProviderAllowed(name string) error {
+	if c == nil || c.registry == nil || !c.registry.localOnly {
+		return nil
+	}
+	cfg, ok := c.registry.configs[name]
+	if !ok {
+		return nil
+	}
+	if IsLocalBaseURL(cfg.BaseURL) {
+		return nil
+	}
+	return fmt.Errorf("local-only workspace blocks non-local model provider %q at %s", name, strings.TrimSpace(cfg.BaseURL))
+}
+
+// IsLocalBaseURL recognizes loopback and Unix-socket provider endpoints.
+func IsLocalBaseURL(raw string) bool {
+	raw = strings.TrimSpace(raw)
+	if raw == "" {
+		return false
+	}
+	parsed, err := url.Parse(raw)
+	if err != nil {
+		return false
+	}
+	if strings.EqualFold(parsed.Scheme, "unix") {
+		return true
+	}
+	host := strings.Trim(strings.ToLower(parsed.Hostname()), "[]")
+	if host == "localhost" {
+		return true
+	}
+	if ip := net.ParseIP(host); ip != nil {
+		return ip.IsLoopback()
+	}
+	return false
 }

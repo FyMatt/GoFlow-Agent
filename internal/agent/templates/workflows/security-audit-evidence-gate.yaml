@@ -2,194 +2,463 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: security-audit-evidence-gate
-title: Security Audit Evidence Gate
-description: Collect target scope, gather evidence, audit findings, and route through a quality gate before reporting.
+title: 网络安全审计与修复交付
+description: 在明确授权范围内完成证据审计、受批修复、独立复测、必要返修和统一安全交付，适用于真实代码库和本地测试目标。
 category: security
-tags:
-    - security
-    - evidence
-    - quality_gate
-    - manual-input
-stages: 9
+tags: [security, audit, remediation, approval, regression, recovery, quality_gate, report]
+stages: 12
 graph:
-    name: security-audit-evidence-gate
-    description: Security audit workflow with operator scope, evidence artifacts, authorization blockers, attack-path hypothesis, exploitability arbitration, disallowed actions, quality gate, disclosure-safe reporting, and red/blue handoff.
-    stages:
-        - name: start
-          node_type: start
-          agent: ""
-          skill: ""
-          next:
-            - scope
-          position:
-            x: 60
-            "y": 220
-        - name: scope
-          node_type: input_gate
-          agent: ""
-          skill: ""
-          params:
-            fields_json: '{"fields":[{"name":"target","type":"text","label":"Target URL, file, binary, config, or system","required":true},{"name":"scope","type":"textarea","label":"Authorized scope","required":true},{"name":"allowed_actions","type":"textarea","label":"Allowed actions and exclusions","required":true},{"name":"active_validation_approved","type":"checkbox","label":"Active validation approved","default":false},{"name":"depth","type":"integer","default":"1","min":"1","max":"3"}]}'
-            manual: "true"
-            prompt: Provide the authorized target, scope, allowed actions, exclusions, and depth before security analysis. Missing authorization must remain visible as an authorization blocker.
-          outputs:
-            active_validation_approved: params.active_validation_approved
-            allowed_actions: params.allowed_actions
-            depth: params.depth
-            scope: params.scope
-            target: params.target
-          next:
-            - collect
-          position:
-            x: 320
-            "y": 210
-        - name: collect
-          node_type: skill
-          agent: web-security-researcher
-          skill: web-vulnerability-research
-          params:
-            output_contract: Emit sections named Scope Summary, Authorization Blockers, Disallowed Actions, Evidence Summary, Code Evidence, Browser Evidence, Binary Evidence, Configuration Evidence, Probe Surface, Attack-Path Hypothesis, Findings, Confidence, Limitations, and Recommended Verification.
-            evidence_rule: Keep evidence tied to the operator-provided scope, require authorized_scope=true and allowed_hosts before browser_snapshot, use browser_probe_points only for scoped probe surface enumeration unless active_probe_approved=true, keep offensive validation non-destructive, and run binary/static helpers or redaction checks only when relevant local artifacts exist.
-            allowed_tools: file_tools/read_file,file_tools/search_files,web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points,web_tools/fetch_url,web_tools/web_search,python_notes/binary_format_summary,python_notes/binary_entropy_map,python_notes/binary_symbol_hints,python_notes/redaction_check
-          input:
-            active_validation_approved: stages.scope.outputs.active_validation_approved
-            allowed_actions: stages.scope.outputs.allowed_actions
-            scope: stages.scope.outputs.scope
-            target: stages.scope.outputs.target
-          outputs:
-            evidence: result.output
-            findings: result.findings
-            summary: result.summary
-          artifacts:
-            - name: web-evidence
-              kind: evidence
-              title: Collected web evidence
-              ref: result.output
-              summary: Scope-bound code, web, browser, binary, configuration, redaction, and probe-surface evidence.
-          acceptance_criteria:
-            - name: target-covered
-              ref: result.output
-              contains: http
-              expected: evidence references fetched target material
-            - name: browser-boundary-stated
-              ref: result.output
-              contains: Browser Evidence
-              expected: evidence states browser automation scope, authorization, or limitations
-            - name: authorization-blockers-stated
-              ref: result.output
-              contains: Authorization Blockers
-              expected: evidence records missing authorization or states no blocker
-            - name: attack-path-hypothesis-stated
-              ref: result.output
-              contains: Attack-Path Hypothesis
-              expected: evidence records attack-path hypothesis or a scoped blocker
-          next:
-            - audit
-          position:
-            x: 620
-            "y": 190
-        - name: audit
-          node_type: skill
-          agent: auditor
-          skill: code-audit
-          params:
-            output_contract: Emit sections named Audit Decision, Exploitability Arbitration, Evidence Sufficiency, Severity Confidence, Disallowed Actions, Disclosure-Safe Notes, Remediation, and Red/Blue Handoff.
-          input:
-            evidence: stages.collect.outputs.evidence
-          outputs:
-            audit: result.output
-            findings: result.findings
-          artifacts:
-            - name: audit-findings
-              kind: finding
-              title: Audit findings
-              ref: result.findings
-            - name: audit-report
-              kind: report
-              title: Audit report
-              ref: result.output
-          acceptance_criteria:
-            - name: risk-classified
-              ref: result.output
-              contains: risk
-              expected: audit classifies risk and impact
-            - name: exploitability-arbitrated
-              ref: result.output
-              contains: Exploitability Arbitration
-              expected: audit separates confirmed exploitability from hypotheses
-          next:
-            - quality
-          position:
-            x: 920
-            "y": 190
-        - name: quality
-          node_type: quality_gate
-          agent: ""
-          skill: ""
-          params:
-            min_score: "75"
-            reason: security evidence is insufficient for a final report because authorization, disallowed actions, active validation blockers, exploitability arbitration, evidence sufficiency, severity confidence, disclosure-safe wording, or red/blue handoff is missing
-            require_acceptance: "true"
-            require_evidence: "true"
-          routes:
-            fail: remediate
-            pass: report
-            warning: review
-          position:
-            x: 1220
-            "y": 220
-        - name: review
-          node_type: checkpoint
-          agent: ""
-          skill: ""
-          params:
-            prompt: Review warning-level security evidence before producing the report. Confirm authorization blockers, disallowed actions, active validation blockers, exploitability arbitration, and disclosure-safe red/blue handoff.
-          next:
-            - report
-          position:
-            x: 1510
-            "y": 110
-        - name: report
-          node_type: skill
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Disclosure-Safe Report, Findings, Exploitability Arbitration, Evidence, Remediation, Follow-up Tests, Red/Blue Handoff, Remaining Risks, and Blocked Actions.
-          input:
-            audit: stages.audit.outputs.audit
-            quality: stages.quality.outputs.quality_status
-          outputs:
-            report: result.output
-          artifacts:
-            - name: final-security-report
-              kind: report
-              title: Final security report
-              ref: result.output
-          next:
-            - end
-          position:
-            x: 1510
-            "y": 240
-        - name: remediate
-          node_type: skill
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Remediation Plan, Missing Evidence, Authorization Blockers, Disallowed Actions, Active Validation Blockers, Exploitability Gaps, Follow-up Tests, and Red/Blue Handoff.
-          input:
-            audit: stages.audit.outputs.audit
-            failures: stages.quality.outputs.failures
-          outputs:
-            remediation_plan: result.output
-          next:
-            - end
-          position:
-            x: 1510
-            "y": 390
-        - name: end
-          node_type: end
-          agent: ""
-          skill: ""
-          position:
-            x: 1810
-            "y": 240
+  name: security-audit-evidence-gate
+  description: 通用防御性安全工程流程。只读审计与修改阶段隔离，主动探测必须改用受控红队工作流。
+  budget:
+    soft_llm_calls: 64
+    hard_llm_calls: 96
+    soft_continuations: 1
+    hard_continuations: 2
+    soft_total_tokens: 250000
+    hard_total_tokens: 400000
+  stages:
+    - name: start
+      node_type: start
+      next: [audit]
+      position: {x: 60, y: 260}
+
+    - name: audit
+      node_type: skill
+      agent: security-researcher
+      skill: vulnerability-research
+      execution:
+        mode: planning
+        risk_level: low
+        boundary: authorized-workspace-read-only
+        requires_authorized_scope: true
+      params:
+        max_model_calls: "4"
+        max_total_model_calls: "6"
+        require_workspace_mutation: "false"
+        change_slice_policy: "required"
+        purpose: >-
+          先解析请求中的授权目标、允许动作、禁止动作和停止条件。仅在授权工作区内定位请求涉及的真实入口和实现文件，
+          将实际发现的路径、证据和验证命令写入待审批计划；缺少目标或授权时停止并说明缺失输入，不猜测项目布局。
+          每个发现必须区分已观察事实、危险模式、待验证假设和已确认漏洞。
+        output_contract: 使用中文输出“授权与范围、资产与入口、发现、证据链、可利用性与影响、修复建议、复测计划、已阻止动作、剩余未知”，并在末尾给出 goflow-change-slices 围栏 JSON。每个发现使用稳定编号并引用文件、行号、命令结果或请求证据。
+        tools: file_tools/list_tree,file_tools/search_files,file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/read_file_range,command_tools/run_command
+        max_iterations: "10"
+        max_read_calls: "16"
+        max_command_calls: "2"
+        allowed_command_classes: inspection,test
+      input:
+        request: workflow.input
+      outputs:
+        audit_report: result.output
+        findings: result.findings
+        evidence: result.tool_results
+        summary: result.summary
+      artifacts:
+        - name: security-audit
+          kind: audit
+          title: 安全审计证据
+          ref: result.output
+          summary: 授权范围、发现、证据、影响边界、修复建议和复测计划。
+      acceptance_criteria:
+        - name: authorization-scope
+          ref: result.output
+          contains: 授权与范围
+          expected: 报告明确授权目标、允许动作和边界
+        - name: evidence-chain
+          ref: result.output
+          contains: 证据链
+          expected: 每个发现具有可复核证据
+        - name: retest-plan
+          ref: result.output
+          contains: 复测计划
+          expected: 修复前已有确定性复测条件
+      retry: {max_attempts: 3}
+      context:
+        include: [memory.project, workflow.input]
+        exclude: [raw_tool_logs, unrelated_session_history]
+        max_tokens: 5200
+        prompt_max_tokens: 10000
+        request_max_tokens: 1800
+      next: [approve-remediation]
+      position: {x: 360, y: 260}
+
+    - name: approve-remediation
+      node_type: checkpoint
+      params:
+        prompt: 请确认授权范围、待修改文件、验证命令和回滚策略。批准后仅在当前工作区实施修复；主动探测、远程目标和生产变更不包含在本次批准中。
+      next: [remediate]
+      position: {x: 680, y: 260}
+
+    - name: remediate
+      node_type: skill
+      agent: fixer
+      skill: code-writing
+      execution:
+        mode: live
+        risk_level: medium
+        boundary: approved-workspace-staging
+        requires_approval: true
+        requires_authorized_scope: true
+        requires_rollback: true
+        allow_live_tools:
+          - file_tools/list_tree
+          - file_tools/search_files
+          - file_tools/read_file
+          - file_tools/read_files
+          - file_tools/read_file_outline
+          - file_tools/read_file_range
+          - file_tools/apply_patch
+          - file_tools/write_file
+          - file_tools/mkdir
+          - command_tools/run_command
+      approval: true
+      params:
+        max_model_calls: "12"
+        max_total_model_calls: "22"
+        require_workspace_mutation: "true"
+        use_change_slice_scheduler: "true"
+        worker_contract: security_engineering_v2
+        approval_ref: stages.approve-remediation.approval
+        authorized_scope: current-workspace-only
+        rollback_plan: apply changes in task staging and retain the pre-change workspace checkpoint
+        credential_ref: local-workspace:no-external-credential
+        allowed_commands: commands classified as format, test, build, or lint by command policy
+        purpose: >-
+          只修复审计报告中有证据支持且用户批准的发现。按发现编号分片实施，优先最小补丁；每个修复都增加回归测试。
+          使用哈希保护的精确补丁，保留用户已有修改，不降低认证、授权、输入校验、审计或安全默认值。
+          只修改请求与批准计划明确列出的真实目标文件。需要报告时写入请求指定或用户批准的报告路径；不得猜测固定产物名。
+          脱敏必须删除明文秘密值；[REDACTED]secret-value 仍算泄露。补丁必须包含所需 import，go test ./... 编译失败时继续修改同一文件。
+          Go 路径边界修复不能在完整目标 os.IsNotExist 时直接放行；必须从 root 开始逐级 Lstat 已存在路径组件，
+          对每个组件 EvalSymlinks，并用 filepath.Rel 确认解析结果仍在真实 root 内，才能允许后续不存在目标。
+          若返修提示包含 FAIL 输出，先读失败包的实现文件和对应 *_test.go，再 apply_patch 直到公开测试通过。
+          审计已给出目标路径时，直接 read_file 这些实现文件和对应测试；不要用重复的目录搜索消耗读取配额。
+          写入报告前必须实际执行批准计划中适用于目标项目的格式、测试和静态检查命令；报告“即时验证”只能记录真实命令结果，
+          不得在命令已经通过后保留“待执行”“据称通过”或其他过期状态。报告写入后必须 read_file 读回一次。
+        output_contract: 使用中文输出“修复摘要、发现与补丁映射、变更文件、回归测试、即时验证、回滚点、未修复项、剩余风险”。
+        tools: file_tools/list_tree,file_tools/search_files,file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/read_file_range,file_tools/apply_patch,file_tools/write_file,file_tools/mkdir,command_tools/run_command
+        max_iterations: "24"
+        max_read_calls: "24"
+        max_command_calls: "4"
+        allowed_command_classes: format,test,build,lint
+        approved_plan_scope: "true"
+      input:
+        audit: stages.audit.outputs.audit_report
+        findings: stages.audit.outputs.findings
+        request: workflow.input
+      outputs:
+        remediation_report: result.output
+        changes: result.changes
+        verification: result.verification
+        summary: result.summary
+      artifacts:
+        - name: security-remediation
+          kind: repair
+          title: 安全修复记录
+          ref: result.output
+          summary: 发现与补丁、回归测试、回滚点和未修复项映射。
+      acceptance_criteria:
+        - name: finding-patch-map
+          ref: result.output
+          contains: 发现与补丁映射
+          expected: 每个修改都对应已批准发现
+        - name: regression-tests
+          ref: result.output
+          contains: 回归测试
+          expected: 每个修复都具有回归覆盖
+        - name: rollback-point
+          ref: result.output
+          contains: 回滚点
+          expected: 失败时可以恢复到修改前状态
+      retry: {max_attempts: 4}
+      context:
+        include: [stages.audit.outputs.audit_report, workflow.input, files.changed]
+        exclude: [raw_tool_logs, unrelated_session_history]
+        max_tokens: 7200
+        prompt_max_tokens: 14000
+        request_max_tokens: 1800
+        inputs_max_tokens: 5200
+      next: [verify]
+      position: {x: 1000, y: 260}
+
+    - name: verify
+      node_type: skill
+      agent: quality-engineer
+      skill: code-audit
+      approval: true
+      params:
+        max_model_calls: "6"
+        max_total_model_calls: "8"
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        use_change_slice_scheduler: "false"
+        purpose: 独立复现原发现，运行聚焦回归、完整相关测试、构建和静态检查。不得修改源码，不得把模型说明当验证证据。
+        output_contract: 使用中文输出“复测结论、发现复现、回归结果、完整测试、构建与静态检查、失败证据、基础设施限制、剩余风险”。
+        tools: file_tools/read_file,file_tools/read_file_outline,file_tools/read_file_range,command_tools/run_command,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+        max_iterations: "8"
+        max_read_calls: "4"
+        max_command_calls: "6"
+        allowed_command_classes: inspection,test,build,lint,format
+        approved_plan_scope: "true"
+      input:
+        audit: stages.audit.outputs.audit_report
+        remediation: stages.remediate.outputs.remediation_report
+        request: workflow.input
+      outputs:
+        verification_report: result.output
+        verification: result.verification
+        summary: result.summary
+      artifacts:
+        - name: security-verification
+          kind: verification
+          title: 安全独立复测
+          ref: result.output
+          summary: 原发现复现、回归、完整测试、构建和静态检查证据。
+      acceptance_criteria:
+        - name: retest-result
+          ref: result.output
+          contains: 复测结论
+          expected: 每个发现都有已修复、未修复或无法验证结论
+        - name: regression-result
+          ref: result.output
+          contains: 回归结果
+          expected: 回归结果来自真实工具
+        - name: failure-evidence
+          ref: result.output
+          contains: 失败证据
+          expected: 失败和限制不能被隐藏
+      retry: {max_attempts: 2}
+      context:
+        include: [stages.audit.outputs.audit_report, stages.remediate.outputs.remediation_report]
+        exclude: [raw_tool_logs, unrelated_session_history]
+        max_tokens: 6200
+        prompt_max_tokens: 12000
+      next: [review]
+      position: {x: 1320, y: 260}
+
+    - name: review
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        max_model_calls: "3"
+        max_total_model_calls: "4"
+        require_workspace_mutation: "false"
+        purpose: 将原始需求、授权范围、审计发现、实际 Diff 和独立复测逐项对照，判断是否存在越权、漏修、验证缺口或风险降级。
+        output_contract: 使用中文输出“审查决定、授权符合性、发现闭环、需求覆盖、验证证据、阻断项、建议”。
+        tools: file_tools/read_file
+        max_iterations: "4"
+        max_read_calls: "2"
+      input:
+        audit: stages.audit.outputs.audit_report
+        remediation: stages.remediate.outputs.remediation_report
+        request: workflow.input
+        verification: stages.verify.outputs.verification_report
+      outputs:
+        review_report: result.output
+        findings: result.findings
+        summary: result.summary
+      artifacts:
+        - name: security-review
+          kind: audit
+          title: 安全交付审查
+          ref: result.output
+          summary: 授权、发现闭环、需求覆盖、验证和阻断项。
+      acceptance_criteria:
+        - name: review-decision
+          ref: result.output
+          contains: 审查决定
+          expected: 审查明确通过、需返修或阻断
+        - name: authorization-compliance
+          ref: result.output
+          contains: 授权符合性
+          expected: 未发生授权范围外操作
+        - name: blocking-findings
+          ref: result.output
+          contains: 阻断项
+          expected: 未解决问题必须显式列出
+      next: [quality]
+      position: {x: 1640, y: 260}
+
+    - name: quality
+      node_type: quality_gate
+      params:
+        max_repair_rounds: "2"
+        stages: audit,remediate,verify,review
+        min_score: "85"
+        reason: 安全交付缺少授权、证据、修复映射、独立复测或审查闭环
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "true"
+        verification_mode: command
+        allow_unknown: "false"
+        allowed_infrastructure_failures: go_race_unavailable
+      routes:
+        pass: final-report
+        warning: final-report
+        fail: repair
+      position: {x: 1960, y: 260}
+
+    - name: repair
+      node_type: skill
+      agent: fixer
+      skill: code-writing
+      approval: true
+      params:
+        max_model_calls: "8"
+        max_total_model_calls: "14"
+        require_workspace_mutation: "false"
+        no_op_policy: 若审查确认没有遗留阻塞项，直接输出“无需修改”并说明依据，不要为满足变更要求而改无关文件。
+        use_change_slice_scheduler: "true"
+        reopen_blocked_slices: "true"
+        purpose: >-
+          只处理独立复测或审查给出的具体阻断项，禁止扩大审计范围或引入无关重构。每个返修增加针对性回归。
+          返修完成后必须运行批准范围内的真实验证；请求或批准计划要求文件报告时，读取、更新、再读回该明确路径的报告；
+          报告必须同步最终命令结果、阻断项闭环、未修复项和剩余风险，不得保留“待执行测试”等过期结论。
+          若阻断项是 Go 符号链接祖先下的不存在目标，必须逐级 Lstat/EvalSymlinks 已存在组件并用 filepath.Rel 校验 root 边界；
+          禁止因完整目标返回 os.IsNotExist 而跳过已存在父目录或 Junction 的边界检查。
+          若 verification 已明确通过且 review 只缺报告或证据同步，禁止再次修改实现源码，只更新并读回安全报告。
+          任一源码修改后必须重新运行批准计划中的相关格式、测试和静态检查；编译或测试失败时不得宣称修复完成，
+          禁止保留未定义 helper、占位函数、伪代码或仅在摘要中声称后续补齐。
+        output_contract: 使用中文输出“返修摘要、阻断项映射、变更文件、针对性回归、即时验证、剩余风险”。
+        tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/read_file_range,file_tools/apply_patch,file_tools/write_file,command_tools/run_command
+        max_iterations: "12"
+        max_read_calls: "12"
+        max_command_calls: "3"
+        allowed_command_classes: format,test,build,lint
+        approved_plan_scope: "true"
+      input:
+        review: stages.review.outputs.review_report
+        verification: stages.verify.outputs.verification_report
+        request: workflow.input
+      outputs:
+        repair_report: result.output
+        changes: result.changes
+        verification: result.verification
+        summary: result.summary
+      artifacts:
+        - name: security-repair
+          kind: repair
+          title: 安全返修记录
+          ref: result.output
+          summary: 阻断项、返修补丁和针对性回归映射。
+      retry: {max_attempts: 2}
+      next: [recovery-verify]
+      position: {x: 2280, y: 420}
+
+    - name: recovery-verify
+      node_type: skill
+      agent: quality-engineer
+      skill: code-audit
+      approval: true
+      params:
+        max_model_calls: "4"
+        max_total_model_calls: "6"
+        require_workspace_mutation: "false"
+        enforce_acceptance_sections: "true"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        use_change_slice_scheduler: "false"
+        purpose: 先验证返修阻断项，再重跑批准范围内的统一验证。不得修改文件，不得重复已通过且未受返修影响的无关检查。
+        output_contract: 使用中文输出“返修复测结论、阻断项验证、回归结果、统一验证、失败证据、剩余风险”。
+        tools: file_tools/read_file,file_tools/read_file_outline,command_tools/run_command,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+        max_iterations: "7"
+        max_read_calls: "3"
+        max_command_calls: "6"
+        allowed_command_classes: inspection,test,build,lint,format
+        approved_plan_scope: "true"
+      input:
+        initial_review: stages.review.outputs.review_report
+        repair: stages.repair.outputs.repair_report
+        request: workflow.input
+      outputs:
+        verification_report: result.output
+        verification: result.verification
+        summary: result.summary
+      artifacts:
+        - name: security-recovery-verification
+          kind: verification
+          title: 安全返修复测
+          ref: result.output
+          summary: 阻断项验证、回归和统一验证结果。
+      acceptance_criteria:
+        - name: recovery-result
+          ref: result.output
+          contains: 返修复测结论
+          expected: 返修后有明确真实复测结论
+        - name: blocker-result
+          ref: result.output
+          contains: 阻断项验证
+          expected: 每个原阻断项均被复测
+      retry: {max_attempts: 2}
+      next: [final-quality]
+      position: {x: 2600, y: 420}
+
+    - name: final-quality
+      node_type: quality_gate
+      params:
+        stages: repair,recovery-verify
+        min_score: "85"
+        reason: 返修后仍缺少阻断项闭环或真实回归证据
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "true"
+        verification_mode: command
+        allow_unknown: "false"
+        allowed_infrastructure_failures: go_race_unavailable
+      routes:
+        pass: final-report
+        warning: final-report
+        fail: final-report
+      position: {x: 2920, y: 420}
+
+    - name: final-report
+      node_type: skill
+      agent: planner
+      skill: execution-plan
+      params:
+        max_model_calls: "2"
+        max_total_model_calls: "3"
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        purpose: 从持久化审计、修复、复测、审查和质量门证据生成一份统一安全交付，不新增事实或测试结果。
+        output_contract: 使用中文输出“交付状态、授权范围、已关闭发现、未关闭发现、变更文件、验证证据、审批与恢复、产物、剩余限制”。
+        tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/read_file_range,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+        max_iterations: "3"
+      input:
+        audit: stages.audit.outputs.audit_report
+        remediation: stages.remediate.outputs.remediation_report
+        verification: stages.verify.outputs.verification_report
+        review: stages.review.outputs.review_report
+        initial_quality: stages.quality.outputs.quality_status
+        repair: stages.repair.outputs.repair_report
+        recovery_verification: stages.recovery-verify.outputs.verification_report
+        final_quality: stages.final-quality.outputs.quality_status
+      outputs:
+        final_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: security-completion-report
+          kind: report
+          title: 网络安全统一交付
+          ref: result.output
+          summary: 授权、发现、修复、验证、审批、恢复、产物和限制。
+      acceptance_criteria:
+        - name: delivery-status
+          ref: result.output
+          contains: 交付状态
+          expected: 明确完成、部分完成或阻断
+        - name: verification-evidence
+          ref: result.output
+          contains: 验证证据
+          expected: 引用真实复测和质量门结果
+        - name: unresolved-findings
+          ref: result.output
+          contains: 未关闭发现
+          expected: 未关闭风险不得隐藏
+      next: [end]
+      position: {x: 3240, y: 260}
+
+    - name: end
+      node_type: end
+      position: {x: 3560, y: 260}
+

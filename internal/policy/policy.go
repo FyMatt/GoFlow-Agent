@@ -111,6 +111,11 @@ func EnforceToolPolicy(agent config.AgentProfile, tool schema.Tool) error {
 		if len(allowedStrings) == 0 {
 			allowedStrings = []string{"-"}
 		}
+		// Name the concrete tools the caller may use instead: a bare kind list
+		// made the model retry the same forbidden tool on the next turn.
+		if len(agent.AllowedTools) > 0 {
+			return fmt.Errorf("tool kind %s is not allowed; allowed kinds: %s; allowed tools: %s", kind, strings.Join(allowedStrings, ", "), strings.Join(agent.AllowedTools, ", "))
+		}
 		return fmt.Errorf("tool kind %s is not allowed; allowed kinds: %s", kind, strings.Join(allowedStrings, ", "))
 	}
 	if len(agent.AllowedTools) > 0 {

@@ -120,7 +120,8 @@ def main() -> int:
         ]
         if symlink_supported:
             request_lines.append(request(14, "read_note", {"path": "outside-link.txt"}))
-        requests = "\n".join(request_lines)
+        list_request = json.dumps({"jsonrpc": "2.0", "id": 0, "method": "tools/list"}, ensure_ascii=False)
+        requests = "\n".join([list_request, *request_lines])
 
         env = os.environ.copy()
         env["GOFLOW_WORKSPACE_ROOT"] = str(root)
@@ -128,6 +129,8 @@ def main() -> int:
             [sys.executable, str(server)],
             input=requests + "\n",
             text=True,
+            encoding="utf-8",
+            errors="strict",
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             env=env,
@@ -137,20 +140,26 @@ def main() -> int:
             raise SystemExit(f"server exited {proc.returncode}: {proc.stderr}")
 
         lines = [line for line in proc.stdout.splitlines() if line.strip()]
-        expected_lines = 14 if symlink_supported else 13
+        expected_lines = 15 if symlink_supported else 14
         if len(lines) != expected_lines:
             raise AssertionError(f"expected {expected_lines} responses, got {len(lines)}: {proc.stdout}")
 
+        tool_list = json.loads(lines[0]).get("result", {}).get("tools", [])
+        write_note = next((tool for tool in tool_list if tool.get("name") == "write_note"), None)
+        if not write_note or write_note.get("description") != "在工作区内写入 UTF-8 文本笔记。":
+            raise AssertionError(f"python MCP tool descriptions must remain UTF-8: {write_note}")
+        call_lines = lines[1:]
+
         decoded = {}
-        for line in lines[:12]:
+        for line in call_lines[:12]:
             req_id, payload = decode_response(line)
             decoded[req_id] = payload
 
-        escape = json.loads(lines[12])["result"]
+        escape = json.loads(call_lines[12])["result"]
         if not escape.get("is_error") or "escapes workspace root" not in escape.get("content", ""):
             raise AssertionError(f"expected workspace escape rejection, got {escape}")
         if symlink_supported:
-            symlink_escape = json.loads(lines[13])["result"]
+            symlink_escape = json.loads(call_lines[13])["result"]
             symlink_content = symlink_escape.get("content", "")
             if not symlink_escape.get("is_error") or (
                 "resolves outside workspace root" not in symlink_content

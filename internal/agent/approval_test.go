@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/nativesandbox"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
@@ -17,6 +18,20 @@ type stubApprovalMCP struct {
 	calls  int
 	name   string
 	args   []byte
+}
+
+func rememberExecutionApproval(t *testing.T, execCtx *ExecutionContext, call schema.ToolCall, tool schema.Tool) session.ApprovalScope {
+	t.Helper()
+	if execCtx.Session == nil {
+		execCtx.Session = session.New(4)
+	}
+	now := time.Now().UTC()
+	scope, err := execCtx.approvalScope(call, tool, now, now.Add(time.Hour))
+	if err != nil {
+		t.Fatalf("approvalScope: %v", err)
+	}
+	execCtx.Session.RememberApprovalScope(scope)
+	return scope
 }
 
 func (s *stubApprovalMCP) ListTools(context.Context) ([]schema.Tool, error) {
@@ -107,6 +122,95 @@ func TestExecutorExecutesReadToolsImmediatelyUnderConfirmPolicy(t *testing.T) {
 	}
 }
 
+func TestExecutorRejectsUnknownLocalCommandWithoutStrongNativeSandbox(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "should not run"}}
+	tool := commandApprovalTool()
+	report := nativesandbox.Report{StrongReady: false, RefusalReason: "test sandbox is incomplete"}
+	execCtx := newExecutionContext("fixer", config.AgentProfile{
+		ToolPolicy:       config.ToolPolicyAllow,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindExec},
+	}, []schema.Tool{tool}, nil, t.TempDir())
+	execCtx.NativeSandboxReport = &report
+
+	results, err := NewExecutor(mcp).RunToolCalls(context.Background(), execCtx, []schema.ToolCall{
+		commandToolCall(t, "custom-tool", []string{"run"}),
+	}, &Runtime{approvals: newApprovalStore()}, nil)
+	if err != nil {
+		t.Fatalf("RunToolCalls: %v", err)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("unknown command must not reach MCP without a strong native sandbox, got %d calls", mcp.calls)
+	}
+	if len(results) != 1 || !results[0].Denied || !results[0].IsError || results[0].Suspended {
+		t.Fatalf("expected a terminal policy denial, got %#v", results)
+	}
+	if !strings.Contains(results[0].Content, "原生执行策略拒绝") {
+		t.Fatalf("expected native sandbox refusal detail, got %q", results[0].Content)
+	}
+}
+
+func TestExecutorAllowsClassifiedVerificationWithoutStrongNativeSandbox(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	tool := commandApprovalTool()
+	report := nativesandbox.Report{StrongReady: false, RefusalReason: "test sandbox is incomplete"}
+	execCtx := newExecutionContext("fixer", config.AgentProfile{
+		ToolPolicy:       config.ToolPolicyAllow,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindExec},
+	}, []schema.Tool{tool}, nil, t.TempDir())
+	execCtx.NativeSandboxReport = &report
+
+	results, err := NewExecutor(mcp).RunToolCalls(context.Background(), execCtx, []schema.ToolCall{
+		commandToolCall(t, "go", []string{"test", "./internal/..."}),
+	}, &Runtime{approvals: newApprovalStore()}, nil)
+	if err != nil {
+		t.Fatalf("RunToolCalls: %v", err)
+	}
+	if mcp.calls != 1 {
+		t.Fatalf("classified verification command should execute, got %d calls", mcp.calls)
+	}
+	if len(results) != 1 || results[0].Denied || results[0].IsError || results[0].Suspended {
+		t.Fatalf("expected successful verification result, got %#v", results)
+	}
+}
+
+func TestApprovedUnknownCommandRemainsBlockedWithoutStrongNativeSandbox(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "should not run"}}
+	tool := commandApprovalTool()
+	call := commandToolCall(t, "custom-tool", []string{"run"})
+	runtimeRef := &Runtime{
+		cfg:       &config.Config{WorkspaceRoot: t.TempDir()},
+		mcp:       mcp,
+		session:   session.New(4),
+		approvals: newApprovalStore(),
+		nativeSandboxProbe: func() nativesandbox.Report {
+			return nativesandbox.Report{StrongReady: false, RefusalReason: "test sandbox is incomplete"}
+		},
+	}
+	runtimeRef.queueApproval(call, tool, "fixer")
+
+	if ok, reason := runtimeRef.CanApprovePendingToolApproval(call.ID); ok || !strings.Contains(reason, "原生执行策略拒绝") {
+		t.Fatalf("expected approval UI to report the native sandbox refusal, ok=%v reason=%q", ok, reason)
+	}
+	if _, err := runtimeRef.ApproveToolCall(context.Background(), call.ID); err == nil || !strings.Contains(err.Error(), "原生执行策略拒绝") {
+		t.Fatalf("expected approved unknown command to remain blocked, got %v", err)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("approval must not bypass the native sandbox policy, got %d MCP calls", mcp.calls)
+	}
+	if _, ok := runtimeRef.PendingApproval(call.ID); !ok {
+		t.Fatal("blocked approval should remain queued so the task can recover after policy or environment changes")
+	}
+}
+
+func commandApprovalTool() schema.Tool {
+	return schema.Tool{
+		Name:        "run_command",
+		Server:      "command_tools",
+		Kind:        string(config.ToolKindExec),
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"program":{"type":"string"},"args":{"type":"array","items":{"type":"string"}}},"required":["program"],"additionalProperties":false}`),
+	}
+}
+
 func TestExecutorSkipsRepeatedApprovalForRememberedWorkspaceTool(t *testing.T) {
 	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
 	executor := NewExecutor(mcp)
@@ -119,13 +223,14 @@ func TestExecutorSkipsRepeatedApprovalForRememberedWorkspaceTool(t *testing.T) {
 		Kind:        "write",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
 	}}, nil, "C:/repo")
-	execCtx.RememberApprovedTool("write_file")
-
-	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
+	call := schema.ToolCall{
 		ID:        "call-remembered",
 		Name:      "write_file",
 		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello again"}`),
-	}}, runtimeRef, nil)
+	}
+	rememberExecutionApproval(t, &execCtx, call, execCtx.Tools[0])
+
+	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{call}, runtimeRef, nil)
 	if err != nil {
 		t.Fatalf("RunToolCalls: %v", err)
 	}
@@ -137,6 +242,40 @@ func TestExecutorSkipsRepeatedApprovalForRememberedWorkspaceTool(t *testing.T) {
 	}
 	if len(runtimeRef.PendingApprovals()) != 0 {
 		t.Fatalf("expected no pending approvals for remembered tool, got %#v", runtimeRef.PendingApprovals())
+	}
+}
+
+func TestManagedHostChangesAlwaysRequireOneTimeApproval(t *testing.T) {
+	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
+	executor := NewExecutor(mcp)
+	runtimeRef := &Runtime{approvals: newApprovalStore()}
+	tool := schema.Tool{
+		Name: "set_managed_json_value", Server: "host_tools", Kind: "write",
+		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`),
+	}
+	execCtx := newExecutionContext("operations-specialist", config.AgentProfile{
+		ToolPolicy: config.ToolPolicyAllow, AllowedToolKinds: []config.ToolKind{config.ToolKindWrite},
+	}, []schema.Tool{tool}, nil, "C:/repo")
+	call := schema.ToolCall{ID: "managed-change", Name: "host_tools/set_managed_json_value", Arguments: json.RawMessage(`{"path":"C:/managed/app.json"}`)}
+	rememberExecutionApproval(t, &execCtx, call, tool)
+	if execCtx.canRememberCallApproval(call, tool) {
+		t.Fatal("managed host change approval must not be rememberable")
+	}
+
+	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{call}, runtimeRef, nil)
+	if err != nil {
+		t.Fatalf("RunToolCalls: %v", err)
+	}
+	if mcp.calls != 0 || len(results) != 1 || !results[0].Suspended {
+		t.Fatalf("remembered scope bypassed one-time managed change approval: calls=%d results=%#v", mcp.calls, results)
+	}
+	if len(runtimeRef.PendingApprovals()) != 1 {
+		t.Fatalf("expected one pending managed change approval, got %#v", runtimeRef.PendingApprovals())
+	}
+	restoreTool := schema.Tool{Name: "restore_managed_json_change", Server: "host_tools", Kind: "write"}
+	restoreCall := schema.ToolCall{ID: "managed-restore", Name: "host_tools/restore_managed_json_change", Arguments: json.RawMessage(`{"change_id":"0123456789abcdef01234567"}`)}
+	if !execCtx.requiresApproval(restoreCall, restoreTool) || execCtx.canRememberCallApproval(restoreCall, restoreTool) {
+		t.Fatal("managed recovery must require a non-rememberable one-time approval")
 	}
 }
 
@@ -277,7 +416,7 @@ func TestRiskPolicyRejectsUnsandboxedRiskyToolBeforeApproval(t *testing.T) {
 	}
 }
 
-func TestRiskPolicyDoesNotForceApprovalForContainerizedRiskyTool(t *testing.T) {
+func TestRiskPolicyDoesNotForceApprovalForNativeStrongRiskyTool(t *testing.T) {
 	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
 	executor := NewExecutor(mcp)
 	runtimeRef := &Runtime{approvals: newApprovalStore()}
@@ -291,10 +430,10 @@ func TestRiskPolicyDoesNotForceApprovalForContainerizedRiskyTool(t *testing.T) {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
 	}}, nil, "C:/repo")
 	execCtx.RiskPolicy = config.ToolRiskPolicyConfig{RequireApprovalForUnsandboxedRiskyTools: true}
-	execCtx.MCPServers = []config.MCPServerRef{{Name: "stub", Isolation: "container"}}
+	execCtx.MCPServers = []config.MCPServerRef{{Name: "stub", Isolation: "native_strong"}}
 
 	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
-		ID:        "call-container",
+		ID:        "call-native-strong",
 		Name:      "write_file",
 		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
 	}}, runtimeRef, nil)
@@ -302,7 +441,7 @@ func TestRiskPolicyDoesNotForceApprovalForContainerizedRiskyTool(t *testing.T) {
 		t.Fatalf("RunToolCalls: %v", err)
 	}
 	if mcp.calls != 1 {
-		t.Fatalf("expected immediate MCP call for containerized risky tool under allow policy, got %d", mcp.calls)
+		t.Fatalf("expected immediate MCP call for native-strong risky tool under allow policy, got %d", mcp.calls)
 	}
 	if len(results) != 1 || results[0].Suspended || results[0].IsError {
 		t.Fatalf("expected successful direct result, got %#v", results)
@@ -312,7 +451,7 @@ func TestRiskPolicyDoesNotForceApprovalForContainerizedRiskyTool(t *testing.T) {
 	}
 }
 
-func TestRiskPolicyDoesNotRejectContainerizedRiskyTool(t *testing.T) {
+func TestRiskPolicyDoesNotRejectNativeStrongRiskyTool(t *testing.T) {
 	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
 	executor := NewExecutor(mcp)
 	runtimeRef := &Runtime{approvals: newApprovalStore()}
@@ -326,10 +465,10 @@ func TestRiskPolicyDoesNotRejectContainerizedRiskyTool(t *testing.T) {
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
 	}}, nil, "C:/repo")
 	execCtx.RiskPolicy = config.ToolRiskPolicyConfig{RejectUnsandboxedRiskyTools: true}
-	execCtx.MCPServers = []config.MCPServerRef{{Name: "stub", Isolation: "container"}}
+	execCtx.MCPServers = []config.MCPServerRef{{Name: "stub", Isolation: "native_strong"}}
 
 	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
-		ID:        "call-container-risk",
+		ID:        "call-native-strong-risk",
 		Name:      "write_file",
 		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
 	}}, runtimeRef, nil)
@@ -337,7 +476,7 @@ func TestRiskPolicyDoesNotRejectContainerizedRiskyTool(t *testing.T) {
 		t.Fatalf("RunToolCalls: %v", err)
 	}
 	if mcp.calls != 1 {
-		t.Fatalf("expected containerized risky tool to execute, got %d calls", mcp.calls)
+		t.Fatalf("expected native-strong risky tool to execute, got %d calls", mcp.calls)
 	}
 	if len(results) != 1 || results[0].Denied || results[0].IsError || results[0].Suspended {
 		t.Fatalf("expected successful direct result, got %#v", results)
@@ -409,7 +548,7 @@ func TestExecutorRememberedApprovalDoesNotBypassToolAllowlist(t *testing.T) {
 		Kind:        "write",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
 	}}, nil, "C:/repo")
-	execCtx.RememberApprovedTool("write_file")
+	rememberExecutionApproval(t, &execCtx, schema.ToolCall{Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`)}, execCtx.Tools[0])
 
 	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
 		ID:        "call-remembered-denied",
@@ -442,7 +581,7 @@ func TestExecutorRememberedApprovalDoesNotBypassToolKindDenial(t *testing.T) {
 		Kind:        "write",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
 	}}, nil, "C:/repo")
-	execCtx.RememberApprovedTool("write_file")
+	rememberExecutionApproval(t, &execCtx, schema.ToolCall{Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`)}, execCtx.Tools[0])
 
 	results, err := executor.RunToolCalls(context.Background(), execCtx, []schema.ToolCall{{
 		ID:        "call-kind-denied",
@@ -545,8 +684,9 @@ func TestRuntimeApproveToolCallAndRememberStoresScopedToolApproval(t *testing.T)
 	if result.CallID != "call-1" || result.Content != "ok" {
 		t.Fatalf("unexpected result: %#v", result)
 	}
-	if !state.HasApprovedToolScope("C:/repo", "write", "write_file") {
-		t.Fatal("expected scoped write_file approval to be remembered")
+	scopes := state.ApprovalScopes(time.Now().UTC())
+	if len(scopes) != 1 || scopes[0].ToolKind != "write" || scopes[0].ToolName != "write_file" || scopes[0].Workspace != "C:/repo" {
+		t.Fatalf("expected exact write_file approval to be remembered, got %#v", scopes)
 	}
 }
 
@@ -684,19 +824,27 @@ func TestRunStreamIgnoresPersistedApprovedToolsForConfirmPolicy(t *testing.T) {
 
 func TestRunStreamUsesSessionApprovedToolScopeForCurrentSession(t *testing.T) {
 	state := session.New(4)
-	state.RememberApprovedToolScope("C:/repo", "write", "write_file")
-	llm := &scriptedLLMClient{calls: []scriptedLLMCall{{
-		response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{
-			ID:        "call-1",
-			Name:      "write_file",
-			Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
-		}}},
-	}}}
-	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+	rememberedCall := schema.ToolCall{
+		ID:        "call-1",
+		Name:      "write_file",
+		Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`),
+	}
+	rememberedTool := schema.Tool{
 		Name:        "write_file",
 		Kind:        "write",
 		InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}
+	approvalContext := newExecutionContext("fixer", config.AgentProfile{}, []schema.Tool{rememberedTool}, nil, "C:/repo")
+	approvalContext.Session = state
+	rememberExecutionApproval(t, &approvalContext, rememberedCall, rememberedTool)
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{{
+		response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{
+			ID:        rememberedCall.ID,
+			Name:      rememberedCall.Name,
+			Arguments: rememberedCall.Arguments,
+		}}},
 	}}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{rememberedTool}}
 	runtimeRef := &Runtime{
 		cfg:       &config.Config{WorkspaceRoot: "C:/repo"},
 		session:   state,
@@ -773,7 +921,7 @@ func TestRuntimeApproveAllPendingToolCallsExecutesQueuedCalls(t *testing.T) {
 
 func TestRuntimeApprovePendingToolCallsForWorkflowExecutesOnlyMatchingQueuedCalls(t *testing.T) {
 	mcp := &stubApprovalMCP{result: schema.ToolResult{Content: "ok"}}
-	runtimeRef := &Runtime{mcp: mcp, approvals: newApprovalStore()}
+	runtimeRef := &Runtime{cfg: &config.Config{WorkspaceRoot: "C:/repo"}, mcp: mcp, session: session.New(4), approvals: newApprovalStore()}
 	runtimeRef.approvals.Add(pendingApproval{
 		call:     schema.ToolCall{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`)},
 		tool:     schema.Tool{Name: "write_file"},
@@ -846,72 +994,99 @@ func TestRiskPolicyRejectsWorkflowRememberForUnsandboxedRiskyTool(t *testing.T) 
 }
 
 func TestRuntimeWorkflowAutoApprovalTracksMultipleToolsWithinSameStage(t *testing.T) {
-	runtimeRef := &Runtime{}
-	runtimeRef.EnableWorkflowAutoApproval(workflowNamePlanFixAudit, WorkflowStageFix, "write_file")
-	runtimeRef.EnableWorkflowAutoApproval(workflowNamePlanFixAudit, WorkflowStageFix, "run_command")
-
-	if !runtimeRef.shouldAutoApproveWorkflowCall(pendingApproval{
+	runtimeRef := &Runtime{cfg: &config.Config{WorkspaceRoot: "C:/repo"}, session: session.New(4)}
+	writeCall := pendingApproval{
 		workflow: workflowNamePlanFixAudit,
 		stage:    WorkflowStageFix,
-		tool:     schema.Tool{Name: "write_file"},
-	}) {
+		call:     schema.ToolCall{Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`)},
+		tool:     schema.Tool{Name: "write_file", Kind: "write"},
+	}
+	commandCall := pendingApproval{
+		workflow: workflowNamePlanFixAudit,
+		stage:    WorkflowStageFix,
+		call:     commandToolCall(t, "git", []string{"status", "--short"}),
+		tool:     schema.Tool{Name: "run_command", Kind: "exec"},
+	}
+	if err := runtimeRef.enableWorkflowAutoApproval(writeCall); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtimeRef.enableWorkflowAutoApproval(commandCall); err != nil {
+		t.Fatal(err)
+	}
+
+	if !runtimeRef.shouldAutoApproveWorkflowCall(writeCall) {
 		t.Fatal("expected write_file to remain auto-approved after enabling another tool in same workflow stage")
 	}
-	if !runtimeRef.shouldAutoApproveWorkflowCall(pendingApproval{
-		workflow: workflowNamePlanFixAudit,
-		stage:    WorkflowStageFix,
-		tool:     schema.Tool{Name: "run_command"},
-	}) {
+	if !runtimeRef.shouldAutoApproveWorkflowCall(commandCall) {
 		t.Fatal("expected run_command to be auto-approved in same workflow stage")
+	}
+	changedCommand := commandCall
+	changedCommand.call = commandToolCall(t, "git", []string{"clean", "-fd"})
+	if runtimeRef.shouldAutoApproveWorkflowCall(changedCommand) {
+		t.Fatal("exact git status approval must not authorize another command")
 	}
 }
 
 func TestRuntimeWorkflowAutoApprovalRemainsStageScopedWithinWorkflow(t *testing.T) {
-	runtimeRef := &Runtime{}
-	runtimeRef.EnableWorkflowAutoApproval(workflowNamePlanFixAudit, WorkflowStageFix, "write_file")
-	runtimeRef.EnableWorkflowAutoApproval(workflowNamePlanFixAudit, WorkflowStageAudit, "read_file")
-
-	if !runtimeRef.shouldAutoApproveWorkflowCall(pendingApproval{
+	runtimeRef := &Runtime{cfg: &config.Config{WorkspaceRoot: "C:/repo"}, session: session.New(4)}
+	fixCall := pendingApproval{
 		workflow: workflowNamePlanFixAudit,
 		stage:    WorkflowStageFix,
-		tool:     schema.Tool{Name: "write_file"},
-	}) {
+		call:     schema.ToolCall{Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`)},
+		tool:     schema.Tool{Name: "write_file", Kind: "write"},
+	}
+	auditCall := pendingApproval{
+		workflow: workflowNamePlanFixAudit,
+		stage:    WorkflowStageAudit,
+		call:     schema.ToolCall{Name: "read_file", Arguments: json.RawMessage(`{"path":"a.txt"}`)},
+		tool:     schema.Tool{Name: "read_file", Kind: "read"},
+	}
+	if err := runtimeRef.enableWorkflowAutoApproval(fixCall); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtimeRef.enableWorkflowAutoApproval(auditCall); err != nil {
+		t.Fatal(err)
+	}
+
+	if !runtimeRef.shouldAutoApproveWorkflowCall(fixCall) {
 		t.Fatal("expected fix-stage write_file to stay auto-approved")
 	}
-	if !runtimeRef.shouldAutoApproveWorkflowCall(pendingApproval{
-		workflow: workflowNamePlanFixAudit,
-		stage:    WorkflowStageAudit,
-		tool:     schema.Tool{Name: "read_file"},
-	}) {
+	if !runtimeRef.shouldAutoApproveWorkflowCall(auditCall) {
 		t.Fatal("expected audit-stage read_file to stay auto-approved")
 	}
-	if runtimeRef.shouldAutoApproveWorkflowCall(pendingApproval{
-		workflow: workflowNamePlanFixAudit,
-		stage:    WorkflowStageAudit,
-		tool:     schema.Tool{Name: "write_file"},
-	}) {
+	wrongStage := fixCall
+	wrongStage.stage = WorkflowStageAudit
+	if runtimeRef.shouldAutoApproveWorkflowCall(wrongStage) {
 		t.Fatal("expected auto-approval to reject same tool name in different stage when not enabled there")
 	}
 }
 
 func TestRuntimeDisableWorkflowAutoApprovalClearsAllScopesForWorkflow(t *testing.T) {
-	runtimeRef := &Runtime{}
-	runtimeRef.EnableWorkflowAutoApproval(workflowNamePlanFixAudit, WorkflowStageFix, "write_file")
-	runtimeRef.EnableWorkflowAutoApproval(workflowNamePlanFixAudit, WorkflowStageAudit, "read_file")
-	runtimeRef.DisableWorkflowAutoApproval(workflowNamePlanFixAudit)
-
-	if runtimeRef.shouldAutoApproveWorkflowCall(pendingApproval{
+	runtimeRef := &Runtime{cfg: &config.Config{WorkspaceRoot: "C:/repo"}, session: session.New(4)}
+	fixCall := pendingApproval{
 		workflow: workflowNamePlanFixAudit,
 		stage:    WorkflowStageFix,
-		tool:     schema.Tool{Name: "write_file"},
-	}) {
-		t.Fatal("expected workflow auto-approval to be cleared for fix stage")
+		call:     schema.ToolCall{Name: "write_file", Arguments: json.RawMessage(`{"path":"a.txt","content":"hello"}`)},
+		tool:     schema.Tool{Name: "write_file", Kind: "write"},
 	}
-	if runtimeRef.shouldAutoApproveWorkflowCall(pendingApproval{
+	auditCall := pendingApproval{
 		workflow: workflowNamePlanFixAudit,
 		stage:    WorkflowStageAudit,
-		tool:     schema.Tool{Name: "read_file"},
-	}) {
+		call:     schema.ToolCall{Name: "read_file", Arguments: json.RawMessage(`{"path":"a.txt"}`)},
+		tool:     schema.Tool{Name: "read_file", Kind: "read"},
+	}
+	if err := runtimeRef.enableWorkflowAutoApproval(fixCall); err != nil {
+		t.Fatal(err)
+	}
+	if err := runtimeRef.enableWorkflowAutoApproval(auditCall); err != nil {
+		t.Fatal(err)
+	}
+	runtimeRef.DisableWorkflowAutoApproval(workflowNamePlanFixAudit)
+
+	if runtimeRef.shouldAutoApproveWorkflowCall(fixCall) {
+		t.Fatal("expected workflow auto-approval to be cleared for fix stage")
+	}
+	if runtimeRef.shouldAutoApproveWorkflowCall(auditCall) {
 		t.Fatal("expected workflow auto-approval to be cleared for audit stage")
 	}
 }
@@ -1253,7 +1428,7 @@ func TestResumePlanFixAuditStopsWhenFixerSuspendsAgainAfterApproval(t *testing.T
 	}
 }
 
-func TestResumePlanFixAuditAutoApprovesLaterMatchingFixerCallsAfterWorkflowApproveAll(t *testing.T) {
+func TestResumePlanFixAuditRequiresFreshApprovalForChangedArgumentsAfterWorkflowApproveAll(t *testing.T) {
 	ctx := context.Background()
 	capture := newWorkflowTestRuntimeWithRepeatedSuspendedFixTools()
 
@@ -1277,25 +1452,22 @@ func TestResumePlanFixAuditAutoApprovesLaterMatchingFixerCallsAfterWorkflowAppro
 	if err != nil {
 		t.Fatalf("ResumePlanFixAudit: %v", err)
 	}
-	if second.Status != "completed" {
-		t.Fatalf("expected workflow to complete after workflow-scoped approve-all, got %q", second.Status)
+	if second.Status != "awaiting_tool_approval" {
+		t.Fatalf("expected changed write arguments to require fresh approval, got %q", second.Status)
 	}
-	if len(second.CompletedStages) != 3 {
-		t.Fatalf("expected planner, fixer, and auditor stages, got %d", len(second.CompletedStages))
-	}
-	if len(capture.auditor.requests) != 1 {
-		t.Fatalf("expected auditor to run after second matching tool call auto-approved, got %d requests", len(capture.auditor.requests))
+	if len(capture.auditor.requests) != 0 {
+		t.Fatalf("expected auditor to wait for the changed write approval, got %d requests", len(capture.auditor.requests))
 	}
 
 	snapshot := capture.runtime.SessionSnapshot()
-	if snapshot.Workflow.Status != "completed" {
-		t.Fatalf("expected completed workflow state, got %#v", snapshot.Workflow)
+	if snapshot.Workflow.Status != "awaiting_tool_approval" {
+		t.Fatalf("expected persisted approval wait, got %#v", snapshot.Workflow)
 	}
-	if snapshot.Workflow.PendingCallID != "" {
-		t.Fatalf("expected no persisted pending call after auto-approval, got %#v", snapshot.Workflow)
+	if snapshot.Workflow.PendingCallID != "call-2" {
+		t.Fatalf("expected changed call-2 to remain pending, got %#v", snapshot.Workflow)
 	}
-	if len(snapshot.PendingApprovals) != 0 {
-		t.Fatalf("expected no pending approvals after workflow completion, got %#v", snapshot.PendingApprovals)
+	if len(snapshot.PendingApprovals) != 1 || snapshot.PendingApprovals[0].CallID != "call-2" {
+		t.Fatalf("expected only changed call-2 to require approval, got %#v", snapshot.PendingApprovals)
 	}
 }
 
@@ -1404,6 +1576,10 @@ func TestResumePlanFixAuditReinjectsApprovedToolResultIntoFixerConversation(t *t
 	if err != nil {
 		t.Fatalf("RunPlanFixAudit: %v", err)
 	}
+	persisted := capture.runtime.SessionSnapshot().PendingApprovals
+	if len(persisted) != 1 || len(persisted[0].WorkflowMessages) == 0 || persisted[0].WorkflowSystemPrompt == "" {
+		t.Fatalf("expected durable workflow conversation context before approval, got %#v", persisted)
+	}
 	_, err = capture.runtime.WorkflowRunner().ResumePlanFixAudit(ctx, "call-1", true, nil)
 	if err != nil {
 		t.Fatalf("ResumePlanFixAudit: %v", err)
@@ -1429,6 +1605,50 @@ func TestResumePlanFixAuditReinjectsApprovedToolResultIntoFixerConversation(t *t
 	}
 	if !strings.Contains(tool.Content, "done") {
 		t.Fatalf("expected resumed tool message to contain approved tool output, got %#v", tool)
+	}
+}
+
+func TestResumePlanFixAuditPreservesFullConversationAcrossRepeatedApprovals(t *testing.T) {
+	ctx := context.Background()
+	capture := newWorkflowTestRuntimeWithRepeatedSuspendedFixTools()
+
+	_, err := capture.runtime.WorkflowRunner().RunPlanFixAudit(ctx, "build flask hello world", true, nil)
+	if err != nil {
+		t.Fatalf("RunPlanFixAudit: %v", err)
+	}
+	_, err = capture.runtime.WorkflowRunner().ResumePlanFixAudit(ctx, "call-1", true, nil)
+	if err != nil {
+		t.Fatalf("first ResumePlanFixAudit: %v", err)
+	}
+	_, err = capture.runtime.WorkflowRunner().ResumePlanFixAudit(ctx, "call-2", true, nil)
+	if err != nil {
+		t.Fatalf("second ResumePlanFixAudit: %v", err)
+	}
+
+	if len(capture.fixer.requests) < 3 {
+		t.Fatalf("expected three fixer requests, got %d", len(capture.fixer.requests))
+	}
+	first := capture.fixer.requests[0]
+	resumed := capture.fixer.requests[2]
+	if resumed.System != first.System {
+		t.Fatal("repeated approval resume must preserve the original system prompt for provider cache stability")
+	}
+	toolResults := map[string]bool{}
+	assistantCalls := map[string]bool{}
+	for _, message := range resumed.Messages {
+		if message.Role == "tool" {
+			toolResults[message.ToolCallID] = true
+		}
+		if message.Role == "assistant" {
+			for _, call := range message.ToolCalls {
+				assistantCalls[call.ID] = true
+			}
+		}
+	}
+	for _, callID := range []string{"call-1", "call-2"} {
+		if !assistantCalls[callID] || !toolResults[callID] {
+			t.Fatalf("expected resumed conversation to preserve assistant/tool pair %s, messages=%#v", callID, resumed.Messages)
+		}
 	}
 }
 
@@ -1500,5 +1720,40 @@ func TestResumePlanFixAuditAuditPromptUsesFixerSummaryAfterResume(t *testing.T) 
 	auditPrompt := capture.auditor.requests[0].Messages[len(capture.auditor.requests[0].Messages)-1].Content
 	if !strings.Contains(auditPrompt, "Implementation summary:\nfix completed") {
 		t.Fatalf("expected audit prompt to include fixer summary, got %q", auditPrompt)
+	}
+}
+
+func TestCaptureOrdinaryApprovalContextDoesNotReopenTerminalRun(t *testing.T) {
+	state := session.New(4)
+	runID := state.StartAgentRunWithOptions("write report", session.AgentRunStartOptions{AgentID: "chat"})
+	runtimeRef := &Runtime{session: state, approvals: newApprovalStore()}
+	call := schema.ToolCall{ID: "call-delayed", Name: "write_file", Arguments: json.RawMessage(`{"path":"report.md","content":"done"}`)}
+	tool := schema.Tool{Name: "write_file", Server: "file_tools", Kind: string(config.ToolKindWrite)}
+	runtimeRef.queueApprovalForAgentRun(call, tool, "chat", runID)
+
+	if _, ok := state.CompleteAgentRun(runID, "completed", schema.AgentResult{Output: "done", AgentID: "chat", Mode: "fix"}); !ok {
+		t.Fatal("expected run completion")
+	}
+	runtimeRef.CaptureOrdinaryApprovalContext(
+		runID,
+		"chat",
+		config.AgentProfile{},
+		nil,
+		"system",
+		"fix",
+		[]schema.Message{{Role: "assistant", ToolCalls: []schema.ToolCall{call}}},
+		[]schema.ToolCall{call},
+		nil,
+	)
+
+	run, ok := state.AgentRun(runID)
+	if !ok || run.Status != "completed" || run.ResumeContext != nil || len(run.PendingApprovals) != 0 {
+		t.Fatalf("delayed capture must not reopen terminal run, got %#v ok=%t", run, ok)
+	}
+	if pending := runtimeRef.PendingApprovals(); len(pending) != 0 {
+		t.Fatalf("delayed capture must discard orphaned approvals, got %#v", pending)
+	}
+	if pending := state.Snapshot().PendingApprovals; len(pending) != 0 {
+		t.Fatalf("compact session must not retain orphaned approvals, got %#v", pending)
 	}
 }

@@ -3,8 +3,12 @@ package api
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"image"
+	"image/color"
+	"image/png"
 	"net/http"
 	"net/url"
 	"os"
@@ -18,8 +22,11 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
 	"github.com/FyMatt/GoFlow-Agent/internal/llm"
+	"github.com/FyMatt/GoFlow-Agent/internal/persistence"
 	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
+	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/internal/skill"
 	"github.com/FyMatt/GoFlow-Agent/internal/version"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
@@ -34,6 +41,19 @@ const (
 	resourceCatalogSchema        = "goflow.api.resources"
 	resourceCatalogSchemaVersion = 1
 )
+
+// defaultResourceCatalogKinds is the deliberately small user-facing resource
+// surface. Provider configuration belongs in Settings, while the remaining
+// legacy resource families stay addressable through explicit kind filters for
+// runtime and persisted-workflow compatibility.
+var defaultResourceCatalogKinds = map[string]struct{}{
+	"agent":    {},
+	"subagent": {},
+	"workflow": {},
+	"skill":    {},
+	"tool":     {},
+	"mcp":      {},
+}
 
 var editableSkillResourceDirs = map[string]struct{}{
 	"references": {},
@@ -93,16 +113,37 @@ type resourceValidationResult struct {
 	Issues          []resourceValidationIssue `json:"issues,omitempty"`
 }
 
+type providerModelListResult struct {
+	Valid    bool                      `json:"valid"`
+	Resource string                    `json:"resource"`
+	Name     string                    `json:"name,omitempty"`
+	Status   string                    `json:"status"`
+	Message  string                    `json:"message"`
+	Provider string                    `json:"provider,omitempty"`
+	BaseURL  string                    `json:"base_url,omitempty"`
+	Models   []llm.ModelRef            `json:"models,omitempty"`
+	Issues   []resourceValidationIssue `json:"issues,omitempty"`
+}
+
 type providerTestResult struct {
-	Valid     bool                      `json:"valid"`
-	Resource  string                    `json:"resource"`
-	Name      string                    `json:"name,omitempty"`
-	Status    string                    `json:"status"`
-	Message   string                    `json:"message"`
-	Provider  string                    `json:"provider,omitempty"`
-	Model     string                    `json:"model,omitempty"`
-	LatencyMS int64                     `json:"latency_ms,omitempty"`
-	Issues    []resourceValidationIssue `json:"issues,omitempty"`
+	Valid        bool                           `json:"valid"`
+	Resource     string                         `json:"resource"`
+	Name         string                         `json:"name,omitempty"`
+	Status       string                         `json:"status"`
+	Message      string                         `json:"message"`
+	Provider     string                         `json:"provider,omitempty"`
+	Model        string                         `json:"model,omitempty"`
+	LatencyMS    int64                          `json:"latency_ms,omitempty"`
+	Capabilities []providerCapabilityTestResult `json:"capabilities,omitempty"`
+	Issues       []resourceValidationIssue      `json:"issues,omitempty"`
+}
+
+type providerCapabilityTestResult struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Supported bool   `json:"supported"`
+	Message   string `json:"message,omitempty"`
+	LatencyMS int64  `json:"latency_ms,omitempty"`
 }
 
 type resourceCatalogResponse struct {
@@ -110,6 +151,46 @@ type resourceCatalogResponse struct {
 	Counts   resourceCatalogCounts   `json:"counts"`
 	Summary  resourceCatalogSummary  `json:"summary"`
 	Families []resourceFamilySummary `json:"families"`
+	Items    []resourceCatalogItem   `json:"items,omitempty"`
+}
+
+type resourceCatalogItem struct {
+	Kind             string                        `json:"kind"`
+	Name             string                        `json:"name"`
+	Title            string                        `json:"title,omitempty"`
+	Description      string                        `json:"description,omitempty"`
+	Version          string                        `json:"version"`
+	DeclaredVersion  string                        `json:"declared_version,omitempty"`
+	VersionSource    string                        `json:"version_source"`
+	Capabilities     []string                      `json:"capabilities,omitempty"`
+	Dependencies     []resourceCatalogDependency   `json:"dependencies,omitempty"`
+	Health           string                        `json:"health"`
+	HealthDetail     string                        `json:"health_detail,omitempty"`
+	ValidationStatus string                        `json:"validation_status"`
+	Valid            bool                          `json:"valid"`
+	Issues           []resourceValidationIssue     `json:"issues,omitempty"`
+	ApplyState       string                        `json:"apply_state,omitempty"`
+	DetailPath       string                        `json:"detail_path"`
+	UseInTask        resourceCatalogTaskTarget     `json:"use_in_task"`
+	DryRunFixture    *resourceCatalogDryRunFixture `json:"dry_run_fixture,omitempty"`
+	Builtin          bool                          `json:"builtin,omitempty"`
+	Editable         bool                          `json:"editable"`
+	ToolCount        int                           `json:"tool_count,omitempty"`
+}
+
+type resourceCatalogDependency struct {
+	Kind     string `json:"kind"`
+	Name     string `json:"name"`
+	Required bool   `json:"required"`
+	Status   string `json:"status"`
+	Detail   string `json:"detail,omitempty"`
+}
+
+type resourceCatalogTaskTarget struct {
+	Route   string `json:"route"`
+	Kind    string `json:"kind"`
+	Name    string `json:"name"`
+	Version string `json:"version"`
 }
 
 type resourceCatalogMetadata struct {
@@ -204,6 +285,8 @@ type skillResourceMeta struct {
 
 type agentResourceDocument struct {
 	ID               string   `json:"id" yaml:"id,omitempty"`
+	Kind             string   `json:"kind" yaml:"kind,omitempty"`
+	TargetScope      string   `json:"target_scope,omitempty" yaml:"target_scope,omitempty"`
 	Name             string   `json:"name" yaml:"name"`
 	Description      string   `json:"description" yaml:"description"`
 	SystemPrompt     string   `json:"system_prompt,omitempty" yaml:"system_prompt,omitempty"`
@@ -227,6 +310,7 @@ type providerResourceDocument struct {
 	Type                  string   `json:"type,omitempty" yaml:"-"`
 	Provider              string   `json:"provider" yaml:"provider"`
 	BaseURL               string   `json:"base_url" yaml:"base_url"`
+	WireAPI               string   `json:"wire_api,omitempty" yaml:"wire_api,omitempty"`
 	APIKey                string   `json:"api_key,omitempty" yaml:"api_key,omitempty"`
 	EnvKey                string   `json:"env_key,omitempty" yaml:"-"`
 	APIKeySet             bool     `json:"api_key_set,omitempty" yaml:"-"`
@@ -234,9 +318,11 @@ type providerResourceDocument struct {
 	DefaultModel          string   `json:"default_model,omitempty" yaml:"-"`
 	FallbackProvider      string   `json:"fallback_provider,omitempty" yaml:"fallback_provider,omitempty"`
 	ProviderMessageFields []string `json:"provider_message_fields,omitempty" yaml:"provider_message_fields,omitempty"`
+	Vision                bool     `json:"vision,omitempty" yaml:"vision,omitempty"`
 	Timeout               string   `json:"timeout,omitempty" yaml:"timeout,omitempty"`
 	Temperature           float64  `json:"temperature,omitempty" yaml:"temperature,omitempty"`
 	MaxTokens             int      `json:"max_tokens,omitempty" yaml:"max_tokens,omitempty"`
+	ReasoningEffort       string   `json:"reasoning_effort,omitempty" yaml:"reasoning_effort,omitempty"`
 	RetryCount            int      `json:"retry_count,omitempty" yaml:"retry_count,omitempty"`
 	RetryBackoff          string   `json:"retry_backoff,omitempty" yaml:"retry_backoff,omitempty"`
 	Path                  string   `json:"path,omitempty" yaml:"-"`
@@ -247,6 +333,7 @@ type providerResourceDocument struct {
 
 type toolResourceDocument struct {
 	Name                string                  `json:"name" yaml:"name"`
+	TargetScope         string                  `json:"target_scope,omitempty" yaml:"target_scope,omitempty"`
 	Language            string                  `json:"language" yaml:"language"`
 	Description         string                  `json:"description,omitempty" yaml:"description,omitempty"`
 	Command             string                  `json:"command" yaml:"command"`
@@ -257,7 +344,6 @@ type toolResourceDocument struct {
 	EnvAllowlist        []string                `json:"env_allowlist,omitempty" yaml:"env_allowlist,omitempty"`
 	NetworkDisabled     bool                    `json:"network_disabled,omitempty" yaml:"network_disabled,omitempty"`
 	Isolation           string                  `json:"isolation,omitempty" yaml:"isolation,omitempty"`
-	IsolationProfile    string                  `json:"isolation_profile,omitempty" yaml:"isolation_profile,omitempty"`
 	IsolationOptions    map[string]string       `json:"isolation_options,omitempty" yaml:"isolation_options,omitempty"`
 	RestartLimit        int                     `json:"restart_limit,omitempty" yaml:"restart_limit,omitempty"`
 	Cooldown            string                  `json:"cooldown,omitempty" yaml:"cooldown,omitempty"`
@@ -297,6 +383,7 @@ type toolResourceConfigDocument struct {
 
 type toolResourceServerDocument struct {
 	Name                string            `yaml:"name"`
+	TargetScope         string            `yaml:"target_scope,omitempty"`
 	Command             string            `yaml:"command"`
 	Args                []string          `yaml:"args"`
 	Enabled             bool              `yaml:"enabled"`
@@ -305,7 +392,6 @@ type toolResourceServerDocument struct {
 	EnvAllowlist        []string          `yaml:"env_allowlist,omitempty"`
 	NetworkDisabled     bool              `yaml:"network_disabled,omitempty"`
 	Isolation           string            `yaml:"isolation,omitempty"`
-	IsolationProfile    string            `yaml:"isolation_profile,omitempty"`
 	IsolationOptions    map[string]string `yaml:"isolation_options,omitempty"`
 	RestartLimit        int               `yaml:"restart_limit,omitempty"`
 	Cooldown            string            `yaml:"cooldown,omitempty"`
@@ -326,9 +412,18 @@ func (s *Server) handleResourceCatalog(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) resourceCatalog(query url.Values) resourceCatalogResponse {
 	allowedKinds := resourceCatalogFamilyFilter(query)
+	if len(allowedKinds) == 0 {
+		allowedKinds = cloneResourceCatalogKinds(defaultResourceCatalogKinds)
+	}
 	searchText := resourceCatalogSearchText(query)
-	filterKey := resourceCatalogFilterKey(allowedKinds, searchText)
+	capability := resourceCatalogQueryValue(query, "capability")
+	health := resourceCatalogQueryValue(query, "health")
+	validation := resourceCatalogQueryValue(query, "validation")
+	filterKey := resourceCatalogFilterKey(allowedKinds, searchText, capability, health, validation)
 	families := s.resourceFamilySummaries(allowedKinds, searchText)
+	items := s.resourceCatalogItems(allowedKinds)
+	items = filterResourceCatalogItems(items, searchText, capability, health, validation)
+	applyVisibleResourceCatalogCounts(families, items)
 	counts := resourceCatalogCounts{Families: len(families)}
 	applyStates := make(map[string]struct{})
 	for _, family := range families {
@@ -381,12 +476,43 @@ func (s *Server) resourceCatalog(query url.Values) resourceCatalogResponse {
 			DiagnosticsPath: firstResourceCatalogDiagnosticsPath(families),
 			ApplyStates:     sortedResourceCatalogKeys(applyStates),
 			Notes: []string{
-				"Use resource family paths for CRUD operations; this endpoint is a read-only Studio catalog.",
-				"Agent, provider, and MCP tool saves are file-backed but currently require runtime restart before active execution changes.",
+				"默认资源库展示智能体、子智能体、工作流、技能、单个 MCP 工具和 MCP 连接；模型供应商在设置页单独管理。",
+				"兼容性资源类型仍可通过显式的 kind 查询参数访问。",
+				"资源库总览为只读目录；创建、修改、删除和验证请使用对应资源类型接口。",
+				"智能体、子智能体、技能和 MCP 连接支持运行时热加载；供应商配置仍需重启后绑定新的模型客户端。",
 			},
 		},
 		Families: families,
+		Items:    items,
 	}
+}
+
+func applyVisibleResourceCatalogCounts(families []resourceFamilySummary, items []resourceCatalogItem) {
+	counts := make(map[string]int)
+	invalid := make(map[string]int)
+	for _, item := range items {
+		kind := strings.TrimSpace(item.Kind)
+		if kind == "" {
+			continue
+		}
+		counts[kind]++
+		if !item.Valid {
+			invalid[kind]++
+		}
+	}
+	for index := range families {
+		kind := strings.TrimSpace(families[index].Kind)
+		families[index].Count = counts[kind]
+		families[index].InvalidCount = invalid[kind]
+	}
+}
+
+func cloneResourceCatalogKinds(source map[string]struct{}) map[string]struct{} {
+	clone := make(map[string]struct{}, len(source))
+	for kind := range source {
+		clone[kind] = struct{}{}
+	}
+	return clone
 }
 
 func (s *Server) resourceFamilySummaries(allowed map[string]struct{}, searchText string) []resourceFamilySummary {
@@ -468,9 +594,16 @@ func resourceCatalogSearchText(query url.Values) string {
 	return ""
 }
 
-func resourceCatalogFilterKey(allowed map[string]struct{}, searchText string) string {
+func resourceCatalogQueryValue(query url.Values, key string) string {
+	if query == nil {
+		return ""
+	}
+	return strings.ToLower(strings.TrimSpace(query.Get(key)))
+}
+
+func resourceCatalogFilterKey(allowed map[string]struct{}, filters ...string) string {
 	kinds := sortedResourceCatalogKeys(allowed)
-	return strings.Join([]string{strings.Join(kinds, ","), searchText}, "|")
+	return strings.Join(append([]string{strings.Join(kinds, ",")}, filters...), "|")
 }
 
 func resourceFamilyMatchesQuery(family resourceFamilySummary, searchText string) bool {
@@ -503,17 +636,642 @@ func resourceFamilyMatchesQuery(family resourceFamilySummary, searchText string)
 	return false
 }
 
+func (s *Server) resourceCatalogItems(allowed map[string]struct{}) []resourceCatalogItem {
+	if s == nil || s.runtime == nil {
+		return nil
+	}
+	items := make([]resourceCatalogItem, 0)
+	if resourceCatalogKindAllowed(allowed, "agent") {
+		for _, doc := range s.agentResourceListByKind(config.AgentKindAgent) {
+			items = append(items, s.agentCatalogItem("agent", doc))
+		}
+	}
+	if resourceCatalogKindAllowed(allowed, "subagent") {
+		for _, doc := range s.agentResourceListByKind(config.AgentKindSubagent) {
+			items = append(items, s.agentCatalogItem("subagent", doc))
+		}
+	}
+	if resourceCatalogKindAllowed(allowed, "workflow") {
+		runner := s.runtime.WorkflowRunner()
+		titles := make(map[string]string)
+		for _, template := range runner.WorkflowTemplates() {
+			titles[template.Name] = template.Title
+		}
+		for _, summary := range runner.ListWorkflowGraphs() {
+			items = append(items, s.workflowCatalogItem(summary, titles[summary.Name]))
+		}
+	}
+	if resourceCatalogKindAllowed(allowed, "skill") {
+		for _, item := range s.runtime.SkillList() {
+			items = append(items, s.skillCatalogItem(item))
+		}
+	}
+	if resourceCatalogKindAllowed(allowed, "tool") {
+		if tools, err := s.runtime.Tools(context.Background()); err == nil {
+			for _, tool := range tools {
+				items = append(items, s.toolCatalogItem(tool))
+			}
+		}
+	}
+	if resourceCatalogKindAllowed(allowed, "mcp") {
+		health := s.runtime.MCPHealthStatus(context.Background())
+		for _, doc := range s.mcpResourceList() {
+			if !userVisibleMCPResource(doc.Name) {
+				continue
+			}
+			items = append(items, s.mcpCatalogItem(doc, health))
+		}
+	}
+	sort.Slice(items, func(i, j int) bool {
+		if items[i].Kind != items[j].Kind {
+			return items[i].Kind < items[j].Kind
+		}
+		return strings.ToLower(items[i].Name) < strings.ToLower(items[j].Name)
+	})
+	return items
+}
+
+func userVisibleMCPResource(name string) bool {
+	switch normalizeResourceName(name) {
+	case "python_notes", "skill_runner":
+		return false
+	default:
+		return true
+	}
+}
+
+func resourceCatalogKindAllowed(allowed map[string]struct{}, kind string) bool {
+	if len(allowed) == 0 {
+		return true
+	}
+	_, ok := allowed[kind]
+	return ok
+}
+
+func (s *Server) agentCatalogItem(kind string, doc agentResourceDocument) resourceCatalogItem {
+	publicDoc := comparableAgentResource(doc)
+	version := session.ResourceVersion(publicDoc)
+	valid := true
+	var issues []resourceValidationIssue
+	if _, err := s.validateAgentResourceDryRun(doc.ID, doc); err != nil {
+		valid = false
+		issues = append(issues, resourceValidationIssue{Severity: "error", Message: err.Error(), Recommendation: "Open the resource and correct the highlighted configuration."})
+	}
+	dependencies := make([]resourceCatalogDependency, 0, 1)
+	if provider := strings.TrimSpace(doc.Provider); provider != "" {
+		status, detail := s.providerDependencyStatus(provider)
+		dependencies = append(dependencies, resourceCatalogDependency{Kind: "provider", Name: provider, Required: true, Status: status, Detail: detail})
+	}
+	issues = append(issues, resourceCatalogDependencyIssues(dependencies)...)
+	capabilities := append([]string{kind}, doc.AllowedToolKinds...)
+	if mode := strings.TrimSpace(doc.Mode); mode != "" {
+		capabilities = append(capabilities, mode)
+	}
+	health, healthDetail := catalogHealthFromDependencies(valid, dependencies)
+	applyState := doc.ApplyState
+	if _, loaded := s.runtime.Profile(doc.ID); loaded && valid && health == "healthy" {
+		applyState = "active"
+	}
+	return newResourceCatalogItem(resourceCatalogItem{
+		Kind:             kind,
+		Name:             doc.ID,
+		Title:            doc.Name,
+		Description:      doc.Description,
+		Version:          version,
+		VersionSource:    "content_sha256",
+		Capabilities:     capabilities,
+		Dependencies:     dependencies,
+		Health:           health,
+		HealthDetail:     healthDetail,
+		ValidationStatus: catalogValidationStatus(valid),
+		Valid:            valid,
+		Issues:           issues,
+		ApplyState:       applyState,
+		DetailPath:       "/api/resources/" + kind + "s/" + url.PathEscape(doc.ID),
+	})
+}
+
+func (s *Server) workflowCatalogItem(summary agent.WorkflowGraphSummary, templateTitle ...string) resourceCatalogItem {
+	runner := s.runtime.WorkflowRunner()
+	title := ""
+	if len(templateTitle) > 0 {
+		title = strings.TrimSpace(templateTitle[0])
+	} else if template, ok := runner.WorkflowTemplate(summary.Name); ok {
+		title = strings.TrimSpace(template.Title)
+	}
+	if title == "" {
+		title = resourceCatalogFriendlyTitle("workflow", summary.Name, summary.Name)
+	}
+	doc, err := runner.LoadWorkflowGraphDocument(summary.Name)
+	valid := summary.Valid && err == nil
+	var issues []resourceValidationIssue
+	if !valid {
+		message := strings.TrimSpace(summary.Error)
+		if message == "" && err != nil {
+			message = err.Error()
+		}
+		if message == "" {
+			message = "workflow validation failed"
+		}
+		issues = append(issues, resourceValidationIssue{Severity: "error", Message: message, Recommendation: "Open the workflow designer and repair invalid nodes or dependencies."})
+	}
+	versionValue := any(summary)
+	capabilities := []string{"workflow"}
+	var dependencies []resourceCatalogDependency
+	if err == nil {
+		versionValue = doc
+		if len(doc.Stages) > 1 {
+			capabilities = append(capabilities, "multi_stage")
+		}
+		for _, stage := range doc.Stages {
+			nodeType := strings.ToLower(strings.TrimSpace(stage.NodeType))
+			if nodeType == "" {
+				nodeType = "agent"
+			}
+			capabilities = append(capabilities, nodeType)
+			if stage.Approval || stage.Execution.RequiresApproval {
+				capabilities = append(capabilities, "approval")
+			}
+		}
+		for _, requirement := range runner.WorkflowGraphStageRequirements(doc) {
+			if requirement.Agent != "" {
+				status := "ready"
+				if _, ok := s.runtime.Profile(requirement.Agent); !ok {
+					status = "missing"
+				}
+				dependencies = append(dependencies, resourceCatalogDependency{Kind: "agent", Name: requirement.Agent, Required: true, Status: status})
+			}
+			if requirement.Provider != "" {
+				status, detail := s.providerDependencyStatus(requirement.Provider)
+				dependencies = append(dependencies, resourceCatalogDependency{Kind: "provider", Name: requirement.Provider, Required: true, Status: status, Detail: detail})
+			}
+			if requirement.Skill != "" {
+				status := "ready"
+				if _, ok := s.runtimeSkillByName(requirement.Skill); !ok {
+					status = "missing"
+				}
+				dependencies = append(dependencies, resourceCatalogDependency{Kind: "skill", Name: requirement.Skill, Required: true, Status: status})
+			}
+			for _, tool := range requirement.Tools {
+				dependencies = append(dependencies, resourceCatalogDependency{Kind: "tool", Name: tool, Required: true, Status: s.toolDependencyStatus(tool)})
+			}
+			if requirement.SubWorkflow != "" {
+				status := "ready"
+				if _, err := runner.LoadWorkflowGraphDocument(requirement.SubWorkflow); err != nil {
+					status = "missing"
+				}
+				dependencies = append(dependencies, resourceCatalogDependency{Kind: "workflow", Name: requirement.SubWorkflow, Required: true, Status: status})
+			}
+		}
+	}
+	dependencies = normalizeResourceCatalogDependencies(dependencies)
+	issues = append(issues, resourceCatalogDependencyIssues(dependencies)...)
+	health, healthDetail := catalogHealthFromDependencies(valid, dependencies)
+	return newResourceCatalogItem(resourceCatalogItem{
+		Kind:             "workflow",
+		Name:             summary.Name,
+		Title:            title,
+		Description:      summary.Description,
+		Version:          session.ResourceVersion(versionValue),
+		VersionSource:    "content_sha256",
+		Capabilities:     capabilities,
+		Dependencies:     dependencies,
+		Health:           health,
+		HealthDetail:     healthDetail,
+		ValidationStatus: catalogValidationStatus(valid),
+		Valid:            valid,
+		Issues:           issues,
+		ApplyState:       "active",
+		DetailPath:       "/api/workflow-graphs/" + url.PathEscape(summary.Name),
+		DryRunFixture:    referenceWorkflowDryRunFixture(summary.Name),
+	})
+}
+
+func (s *Server) skillCatalogItem(item schema.Skill) resourceCatalogItem {
+	title := firstWorkflowRunQueryValue(item.Metadata["title"], item.Metadata["display_name"])
+	if title == "" {
+		title = resourceCatalogFriendlyTitle("skill", item.Name, item.Name)
+	}
+	publicDoc := skillResourceFromSchema(item)
+	publicDoc.Path = ""
+	dependencies := make([]resourceCatalogDependency, 0, len(item.Tools)+len(item.NextSkills)+1)
+	if name := strings.TrimSpace(item.PreferredAgent); name != "" {
+		status := "ready"
+		if _, ok := s.runtime.Profile(name); !ok {
+			status = "missing"
+		}
+		dependencies = append(dependencies, resourceCatalogDependency{Kind: "agent", Name: name, Required: true, Status: status})
+	}
+	for _, tool := range item.Tools {
+		dependencies = append(dependencies, resourceCatalogDependency{Kind: "tool", Name: tool.Name, Required: tool.Required, Status: s.toolDependencyStatus(tool.Name)})
+	}
+	for _, next := range item.NextSkills {
+		status := "ready"
+		if _, ok := s.runtimeSkillByName(next); !ok {
+			status = "missing"
+		}
+		dependencies = append(dependencies, resourceCatalogDependency{Kind: "skill", Name: next, Required: false, Status: status})
+	}
+	dependencies = normalizeResourceCatalogDependencies(dependencies)
+	issues := resourceCatalogDependencyIssues(dependencies)
+	capabilities := append([]string{"skill"}, item.AllowedToolKinds...)
+	if item.OutputKind != "" {
+		capabilities = append(capabilities, item.OutputKind)
+	}
+	if item.Mode != "" {
+		capabilities = append(capabilities, item.Mode)
+	}
+	health, healthDetail := catalogHealthFromDependencies(true, dependencies)
+	return newResourceCatalogItem(resourceCatalogItem{
+		Kind:             "skill",
+		Name:             item.Name,
+		Title:            title,
+		Description:      item.Description,
+		Version:          session.ResourceVersion(publicDoc),
+		DeclaredVersion:  item.Version,
+		VersionSource:    "content_sha256",
+		Capabilities:     capabilities,
+		Dependencies:     dependencies,
+		Health:           health,
+		HealthDetail:     healthDetail,
+		ValidationStatus: "valid",
+		Valid:            true,
+		Issues:           issues,
+		ApplyState:       "active",
+		DetailPath:       "/api/resources/skills/" + url.PathEscape(item.Name),
+	})
+}
+
+func (s *Server) mcpCatalogItem(doc mcpResourceDocument, health map[string]string) resourceCatalogItem {
+	publicDoc := doc
+	publicDoc.Path = ""
+	publicDoc.RestartRequired = false
+	publicDoc.ApplyState = ""
+	publicDoc.ApplyMessage = ""
+	publicDoc.Builtin = false
+	publicDoc.ReadOnly = false
+	publicDoc.ToolCount = 0
+	valid := strings.TrimSpace(doc.Name) != "" && strings.TrimSpace(doc.Command) != ""
+	var issues []resourceValidationIssue
+	if !valid {
+		issues = append(issues, resourceValidationIssue{Severity: "error", Field: "command", Message: "MCP connection requires a name and command.", Recommendation: "Open the resource and configure the local MCP command."})
+	}
+	rawHealth := resourceCatalogMCPHealth(health, doc.Name)
+	normalizedHealth := normalizeResourceCatalogMCPHealth(doc.Enabled, rawHealth)
+	if !valid {
+		normalizedHealth = "error"
+	}
+	dependencies := []resourceCatalogDependency{{Kind: "runtime", Name: doc.Command, Required: true, Status: resourceCatalogRuntimeDependencyStatus(normalizedHealth), Detail: rawHealth}}
+	issues = append(issues, resourceCatalogDependencyIssues(dependencies)...)
+	applyState := doc.ApplyState
+	if valid && normalizedHealth == "healthy" {
+		applyState = "active"
+	}
+	return newResourceCatalogItem(resourceCatalogItem{
+		Kind:             "mcp",
+		Name:             doc.Name,
+		Title:            resourceCatalogFriendlyTitle("mcp", doc.Name, doc.Name),
+		Description:      resourceCatalogMCPDescription(doc.Name, doc.Command, doc.Args),
+		Version:          session.ResourceVersion(publicDoc),
+		VersionSource:    "content_sha256",
+		Capabilities:     []string{"mcp", "tool_connection", "stdio"},
+		Dependencies:     dependencies,
+		Health:           normalizedHealth,
+		HealthDetail:     rawHealth,
+		ValidationStatus: catalogValidationStatus(valid),
+		Valid:            valid,
+		Issues:           issues,
+		ApplyState:       applyState,
+		DetailPath:       "/api/resources/mcp/" + url.PathEscape(doc.Name),
+		Builtin:          doc.Builtin,
+		Editable:         !doc.ReadOnly,
+		ToolCount:        doc.ToolCount,
+	})
+}
+
+func (s *Server) toolCatalogItem(tool schema.Tool) resourceCatalogItem {
+	name := qualifiedToolName(tool)
+	server := strings.TrimSpace(tool.Server)
+	dependencies := make([]resourceCatalogDependency, 0, 1)
+	if server != "" {
+		dependencies = append(dependencies, resourceCatalogDependency{Kind: "mcp", Name: server, Required: true, Status: s.toolDependencyStatus(name)})
+	}
+	health, healthDetail := catalogHealthFromDependencies(strings.TrimSpace(name) != "", dependencies)
+	item := newResourceCatalogItem(resourceCatalogItem{
+		Kind:             "tool",
+		Name:             name,
+		Title:            strings.TrimSpace(tool.Name),
+		Description:      strings.TrimSpace(tool.Description),
+		Version:          session.ResourceVersion(tool),
+		VersionSource:    "content_sha256",
+		Capabilities:     []string{"tool", strings.TrimSpace(tool.Kind), server},
+		Dependencies:     dependencies,
+		Health:           health,
+		HealthDetail:     healthDetail,
+		ValidationStatus: catalogValidationStatus(strings.TrimSpace(name) != ""),
+		Valid:            strings.TrimSpace(name) != "",
+		ApplyState:       "active",
+		DetailPath:       "/api/resources/tools/" + url.PathEscape(name),
+		Editable:         false,
+	})
+	item.UseInTask = resourceCatalogTaskTarget{Route: "#workflows", Kind: "tool", Name: name, Version: item.Version}
+	return item
+}
+
+func resourceCatalogFriendlyTitle(kind, name, fallback string) string {
+	key := strings.ToLower(strings.TrimSpace(kind)) + ":" + strings.ToLower(strings.TrimSpace(name))
+	titles := map[string]string{
+		"mcp:command_tools": "命令执行连接", "mcp:file_tools": "文件操作连接", "mcp:host_tools": "本地主机连接",
+		"mcp:network_tools": "网络诊断连接", "mcp:office_tools": "Office 文档连接", "mcp:ssh_tools": "SSH 远程连接", "mcp:web_tools": "网页与研究连接",
+		"workflow:plan-fix-audit": "规划、修复与审计", "workflow:plan-implement-audit": "规划、实现与审计",
+		"workflow:skill-chain": "专业技能路由", "workflow:task-decomposition-plan": "复杂任务拆解规划",
+		"skill:authorized-pentest-helper": "授权渗透辅助", "skill:authorized-red-team-validation": "授权红队验证",
+		"skill:binary-vulnerability-research": "二进制漏洞研究", "skill:code-audit": "代码审计", "skill:code-writing": "代码实现",
+		"skill:controlled-operations": "受控运维变更", "skill:crypto-learning": "密码学学习", "skill:execution-plan": "执行规划",
+		"skill:internet-research": "互联网研究", "skill:local-host-diagnostics": "本地主机诊断", "skill:managed-local-config": "受管本地配置",
+		"skill:office-document-production": "Office 文档生产", "skill:ops-study": "运维学习", "skill:remote-host-diagnostics": "远程主机诊断",
+		"skill:reverse-engineering": "逆向分析", "skill:source-verification": "来源核验", "skill:vulnerability-research": "漏洞研究",
+		"skill:web-vulnerability-research": "Web 漏洞研究",
+	}
+	if title := strings.TrimSpace(titles[key]); title != "" {
+		return title
+	}
+	return strings.TrimSpace(fallback)
+}
+
+func resourceCatalogMCPDescription(name, command string, args []string) string {
+	descriptions := map[string]string{
+		"command_tools": "在任务工作区内运行结构化本地命令，用于测试、构建、检查和受控项目解释器。",
+		"file_tools":    "读取、检索、精确修改和恢复任务工作区文件，并保留可审计 Diff。",
+		"host_tools":    "读取本地主机、磁盘、端口、进程、服务和受管配置状态。",
+		"network_tools": "执行受限 DNS、TCP、HTTP 和网络诊断，不提供任意网络扫描。",
+		"office_tools":  "生成、检查和预览 Word、Excel、PowerPoint 与 PDF 交付物。",
+		"ssh_tools":     "管理授权 SSH 目标的主机密钥，并执行精确白名单命令。",
+		"web_tools":     "搜索、抓取、快照和分析网页、静态资源与研究来源。",
+	}
+	if description := descriptions[strings.ToLower(strings.TrimSpace(name))]; description != "" {
+		return description
+	}
+	return strings.TrimSpace(strings.Join(append([]string{command}, args...), " "))
+}
+
+func newResourceCatalogItem(item resourceCatalogItem) resourceCatalogItem {
+	item.Kind = strings.ToLower(strings.TrimSpace(item.Kind))
+	item.Name = strings.TrimSpace(item.Name)
+	item.Title = strings.TrimSpace(item.Title)
+	if item.Title == "" {
+		item.Title = item.Name
+	}
+	item.Capabilities = uniqueSortedNonEmpty(item.Capabilities)
+	item.Dependencies = normalizeResourceCatalogDependencies(item.Dependencies)
+	if item.Kind != "mcp" && item.Kind != "tool" {
+		item.Editable = true
+	}
+	item.UseInTask = resourceCatalogTaskTarget{Route: "#playground", Kind: item.Kind, Name: item.Name, Version: item.Version}
+	return item
+}
+
+func (s *Server) providerDependencyStatus(name string) (string, string) {
+	if _, ok := s.runtime.Provider(name); !ok {
+		return "missing", "Provider is not configured."
+	}
+	if !s.runtime.ProviderAvailable(name) {
+		return "degraded", "Provider is configured but its client is not currently available."
+	}
+	return "ready", ""
+}
+
+func (s *Server) toolDependencyStatus(name string) string {
+	name = strings.ToLower(strings.TrimSpace(name))
+	if name == "" {
+		return "missing"
+	}
+	for _, candidate := range s.runtime.ToolNames() {
+		candidate = strings.ToLower(strings.TrimSpace(candidate))
+		if candidate == name || (!strings.Contains(name, "/") && strings.HasSuffix(candidate, "/"+name)) {
+			return "ready"
+		}
+	}
+	serverName, _, qualified := strings.Cut(name, "/")
+	if !qualified || strings.TrimSpace(serverName) == "" || s == nil || s.runtime == nil {
+		return "missing"
+	}
+	for _, server := range s.runtime.MCPServerRefs() {
+		if !strings.EqualFold(strings.TrimSpace(server.Name), serverName) {
+			continue
+		}
+		if !server.Enabled {
+			return "disabled"
+		}
+		// MCP servers are started and their tools discovered on demand. An
+		// enabled connection satisfies the catalog dependency until discovery
+		// can confirm the exact tool without making the Resources page eager.
+		return "deferred"
+	}
+	return "missing"
+}
+
+func catalogHealthFromDependencies(valid bool, dependencies []resourceCatalogDependency) (string, string) {
+	if !valid {
+		return "error", "Resource validation failed."
+	}
+	optionalMissing := false
+	for _, dependency := range dependencies {
+		status := strings.ToLower(strings.TrimSpace(dependency.Status))
+		if dependency.Required && (status == "missing" || status == "error" || status == "disabled") {
+			return "error", "One or more required dependencies are unavailable."
+		}
+		if status == "degraded" || status == "unknown" || status == "missing" || status == "disabled" {
+			optionalMissing = true
+		}
+	}
+	if optionalMissing {
+		return "degraded", "One or more dependencies need attention."
+	}
+	return "healthy", ""
+}
+
+func catalogValidationStatus(valid bool) string {
+	if valid {
+		return "valid"
+	}
+	return "invalid"
+}
+
+func resourceCatalogDependencyIssues(items []resourceCatalogDependency) []resourceValidationIssue {
+	issues := make([]resourceValidationIssue, 0)
+	for _, dependency := range normalizeResourceCatalogDependencies(items) {
+		status := strings.ToLower(strings.TrimSpace(dependency.Status))
+		if status == "ready" || status == "healthy" || status == "deferred" || status == "" {
+			continue
+		}
+		severity := "warning"
+		if dependency.Required && (status == "missing" || status == "error" || status == "disabled") {
+			severity = "error"
+		}
+		issues = append(issues, resourceValidationIssue{
+			Severity:       severity,
+			Code:           "dependency_" + status,
+			Field:          "dependencies." + dependency.Kind + "." + dependency.Name,
+			Message:        fmt.Sprintf("%s dependency %s is %s", dependency.Kind, dependency.Name, status),
+			Recommendation: resourceCatalogDependencyRecommendation(dependency),
+		})
+	}
+	return issues
+}
+
+func resourceCatalogDependencyRecommendation(dependency resourceCatalogDependency) string {
+	kind := strings.ToLower(strings.TrimSpace(dependency.Kind))
+	name := strings.TrimSpace(dependency.Name)
+	switch kind {
+	case "provider":
+		return fmt.Sprintf("Open Settings, configure and test Provider %s, then refresh Resources.", name)
+	case "agent":
+		return fmt.Sprintf("Restore Agent %s or select an available Agent in the Workflow stage.", name)
+	case "skill":
+		return fmt.Sprintf("Restore Skill %s and validate its SKILL.md dependencies.", name)
+	case "tool", "mcp":
+		return fmt.Sprintf("Enable the MCP connection that provides %s, repair its command if needed, then refresh tool discovery.", name)
+	case "workflow":
+		return fmt.Sprintf("Restore or repair referenced Workflow %s before running this Workflow.", name)
+	case "runtime":
+		return fmt.Sprintf("Install or repair command %s, then restart or refresh its MCP connection.", name)
+	default:
+		return fmt.Sprintf("Repair %s dependency %s and refresh Resources.", kind, name)
+	}
+}
+
+func normalizeResourceCatalogDependencies(items []resourceCatalogDependency) []resourceCatalogDependency {
+	if len(items) == 0 {
+		return nil
+	}
+	byKey := make(map[string]resourceCatalogDependency, len(items))
+	for _, item := range items {
+		item.Kind = strings.ToLower(strings.TrimSpace(item.Kind))
+		item.Name = strings.TrimSpace(item.Name)
+		item.Status = strings.ToLower(strings.TrimSpace(item.Status))
+		if item.Kind == "" || item.Name == "" {
+			continue
+		}
+		key := item.Kind + "\x00" + strings.ToLower(item.Name)
+		if existing, ok := byKey[key]; !ok || (!existing.Required && item.Required) {
+			byKey[key] = item
+		}
+	}
+	out := make([]resourceCatalogDependency, 0, len(byKey))
+	for _, item := range byKey {
+		out = append(out, item)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].Kind != out[j].Kind {
+			return out[i].Kind < out[j].Kind
+		}
+		return strings.ToLower(out[i].Name) < strings.ToLower(out[j].Name)
+	})
+	return out
+}
+
+func resourceCatalogMCPHealth(health map[string]string, name string) string {
+	for candidate, status := range health {
+		if strings.EqualFold(strings.TrimSpace(candidate), strings.TrimSpace(name)) {
+			return strings.TrimSpace(status)
+		}
+	}
+	return "unknown"
+}
+
+func normalizeResourceCatalogMCPHealth(enabled bool, raw string) string {
+	if !enabled {
+		return "disabled"
+	}
+	value := strings.ToLower(strings.TrimSpace(raw))
+	switch {
+	case strings.HasPrefix(value, "ready"), strings.HasPrefix(value, "healthy"), strings.HasPrefix(value, "idle"):
+		return "healthy"
+	case strings.HasPrefix(value, "degraded"), strings.Contains(value, "cooldown"):
+		return "degraded"
+	case value == "disabled":
+		return "disabled"
+	case value == "", value == "unknown", value == "missing":
+		return "unknown"
+	default:
+		return "error"
+	}
+}
+
+func resourceCatalogRuntimeDependencyStatus(health string) string {
+	switch health {
+	case "healthy":
+		return "ready"
+	case "disabled":
+		return "disabled"
+	case "error":
+		return "error"
+	default:
+		return health
+	}
+}
+
+func filterResourceCatalogItems(items []resourceCatalogItem, searchText, capability, health, validation string) []resourceCatalogItem {
+	out := make([]resourceCatalogItem, 0, len(items))
+	for _, item := range items {
+		if searchText != "" && !resourceCatalogItemMatchesQuery(item, searchText) {
+			continue
+		}
+		if capability != "" && !resourceCatalogStringSliceContains(item.Capabilities, capability) {
+			continue
+		}
+		if health != "" && !strings.EqualFold(item.Health, health) {
+			continue
+		}
+		if validation != "" && !strings.EqualFold(item.ValidationStatus, validation) {
+			continue
+		}
+		out = append(out, item)
+	}
+	return out
+}
+
+func resourceCatalogItemMatchesQuery(item resourceCatalogItem, searchText string) bool {
+	haystacks := []string{item.Kind, item.Name, item.Title, item.Description, item.Version, item.DeclaredVersion, item.Health, item.HealthDetail, item.ValidationStatus, item.ApplyState, strings.Join(item.Capabilities, " ")}
+	for _, dependency := range item.Dependencies {
+		haystacks = append(haystacks, dependency.Kind, dependency.Name, dependency.Status, dependency.Detail)
+	}
+	for _, issue := range item.Issues {
+		haystacks = append(haystacks, issue.Message, issue.Recommendation)
+	}
+	for _, value := range haystacks {
+		if strings.Contains(strings.ToLower(value), searchText) {
+			return true
+		}
+	}
+	return false
+}
+
+func resourceCatalogStringSliceContains(values []string, expected string) bool {
+	for _, value := range values {
+		if strings.EqualFold(strings.TrimSpace(value), strings.TrimSpace(expected)) {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Server) resourceFamilyCounts(kind string) (int, int) {
 	if s == nil || s.runtime == nil {
 		return 0, 0
 	}
 	switch kind {
 	case "agent":
-		return len(s.agentResourceList()), 0
+		return len(s.agentResourceListByKind(config.AgentKindAgent)), 0
+	case "subagent":
+		return len(s.agentResourceListByKind(config.AgentKindSubagent)), 0
 	case "provider":
 		return len(s.providerResourceList()), 0
 	case "tool":
 		return len(s.toolResourceList()), 0
+	case "mcp":
+		return len(s.mcpResourceList()), 0
 	case "skill":
 		return len(s.runtime.SkillList()), 0
 	case "workflow":
@@ -674,10 +1432,16 @@ func (s *Server) handleSkillResourceItem(w http.ResponseWriter, r *http.Request)
 		}
 		saved, err := s.saveSkillResource(name, doc)
 		if err != nil {
-			writeJSONStatus(w, http.StatusBadRequest, invalidResourceValidation("skill", firstResourceValidationName(name, doc.Name), skillValidationField(err.Error()), err.Error()))
+			writeJSONStatus(w, resourceErrorStatus(err, http.StatusBadRequest), invalidResourceValidation("skill", firstResourceValidationName(name, doc.Name), skillValidationField(err.Error()), err.Error()))
 			return
 		}
 		writeJSON(w, saved)
+	case http.MethodDelete:
+		if err := s.deleteSkillResource(name); err != nil {
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
@@ -709,7 +1473,7 @@ func (s *Server) handleSkillFileResource(w http.ResponseWriter, r *http.Request,
 		}
 		files, err := s.skillFileResourceList(name)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		writeJSON(w, files)
@@ -719,7 +1483,7 @@ func (s *Server) handleSkillFileResource(w http.ResponseWriter, r *http.Request,
 	case http.MethodGet:
 		doc, err := s.skillFileResource(name, rel, true)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		writeJSON(w, doc)
@@ -731,13 +1495,13 @@ func (s *Server) handleSkillFileResource(w http.ResponseWriter, r *http.Request,
 		}
 		saved, err := s.saveSkillFileResource(name, rel, doc.Content)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		writeJSON(w, saved)
 	case http.MethodDelete:
 		if err := s.deleteSkillFileResource(name, rel); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -755,7 +1519,7 @@ func (s *Server) handleAgentResourceCollection(w http.ResponseWriter, r *http.Re
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 		return
 	}
-	writeJSON(w, s.agentResourceList())
+	writeJSON(w, s.agentResourceListByKind(config.AgentKindAgent))
 }
 
 func (s *Server) handleAgentResourceItem(w http.ResponseWriter, r *http.Request) {
@@ -776,7 +1540,7 @@ func (s *Server) handleAgentResourceItem(w http.ResponseWriter, r *http.Request)
 	switch r.Method {
 	case http.MethodGet:
 		doc, ok := s.agentResourceByName(name)
-		if !ok {
+		if !ok || doc.Kind != config.AgentKindAgent {
 			http.NotFound(w, r)
 			return
 		}
@@ -787,21 +1551,118 @@ func (s *Server) handleAgentResourceItem(w http.ResponseWriter, r *http.Request)
 			http.Error(w, "invalid json", http.StatusBadRequest)
 			return
 		}
+		doc.Kind = config.AgentKindAgent
 		saved, err := s.saveAgentResource(name, doc)
 		if err != nil {
-			writeJSONStatus(w, http.StatusBadRequest, invalidResourceValidation("agent", firstResourceValidationName(name, doc.ID), resourceValidationField(err.Error()), err.Error()))
+			writeJSONStatus(w, resourceErrorStatus(err, http.StatusBadRequest), invalidResourceValidation("agent", firstResourceValidationName(name, doc.ID), resourceValidationField(err.Error()), err.Error()))
 			return
 		}
 		writeJSON(w, saved)
 	case http.MethodDelete:
+		doc, ok := s.agentResourceByName(name)
+		if !ok || doc.Kind != config.AgentKindAgent {
+			http.NotFound(w, r)
+			return
+		}
 		if err := s.deleteAgentResource(name); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
 	default:
 		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
 	}
+}
+
+func (s *Server) handleSubagentResourceCollection(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost && strings.Trim(r.URL.Path, "/") == "api/resources/subagents/validate" {
+		s.handleSubagentResourceValidate(w, r, "")
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	writeJSON(w, s.agentResourceListByKind(config.AgentKindSubagent))
+}
+
+func (s *Server) handleSubagentResourceItem(w http.ResponseWriter, r *http.Request) {
+	name := strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/resources/subagents/"), "/")
+	parts := strings.Split(name, "/")
+	if len(parts) == 1 && parts[0] == "import" {
+		s.handleSubagentImport(w, r)
+		return
+	}
+	if len(parts) == 1 && parts[0] == "validate" && r.Method == http.MethodPost {
+		s.handleSubagentResourceValidate(w, r, "")
+		return
+	}
+	if len(parts) == 2 && parts[1] == "validate" && r.Method == http.MethodPost {
+		s.handleSubagentResourceValidate(w, r, parts[0])
+		return
+	}
+	if len(parts) == 2 && parts[1] == "export" {
+		s.handleSubagentExport(w, r, parts[0])
+		return
+	}
+	if name == "" || strings.Contains(name, "/") {
+		http.NotFound(w, r)
+		return
+	}
+	switch r.Method {
+	case http.MethodGet:
+		doc, ok := s.agentResourceByName(name)
+		if !ok || doc.Kind != config.AgentKindSubagent {
+			http.NotFound(w, r)
+			return
+		}
+		writeJSON(w, doc)
+	case http.MethodPut:
+		var doc agentResourceDocument
+		if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+			http.Error(w, "invalid json", http.StatusBadRequest)
+			return
+		}
+		doc.Kind = config.AgentKindSubagent
+		saved, err := s.saveAgentResource(name, doc)
+		if err != nil {
+			writeJSONStatus(w, resourceErrorStatus(err, http.StatusBadRequest), invalidResourceValidation("subagent", firstResourceValidationName(name, doc.ID), resourceValidationField(err.Error()), err.Error()))
+			return
+		}
+		writeJSON(w, saved)
+	case http.MethodDelete:
+		doc, ok := s.agentResourceByName(name)
+		if !ok || doc.Kind != config.AgentKindSubagent {
+			http.NotFound(w, r)
+			return
+		}
+		if err := s.deleteAgentResource(name); err != nil {
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
+			return
+		}
+		w.WriteHeader(http.StatusNoContent)
+	default:
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+	}
+}
+
+func (s *Server) handleSubagentResourceValidate(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var doc agentResourceDocument
+	if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+		writeJSON(w, invalidResourceValidation("subagent", name, "body", "invalid json"))
+		return
+	}
+	doc.Kind = config.AgentKindSubagent
+	normalized, err := s.validateAgentResourceDryRun(name, doc)
+	if err != nil {
+		writeJSON(w, invalidResourceValidation("subagent", firstResourceValidationName(name, doc.ID), resourceValidationField(err.Error()), err.Error()))
+		return
+	}
+	writeJSON(w, validResourceValidation("subagent", normalized.ID, normalized))
 }
 
 func (s *Server) handleAgentResourceValidate(w http.ResponseWriter, r *http.Request, name string) {
@@ -814,6 +1675,7 @@ func (s *Server) handleAgentResourceValidate(w http.ResponseWriter, r *http.Requ
 		writeJSON(w, invalidResourceValidation("agent", name, "body", "invalid json"))
 		return
 	}
+	doc.Kind = config.AgentKindAgent
 	normalized, err := s.validateAgentResourceDryRun(name, doc)
 	if err != nil {
 		writeJSON(w, invalidResourceValidation("agent", firstResourceValidationName(name, doc.ID), resourceValidationField(err.Error()), err.Error()))
@@ -829,6 +1691,10 @@ func (s *Server) handleProviderResourceCollection(w http.ResponseWriter, r *http
 	}
 	if r.Method == http.MethodPost && strings.Trim(r.URL.Path, "/") == "api/resources/providers/test" {
 		s.handleProviderResourceTest(w, r, "")
+		return
+	}
+	if r.Method == http.MethodPost && strings.Trim(r.URL.Path, "/") == "api/resources/providers/models" {
+		s.handleProviderResourceModels(w, r, "")
 		return
 	}
 	if r.Method != http.MethodGet {
@@ -857,6 +1723,10 @@ func (s *Server) handleProviderResourceItem(w http.ResponseWriter, r *http.Reque
 		s.handleProviderResourceTest(w, r, parts[0])
 		return
 	}
+	if len(parts) == 2 && parts[1] == "models" && r.Method == http.MethodPost {
+		s.handleProviderResourceModels(w, r, parts[0])
+		return
+	}
 	if name == "" || strings.Contains(name, "/") {
 		http.NotFound(w, r)
 		return
@@ -877,13 +1747,13 @@ func (s *Server) handleProviderResourceItem(w http.ResponseWriter, r *http.Reque
 		}
 		saved, err := s.saveProviderResource(name, doc)
 		if err != nil {
-			writeJSONStatus(w, http.StatusBadRequest, invalidResourceValidation("provider", firstResourceValidationName(name, doc.ID), resourceValidationField(err.Error()), err.Error()))
+			writeJSONStatus(w, resourceErrorStatus(err, http.StatusBadRequest), invalidResourceValidation("provider", firstResourceValidationName(name, doc.ID), resourceValidationField(err.Error()), err.Error()))
 			return
 		}
 		writeJSON(w, saved)
 	case http.MethodDelete:
 		if err := s.deleteProviderResource(name); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -925,8 +1795,84 @@ func (s *Server) handleProviderResourceTest(w http.ResponseWriter, r *http.Reque
 		writeJSON(w, providerTestInvalid(firstResourceValidationName(name, doc.ID), resourceValidationField(err.Error()), err.Error()))
 		return
 	}
+	if s.runtime != nil {
+		resolved, resolveErr := config.ResolveSecretReference(s.runtime.DataRoot(), normalized.APIKey)
+		if resolveErr != nil {
+			writeJSON(w, providerTestInvalid(normalized.ID, "api_key", resolveErr.Error()))
+			return
+		}
+		normalized.APIKey = resolved
+	}
+	if s.runtime != nil && s.runtime.LocalOnly() && !llm.IsLocalBaseURL(providerResourceLLMConfig(normalized).BaseURL) {
+		writeJSON(w, providerTestInvalid(normalized.ID, "base_url", "local-only workspace blocks non-local model providers"))
+		return
+	}
 	result := testProviderResourceConnection(r.Context(), normalized)
 	writeJSON(w, result)
+}
+
+func (s *Server) handleProviderResourceModels(w http.ResponseWriter, r *http.Request, name string) {
+	if r.Method != http.MethodPost {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	var doc providerResourceDocument
+	if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
+		writeJSON(w, providerModelListInvalid(name, "body", "invalid json"))
+		return
+	}
+	if strings.TrimSpace(doc.ID) == "" {
+		doc.ID = name
+	}
+	if strings.TrimSpace(doc.APIKey) == "" {
+		if existing, ok := s.loadProviderResourceSnippet(firstResourceValidationName(name, doc.ID)); ok {
+			doc.APIKey = existing.APIKey
+		}
+	}
+	applyProviderResourceDefaults(&doc)
+	cfg := providerResourceLLMConfig(doc)
+	if strings.TrimSpace(cfg.BaseURL) == "" {
+		writeJSON(w, providerModelListInvalid(firstResourceValidationName(name, doc.ID), "base_url", "model provider setup required: configure base_url in Web Studio Settings/Resources or configs/providers/*.yaml"))
+		return
+	}
+	if strings.TrimSpace(cfg.APIKey) == "" {
+		writeJSON(w, providerModelListInvalid(firstResourceValidationName(name, doc.ID), "api_key", "model provider setup required: configure api_key in Web Studio Settings/Resources or configs/providers/*.yaml"))
+		return
+	}
+	if s.runtime != nil {
+		resolved, resolveErr := config.ResolveSecretReference(s.runtime.DataRoot(), cfg.APIKey)
+		if resolveErr != nil {
+			writeJSON(w, providerModelListInvalid(doc.ID, "api_key", resolveErr.Error()))
+			return
+		}
+		cfg.APIKey = resolved
+	}
+	if s.runtime != nil && s.runtime.LocalOnly() && !llm.IsLocalBaseURL(cfg.BaseURL) {
+		writeJSON(w, providerModelListInvalid(doc.ID, "base_url", "local-only workspace blocks non-local model providers"))
+		return
+	}
+	cfg.Timeout = 20 * time.Second
+	cfg.RetryCount = 0
+	client := llm.NewClient(cfg)
+	models, err := client.ListModels(r.Context())
+	if err != nil {
+		writeJSON(w, providerModelListInvalid(firstResourceValidationName(name, doc.ID), providerTestErrorField(err.Error()), err.Error()))
+		return
+	}
+	if len(models) == 0 {
+		writeJSON(w, providerModelListInvalid(firstResourceValidationName(name, doc.ID), "model", "provider did not return a model list"))
+		return
+	}
+	writeJSON(w, providerModelListResult{
+		Valid:    true,
+		Resource: "provider",
+		Name:     firstResourceValidationName(name, doc.ID),
+		Status:   "ok",
+		Message:  "model catalog loaded",
+		Provider: cfg.Provider,
+		BaseURL:  cfg.BaseURL,
+		Models:   models,
+	})
 }
 
 func (s *Server) handleToolResourceCollection(w http.ResponseWriter, r *http.Request) {
@@ -989,7 +1935,7 @@ func (s *Server) handleToolResourceItem(w http.ResponseWriter, r *http.Request) 
 		}
 		saved, err := s.saveToolResource(name, doc)
 		if err != nil {
-			writeJSONStatus(w, http.StatusBadRequest, invalidResourceValidation("tool", firstResourceValidationName(name, doc.Name), resourceValidationField(err.Error()), err.Error()))
+			writeJSONStatus(w, resourceErrorStatus(err, http.StatusBadRequest), invalidResourceValidation("tool", firstResourceValidationName(name, doc.Name), resourceValidationField(err.Error()), err.Error()))
 			return
 		}
 		writeJSON(w, saved)
@@ -999,7 +1945,7 @@ func (s *Server) handleToolResourceItem(w http.ResponseWriter, r *http.Request) 
 			return
 		}
 		if err := s.deleteToolResource(name); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -1079,7 +2025,7 @@ func (s *Server) handlePolicyRuleResourceItem(w http.ResponseWriter, r *http.Req
 		writeJSON(w, saved)
 	case http.MethodDelete:
 		if err := s.deletePolicyRuleResource(name); err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		w.WriteHeader(http.StatusNoContent)
@@ -1190,6 +2136,9 @@ func (s *Server) saveProviderResource(name string, doc providerResourceDocument)
 		return providerResourceDocument{}, err
 	}
 	id := doc.ID
+	if err := s.externalizeProviderSecret(&doc); err != nil {
+		return providerResourceDocument{}, err
+	}
 	path, err := s.providerResourcePath(id)
 	if err != nil {
 		return providerResourceDocument{}, err
@@ -1218,11 +2167,35 @@ func (s *Server) saveProviderResource(name string, doc providerResourceDocument)
 		_ = os.Remove(tmp)
 		return providerResourceDocument{}, fmt.Errorf("replace provider config: %w", err)
 	}
+	if err := s.runtime.SetResourceTombstone("providers", id, false); err != nil {
+		return providerResourceDocument{}, fmt.Errorf("restore provider visibility: %w", err)
+	}
 	saved := doc
 	saved.Path = path
 	saved.APIKeySet = strings.TrimSpace(saved.APIKey) != ""
+	saved.APIKey = ""
 	markProviderResourceRestartRequired(&saved)
 	return saved, nil
+}
+
+func (s *Server) externalizeProviderSecret(doc *providerResourceDocument) error {
+	if s == nil || s.runtime == nil || doc == nil {
+		return nil
+	}
+	value := strings.TrimSpace(doc.APIKey)
+	if value == "" || strings.HasPrefix(value, "${") || strings.HasPrefix(value, "secret://") {
+		return nil
+	}
+	reference := "secret://providers/" + normalizeResourceName(doc.ID) + "/api_key"
+	path, err := config.SecretReferencePath(s.runtime.DataRoot(), reference)
+	if err != nil {
+		return fmt.Errorf("resolve provider secret path: %w", err)
+	}
+	if err := persistence.WriteFileAtomic(path, []byte(value+"\n"), 0o600); err != nil {
+		return fmt.Errorf("store provider secret: %w", err)
+	}
+	doc.APIKey = reference
+	return nil
 }
 
 func (s *Server) validateProviderResourceDryRun(name string, doc providerResourceDocument) (providerResourceDocument, error) {
@@ -1271,6 +2244,9 @@ func (s *Server) deleteProviderResource(name string) error {
 	}
 	if _, ok := s.loadProviderResourceSnippet(id); !ok {
 		if s != nil && s.runtime != nil {
+			if s.builtinProviderModuleExists(id) {
+				return s.runtime.SetResourceTombstone("providers", id, true)
+			}
 			if _, runtimeProvider := s.runtime.Provider(id); runtimeProvider {
 				return fmt.Errorf("provider %q is defined in the main config; delete only supports configs/providers/*.yaml modules", id)
 			}
@@ -1324,6 +2300,18 @@ func (s *Server) agentResourceList() []agentResourceDocument {
 	return out
 }
 
+func (s *Server) agentResourceListByKind(kind string) []agentResourceDocument {
+	kind = normalizeAgentResourceKind(kind)
+	all := s.agentResourceList()
+	out := make([]agentResourceDocument, 0, len(all))
+	for _, doc := range all {
+		if doc.Kind == kind {
+			out = append(out, doc)
+		}
+	}
+	return out
+}
+
 func (s *Server) agentResourceByName(name string) (agentResourceDocument, bool) {
 	id := normalizeResourceName(name)
 	if id == "" {
@@ -1353,6 +2341,9 @@ func (s *Server) saveAgentResource(name string, doc agentResourceDocument) (agen
 		return agentResourceDocument{}, err
 	}
 	id := doc.ID
+	if err := s.ensureResourceNotInUse("agent", id); err != nil {
+		return agentResourceDocument{}, err
+	}
 	path, err := s.agentResourcePath(id)
 	if err != nil {
 		return agentResourceDocument{}, err
@@ -1381,8 +2372,16 @@ func (s *Server) saveAgentResource(name string, doc agentResourceDocument) (agen
 		_ = os.Remove(tmp)
 		return agentResourceDocument{}, fmt.Errorf("replace agent config: %w", err)
 	}
+	if err := s.runtime.SetResourceTombstone("agents", id, false); err != nil {
+		return agentResourceDocument{}, fmt.Errorf("restore agent visibility: %w", err)
+	}
 	doc.Path = path
-	markAgentResourceRestartRequired(&doc)
+	if err := s.runtime.UpsertAgentProfile(id, parsed[id]); err != nil {
+		markAgentResourceRestartRequired(&doc)
+		doc.ApplyMessage = err.Error()
+		return doc, nil
+	}
+	markAgentResourceActive(&doc)
 	return doc, nil
 }
 
@@ -1415,6 +2414,9 @@ func (s *Server) validateAgentResourceDryRun(name string, doc agentResourceDocum
 }
 
 func (s *Server) deleteAgentResource(name string) error {
+	if err := s.ensureResourceNotInUse("agent", name); err != nil {
+		return err
+	}
 	id := normalizeResourceName(name)
 	if !resourceNamePattern.MatchString(id) {
 		return fmt.Errorf("invalid agent name %q: use lowercase letters, numbers, hyphen, or underscore", id)
@@ -1425,6 +2427,9 @@ func (s *Server) deleteAgentResource(name string) error {
 	}
 	if _, ok := s.loadAgentResourceSnippet(id); !ok {
 		if s != nil && s.runtime != nil {
+			if s.builtinAgentModuleExists(id) {
+				return s.runtime.SetResourceTombstone("agents", id, true)
+			}
 			if _, runtimeAgent := s.runtime.Profile(id); runtimeAgent {
 				return fmt.Errorf("agent %q is defined in the main config; delete only supports configs/agents/*.yaml modules", id)
 			}
@@ -1433,6 +2438,9 @@ func (s *Server) deleteAgentResource(name string) error {
 	}
 	if err := os.Remove(path); err != nil {
 		return fmt.Errorf("delete agent config: %w", err)
+	}
+	if s.runtime != nil {
+		_ = s.runtime.RemoveAgentProfile(id)
 	}
 	return nil
 }
@@ -1446,7 +2454,7 @@ func (s *Server) toolResourceList() []toolResourceDocument {
 	runtimeTools, err := s.runtime.Tools(context.Background())
 	if err != nil {
 		for _, name := range s.runtime.ToolNames() {
-			doc := toolResourceDocument{Name: name, Language: "mcp", Description: "Discovered MCP tool"}
+			doc := toolResourceDocument{Name: name, Language: "mcp", Description: "Discovered MCP tool", TargetScope: s.targetScopeForTool(name)}
 			doc.Risk = s.toolRiskProfileForName(name)
 			out = append(out, doc)
 			seen[normalizeResourceName(name)] = struct{}{}
@@ -1461,6 +2469,7 @@ func (s *Server) toolResourceList() []toolResourceDocument {
 				Name:        name,
 				Language:    "mcp",
 				Description: strings.TrimSpace(tool.Description),
+				TargetScope: s.targetScopeForTool(name),
 				Risk:        s.toolRiskProfileForTool(tool),
 			}
 			out = append(out, doc)
@@ -1514,7 +2523,6 @@ func (s *Server) toolResourceByName(name string) (toolResourceDocument, bool) {
 		var cfg toolResourceConfigDocument
 		if err := yaml.Unmarshal(data, &cfg); err == nil && len(cfg.MCPServers) > 0 {
 			saved := toolResourceFromServerDocument(cfg.MCPServers[0])
-			normalizeToolResourceIsolationProfile(&saved)
 			saved.Code = doc.Code
 			saved.Path = codePath
 			saved.ConfigPath = configPath
@@ -1550,13 +2558,24 @@ func (s *Server) runtimeToolResourceByName(name string) (toolResourceDocument, b
 			Name:        qualified,
 			Language:    "mcp",
 			Description: strings.TrimSpace(tool.Description),
+			TargetScope: s.targetScopeForTool(qualified),
 			Risk:        s.toolRiskProfileForTool(tool),
 		}, true
 	}
 	return toolResourceDocument{}, false
 }
 
+func (s *Server) targetScopeForTool(name string) string {
+	if server, ok := s.runtimeMCPServerForTool(name); ok {
+		return normalizeTargetScope(server.TargetScope)
+	}
+	return ""
+}
+
 func (s *Server) saveToolResource(name string, doc toolResourceDocument) (toolResourceDocument, error) {
+	if err := s.ensureResourceNotInUse("mcp", name); err != nil {
+		return toolResourceDocument{}, err
+	}
 	doc, err := s.validateToolResourceDryRun(name, doc)
 	if err != nil {
 		return toolResourceDocument{}, err
@@ -1615,7 +2634,14 @@ func (s *Server) saveToolResource(name string, doc toolResourceDocument) (toolRe
 	}
 	doc.Path = codePath
 	doc.ConfigPath = configPath
-	markToolResourceRestartRequired(&doc)
+	if s.runtime != nil {
+		if err := s.runtime.UpsertMCPServer(parsed.MCPServers[0]); err != nil {
+			markToolResourceRestartRequired(&doc)
+			doc.ApplyMessage = err.Error()
+			return doc, nil
+		}
+	}
+	markToolResourceActive(&doc)
 	return doc, nil
 }
 
@@ -1626,7 +2652,6 @@ func (s *Server) validateToolResourceDryRun(name string, doc toolResourceDocumen
 	}
 	doc.Name = normalized
 	s.applyToolResourceDefaults(&doc)
-	normalizeToolResourceIsolationProfile(&doc)
 	if strings.TrimSpace(doc.Code) == "" {
 		return toolResourceDocument{}, fmt.Errorf("tool code is required")
 	}
@@ -1659,6 +2684,9 @@ func (s *Server) validateToolResourceDryRun(name string, doc toolResourceDocumen
 }
 
 func (s *Server) deleteToolResource(name string) error {
+	if err := s.ensureResourceNotInUse("mcp", name); err != nil {
+		return err
+	}
 	normalized := normalizeResourceName(name)
 	if !resourceNamePattern.MatchString(normalized) {
 		return fmt.Errorf("invalid tool name %q: use lowercase letters, numbers, hyphen, or underscore", normalized)
@@ -1688,6 +2716,9 @@ func (s *Server) deleteToolResource(name string) error {
 		if err := os.Remove(configPath); err != nil {
 			return fmt.Errorf("delete tool config: %w", err)
 		}
+	}
+	if s.runtime != nil {
+		_ = s.runtime.RemoveMCPServer(normalized)
 	}
 	return nil
 }
@@ -1884,6 +2915,9 @@ func (s *Server) skillFileResource(name, rel string, includeContent bool) (skill
 }
 
 func (s *Server) saveSkillFileResource(name, rel, content string) (skillFileResourceDocument, error) {
+	if err := s.ensureResourceNotInUse("skill", name); err != nil {
+		return skillFileResourceDocument{}, err
+	}
 	if len([]byte(content)) > maxSkillResourceTextBytes {
 		return skillFileResourceDocument{}, fmt.Errorf("skill resource content exceeds %d bytes", maxSkillResourceTextBytes)
 	}
@@ -1923,6 +2957,9 @@ func (s *Server) saveSkillFileResource(name, rel, content string) (skillFileReso
 }
 
 func (s *Server) deleteSkillFileResource(name, rel string) error {
+	if err := s.ensureResourceNotInUse("skill", name); err != nil {
+		return err
+	}
 	if _, ok, err := s.loadSkillResourceFromDisk(name); err != nil {
 		return err
 	} else if !ok {
@@ -1975,7 +3012,7 @@ func (s *Server) skillDirectory(name string) (string, error) {
 	if !resourceNamePattern.MatchString(name) {
 		return "", fmt.Errorf("invalid skill name %q: use lowercase letters, numbers, hyphen, or underscore", name)
 	}
-	root := strings.TrimSpace(s.runtime.SkillRoot())
+	root := strings.TrimSpace(s.runtime.UserSkillRoot())
 	if root == "" {
 		return "", fmt.Errorf("skill root is not configured")
 	}
@@ -2107,6 +3144,9 @@ func ensureSkillResourceParentWithin(dir, parent string) error {
 }
 
 func (s *Server) saveSkillResource(name string, doc skillResourceDocument) (skillResourceDocument, error) {
+	if err := s.ensureResourceNotInUse("skill", firstWorkflowRunQueryValue(name, doc.Name)); err != nil {
+		return skillResourceDocument{}, err
+	}
 	doc, err := s.validateSkillResourceDryRun(name, doc)
 	if err != nil {
 		return skillResourceDocument{}, err
@@ -2137,12 +3177,69 @@ func (s *Server) saveSkillResource(name string, doc skillResourceDocument) (skil
 		_ = os.Remove(tmp)
 		return skillResourceDocument{}, fmt.Errorf("replace skill: %w", err)
 	}
+	if err := s.runtime.SetResourceTombstone("skills", name, false); err != nil {
+		return skillResourceDocument{}, fmt.Errorf("restore skill visibility: %w", err)
+	}
 	if err := s.runtime.ReloadSkills(); err != nil {
 		return skillResourceDocument{}, fmt.Errorf("reload skills: %w", err)
 	}
 	saved := skillResourceFromSchema(*parsed)
 	saved.Path = path
 	return saved, nil
+}
+
+func (s *Server) deleteSkillResource(name string) error {
+	if err := s.ensureResourceNotInUse("skill", name); err != nil {
+		return err
+	}
+	name = normalizeResourceName(name)
+	dir, err := s.skillDirectory(name)
+	if err != nil {
+		return err
+	}
+	info, err := os.Lstat(dir)
+	if err != nil {
+		if os.IsNotExist(err) {
+			if s.builtinSkillExists(name) {
+				if err := s.runtime.SetResourceTombstone("skills", name, true); err != nil {
+					return fmt.Errorf("hide built-in skill: %w", err)
+				}
+				return s.runtime.ReloadSkills()
+			}
+			return fmt.Errorf("skill %q does not exist", name)
+		}
+		return fmt.Errorf("stat skill directory: %w", err)
+	}
+	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() {
+		return fmt.Errorf("skill %q is not a removable skill directory", normalizeResourceName(name))
+	}
+	if _, err := os.Lstat(filepath.Join(dir, "SKILL.md")); err != nil {
+		return fmt.Errorf("skill %q has no SKILL.md", normalizeResourceName(name))
+	}
+	if err := os.RemoveAll(dir); err != nil {
+		return fmt.Errorf("delete skill: %w", err)
+	}
+	if s.builtinSkillExists(name) {
+		if err := s.runtime.SetResourceTombstone("skills", name, true); err != nil {
+			return fmt.Errorf("hide built-in skill: %w", err)
+		}
+	}
+	if err := s.runtime.ReloadSkills(); err != nil {
+		return fmt.Errorf("reload skills: %w", err)
+	}
+	return nil
+}
+
+func (s *Server) builtinSkillExists(name string) bool {
+	if s == nil || s.runtime == nil {
+		return false
+	}
+	root := strings.TrimSpace(s.runtime.BuiltinSkillRoot())
+	if root == "" || strings.EqualFold(filepath.Clean(root), filepath.Clean(s.runtime.UserSkillRoot())) {
+		return false
+	}
+	info, err := os.Lstat(filepath.Join(root, normalizeResourceName(name), "SKILL.md"))
+	return err == nil && info.Mode().IsRegular()
 }
 
 func (s *Server) validateSkillResourceDryRun(name string, doc skillResourceDocument) (skillResourceDocument, error) {
@@ -2214,6 +3311,8 @@ func skillResourceFromSchema(item schema.Skill) skillResourceDocument {
 func agentResourceFromProfile(id string, profile config.AgentProfile) agentResourceDocument {
 	return agentResourceDocument{
 		ID:               id,
+		Kind:             normalizeAgentResourceKind(profile.Kind),
+		TargetScope:      normalizeTargetScope(profile.TargetScope),
 		Name:             profile.Name,
 		Description:      profile.Description,
 		SystemPrompt:     profile.SystemPrompt,
@@ -2235,13 +3334,16 @@ func providerResourceFromConfig(id string, provider config.LLMConfig, revealAPIK
 		Type:                  provider.Provider,
 		Provider:              provider.Provider,
 		BaseURL:               provider.BaseURL,
+		WireAPI:               provider.WireAPI,
 		Model:                 provider.Model,
 		DefaultModel:          provider.Model,
 		FallbackProvider:      provider.FallbackProvider,
 		ProviderMessageFields: append([]string(nil), provider.ProviderMessageFields...),
+		Vision:                provider.Vision,
 		Timeout:               durationString(provider.Timeout),
 		Temperature:           provider.Temperature,
 		MaxTokens:             provider.MaxTokens,
+		ReasoningEffort:       provider.ReasoningEffort,
 		RetryCount:            provider.RetryCount,
 		RetryBackoff:          durationString(provider.RetryBackoff),
 		APIKeySet:             strings.TrimSpace(provider.APIKey) != "",
@@ -2258,6 +3360,7 @@ func applyProviderResourceDefaults(doc *providerResourceDocument) {
 	if strings.TrimSpace(doc.Provider) == "" {
 		doc.Provider = "openai-compatible"
 	}
+	doc.WireAPI = normalizeProviderWireAPI(doc.WireAPI)
 	if strings.TrimSpace(doc.Timeout) == "" {
 		doc.Timeout = "60s"
 	}
@@ -2325,13 +3428,16 @@ func renderProviderResource(doc providerResourceDocument) (string, error) {
 	meta := map[string]providerResourceDocument{doc.ID: {
 		Provider:              doc.Provider,
 		BaseURL:               doc.BaseURL,
+		WireAPI:               doc.WireAPI,
 		APIKey:                doc.APIKey,
 		Model:                 doc.Model,
 		FallbackProvider:      doc.FallbackProvider,
 		ProviderMessageFields: append([]string(nil), doc.ProviderMessageFields...),
+		Vision:                doc.Vision,
 		Timeout:               doc.Timeout,
 		Temperature:           doc.Temperature,
 		MaxTokens:             doc.MaxTokens,
+		ReasoningEffort:       doc.ReasoningEffort,
 		RetryCount:            doc.RetryCount,
 		RetryBackoff:          doc.RetryBackoff,
 	}}
@@ -2355,9 +3461,7 @@ func testProviderResourceConnection(parent context.Context, doc providerResource
 	}
 	cfg.Timeout = providerTestTimeout(cfg.Timeout)
 	cfg.RetryCount = 0
-	var client interface {
-		Chat(context.Context, schema.ChatRequest) (schema.ChatResponse, error)
-	}
+	var client interfaces.LLMClient
 	switch strings.TrimSpace(cfg.Provider) {
 	case "", "openai-compatible":
 		client = llm.NewClient(cfg)
@@ -2366,41 +3470,238 @@ func testProviderResourceConnection(parent context.Context, doc providerResource
 	default:
 		return providerTestInvalid(doc.ID, "provider", fmt.Sprintf("unsupported provider %q", cfg.Provider))
 	}
-	ctx, cancel := context.WithTimeout(parent, cfg.Timeout)
-	defer cancel()
 	started := time.Now()
-	_, err := client.Chat(ctx, schema.ChatRequest{
-		Model:       cfg.Model,
-		MaxTokens:   8,
-		Temperature: 0,
-		Messages: []schema.Message{{
-			Role:    "user",
-			Content: "ping",
-		}},
+	chat := testProviderCapability(parent, cfg.Timeout, "chat", func(ctx context.Context) error {
+		response, err := client.Chat(ctx, schema.ChatRequest{
+			Model:       cfg.Model,
+			MaxTokens:   64,
+			Temperature: 0,
+			Messages: []schema.Message{{
+				Role:    "user",
+				Content: "Reply with exactly GOFLOW_OK.",
+			}},
+		})
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(response.Message.Content) == "" && len(response.ToolCalls) == 0 && len(response.Message.ProviderFields) == 0 && response.StopReason != schema.StopReasonMaxTokens && response.StopReason != schema.StopReasonLength {
+			return fmt.Errorf("provider returned an empty chat response")
+		}
+		return nil
 	})
-	latency := time.Since(started).Milliseconds()
-	if err != nil {
+	capabilities := []providerCapabilityTestResult{chat}
+	if !chat.Supported {
 		return providerTestResult{
-			Valid:     false,
-			Resource:  "provider",
-			Name:      doc.ID,
-			Status:    "error",
-			Message:   err.Error(),
-			Provider:  cfg.Provider,
-			Model:     cfg.Model,
-			LatencyMS: latency,
-			Issues:    []resourceValidationIssue{resourceValidationIssueFor("provider", providerTestErrorField(err.Error()), err.Error())},
+			Valid:        false,
+			Resource:     "provider",
+			Name:         doc.ID,
+			Status:       "error",
+			Message:      chat.Message,
+			Provider:     cfg.Provider,
+			Model:        cfg.Model,
+			LatencyMS:    time.Since(started).Milliseconds(),
+			Capabilities: capabilities,
+			Issues:       []resourceValidationIssue{resourceValidationIssueFor("provider", providerTestErrorField(chat.Message), chat.Message)},
+		}
+	}
+
+	capabilities = append(capabilities,
+		testProviderStreamingCapability(parent, cfg.Timeout, client, cfg.Model),
+		testProviderToolCallingCapability(parent, cfg.Timeout, client, cfg.Model),
+		testProviderStructuredOutputCapability(parent, cfg.Timeout, client, cfg.Model),
+		testProviderVisionCapability(parent, cfg.Timeout, client, cfg.Model),
+	)
+	status := "ok"
+	message := "provider capabilities verified"
+	for _, capability := range capabilities {
+		if !capability.Supported {
+			status = "limited"
+			message = "provider connection succeeded with limited capabilities"
+			break
 		}
 	}
 	return providerTestResult{
-		Valid:     true,
-		Resource:  "provider",
-		Name:      doc.ID,
-		Status:    "ok",
-		Message:   "provider connection succeeded",
-		Provider:  cfg.Provider,
-		Model:     cfg.Model,
-		LatencyMS: latency,
+		Valid:        true,
+		Resource:     "provider",
+		Name:         doc.ID,
+		Status:       status,
+		Message:      message,
+		Provider:     cfg.Provider,
+		Model:        cfg.Model,
+		LatencyMS:    time.Since(started).Milliseconds(),
+		Capabilities: capabilities,
+	}
+}
+
+func testProviderVisionCapability(parent context.Context, timeout time.Duration, client interfaces.LLMClient, model string) providerCapabilityTestResult {
+	if !providerClientSupports(client, "vision") {
+		return unsupportedProviderCapability("vision", "当前 Provider 适配器不支持图片输入")
+	}
+	return testProviderCapability(parent, timeout, "vision", func(ctx context.Context) error {
+		dataURL, err := providerVisionProbeDataURL()
+		if err != nil {
+			return err
+		}
+		response, err := client.Chat(ctx, schema.ChatRequest{
+			Model:       model,
+			MaxTokens:   64,
+			Temperature: 0,
+			Messages: []schema.Message{{
+				Role:    "user",
+				Content: "请用一个词描述图片的主色。",
+				ContentParts: []schema.MessageContentPart{{
+					Type:    "image",
+					DataURL: dataURL,
+				}},
+			}},
+		})
+		if err != nil {
+			return err
+		}
+		if strings.TrimSpace(response.Message.Content) == "" && len(response.Message.ProviderFields) == 0 {
+			return fmt.Errorf("provider returned an empty vision response")
+		}
+		return nil
+	})
+}
+
+func providerVisionProbeDataURL() (string, error) {
+	const size = 64
+	probe := image.NewRGBA(image.Rect(0, 0, size, size))
+	for y := 0; y < size; y++ {
+		for x := 0; x < size; x++ {
+			probe.SetRGBA(x, y, color.RGBA{R: 220, G: 38, B: 38, A: 255})
+		}
+	}
+
+	var encoded bytes.Buffer
+	if err := png.Encode(&encoded, probe); err != nil {
+		return "", fmt.Errorf("encode provider vision probe image: %w", err)
+	}
+	return "data:image/png;base64," + base64.StdEncoding.EncodeToString(encoded.Bytes()), nil
+}
+
+func testProviderStreamingCapability(parent context.Context, timeout time.Duration, client interfaces.LLMClient, model string) providerCapabilityTestResult {
+	if !providerClientSupports(client, "stream") {
+		return unsupportedProviderCapability("streaming", "native streaming is not implemented by this provider adapter")
+	}
+	return testProviderCapability(parent, timeout, "streaming", func(ctx context.Context) error {
+		events := 0
+		response, err := client.StreamChat(ctx, schema.ChatRequest{
+			Model:       model,
+			MaxTokens:   128,
+			Temperature: 0,
+			Messages:    []schema.Message{{Role: "user", Content: "Reply with exactly GOFLOW_STREAM_OK."}},
+		}, func(event schema.StreamEvent) error {
+			if event.Type == schema.StreamEventText || event.Type == schema.StreamEventToolCall {
+				events++
+			}
+			return nil
+		})
+		if err != nil {
+			return err
+		}
+		if events == 0 && len(response.Message.ProviderFields) == 0 {
+			return fmt.Errorf("provider did not emit native stream events")
+		}
+		return nil
+	})
+}
+
+func testProviderToolCallingCapability(parent context.Context, timeout time.Duration, client interfaces.LLMClient, model string) providerCapabilityTestResult {
+	if !providerClientSupports(client, "tool_calling") {
+		return unsupportedProviderCapability("tool_calling", "tool calling is not implemented by this provider adapter")
+	}
+	return testProviderCapability(parent, timeout, "tool_calling", func(ctx context.Context) error {
+		response, err := client.Chat(ctx, schema.ChatRequest{
+			Model:       model,
+			MaxTokens:   256,
+			Temperature: 0,
+			Messages:    []schema.Message{{Role: "user", Content: "You are reviewing a proposed repository documentation change before execution. The file docs/operations.md needs a concise Windows rollback section added because operators currently cannot recover from a failed local upgrade. Analyze the request and call the supplied planning tool exactly once. Set path to docs/operations.md, action to add_rollback_section, and risk to low. Do not answer with prose because the downstream workflow consumes only the structured tool arguments."}},
+			Tools: []schema.Tool{{
+				Name:        "goflow_plan_change",
+				Description: "Record a proposed repository change for downstream workflow validation without executing it.",
+				InputSchema: json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"action":{"type":"string"},"risk":{"type":"string","enum":["low","medium","high"]}},"required":["path","action","risk"],"additionalProperties":false}`),
+			}},
+		})
+		if err != nil {
+			return err
+		}
+		for _, call := range response.ToolCalls {
+			var arguments struct {
+				Path   string `json:"path"`
+				Action string `json:"action"`
+				Risk   string `json:"risk"`
+			}
+			if call.Name == "goflow_plan_change" && json.Unmarshal(call.Arguments, &arguments) == nil &&
+				arguments.Path == "docs/operations.md" && arguments.Action == "add_rollback_section" && arguments.Risk == "low" {
+				return nil
+			}
+		}
+		return fmt.Errorf("provider did not return the required tool call")
+	})
+}
+
+func testProviderStructuredOutputCapability(parent context.Context, timeout time.Duration, client interfaces.LLMClient, model string) providerCapabilityTestResult {
+	if !providerClientSupports(client, "structured_output") {
+		return unsupportedProviderCapability("structured_output", "native structured output is not implemented by this provider adapter")
+	}
+	return testProviderCapability(parent, timeout, "structured_output", func(ctx context.Context) error {
+		response, err := client.Chat(ctx, schema.ChatRequest{
+			Model:          model,
+			MaxTokens:      256,
+			Temperature:    0,
+			ResponseFormat: &schema.ResponseFormat{Type: "json_object"},
+			Messages:       []schema.Message{{Role: "user", Content: `Return one JSON object with the exact shape {"ok":true}.`}},
+		})
+		if err != nil {
+			return err
+		}
+		var object map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimSpace(response.Message.Content)), &object); err != nil {
+			return fmt.Errorf("provider returned invalid structured output: %w", err)
+		}
+		if len(object) == 0 {
+			return fmt.Errorf("provider returned an empty structured object")
+		}
+		return nil
+	})
+}
+
+func testProviderCapability(parent context.Context, timeout time.Duration, name string, probe func(context.Context) error) providerCapabilityTestResult {
+	ctx, cancel := context.WithTimeout(parent, providerTestTimeout(timeout))
+	defer cancel()
+	started := time.Now()
+	err := probe(ctx)
+	result := providerCapabilityTestResult{Name: name, Status: "supported", Supported: err == nil, LatencyMS: time.Since(started).Milliseconds()}
+	if err != nil {
+		result.Status = "failed"
+		result.Message = err.Error()
+	}
+	return result
+}
+
+func unsupportedProviderCapability(name, message string) providerCapabilityTestResult {
+	return providerCapabilityTestResult{Name: name, Status: "unsupported", Message: message}
+}
+
+func providerClientSupports(client interfaces.LLMClient, capability string) bool {
+	for _, candidate := range client.Capabilities() {
+		if candidate == capability {
+			return true
+		}
+	}
+	return false
+}
+
+func providerModelListInvalid(name, field, message string) providerModelListResult {
+	return providerModelListResult{
+		Valid:    false,
+		Resource: "provider",
+		Name:     firstResourceValidationName(name),
+		Status:   "error",
+		Message:  message,
+		Issues:   []resourceValidationIssue{resourceValidationIssueFor("provider", field, message)},
 	}
 }
 
@@ -2421,21 +3722,28 @@ func providerResourceLLMConfig(doc providerResourceDocument) config.LLMConfig {
 	return config.LLMConfig{
 		Provider:              strings.TrimSpace(doc.Provider),
 		BaseURL:               os.ExpandEnv(strings.TrimSpace(doc.BaseURL)),
+		WireAPI:               strings.TrimSpace(doc.WireAPI),
 		APIKey:                os.ExpandEnv(strings.TrimSpace(doc.APIKey)),
 		Model:                 os.ExpandEnv(strings.TrimSpace(doc.Model)),
 		FallbackProvider:      strings.TrimSpace(doc.FallbackProvider),
 		ProviderMessageFields: normalizeProviderMessageFields(doc.ProviderMessageFields),
+		Vision:                doc.Vision,
 		Timeout:               timeout,
 		Temperature:           doc.Temperature,
 		MaxTokens:             doc.MaxTokens,
+		ReasoningEffort:       config.NormalizeReasoningEffort(doc.ReasoningEffort),
 		RetryCount:            doc.RetryCount,
 		RetryBackoff:          retryBackoff,
 	}
 }
 
 func providerTestTimeout(timeout time.Duration) time.Duration {
-	if timeout <= 0 || timeout > 15*time.Second {
-		return 15 * time.Second
+	const maximum = 5 * time.Minute
+	if timeout <= 0 {
+		return maximum
+	}
+	if timeout > maximum {
+		return maximum
 	}
 	return timeout
 }
@@ -2475,6 +3783,8 @@ func readProviderResourceMap(data []byte) (map[string]providerResourceDocument, 
 
 func applyAgentResourceDefaults(doc *agentResourceDocument) {
 	doc.ID = normalizeResourceName(doc.ID)
+	doc.Kind = normalizeAgentResourceKind(doc.Kind)
+	doc.TargetScope = strings.ToLower(strings.TrimSpace(doc.TargetScope))
 	if strings.TrimSpace(doc.Name) == "" {
 		doc.Name = strings.ReplaceAll(doc.ID, "-", " ")
 	}
@@ -2499,6 +3809,14 @@ func applyAgentResourceDefaults(doc *agentResourceDocument) {
 }
 
 func validateAgentResource(doc agentResourceDocument, providers map[string]struct{}) error {
+	switch doc.Kind {
+	case config.AgentKindAgent, config.AgentKindSubagent:
+	default:
+		return fmt.Errorf("agent kind must be agent or subagent")
+	}
+	if scope := strings.ToLower(strings.TrimSpace(doc.TargetScope)); scope != "" && scope != "host" {
+		return fmt.Errorf("agent target_scope must be empty or host")
+	}
 	if strings.TrimSpace(doc.Provider) == "" {
 		return fmt.Errorf("agent provider is required")
 	}
@@ -2537,6 +3855,8 @@ func validateAgentResource(doc agentResourceDocument, providers map[string]struc
 
 func renderAgentResource(doc agentResourceDocument) (string, error) {
 	meta := map[string]agentResourceDocument{doc.ID: {
+		Kind:             doc.Kind,
+		TargetScope:      doc.TargetScope,
 		Name:             doc.Name,
 		Description:      doc.Description,
 		SystemPrompt:     doc.SystemPrompt,
@@ -2746,7 +4066,7 @@ func (s *Server) toolRiskProfileForTool(tool schema.Tool) *schema.ToolRiskProfil
 		profile.Warnings = append(profile.Warnings, "tool appears destructive based on its name or capability kind")
 	}
 	if !profile.Sandboxed && toolKindNeedsRealSandbox(kind) {
-		profile.Warnings = append(profile.Warnings, "tool uses write, exec, network, or unknown capabilities without a real OS/container sandbox")
+		profile.Warnings = append(profile.Warnings, "tool uses write, exec, network, or unknown capabilities without an enforced native sandbox")
 	}
 	if profile.WorkspaceScopedInputs {
 		profile.Capabilities = append(profile.Capabilities, "workspace_path_input")
@@ -2927,7 +4247,9 @@ func toolRiskWorkspaceScopeLikelyEnforced(tool schema.Tool) bool {
 		return true
 	case server == "python_notes" || strings.HasPrefix(qualified, "python_notes/"):
 		return true
-	case strings.HasPrefix(name, "file_tools/") || strings.HasPrefix(name, "python_notes/"):
+	case server == "command_tools" || strings.HasPrefix(qualified, "command_tools/"):
+		return true
+	case strings.HasPrefix(name, "file_tools/") || strings.HasPrefix(name, "python_notes/") || strings.HasPrefix(name, "command_tools/"):
 		return true
 	default:
 		return false
@@ -3038,6 +4360,7 @@ func sameAgentResourceDocument(a, b agentResourceDocument) bool {
 
 func comparableAgentResource(doc agentResourceDocument) agentResourceDocument {
 	doc.ID = normalizeResourceName(doc.ID)
+	doc.Kind = normalizeAgentResourceKind(doc.Kind)
 	doc.Name = strings.TrimSpace(doc.Name)
 	doc.Description = strings.TrimSpace(doc.Description)
 	doc.SystemPrompt = strings.TrimSpace(doc.SystemPrompt)
@@ -3054,6 +4377,14 @@ func comparableAgentResource(doc agentResourceDocument) agentResourceDocument {
 	return doc
 }
 
+func normalizeAgentResourceKind(kind string) string {
+	kind = strings.ToLower(strings.TrimSpace(kind))
+	if kind == "" {
+		return config.AgentKindAgent
+	}
+	return kind
+}
+
 func sameProviderResourceDocument(a, b providerResourceDocument) bool {
 	a = comparableProviderResource(a)
 	b = comparableProviderResource(b)
@@ -3066,6 +4397,7 @@ func comparableProviderResource(doc providerResourceDocument) providerResourceDo
 	doc.ID = normalizeResourceName(doc.ID)
 	doc.Provider = strings.TrimSpace(doc.Provider)
 	doc.BaseURL = strings.TrimSpace(doc.BaseURL)
+	doc.WireAPI = normalizeProviderWireAPI(doc.WireAPI)
 	doc.APIKey = ""
 	doc.APIKeySet = false
 	doc.Model = strings.TrimSpace(doc.Model)
@@ -3078,6 +4410,15 @@ func comparableProviderResource(doc providerResourceDocument) providerResourceDo
 	doc.ApplyState = ""
 	doc.ApplyMessage = ""
 	return doc
+}
+
+func normalizeProviderWireAPI(value string) string {
+	switch strings.ToLower(strings.TrimSpace(value)) {
+	case "responses", "response":
+		return "responses"
+	default:
+		return "chat_completions"
+	}
 }
 
 func normalizeProviderMessageFields(values []string) []string {
@@ -3140,6 +4481,11 @@ func (s *Server) toolServerActive(name string) bool {
 	if name == "" {
 		return false
 	}
+	for _, ref := range s.runtime.MCPServerRefs() {
+		if normalizeResourceName(ref.Name) == name && ref.Enabled {
+			return true
+		}
+	}
 	for server, status := range s.runtime.MCPHealthStatus(context.Background()) {
 		if normalizeResourceName(server) != name {
 			continue
@@ -3196,6 +4542,7 @@ func (s *Server) defaultToolResource(name string) toolResourceDocument {
 
 func (s *Server) applyToolResourceDefaults(doc *toolResourceDocument) {
 	defaults := s.defaultToolResource(doc.Name)
+	doc.TargetScope = strings.ToLower(strings.TrimSpace(doc.TargetScope))
 	if strings.TrimSpace(doc.Language) == "" {
 		doc.Language = defaults.Language
 	}
@@ -3250,6 +4597,7 @@ func (s *Server) runtimeHomeForScaffold() string {
 func renderToolResourceConfig(doc toolResourceDocument) (string, error) {
 	configDoc := toolResourceConfigDocument{MCPServers: []toolResourceServerDocument{{
 		Name:                doc.Name,
+		TargetScope:         strings.ToLower(strings.TrimSpace(doc.TargetScope)),
 		Command:             doc.Command,
 		Args:                doc.Args,
 		Enabled:             doc.Enabled,
@@ -3258,7 +4606,6 @@ func renderToolResourceConfig(doc toolResourceDocument) (string, error) {
 		EnvAllowlist:        doc.EnvAllowlist,
 		NetworkDisabled:     doc.NetworkDisabled,
 		Isolation:           doc.Isolation,
-		IsolationProfile:    doc.IsolationProfile,
 		IsolationOptions:    copyMap(doc.IsolationOptions),
 		RestartLimit:        doc.RestartLimit,
 		Cooldown:            doc.Cooldown,
@@ -3338,6 +4685,7 @@ func policyRuleResourceFromDefinition(definition agent.WorkflowPolicyRuleDefinit
 func toolResourceFromServerDocument(doc toolResourceServerDocument) toolResourceDocument {
 	out := toolResourceDocument{
 		Name:                doc.Name,
+		TargetScope:         normalizeTargetScope(doc.TargetScope),
 		Language:            "python",
 		Command:             doc.Command,
 		Args:                append([]string(nil), doc.Args...),
@@ -3347,7 +4695,6 @@ func toolResourceFromServerDocument(doc toolResourceServerDocument) toolResource
 		EnvAllowlist:        append([]string(nil), doc.EnvAllowlist...),
 		NetworkDisabled:     doc.NetworkDisabled,
 		Isolation:           doc.Isolation,
-		IsolationProfile:    doc.IsolationProfile,
 		IsolationOptions:    copyMap(doc.IsolationOptions),
 		RestartLimit:        doc.RestartLimit,
 		Cooldown:            doc.Cooldown,
@@ -3357,25 +4704,7 @@ func toolResourceFromServerDocument(doc toolResourceServerDocument) toolResource
 		MaxRequestBytes:     doc.MaxRequestBytes,
 		MaxResponseBytes:    doc.MaxResponseBytes,
 	}
-	normalizeToolResourceIsolationProfile(&out)
 	return out
-}
-
-func normalizeToolResourceIsolationProfile(doc *toolResourceDocument) {
-	if doc == nil {
-		return
-	}
-	profile := strings.ToLower(strings.TrimSpace(doc.IsolationProfile))
-	if profile == "" && doc.IsolationOptions != nil {
-		profile = strings.ToLower(strings.TrimSpace(doc.IsolationOptions["profile"]))
-	}
-	if profile == "" {
-		return
-	}
-	doc.IsolationProfile = profile
-	if doc.IsolationOptions != nil {
-		delete(doc.IsolationOptions, "profile")
-	}
 }
 
 func applySkillResourceDefaults(doc *skillResourceDocument) {
@@ -3438,7 +4767,7 @@ func renderSkillResource(doc skillResourceDocument) (string, error) {
 }
 
 func (s *Server) providerResourceRoot() (string, error) {
-	root, err := s.runtimeResourceRoot("configs", "providers")
+	root, err := s.coreResourceRoot("providers", "configs", "providers")
 	if err != nil {
 		return "", err
 	}
@@ -3513,7 +4842,7 @@ func (s *Server) providerNamesExcept(excluded string) map[string]struct{} {
 }
 
 func (s *Server) agentResourceRoot() (string, error) {
-	root, err := s.runtimeResourceRoot("configs", "agents")
+	root, err := s.coreResourceRoot("agents", "configs", "agents")
 	if err != nil {
 		return "", err
 	}
@@ -3553,6 +4882,58 @@ func (s *Server) loadAgentResourceSnippet(name string) (agentResourceDocument, b
 	doc := agentResourceFromProfile(normalizeResourceName(name), profile)
 	doc.Path = path
 	return doc, true
+}
+
+func (s *Server) builtinAgentModuleExists(name string) bool {
+	if s == nil || s.runtime == nil || sameAPIPath(s.runtime.DataRoot(), s.runtime.RuntimeHome()) {
+		return false
+	}
+	root := filepath.Join(s.runtime.RuntimeHome(), "configs", "agents")
+	entries, _ := os.ReadDir(root)
+	for _, entry := range entries {
+		if entry.IsDir() || !isYAMLFile(entry.Name()) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, entry.Name()))
+		if err != nil {
+			continue
+		}
+		var profiles map[string]config.AgentProfile
+		if yaml.Unmarshal(data, &profiles) == nil {
+			if _, ok := profiles[normalizeResourceName(name)]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func (s *Server) builtinProviderModuleExists(name string) bool {
+	if s == nil || s.runtime == nil || sameAPIPath(s.runtime.DataRoot(), s.runtime.RuntimeHome()) {
+		return false
+	}
+	root := filepath.Join(s.runtime.RuntimeHome(), "configs", "providers")
+	entries, _ := os.ReadDir(root)
+	for _, entry := range entries {
+		if entry.IsDir() || !isYAMLFile(entry.Name()) {
+			continue
+		}
+		data, err := os.ReadFile(filepath.Join(root, entry.Name()))
+		if err != nil {
+			continue
+		}
+		providers, err := readProviderResourceMap(data)
+		if err == nil {
+			if _, ok := providers[normalizeResourceName(name)]; ok {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func sameAPIPath(left, right string) bool {
+	return strings.EqualFold(filepath.Clean(strings.TrimSpace(left)), filepath.Clean(strings.TrimSpace(right)))
 }
 
 func (s *Server) toolResourcePaths(name string) (string, string, error) {
@@ -3597,20 +4978,32 @@ func (s *Server) runtimeResourceRoot(parts ...string) (string, error) {
 	if s == nil || s.runtime == nil {
 		return "", fmt.Errorf("runtime is not configured")
 	}
-	root := strings.TrimSpace(s.runtime.RuntimeHome())
+	root := strings.TrimSpace(s.runtime.DataRoot())
 	if root == "" {
-		return "", fmt.Errorf("runtime home is not configured")
+		return "", fmt.Errorf("data root is not configured")
 	}
 	root, err := filepath.Abs(filepath.Clean(root))
 	if err != nil {
-		return "", fmt.Errorf("resolve runtime home: %w", err)
+		return "", fmt.Errorf("resolve data root: %w", err)
 	}
 	items := append([]string{root}, parts...)
 	path := filepath.Clean(filepath.Join(items...))
 	if !referenceWithinBase(root, path) {
-		return "", fmt.Errorf("resource path escapes runtime home")
+		return "", fmt.Errorf("resource path escapes data root")
 	}
 	return path, nil
+}
+
+func (s *Server) coreResourceRoot(family string, legacyParts ...string) (string, error) {
+	if s == nil || s.runtime == nil {
+		return "", fmt.Errorf("runtime is not configured")
+	}
+	dataRoot := strings.TrimSpace(s.runtime.DataRoot())
+	runtimeHome := strings.TrimSpace(s.runtime.RuntimeHome())
+	if dataRoot == "" || strings.EqualFold(filepath.Clean(dataRoot), filepath.Clean(runtimeHome)) {
+		return s.runtimeResourceRoot(legacyParts...)
+	}
+	return s.runtimeResourceRoot("resources", family)
 }
 
 func toolKindsToStrings(values []config.ToolKind) []string {
@@ -3701,10 +5094,10 @@ func resourceValidationCodeAndRecommendation(resource, field, message string) (s
 	field = strings.ToLower(strings.TrimSpace(field))
 	lower := strings.ToLower(message)
 	switch {
-	case resource == "tool" && (strings.Contains(lower, "windows appcontainer") || strings.Contains(lower, "windows_appcontainer") || strings.Contains(lower, "appcontainer")):
-		return "mcp_windows_appcontainer_unimplemented", "use isolation: container for the supported enforceable sandbox boundary; AppContainer-like values are intentionally rejected"
-	case resource == "tool" && strings.Contains(lower, "isolation_options.network") && strings.Contains(lower, "conflicts with network_disabled"):
-		return "mcp_container_network_conflict", "set isolation_options.network to disabled/none when network_disabled is true, or clear network_disabled for an explicitly networked container"
+	case resource == "tool" && strings.Contains(lower, "managed internally"):
+		return "mcp_native_isolation_internal", "use isolation: auto or native_strong"
+	case resource == "tool" && strings.Contains(lower, "has been removed"):
+		return "mcp_container_isolation_removed", "replace the removed mode with isolation: auto"
 	case resource == "tool" && strings.Contains(lower, "isolation_options"):
 		return "invalid_" + strings.ReplaceAll(field, ".", "_"), "fix the MCP isolation option shown by the validation message"
 	case resource == "tool" && strings.Contains(lower, "allowed_commands or allowed_command_paths"):
@@ -3714,7 +5107,7 @@ func resourceValidationCodeAndRecommendation(resource, field, message string) (s
 	case resource == "tool" && strings.Contains(lower, "outside allowed_command_paths"):
 		return "mcp_command_path_not_allowed", "move the command under an allowed path or add a narrower allowed_command_paths entry"
 	case resource == "tool" && strings.Contains(lower, "isolation") && strings.Contains(lower, "invalid"):
-		return "mcp_isolation_invalid", "choose one of none, process_group, windows_job, windows_restricted_token, linux_cgroup, linux_netns, or container"
+		return "mcp_isolation_invalid", "choose auto, native_strong, process_group, windows_job, windows_restricted_token, linux_cgroup, linux_netns, or a trusted built-in boundary"
 	case strings.Contains(lower, "invalid") && strings.Contains(lower, "json"):
 		return "invalid_json", "fix the JSON body and try validation again"
 	case strings.Contains(lower, "invalid") && strings.Contains(lower, "name"):

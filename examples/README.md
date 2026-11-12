@@ -13,7 +13,9 @@ that can be copied into another runtime home or validated in CI.
 | Example | Use it for |
 | --- | --- |
 | `extension-workflow` | the smallest end-to-end extension path: custom MCP tool, custom agent, custom skill, and a graph workflow |
-| `binary-analysis-kit` | a production-style domain package that links Agent, Skill, Tool, Team, Workflow Template, Policy Rule, and Kit resources |
+| `custom-resource-pack` | an unknown domain with Kit routing, workflow execution and real file read/write/readback, without core changes |
+
+Run `python scripts/resource_pack_acceptance.py --binary <current-goflow-binary>` for the custom-pack mechanism check. Its deterministic loopback Provider is not a real-model content-quality certification.
 
 ## `extension-workflow`
 
@@ -35,34 +37,16 @@ Validate it before copying:
 python scripts/validate_extension_workflow.py
 ```
 
-## `binary-analysis-kit`
-
-A fuller materialized kit example. It connects:
-
-- a domain agent
-- a GoFlow-native skill
-- a Docker/Podman-isolated Python MCP helper
-- a workflow
-- a workflow template
-- a team template
-- a policy rule
-- a kit manifest
-
-Use it when you want to see how Agent, Skill, Tool, Team, Workflow Template,
-Policy Rule, and Kit resources reference each other in a production-style
-domain package.
-
 Validate deployment assets and examples from the repo root:
 
 ```bash
 python scripts/validate_deployment_assets.py
 python scripts/validate_extension_workflow.py
-python scripts/validate_binary_analysis_kit.py
 python scripts/validate_resource_links.py
 ```
 
 The built-in domain packages in `kits/` cover multi-domain routing, software
 engineering, web security, general security research, binary analysis,
 documentation, operations, customer support, and framework extension work. They
-are the recommended starting point for Web Studio users; the examples here are
-kept as inspectable reference bundles.
+are the recommended starting point for Web Studio users. This directory keeps
+only the minimal extension example that is independently exercised in CI.

@@ -2,12 +2,15 @@ package api
 
 import (
 	"errors"
+	"mime"
 	"net/http"
 	"os"
 	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
+
+	"github.com/FyMatt/GoFlow-Agent/internal/promptguard"
 )
 
 const workspaceReferenceTraversalLimit = 3000
@@ -89,6 +92,96 @@ func (s *Server) handleWorkspaceFiles(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
+func (s *Server) handleWorkspaceFile(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if s == nil || s.workspace == nil || strings.TrimSpace(s.workspace.Root()) == "" {
+		writeJSONStatus(w, http.StatusConflict, map[string]any{"error": "workspace_required", "message": "下载或预览产物前需要选择工作区"})
+		return
+	}
+	if !s.workspace.Confirmed() {
+		writeWorkspaceRequired(w, "artifact file access requires a confirmed workspace", s.workspace.Snapshot())
+		return
+	}
+	rawPath := strings.TrimSpace(r.URL.Query().Get("path"))
+	if rawPath == "" {
+		http.Error(w, "path is required", http.StatusBadRequest)
+		return
+	}
+	path, relative, err := resolveWorkspaceArtifactPath(s.workspace.Root(), rawPath)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			http.Error(w, "artifact not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if info.IsDir() {
+		http.Error(w, "artifact path must be a file", http.StatusBadRequest)
+		return
+	}
+	contentType := mime.TypeByExtension(strings.ToLower(filepath.Ext(path)))
+	if contentType == "" {
+		contentType = "application/octet-stream"
+	}
+	disposition := "inline"
+	if r.URL.Query().Get("download") == "1" || !workspaceArtifactInlineType(contentType) {
+		disposition = "attachment"
+	}
+	if value := mime.FormatMediaType(disposition, map[string]string{"filename": filepath.Base(path)}); value != "" {
+		w.Header().Set("Content-Disposition", value)
+	}
+	w.Header().Set("Content-Type", contentType)
+	w.Header().Set("X-Content-Type-Options", "nosniff")
+	w.Header().Set("Cache-Control", "private, no-store")
+	w.Header().Set("X-GoFlow-Artifact-Path", relative)
+	http.ServeFile(w, r, path)
+}
+
+func resolveWorkspaceArtifactPath(workspaceRoot, rawPath string) (string, string, error) {
+	root, err := canonicalWorkspaceReferenceRoot(workspaceRoot)
+	if err != nil {
+		return "", "", err
+	}
+	normalized := filepath.Clean(filepath.FromSlash(strings.TrimPrefix(rawPath, "./")))
+	if normalized == "." || filepath.IsAbs(normalized) {
+		return "", "", errors.New("artifact path must be workspace-relative")
+	}
+	path := filepath.Join(root, normalized)
+	if !workspacePathWithinRoot(root, path) {
+		return "", "", errors.New("artifact path must stay inside the workspace")
+	}
+	relative, err := filepath.Rel(root, path)
+	if err != nil {
+		return "", "", err
+	}
+	relative = filepath.ToSlash(relative)
+	if promptguard.IsSensitivePath(relative) {
+		return "", "", errors.New("sensitive workspace paths cannot be downloaded")
+	}
+	if symlink, err := workspaceReferencePathHasSymlink(root, path); err != nil {
+		return "", "", err
+	} else if symlink {
+		return "", "", errors.New("artifact path cannot traverse a symbolic link")
+	}
+	return path, relative, nil
+}
+
+func workspaceArtifactInlineType(contentType string) bool {
+	contentType = strings.ToLower(contentType)
+	return strings.HasPrefix(contentType, "image/") ||
+		strings.HasPrefix(contentType, "text/") ||
+		strings.HasPrefix(contentType, "application/pdf")
+}
+
 func suggestWorkspaceReferenceEntries(prefix, query, workspaceRoot string, limit int) (workspaceReferenceSuggestions, error) {
 	root, err := canonicalWorkspaceReferenceRoot(workspaceRoot)
 	if err != nil {
@@ -136,6 +229,12 @@ func suggestWorkspaceReferenceEntries(prefix, query, workspaceRoot string, limit
 			return nil
 		}
 		rel = filepath.ToSlash(rel)
+		if promptguard.IsSensitivePath(rel) {
+			if entry.IsDir() {
+				return filepath.SkipDir
+			}
+			return nil
+		}
 		if entry.IsDir() {
 			rel += "/"
 		}
@@ -213,6 +312,7 @@ func shouldSkipWorkspaceReferenceDir(entry os.DirEntry) bool {
 	}
 	switch strings.ToLower(entry.Name()) {
 	case ".git", ".hg", ".svn", ".goflow",
+		".ssh", ".gnupg", ".secrets",
 		".venv", "venv", "env",
 		"node_modules", "__pycache__", "vendor",
 		"dist", "build", "target", "coverage",

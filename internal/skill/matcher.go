@@ -60,9 +60,11 @@ func MatchWithDiagnostics(query string, skills []schema.Skill) (*schema.Skill, s
 	return best, bestDiagnostic, true
 }
 
+// Replacer is immutable and safe to reuse across concurrent matches.
+var matchReplacer = strings.NewReplacer("-", "_", " ", "_", "/", "_", "\\", "_")
+
 func normalizeForMatch(input string) string {
-	replacer := strings.NewReplacer("-", "_", " ", "_", "/", "_", "\\", "_")
-	return strings.ToLower(replacer.Replace(strings.TrimSpace(input)))
+	return strings.ToLower(matchReplacer.Replace(strings.TrimSpace(input)))
 }
 
 func buildMatchReason(diagnostic schema.SkillMatchDiagnostic) string {

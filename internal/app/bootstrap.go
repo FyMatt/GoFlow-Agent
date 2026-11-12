@@ -10,7 +10,9 @@ import (
 	"github.com/FyMatt/GoFlow-Agent/internal/llm"
 	"github.com/FyMatt/GoFlow-Agent/internal/mcp"
 	"github.com/FyMatt/GoFlow-Agent/internal/memory"
+	"github.com/FyMatt/GoFlow-Agent/internal/persistence"
 	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
+	"github.com/FyMatt/GoFlow-Agent/internal/scheduler"
 	"github.com/FyMatt/GoFlow-Agent/internal/session"
 	"github.com/FyMatt/GoFlow-Agent/internal/skill"
 )
@@ -23,6 +25,8 @@ type RuntimeApp struct {
 	SessionState  *session.State
 	MemoryStore   *memory.Store
 	ArtifactStore *session.ArtifactObjectStore
+	DataStore     *persistence.Store
+	ScheduleStore *scheduler.Store
 	SkillManager  interfaces.SkillManager
 	MCPClient     interfaces.MCPClient
 }
@@ -62,6 +66,8 @@ type NewRuntimeAppOptions struct {
 	SessionState  *session.State
 	MemoryStore   *memory.Store
 	ArtifactStore *session.ArtifactObjectStore
+	DataStore     *persistence.Store
+	ScheduleStore *scheduler.Store
 	AuditLogger   *runtime.AuditLogger
 }
 
@@ -72,6 +78,9 @@ func LoadRuntimeConfig(runtimeHome, workspaceRoot string) (*config.Config, strin
 func LoadRuntimeConfigFromPath(runtimeHome, workspaceRoot, configPath string) (*config.Config, string, error) {
 	if configPath == "" {
 		configPath = filepath.Join(runtimeHome, "configs", "goflow.yaml")
+	}
+	if _, err := config.MigratePlaintextProviderSecrets(runtimeHome, config.ResolveDataRoot(runtimeHome)); err != nil {
+		return nil, "", err
 	}
 	cfg, err := config.LoadForWorkspace(configPath, workspaceRoot)
 	if err != nil {
@@ -94,6 +103,8 @@ func NewRuntimeApp(opts NewRuntimeAppOptions) (*RuntimeApp, error) {
 		SessionState:  opts.SessionState,
 		MemoryStore:   opts.MemoryStore,
 		ArtifactStore: opts.ArtifactStore,
+		DataStore:     opts.DataStore,
+		ScheduleStore: opts.ScheduleStore,
 		SkillManager:  opts.SkillManager,
 		MCPClient:     opts.MCPClient,
 	}, nil
@@ -104,15 +115,33 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) (*RuntimeApp, error) 
 	if err != nil {
 		return nil, err
 	}
-	skillManager, err := skill.NewManager(cfg.Skill.Directory)
+	dataStore := persistence.New(cfg.DataRoot)
+	if filepath.Clean(cfg.DataRoot) != filepath.Clean(cfg.RuntimeHome) {
+		if err := dataStore.Ensure(); err != nil {
+			return nil, err
+		}
+	}
+	scheduleStore := scheduler.NewStore(cfg.DataRoot)
+	if err := scheduleStore.Ensure(); err != nil {
+		return nil, err
+	}
+	userSkillRoot := cfg.Skill.Directory
+	var skillManager *skill.Manager
+	if filepath.Clean(cfg.DataRoot) != filepath.Clean(cfg.RuntimeHome) {
+		userSkillRoot = filepath.Join(cfg.DataRoot, "resources", "skills")
+		skillManager, err = skill.NewLayeredManager(cfg.Skill.Directory, userSkillRoot, func(name string) (bool, error) {
+			return dataStore.IsTombstoned("skills", name)
+		})
+	} else {
+		skillManager, err = skill.NewManager(cfg.Skill.Directory)
+	}
 	if err != nil {
 		return nil, err
 	}
 	mcpManager := mcp.NewManager(cfg.MCP)
-	if _, err := mcpManager.RefreshTools(ctx); err != nil {
-		return nil, err
-	}
-	providerRegistry, err := llm.NewRegistry(cfg.LLM, cfg.Providers)
+	// MCP discovery can compile or start local tool servers. Keep the Studio
+	// available while that work is deferred until a resource check or task needs it.
+	providerRegistry, err := llm.NewRegistryWithPolicy(cfg.LLM, cfg.Providers, cfg.Workspace.LocalOnly)
 	if err != nil {
 		return nil, err
 	}
@@ -125,12 +154,24 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) (*RuntimeApp, error) 
 		clients[name] = client
 	}
 	sessionState := session.New(cfg.Session.MaxHistory)
-	artifactStore := session.NewArtifactObjectStore(cfg.WorkspaceRoot)
+	sessionState.SetPersistPath(cfg.Session.PersistPath)
+	artifactStore := session.NewArtifactObjectStore(cfg.WorkspaceDataRoot)
 	if err := artifactStore.Ensure(); err != nil {
 		return nil, err
 	}
 	sessionState.SetArtifactObjectStore(artifactStore)
+	attachmentStore := session.NewAttachmentObjectStore(cfg.WorkspaceDataRoot)
+	if err := attachmentStore.Ensure(); err != nil {
+		return nil, err
+	}
+	sessionState.SetAttachmentObjectStore(attachmentStore)
 	if err := sessionState.Load(cfg.Session.PersistPath); err != nil {
+		return nil, err
+	}
+	if _, err := sessionState.ReconcileInterruptedWorkflowRuns(); err != nil {
+		return nil, err
+	}
+	if _, err := sessionState.ReconcileInterruptedAgentRuns(); err != nil {
 		return nil, err
 	}
 	memoryStore := memory.NewStore(cfg.WorkspaceRoot)
@@ -148,6 +189,8 @@ func Bootstrap(ctx context.Context, opts BootstrapOptions) (*RuntimeApp, error) 
 		SessionState:  sessionState,
 		MemoryStore:   memoryStore,
 		ArtifactStore: artifactStore,
+		DataStore:     dataStore,
+		ScheduleStore: scheduleStore,
 		AuditLogger:   auditLogger,
 	})
 }

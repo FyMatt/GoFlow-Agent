@@ -2,8 +2,8 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: customer-support-triage
-title: Customer Support Triage
-description: Classify a support request, gather required context, draft a response, and review customer-facing quality.
+title: 用户问题分诊
+description: 分类用户问题、收集必要上下文、起草答复并审查面向用户的内容质量。
 category: support
 tags:
     - support
@@ -30,9 +30,11 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Summary, Ticket Context, Product Area, Priority, SLA, Customer Impact, Known Facts, Source Attribution, Privacy Flags, Escalation Policy, Missing Context, Suggested Response Plan, and Next Steps.
             purpose: Classify the customer request, extract ticket context, identify privacy/security/legal/billing/SLA escalation, and identify missing context before drafting a response. Use python_notes/support_case_summary when a local ticket file is available.
-            tools: python_notes/support_case_summary
+            tools: python_notes/support_case_summary,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
           outputs:
             summary: result.summary
             triage: result.output
@@ -103,6 +105,7 @@ graph:
           agent: chat
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Customer Reply, Internal Notes, Follow-up Questions, Escalation Notes, Privacy Check, Source Attribution, and Next Actions.
             purpose: Draft a concise customer-facing response and an internal next-action checklist. Separate customer-visible wording from internal notes and do not expose secrets or unsupported promises.
           input:
@@ -141,6 +144,7 @@ graph:
           agent: auditor
           skill: code-audit
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Review Decision, Missing Information, Privacy Check, Escalation Policy, Reviewer Quorum, Customer Reply Risk, Internal Notes Risk, and Recommendation. Use approved only when ready to send.
             review_scope: Review clarity, unsupported claims, missing caveats, privacy-sensitive details, source attribution, customer/internal note separation, escalation needs, and reviewer quorum. Use python_notes/redaction_check when local ticket or draft files are available.
             tools: python_notes/redaction_check
@@ -210,6 +214,7 @@ graph:
           agent: chat
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Customer Reply, Internal Notes, Escalation Decision, Privacy Status, Reviewer Quorum, Source Attribution, Remaining Risks, and Next Steps.
           input:
             response: stages.draft-response.outputs.response
@@ -231,6 +236,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Revision Required, Blocking Issues, Missing Information, Privacy Gaps, Escalation Gaps, Reviewer Quorum Gaps, and Safe Response Plan.
           input:
             failures: stages.quality.outputs.failures

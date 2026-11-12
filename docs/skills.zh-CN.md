@@ -15,6 +15,8 @@ Skill 存放在 `skills/<name>/SKILL.md`。
 
 Skill 从 runtime home 加载，而不是从外部 workspace 加载。
 
+工具能连接，不代表每个技能都能调用它。智能体、技能和工作流节点显式声明的工具名单按交集生效；未声明名单的层级仍遵循其工具类型和审批策略。技能的 `tools` 列表要包含它需要调用的已安装工具。`required: false` 表示未安装时不阻止加载，不会绕过其他层级的权限限制。排查工具缺失时可核对运行上下文中的实际注入工具和过滤原因。
+
 ```bash
 go run ./cmd/goflow --workspace D:/empty-project
 ```
@@ -135,7 +137,7 @@ scripts:
 `output: json` 时的 JSON 输出校验状态。
 
 如果需要真正的安全隔离，应在 `skill_runner` MCP server 配置中使用
-`isolation: container`，让脚本在 Docker/Podman 沙箱中执行。Skill 脚本元数据用于表达意图，真正的执行边界来自 MCP server 配置。
+第三方脚本所在的 `skill_runner` MCP 连接使用 `isolation: auto` 或 `native_strong`。Skill 脚本元数据只表达意图，真正的执行边界来自原生 MCP 配置。
 
 ## 匹配
 

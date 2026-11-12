@@ -4,22 +4,38 @@ import "time"
 
 // Config is the root runtime configuration.
 type Config struct {
-	Agent          AgentConfig             `yaml:"agent"`
-	LLM            LLMConfig               `yaml:"llm"`
-	MCP            []MCPServerRef          `yaml:"mcp_servers"`
-	Skill          SkillConfig             `yaml:"skill"`
-	Log            LogConfig               `yaml:"log"`
-	Providers      map[string]LLMConfig    `yaml:"providers"`
-	Agents         map[string]AgentProfile `yaml:"agents"`
-	DefaultAgent   string                  `yaml:"default_agent"`
-	Audit          AuditConfig             `yaml:"audit"`
-	Verifier       VerifierConfig          `yaml:"verifier"`
-	CostControl    CostControlConfig       `yaml:"cost_control"`
-	ToolRiskPolicy ToolRiskPolicyConfig    `yaml:"tool_risk_policy"`
-	Session        SessionConfig           `yaml:"session"`
-	RuntimeHome    string                  `yaml:"-"`
-	WorkspaceRoot  string                  `yaml:"-"`
-	ConfigPath     string                  `yaml:"-"`
+	Agent             AgentConfig             `yaml:"agent"`
+	LLM               LLMConfig               `yaml:"llm"`
+	MCP               []MCPServerRef          `yaml:"mcp_servers"`
+	Skill             SkillConfig             `yaml:"skill"`
+	Log               LogConfig               `yaml:"log"`
+	Providers         map[string]LLMConfig    `yaml:"providers"`
+	Agents            map[string]AgentProfile `yaml:"agents"`
+	DefaultAgent      string                  `yaml:"default_agent"`
+	Audit             AuditConfig             `yaml:"audit"`
+	Verifier          VerifierConfig          `yaml:"verifier"`
+	CostControl       CostControlConfig       `yaml:"cost_control"`
+	ToolRiskPolicy    ToolRiskPolicyConfig    `yaml:"tool_risk_policy"`
+	Session           SessionConfig           `yaml:"session"`
+	Workspace         WorkspaceConfig         `yaml:"workspace"`
+	HTTP              HTTPConfig              `yaml:"http"`
+	Notifications     NotificationsConfig     `yaml:"notifications"`
+	RuntimeHome       string                  `yaml:"-"`
+	DataRoot          string                  `yaml:"-"`
+	WorkspaceDataRoot string                  `yaml:"-"`
+	WorkspaceRoot     string                  `yaml:"-"`
+	ConfigPath        string                  `yaml:"-"`
+}
+
+// WorkspaceConfig controls data-egress behavior for the selected workspace.
+type WorkspaceConfig struct {
+	// LocalOnly blocks non-loopback model providers for this workspace.
+	LocalOnly bool `yaml:"local_only"`
+}
+
+// HTTPConfig controls optional single-user access protection.
+type HTTPConfig struct {
+	Token string `yaml:"token"`
 }
 
 // AgentConfig controls agent loop behaviour.
@@ -31,6 +47,8 @@ type AgentConfig struct {
 
 // AgentProfile configures one named agent runtime.
 type AgentProfile struct {
+	Kind             string        `yaml:"kind,omitempty"`
+	TargetScope      string        `yaml:"target_scope,omitempty"`
 	Name             string        `yaml:"name"`
 	Description      string        `yaml:"description"`
 	SystemPrompt     string        `yaml:"system_prompt"`
@@ -47,15 +65,38 @@ type AgentProfile struct {
 	SkillOverride    *SkillConfig  `yaml:"skill,omitempty"`
 }
 
+const (
+	AgentKindAgent    = "agent"
+	AgentKindSubagent = "subagent"
+)
+
+// IsSubagent reports whether the profile is intended for delegated work.
+func (p AgentProfile) IsSubagent() bool {
+	return p.Kind == AgentKindSubagent
+}
+
 // LLMConfig configures the model provider.
 type LLMConfig struct {
-	Provider              string        `yaml:"provider"`
-	BaseURL               string        `yaml:"base_url"`
-	APIKey                string        `yaml:"api_key"`
-	Model                 string        `yaml:"model"`
+	Provider string `yaml:"provider"`
+	BaseURL  string `yaml:"base_url"`
+	// WireAPI selects the OpenAI-compatible wire protocol. Empty values use
+	// Chat Completions for backwards compatibility; "responses" uses the
+	// OpenAI Responses API at <base_url>/responses.
+	WireAPI string `yaml:"wire_api,omitempty"`
+	APIKey  string `yaml:"api_key"`
+	Model   string `yaml:"model"`
+	// ReasoningEffort selects how hard a reasoning model should think.
+	// Config may use mid; the OpenAI-compatible wire value is medium.
+	// high, xhigh, and max are clamped down to medium.
+	ReasoningEffort string `yaml:"reasoning_effort,omitempty"`
+	// Thinking toggles provider reasoning mode. DeepSeek enables it by
+	// default and bills reasoning tokens as output; "disabled" keeps
+	// mechanical stages from paying for chain-of-thought.
+	Thinking              string        `yaml:"thinking,omitempty"`
 	Pricing               PricingConfig `yaml:"pricing,omitempty"`
 	FallbackProvider      string        `yaml:"fallback_provider"`
 	ProviderMessageFields []string      `yaml:"provider_message_fields"`
+	Vision                bool          `yaml:"vision,omitempty"`
 	Timeout               time.Duration `yaml:"timeout"`
 	Temperature           float64       `yaml:"temperature"`
 	MaxTokens             int           `yaml:"max_tokens"`
@@ -77,9 +118,11 @@ type PricingConfig struct {
 // MCPServerRef declares a configured MCP server.
 type MCPServerRef struct {
 	Name                string            `yaml:"name"`
+	TargetScope         string            `yaml:"target_scope,omitempty"`
 	Command             string            `yaml:"command"`
 	Args                []string          `yaml:"args"`
 	Enabled             bool              `yaml:"enabled"`
+	Optional            bool              `yaml:"optional"`
 	Timeout             time.Duration     `yaml:"timeout"`
 	WorkDir             string            `yaml:"workdir"`
 	EnvAllowlist        []string          `yaml:"env_allowlist"`
@@ -95,6 +138,7 @@ type MCPServerRef struct {
 	MaxRequestBytes     int               `yaml:"max_request_bytes"`
 	MaxResponseBytes    int               `yaml:"max_response_bytes"`
 	WorkspaceRoot       string            `yaml:"-"`
+	RuntimeHome         string            `yaml:"-"`
 }
 
 // SkillConfig controls skill discovery and matching.
@@ -179,3 +223,22 @@ const (
 	ToolKindNetwork ToolKind = "network"
 	ToolKindUnknown ToolKind = "unknown"
 )
+
+// NotificationsConfig configures real delivery of run notifications.
+type NotificationsConfig struct {
+	Email EmailNotificationConfig `yaml:"email"`
+}
+
+// EmailNotificationConfig delivers run notifications over SMTP.
+type EmailNotificationConfig struct {
+	Enabled       bool     `yaml:"enabled"`
+	SMTPHost      string   `yaml:"smtp_host"`
+	SMTPPort      int      `yaml:"smtp_port"`
+	Username      string   `yaml:"username"`
+	Password      string   `yaml:"password"`
+	From          string   `yaml:"from"`
+	To            []string `yaml:"to"`
+	TLS           string   `yaml:"tls"`
+	SubjectPrefix string   `yaml:"subject_prefix"`
+	Timeout       string   `yaml:"timeout"`
+}

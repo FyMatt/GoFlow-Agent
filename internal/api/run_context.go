@@ -17,6 +17,7 @@ type runContextResponse struct {
 	AgentID      string                         `json:"agent_id,omitempty"`
 	Mode         string                         `json:"mode,omitempty"`
 	WorkflowName string                         `json:"workflow_name,omitempty"`
+	TargetID     string                         `json:"target_id,omitempty"`
 	Latest       *runContextBudgetSample        `json:"latest,omitempty"`
 	History      []runContextBudgetSample       `json:"history,omitempty"`
 	MemoryBlocks []schema.PromptContextBlock    `json:"memory_blocks,omitempty"`
@@ -24,6 +25,19 @@ type runContextResponse struct {
 	Artifacts    []string                       `json:"artifact_refs,omitempty"`
 	ToolSchema   runContextToolSchemaVisibility `json:"tool_schema"`
 	Counts       runContextCounts               `json:"counts"`
+}
+
+// runWorkbenchResponse is the bounded task snapshot used by the page-first
+// workbench. It keeps recovery to one request without embedding replay,
+// artifacts, diffs, or other detail that remains available on demand.
+type runWorkbenchResponse struct {
+	Task        TaskRecord             `json:"task"`
+	Run         any                    `json:"run"`
+	FinalOutput string                 `json:"final_output,omitempty"`
+	Actions     any                    `json:"actions,omitempty"`
+	Timeline    any                    `json:"timeline,omitempty"`
+	TokenUsage  usageTotals            `json:"token_usage"`
+	Execution   *runWorkbenchExecution `json:"execution,omitempty"`
 }
 
 type runContextBudgetSample struct {
@@ -71,38 +85,280 @@ type runContextCounts struct {
 }
 
 func (s *Server) handleRunItem(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
-		return
-	}
 	parts := strings.Split(strings.Trim(strings.TrimPrefix(r.URL.Path, "/api/runs/"), "/"), "/")
-	if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" {
+	if len(parts) == 0 || strings.TrimSpace(parts[0]) == "" {
 		http.NotFound(w, r)
 		return
 	}
 	snapshot := s.sessionSnapshotWithApprovalRisk()
-	switch parts[1] {
-	case "context":
-		if run, ok := agentRunByID(snapshot.AgentRuns, parts[0]); ok {
-			writeJSON(w, agentRunContext(run))
+	agentRun, isAgent := agentRunByID(snapshot.AgentRuns, parts[0])
+	workflowRun, isWorkflow := workflowRunByID(snapshot.WorkflowRuns, parts[0])
+	if !isAgent && !isWorkflow {
+		http.NotFound(w, r)
+		return
+	}
+	if r.Method == http.MethodPost {
+		if len(parts) < 3 || parts[1] != "actions" {
+			http.NotFound(w, r)
 			return
 		}
-		if run, ok := workflowRunByID(snapshot.WorkflowRuns, parts[0]); ok {
-			writeJSON(w, workflowRunContext(run))
+		if runActionNeedsCurrentResources(parts[2]) {
+			pins := workflowRun.ResourcePins
+			if isAgent {
+				pins = agentRun.ResourcePins
+			}
+			if !s.requireResourcePinsCurrent(w, pins) {
+				return
+			}
+		}
+		if isAgent {
+			s.handleUnifiedAgentRunAction(w, r, agentRun, parts)
+			return
+		}
+		s.handleUnifiedWorkflowRunAction(w, r, workflowRun, parts)
+		return
+	}
+	if r.Method != http.MethodGet {
+		http.Error(w, "method not allowed", http.StatusMethodNotAllowed)
+		return
+	}
+	if len(parts) == 1 {
+		if runItemWantsWorkbench(r) {
+			if isAgent {
+				actions := unifiedAgentRunActions(agentRun.ID, s.agentRunActions(agentRun))
+				delivery := s.agentRunDeliveryManifest(agentRun)
+				writeJSON(w, runWorkbenchResponse{
+					Task:        s.runCollectionItemForAgent(agentRun),
+					Run:         summarizeAgentRunForAPI(agentRun),
+					FinalOutput: boundedWorkbenchText(agentRun.Output, 64*1024),
+					Actions:     actions,
+					Timeline:    s.taskTimelineForAgent(agentRun, agentRunQuery{Limit: 40}),
+					TokenUsage:  retainedAgentRunUsage(agentRun),
+					Execution:   agentRunWorkbenchExecution(agentRun, delivery),
+				})
+				return
+			}
+			actions := unifiedWorkflowRunActions(workflowRun.ID, s.workflowRunActions(workflowRun))
+			delivery := s.workflowRunDeliveryManifest(workflowRun)
+			writeJSON(w, runWorkbenchResponse{
+				Task:        s.runCollectionItemForWorkflow(workflowRun),
+				Run:         summarizeWorkflowRunForAPI(workflowRun),
+				FinalOutput: workflowWorkbenchFinalOutput(workflowRun),
+				Actions:     actions,
+				Timeline:    s.taskTimelineForWorkflow(workflowRun, workflowRunQuery{Limit: 40}),
+				TokenUsage:  retainedWorkflowRunUsage(workflowRun),
+				Execution:   workflowRunWorkbenchExecution(workflowRun, delivery),
+			})
+			return
+		}
+		if isAgent {
+			s.handleAgentRunItem(w, runRequestWithPath(r, "/api/agent-runs/"+agentRun.ID))
+			return
+		}
+		s.handleWorkflowRunItem(w, runRequestWithPath(r, "/api/workflow-runs/"+workflowRun.ID))
+		return
+	}
+	switch parts[1] {
+	case "context":
+		if isAgent {
+			writeJSON(w, agentRunContext(agentRun))
+			return
+		}
+		if isWorkflow {
+			writeJSON(w, workflowRunContext(workflowRun))
 			return
 		}
 	case "artifacts":
 		query := workflowRunArtifactQueryFromRequest(r)
-		if run, ok := agentRunByID(snapshot.AgentRuns, parts[0]); ok {
-			writeJSON(w, s.agentRunArtifactsResponse(run, query))
+		if isAgent {
+			writeJSON(w, s.agentRunArtifactsResponse(agentRun, query))
 			return
 		}
-		if run, ok := workflowRunByID(snapshot.WorkflowRuns, parts[0]); ok {
-			writeJSON(w, s.workflowRunArtifactsResponse(run, query))
+		if isWorkflow {
+			writeJSON(w, s.workflowRunArtifactsResponse(workflowRun, query))
 			return
 		}
+	case "actions":
+		if len(parts) != 2 {
+			break
+		}
+		if isAgent {
+			actions := unifiedAgentRunActions(agentRun.ID, s.agentRunActions(agentRun))
+			if !runActionsWantsEnvelope(r) {
+				writeJSON(w, actions)
+				return
+			}
+			discovery := agentRunActionDiscoveryFor(agentRun, actions)
+			applyUnifiedAgentRunDiscoveryPaths(&discovery, agentRun.ID)
+			writeJSON(w, discovery)
+			return
+		}
+		actions := unifiedWorkflowRunActions(workflowRun.ID, s.workflowRunActions(workflowRun))
+		if !runActionsWantsEnvelope(r) {
+			writeJSON(w, actions)
+			return
+		}
+		discovery := workflowRunActionDiscoveryFor(workflowRun, actions)
+		applyUnifiedWorkflowRunDiscoveryPaths(&discovery, workflowRun.ID)
+		writeJSON(w, discovery)
+		return
+	case "timeline":
+		if isAgent {
+			writeJSON(w, s.taskTimelineForAgent(agentRun, agentRunQueryFromRequest(r)))
+			return
+		}
+		writeJSON(w, s.taskTimelineForWorkflow(workflowRun, workflowRunQueryFromRequest(r)))
+		return
+	case "delivery":
+		if len(parts) != 2 {
+			break
+		}
+		if isAgent {
+			writeJSON(w, s.agentRunDeliveryManifest(agentRun))
+			return
+		}
+		writeJSON(w, s.workflowRunDeliveryManifest(workflowRun))
+		return
+	default:
+		if isAgent {
+			s.handleAgentRunItem(w, runRequestWithPath(r, "/api/agent-runs/"+strings.Join(parts, "/")))
+			return
+		}
+		s.handleWorkflowRunItem(w, runRequestWithPath(r, "/api/workflow-runs/"+strings.Join(parts, "/")))
+		return
 	}
 	http.NotFound(w, r)
+}
+
+func runItemWantsWorkbench(r *http.Request) bool {
+	if r == nil || r.URL == nil {
+		return false
+	}
+	return strings.EqualFold(strings.TrimSpace(r.URL.Query().Get("view")), "workbench")
+}
+
+func runRequestWithPath(r *http.Request, path string) *http.Request {
+	clone := r.Clone(r.Context())
+	urlCopy := *r.URL
+	urlCopy.Path = path
+	clone.URL = &urlCopy
+	return clone
+}
+
+func unifiedAgentRunActions(runID string, actions []agentRunAction) []agentRunAction {
+	out := append([]agentRunAction(nil), actions...)
+	base := unifiedRunBasePath(runID)
+	for i := range out {
+		out[i].Path = unifiedRunActionPath(runID, out[i].Name)
+		out[i].StreamPath = unifiedRunActionStreamPath(runID, out[i].Name, out[i].StreamPath)
+		out[i].EventsPath = base + "/events/stream"
+	}
+	return out
+}
+
+func unifiedWorkflowRunActions(runID string, actions []workflowRunAction) []workflowRunAction {
+	out := append([]workflowRunAction(nil), actions...)
+	base := unifiedRunBasePath(runID)
+	for i := range out {
+		out[i].Path = unifiedRunActionPath(runID, out[i].Name)
+		out[i].StreamPath = unifiedRunActionStreamPath(runID, out[i].Name, out[i].StreamPath)
+		out[i].EventsPath = base + "/events/stream"
+	}
+	return out
+}
+
+func applyUnifiedAgentRunDiscoveryPaths(discovery *agentRunActionDiscovery, runID string) {
+	if discovery == nil {
+		return
+	}
+	base := unifiedRunBasePath(runID)
+	discovery.EventsPath = base + "/events/stream"
+	discovery.TimelinePath = base + "/timeline"
+	discovery.ReplayPath = base + "/replay"
+	discovery.ActionsPath = base + "/actions"
+}
+
+func applyUnifiedWorkflowRunDiscoveryPaths(discovery *workflowRunActionDiscovery, runID string) {
+	if discovery == nil {
+		return
+	}
+	base := unifiedRunBasePath(runID)
+	discovery.EventsPath = base + "/events/stream"
+	discovery.TimelinePath = base + "/timeline"
+	discovery.ReplayPath = base + "/replay"
+	discovery.ActionsPath = base + "/actions"
+}
+
+func (s *Server) handleUnifiedAgentRunAction(w http.ResponseWriter, r *http.Request, run session.AgentRunSnapshot, parts []string) {
+	action, stream := unifiedAgentRunActionForPath(s.agentRunActions(run), parts)
+	if action == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !action.Available {
+		http.Error(w, firstWorkflowRunQueryValue(action.Reason, "run action is not available"), http.StatusConflict)
+		return
+	}
+	target := action.Path
+	if stream {
+		target = action.StreamPath
+	}
+	if strings.TrimSpace(target) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	s.handleAgentRunItem(w, runRequestWithPath(r, target))
+}
+
+func (s *Server) handleUnifiedWorkflowRunAction(w http.ResponseWriter, r *http.Request, run session.WorkflowRunSnapshot, parts []string) {
+	action, stream := unifiedWorkflowRunActionForPath(s.workflowRunActions(run), parts)
+	if action == nil {
+		http.NotFound(w, r)
+		return
+	}
+	if !action.Available {
+		http.Error(w, firstWorkflowRunQueryValue(action.Reason, "run action is not available"), http.StatusConflict)
+		return
+	}
+	target := action.Path
+	if stream {
+		target = action.StreamPath
+	}
+	if strings.TrimSpace(target) == "" {
+		http.NotFound(w, r)
+		return
+	}
+	s.handleWorkflowRunItem(w, runRequestWithPath(r, target))
+}
+
+func unifiedAgentRunActionForPath(actions []agentRunAction, parts []string) (*agentRunAction, bool) {
+	if len(parts) != 3 && !(len(parts) == 4 && parts[3] == "stream") {
+		return nil, false
+	}
+	name := normalizeUnifiedRunActionName(parts[2])
+	for i := range actions {
+		if normalizeUnifiedRunActionName(actions[i].Name) == name {
+			return &actions[i], len(parts) == 4
+		}
+	}
+	return nil, false
+}
+
+func unifiedWorkflowRunActionForPath(actions []workflowRunAction, parts []string) (*workflowRunAction, bool) {
+	if len(parts) != 3 && !(len(parts) == 4 && parts[3] == "stream") {
+		return nil, false
+	}
+	name := normalizeUnifiedRunActionName(parts[2])
+	for i := range actions {
+		if normalizeUnifiedRunActionName(actions[i].Name) == name {
+			return &actions[i], len(parts) == 4
+		}
+	}
+	return nil, false
+}
+
+func normalizeUnifiedRunActionName(name string) string {
+	return strings.ReplaceAll(strings.ToLower(strings.TrimSpace(name)), "-", "_")
 }
 
 func agentRunContext(run session.AgentRunSnapshot) runContextResponse {
@@ -128,7 +384,9 @@ func agentRunContext(run session.AgentRunSnapshot) runContextResponse {
 			Budget:    budget,
 		})
 	}
-	return runContextResponseFromSamples(run.ID, "agent", run.Status, run.AgentID, run.Mode, "", samples)
+	resp := runContextResponseFromSamples(run.ID, "agent", run.Status, run.AgentID, run.Mode, "", samples)
+	resp.TargetID = run.TargetID
+	return resp
 }
 
 func workflowRunContext(run session.WorkflowRunSnapshot) runContextResponse {
@@ -162,7 +420,9 @@ func workflowRunContext(run session.WorkflowRunSnapshot) runContextResponse {
 			Budget:       budget,
 		})
 	}
-	return runContextResponseFromSamples(run.ID, "workflow", run.Status, runCollectionWorkflowPrimaryAgent(run), runCollectionWorkflowPrimaryMode(run), run.Name, samples)
+	resp := runContextResponseFromSamples(run.ID, "workflow", run.Status, runCollectionWorkflowPrimaryAgent(run), runCollectionWorkflowPrimaryMode(run), run.Name, samples)
+	resp.TargetID = run.TargetID
+	return resp
 }
 
 func runContextResponseFromSamples(runID, runType, status, agentID, mode, workflowName string, samples []runContextBudgetSample) runContextResponse {

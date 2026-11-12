@@ -11,7 +11,9 @@ func (s *Server) sessionSnapshotWithApprovalRisk() session.Snapshot {
 	if s == nil || s.runtime == nil {
 		return session.Snapshot{}
 	}
-	return s.snapshotWithApprovalRisk(s.runtime)
+	snapshot := s.runtime.DurableSessionSnapshot()
+	s.annotateSessionApprovalRisk(&snapshot)
+	return snapshot
 }
 
 func (s *Server) snapshotWithApprovalRisk(source sessionSnapshotProvider) session.Snapshot {

@@ -1,0 +1,82 @@
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: internet-research-team
+title: 互联网资料研究团队
+category: research
+description: 由资料研究、来源核验和交付整理三个角色完成可追溯的互联网研究任务。
+tags: [research, sources, verification, delivery]
+recommended_workflow: parallel-research-review
+recommended_entry_agent: research-specialist
+role_templates:
+  - name: researcher
+    label: 资料研究者
+    agent: research-specialist
+    skill: internet-research
+    responsibilities:
+      - 明确研究问题和时间范围
+      - 搜索并筛选高价值原始来源
+      - 批量获取来源快照并建立结论映射
+    tools: [web_tools/web_search, web_tools/research_snapshot]
+    produces: [research_scope, source_snapshots, claim_map]
+  - name: source-verifier
+    label: 来源核验者
+    agent: source-verifier
+    skill: source-verification
+    responsibilities:
+      - 检查结论与来源是否一一对应
+      - 识别重复来源、过期信息和证据冲突
+      - 对关键结论给出通过或阻断意见
+    tools: [web_tools/research_snapshot, web_tools/compile_research_evidence]
+    consumes: [source_snapshots, claim_map]
+    produces: [source_review, evidence_gaps]
+  - name: delivery-editor
+    label: 研究交付整理者
+    agent: research-specialist
+    skill: internet-research
+    responsibilities:
+      - 根据核验结果修正结论表达
+      - 生成中文 Markdown、JSON 和 CSV 产物
+      - 保留来源冲突、方法限制和产物路径
+    tools: [web_tools/compile_research_evidence, file_tools/write_file]
+    consumes: [claim_map, source_review, evidence_gaps]
+    produces: [research_report, research_json, claim_source_csv]
+handoffs:
+  - from: researcher
+    to: source-verifier
+    kind: evidence_review
+    subject: 待核验的研究证据包
+    artifacts: [source_snapshots, claim_map]
+    blackboard: [request, evidence]
+  - from: source-verifier
+    to: delivery-editor
+    kind: delivery_review
+    subject: 来源核验结果与证据缺口
+    artifacts: [source_review, evidence_gaps]
+    blackboard: [finding, decision]
+blackboard_templates:
+  - kind: request
+    title: 研究请求与范围
+    owner_role: researcher
+    status: open
+    tags: [scope]
+    description: 保存研究问题、时间范围、地域版本边界和交付要求。
+  - kind: evidence
+    title: 来源快照与结论映射
+    owner_role: researcher
+    status: open
+    tags: [evidence]
+    description: 保存规范 URL、抓取时间、内容哈希、结论编号和引用关系。
+  - kind: finding
+    title: 来源冲突与证据缺口
+    owner_role: source-verifier
+    status: open
+    tags: [quality]
+    description: 保存重复来源、过期信息、冲突证据和缺失引用。
+  - kind: decision
+    title: 研究质量结论
+    owner_role: source-verifier
+    status: open
+    tags: [decision]
+    description: 保存通过、需复核或不通过结论以及最小补充研究建议。
+output_contract: [research_scope, source_snapshots, claim_map, source_review, research_report, research_json, claim_source_csv]

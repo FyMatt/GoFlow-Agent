@@ -2,236 +2,247 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: docs-review-publish
-title: Docs Review -> Publish
-description: Plan documentation, draft changes, review quality, and checkpoint before publish.
+title: 办公文档制作与交付
+description: 直接制作真实 Word、Excel、PPT 或 PDF，独立校验，并仅在失败时执行最小范围的失败修正。
 category: documentation
-tags:
-    - docs
-    - review
-    - approval
-    - quality_gate
-    - report
-stages: 9
+tags: [office, document, delivery, quality_gate]
+stages: 8
 graph:
-    name: docs-review-publish
-    description: Documentation generation and review workflow with audience fit, command accuracy, Link Integrity, Bilingual Parity, redaction, and Publish Readiness evidence.
-    stages:
-        - name: start
-          node_type: start
-          agent: ""
-          skill: ""
-          next:
-            - plan
-          position:
-            x: 60
-            "y": 180
-        - name: plan
-          node_type: agent
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Documentation Goal, Audience, Source Files, Outline, Command Accuracy Plan, Link Integrity Plan, Bilingual Parity Plan, Version Platform Notes, Acceptance Checks, and Publish Risks.
-            purpose: Plan documentation changes before drafting.
-          outputs:
-            outline: result.output
-            summary: result.summary
-          artifacts:
-            - name: documentation-plan
-              kind: report
-              title: Documentation plan
-              ref: result.output
-              summary: Goal, audience, source files, outline, acceptance checks, and publish risks.
-          acceptance_criteria:
-            - name: has-outline
-              ref: result.output
-              contains: Outline
-              expected: plan includes a documentation outline
-            - name: has-acceptance-checks
-              ref: result.output
-              contains: Acceptance Checks
-              expected: plan declares how documentation quality will be checked
-            - name: has-link-integrity-plan
-              ref: result.output
-              contains: Link Integrity Plan
-              expected: plan declares markdown link and anchor validation
-          next:
-            - draft
-          position:
-            x: 300
-            "y": 160
-        - name: draft
-          node_type: agent
-          agent: fixer
-          skill: code-writing
-          params:
-            output_contract: Emit sections named Draft Summary, Files Changed, Content Decisions, Command Accuracy Notes, Link Integrity Notes, Bilingual Parity Notes, Version Platform Notes, Redaction Notes, Verification Notes, and Publish Notes.
-            edit_policy: Keep documentation changes scoped to the approved outline, preserve unrelated user edits, and do not invent commands or platform behavior without source evidence.
-          input:
-            outline: stages.plan.outputs.outline
-          outputs:
-            changes: result.changes
-            draft: result.output
-            summary: result.summary
-          artifacts:
-            - name: documentation-draft
-              kind: report
-              title: Documentation draft
-              ref: result.output
-              summary: Draft summary, files changed, content decisions, command accuracy, link integrity, bilingual parity, version/platform notes, redaction notes, verification notes, and publish notes.
-          acceptance_criteria:
-            - name: has-draft-summary
-              ref: result.output
-              contains: Draft Summary
-              expected: draft summarizes the documentation change
-            - name: has-files-changed
-              ref: result.output
-              contains: Files Changed
-              expected: draft lists changed docs or explains none
-          approval: true
-          next:
-            - review
-          position:
-            x: 580
-            "y": 160
-        - name: review
-          node_type: skill
-          agent: auditor
-          skill: code-audit
-          params:
-            output_contract: Emit sections named Review Decision, Audience Fit, Command Accuracy, Link Integrity, Bilingual Parity, Version Platform Notes, Redaction Check, Missing Context, Readability, Publish Readiness, and Recommendation.
-            review_scope: Check correctness, audience fit, command accuracy, missing context, stale version/platform instructions, broken links, bilingual parity, redaction, and release-readiness. Use python_notes/markdown_link_check and python_notes/redaction_check when local files are available.
-            tools: python_notes/markdown_link_check,python_notes/redaction_check
-          input:
-            draft: stages.draft.outputs.draft
-          outputs:
-            review: result.output
-            summary: result.summary
-          artifacts:
-            - name: documentation-review
-              kind: report
-              title: Documentation review
-              ref: result.output
-              summary: Review decision, audience fit, command accuracy, link integrity, bilingual parity, redaction check, missing context, readability, publish readiness, and recommendation.
-          acceptance_criteria:
-            - name: has-review-decision
-              ref: result.output
-              contains: Review Decision
-              expected: review states whether documentation is publishable
-            - name: has-recommendation
-              ref: result.output
-              contains: Recommendation
-              expected: review gives a concrete publish recommendation
-            - name: has-link-integrity
-              ref: result.output
-              contains: Link Integrity
-              expected: review records local link and anchor status or a blocker
-            - name: has-publish-readiness
-              ref: result.output
-              contains: Publish Readiness
-              expected: review declares publish readiness or blockers
-          next:
-            - quality
-          position:
-            x: 860
-            "y": 160
-        - name: quality
-          node_type: quality_gate
-          agent: ""
-          skill: ""
-          params:
-            stages: plan,draft,review
-            min_score: "80"
-            reason: documentation output is missing audience fit, command accuracy, Link Integrity, Bilingual Parity, redaction, or Publish Readiness evidence
-            require_acceptance: "true"
-            require_evidence: "true"
-            require_verification: "true"
-            allow_unknown: "false"
-          routes:
-            pass: publish-gate
-            warning: publish-gate
-            fail: revise
-          position:
-            x: 1130
-            "y": 160
-        - name: publish-gate
-          node_type: checkpoint
-          agent: ""
-          skill: ""
-          params:
-            prompt: Approve documentation publish or handoff after reviewing command accuracy, Link Integrity, Bilingual Parity, redaction, and Publish Readiness blockers?
-          next:
-            - publish-report
-          position:
-            x: 1400
-            "y": 160
-        - name: revise
-          node_type: skill
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Revision Required, Blocking Issues, Missing Evidence, Command Accuracy Gaps, Link Integrity Gaps, Bilingual Parity Gaps, Redaction Gaps, Safe Fix Plan, and Publish Recommendation.
-            purpose: Explain what must change before documentation can be published.
-          input:
-            failures: stages.quality.outputs.failures
-            review: stages.review.outputs.review
-          outputs:
-            revision_plan: result.output
-            summary: result.summary
-          artifacts:
-            - name: documentation-revision-plan
-              kind: report
-              title: Documentation revision plan
-              ref: result.output
-              summary: Blocking issues, missing evidence, safe fix plan, and publish recommendation.
-          acceptance_criteria:
-            - name: has-revision-required
-              ref: result.output
-              contains: Revision Required
-              expected: revision plan explains why publish is blocked
-          next:
-            - publish-report
-          position:
-            x: 1400
-            "y": 320
-        - name: publish-report
-          node_type: skill
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Publish Status, Documentation Changes, Review Evidence, Command Accuracy, Link Integrity, Bilingual Parity, Redaction Status, Remaining Risks, and Next Steps.
-            purpose: Produce a final user-facing documentation publish or handoff report.
-          input:
-            draft: stages.draft.outputs.draft
-            quality_status: stages.quality.outputs.quality_status
-            review: stages.review.outputs.review
-            revision_plan: stages.revise.outputs.revision_plan
-          outputs:
-            final_report: result.output
-            summary: result.summary
-          artifacts:
-            - name: documentation-publish-report
-              kind: report
-              title: Documentation publish report
-              ref: result.output
-              summary: Publish status, documentation changes, review evidence, risks, and next steps.
-          acceptance_criteria:
-            - name: has-publish-status
-              ref: result.output
-              contains: Publish Status
-              expected: final report declares publish or handoff status
-            - name: has-review-evidence
-              ref: result.output
-              contains: Review Evidence
-              expected: final report includes review evidence
-          next:
-            - end
-          position:
-            x: 1680
-            "y": 200
-        - name: end
-          node_type: end
-          agent: ""
-          skill: ""
-          position:
-            x: 1960
-            "y": 200
+  name: docs-review-publish
+  description: 制作、独立校验、质量判断、必要修正和交付的精简办公文档流程。
+  budget:
+    soft_llm_calls: 60
+    hard_llm_calls: 90
+    soft_continuations: 3
+    hard_continuations: 6
+  stages:
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next: [produce]
+      position: {x: 60, y: 190}
+
+    - name: produce
+      node_type: skill
+      agent: documentation-specialist
+      skill: office-document-production
+      model:
+        provider: primary
+        max_tokens: 3600
+        temperature: 0.1
+      params:
+        max_model_calls: "10"
+        max_total_model_calls: "16"
+        require_workspace_mutation: "true"
+        purpose: 根据原始请求和明确输入资料直接创建、基于模板生成或精确修改真实办公文档，并在同一阶段完成首次结构与格式校验。
+        tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,office_tools/inspect_office_document,office_tools/fill_office_template,office_tools/replace_office_text,office_tools/read_xlsx,office_tools/update_xlsx_cells,office_tools/merge_csv_into_xlsx,office_tools/create_docx,office_tools/create_xlsx,office_tools/create_pptx,office_tools/create_pdf,office_tools/validate_office_document,office_tools/export_office_pdf,office_tools/render_office_preview
+        input_rule: 仅读取原始请求明确给出的输入文件路径；输入已经完整内联时直接使用。缺少必要资料路径时先报告缺失输入，不猜测文件名，不读取目录或预读输出。
+        delivery_rule: 需求明确列出的 DOCX、XLSX、PPTX 或 PDF 必须写入指定路径。不要调用 office_capabilities。模板任务顺序固定：各模板 inspect 一次；用 fill_office_template 或有效 replace 写入请求指定的输出文件，失败时保留源文件并报告工具错误；对每个可编辑源文件调用一次 validate_office_document；最后 export_office_pdf 与 render_office_preview。创建或修改后必须对每个可编辑源文件调用 validate_office_document；它已包含内部结构检查，新建文件不重复调用 inspect_office_document。请求提供来源文件时，对每个 DOCX、XLSX 和 PPTX 校验都传实际来源路径 source_path 与 require_source_fidelity=true，来源校验不通过时必须修正无依据内容。PNG 预览不能传给结构校验工具。模板或修改任务保留输入哈希、修改前备份、精确修改清单和保持不变项核对结果。
+        output_contract: 只输出“处理模式、真实产物、修改与保留、校验结论、限制”五个精简中文部分。引用工具返回的实际路径和哈希，不重复正文，不为固定字段生成长篇说明。
+        max_iterations: "12"
+        max_read_calls: "8"
+      input:
+        request: workflow.input
+      retry: {max_attempts: 3}
+      outputs:
+        office_delivery: result.output
+        production_evidence: result.tool_results
+        changes: result.changes
+        summary: result.summary
+      artifacts:
+        - name: office-delivery
+          kind: office_deliverable
+          title: 办公文档产物
+          ref: result.output
+          summary: 真实可编辑文件、转换结果、哈希和首次校验结论。
+      next: [validate]
+      position: {x: 350, y: 170}
+
+    - name: validate
+      node_type: skill
+      agent: auditor
+      skill: office-document-production
+      model:
+        provider: primary
+        max_tokens: 2200
+        temperature: 0.0
+      params:
+        max_model_calls: "5"
+        max_total_model_calls: "8"
+        require_workspace_mutation: "false"
+        purpose: 独立核对原始请求与制作阶段的真实产物，只依据工具返回的文件结构、格式和错误给出结论。
+        tools: office_tools/inspect_office_document,office_tools/validate_office_document
+        review_rule: 对原始请求要求的每个 DOCX、XLSX、PPTX 和 PDF 分别检查。不得调用通用文本读取工具读取 Office 或 PDF 二进制文件，也无需重复读取来源文件；validate_office_document 会在传入 source_path 时完成来源读取与忠实度核验。请求提供来源文件时，对每个 DOCX、XLSX 和 PPTX 校验传实际来源路径 source_path 与 require_source_fidelity=true；工具报告任何来源未支持的事实信号时必须视为阻塞问题。不得校验 PNG，不得以制作阶段的文字自述代替工具结果；缺文件、工具失败、模板哈希变化、公式或打印设置缺失、页数不足、指定内容缺失都必须判为需修正。Excel 公式、筛选、冻结行和打印设置分别使用 require_formulas、require_auto_filter、require_frozen_rows、require_print_setup；PPT 页数和指定文字使用 min_slides、required_text。直接校验 PDF 文件时不要设置 require_pdf、pdf_path、required_text 或 require_source_fidelity；这四项应在可编辑源文件上完成。
+        output_contract: 第一行必须且只能是 GOFLOW_QUALITY=PASS 或 GOFLOW_QUALITY=FAIL；存在源文件之外的事实、缺文件或任一工具错误时使用 FAIL。随后只输出“校验范围、问题清单、质量结论”三个精简中文部分；问题清单为空时明确写“无阻塞问题”，否则列出可执行的最小修正项。
+        max_iterations: "5"
+      input:
+        request: workflow.input
+        office_delivery: stages.produce.outputs.office_delivery
+        production_evidence: stages.produce.outputs.production_evidence
+      outputs:
+        validation_report: result.output
+        validation_evidence: result.tool_results
+        summary: result.summary
+      artifacts:
+        - name: office-validation
+          kind: validation
+          title: 办公文档独立校验
+          ref: result.output
+          summary: 真实文件结构、格式、内容和可交付结论。
+      acceptance_criteria:
+        - name: has-machine-quality-decision
+          ref: result.output
+          contains: GOFLOW_QUALITY=
+          expected: 第一行提供可机器判定的 PASS 或 FAIL
+        - name: has-issue-list
+          ref: result.output
+          contains: 问题清单
+          expected: 明确列出阻塞问题或说明无阻塞问题
+        - name: has-quality-decision
+          ref: result.output
+          contains: 质量结论
+          expected: 明确给出通过或需修正结论
+      next: [quality]
+      position: {x: 660, y: 170}
+
+    - name: quality
+      node_type: quality_gate
+      agent: ""
+      skill: ""
+      params:
+        max_tool_errors: "2"
+        stages: produce,validate
+        min_score: "85"
+        reason: 缺少真实办公文档、独立结构检查或格式校验证据
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "true"
+        verification_mode: tool
+        verification_tools: office_tools/validate_office_document
+        required_tools: office_tools/validate_office_document
+        failure_output_markers: GOFLOW_QUALITY=FAIL
+        allow_unknown: "false"
+      routes:
+        pass: delivery
+        warning: delivery
+        fail: repair
+      position: {x: 970, y: 170}
+
+    - name: repair
+      node_type: skill
+      agent: documentation-specialist
+      skill: office-document-production
+      model:
+        provider: primary
+        max_tokens: 3000
+        temperature: 0.0
+      params:
+        max_model_calls: "8"
+        max_total_model_calls: "12"
+        require_workspace_mutation: "false"
+        no_op_policy: 若审查确认没有遗留阻塞项，直接输出“无需修改”并说明依据，不要为满足变更要求而改无关文件。
+        purpose: 仅针对质量门失败项执行最小修正，保留修改前备份，并重新检查受影响文件。
+        tools: office_tools/inspect_office_document,office_tools/validate_office_document,office_tools/replace_office_text,office_tools/fill_office_template,office_tools/read_xlsx,office_tools/update_xlsx_cells,office_tools/merge_csv_into_xlsx,office_tools/create_docx,office_tools/create_xlsx,office_tools/create_pptx,office_tools/create_pdf,office_tools/export_office_pdf,office_tools/render_office_preview
+        repair_rule: 只依据原始请求、制作证据和校验失败项执行最小修正，不调用通用文本读取工具读取 Office 或 PDF 二进制文件，不重复规划、不重建无关文件、不扩大修改范围。修正后必须重新调用 inspect_office_document 和 validate_office_document；请求提供来源文件时由 validate_office_document 通过实际 source_path 和 require_source_fidelity 完成来源核验。仍失败时如实记录，禁止宣称已通过。
+        output_contract: 第一行必须且只能是 GOFLOW_REPAIR=PASS 或 GOFLOW_REPAIR=FAIL；随后必须逐字包含五个小节标题“失败项”“修正动作”“修正后文件”“复核结论”“剩余限制”，缺少任一小节即视为未完成；每节引用真实路径、备份和工具结果。
+        max_iterations: "7"
+      input:
+        request: workflow.input
+        failures: stages.quality.outputs.failures
+        office_delivery: stages.produce.outputs.office_delivery
+        validation_report: stages.validate.outputs.validation_report
+      retry: {max_attempts: 3}
+      outputs:
+        repaired_delivery: result.output
+        repair_evidence: result.tool_results
+        summary: result.summary
+      artifacts:
+        - name: office-repair
+          kind: change_evidence
+          title: 办公文档修正与复核
+          ref: result.output
+          summary: 失败项、最小修正、备份、修正后文件和复核结论。
+      acceptance_criteria:
+        - name: has-machine-repair-decision
+          ref: result.output
+          contains: GOFLOW_REPAIR=
+          expected: 第一行提供可机器判定的修正结果
+        - name: has-repair-decision
+          ref: result.output
+          contains: 复核结论
+          expected: 明确修正后是否达到交付要求
+      next: [final-quality]
+      position: {x: 1240, y: 330}
+
+    - name: final-quality
+      node_type: quality_gate
+      agent: ""
+      skill: ""
+      params:
+        max_tool_errors: "2"
+        stages: repair
+        min_score: "85"
+        reason: 修正后仍缺少真实办公文档、结构检查或格式校验证据
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "true"
+        verification_mode: tool
+        verification_tools: office_tools/validate_office_document
+        required_tools: office_tools/validate_office_document
+        failure_output_markers: GOFLOW_REPAIR=FAIL
+        allow_unknown: "false"
+      routes:
+        pass: delivery
+        warning: delivery
+        fail: delivery
+      position: {x: 1510, y: 330}
+
+    - name: delivery
+      node_type: agent
+      agent: planner
+      skill: execution-plan
+      model:
+        provider: primary
+        max_tokens: 900
+        temperature: 0.0
+      params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        purpose: 将已存在的真实文件与校验证据整理成用户可直接使用的短交付清单。
+        output_contract: 只输出“交付状态、文件清单、质量证据、限制”四个中文部分，不调用工具、不重复文档正文、不虚构不存在的文件。质量门失败且修正阶段仍有问题时必须标为部分完成或受阻。
+        max_iterations: "1"
+      input:
+        request: workflow.input
+        initial_quality_status: stages.quality.outputs.quality_status
+        repair_quality_status: stages.final-quality.outputs.quality_status
+        repair_quality_route: stages.final-quality.outputs.route
+        office_delivery: stages.produce.outputs.office_delivery
+        validation_report: stages.validate.outputs.validation_report
+        repaired_delivery: stages.repair.outputs.repaired_delivery
+      outputs:
+        final_report: result.output
+        summary: result.summary
+      artifacts:
+        - name: office-delivery-report
+          kind: report
+          title: 办公文档交付清单
+          ref: result.output
+          summary: 最终文件、真实校验证据、限制和交付状态。
+      acceptance_criteria:
+        - name: has-delivery-status
+          ref: result.output
+          contains: 交付状态
+          expected: 明确已完成、部分完成或受阻
+        - name: has-quality-evidence
+          ref: result.output
+          contains: 质量证据
+          expected: 引用真实结构和格式校验结果
+      next: [end]
+      position: {x: 1780, y: 170}
+
+    - name: end
+      node_type: end
+      agent: ""
+      skill: ""
+      position: {x: 2050, y: 190}

@@ -57,9 +57,9 @@ func (s *Server) handleAgentRunItem(w http.ResponseWriter, r *http.Request) {
 		}
 		writeJSON(w, s.runtime.HydrateAgentRun(run))
 	case len(parts) == 2 && parts[1] == "events":
-		writeJSON(w, s.agentRunEventsForQuery(run.Events, agentRunQueryFromRequest(r)))
+		writeJSON(w, s.agentRunEventsForQuery(run.Events, agentRunQueryWithDefaultWindow(r, run.Events, 100)))
 	case len(parts) == 2 && parts[1] == "timeline":
-		writeJSON(w, s.agentRunTimeline(run, agentRunQueryFromRequest(r)))
+		writeJSON(w, s.agentRunTimeline(run, agentRunQueryWithDefaultWindow(r, run.Events, 100)))
 	case len(parts) == 2 && parts[1] == "context":
 		writeJSON(w, agentRunContext(run))
 	case len(parts) == 2 && parts[1] == "artifacts":
@@ -67,7 +67,7 @@ func (s *Server) handleAgentRunItem(w http.ResponseWriter, r *http.Request) {
 	case len(parts) == 3 && parts[1] == "events" && parts[2] == "stream":
 		s.handleAgentRunEventsStream(w, r, run.ID)
 	case len(parts) == 2 && parts[1] == "replay":
-		writeJSON(w, s.agentRunReplay(run, agentRunQueryFromRequest(r)))
+		writeJSON(w, s.agentRunReplay(run, agentRunQueryWithDefaultWindow(r, run.Events, 100)))
 	case len(parts) == 2 && parts[1] == "diffs":
 		writeJSON(w, s.agentRunDiffResponse(run, agentRunQueryFromRequest(r)))
 	case len(parts) == 2 && parts[1] == "export":
@@ -142,6 +142,9 @@ type agentRunAction struct {
 	BodySchema         map[string]any          `json:"body_schema,omitempty"`
 	Destructive        bool                    `json:"destructive,omitempty"`
 	Reason             string                  `json:"reason,omitempty"`
+	ChangeCount        int                     `json:"change_count,omitempty"`
+	RecoveryID         string                  `json:"recovery_id,omitempty"`
+	WorkspaceMode      string                  `json:"workspace_mode,omitempty"`
 	Risk               *schema.ToolRiskProfile `json:"risk,omitempty"`
 }
 
@@ -362,6 +365,10 @@ func agentRunCollectionRunTerminal(run session.AgentRunSnapshot) bool {
 }
 
 func agentRunCollectionRunNeedsAction(run session.AgentRunSnapshot) bool {
+	switch normalizeWorkflowRunQueryToken(run.Status) {
+	case "completed", "failed", "cancelled", "canceled", "denied":
+		return false
+	}
 	if strings.EqualFold(strings.TrimSpace(run.Status), "awaiting_tool_approval") {
 		return true
 	}
@@ -388,18 +395,36 @@ func agentRunCollectionRunHasError(run session.AgentRunSnapshot) bool {
 		return true
 	}
 	for _, event := range run.Events {
-		if event.IsError {
+		if agentRunEventIsBlockingError(event) {
 			return true
 		}
 	}
 	if run.Result != nil {
 		for _, result := range run.Result.ToolResults {
-			if result.IsError || result.Denied {
+			if agentRunToolResultIsBlockingError(result) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// Approval suspension is a durable control-flow state, not a failed tool call.
+// A suspended result may be replayed after approval, so it must not make a
+// completed run look failed. Explicit denial remains a blocking error.
+func agentRunEventIsBlockingError(event session.AgentRunEventSnapshot) bool {
+	return event.IsError && !event.Suspended && !event.NeedsAction &&
+		!agentRunEventIsRecoverableApprovalContextError(event.Content)
+}
+
+func agentRunToolResultIsBlockingError(result schema.ToolResult) bool {
+	if runDeliveryPolicyInterventionText(result.Content) {
+		return false
+	}
+	if !result.Denied && runDeliveryExploratoryReadMiss(result.ToolName, result.Content) {
+		return false
+	}
+	return (result.IsError || result.Denied) && !(result.Suspended && !result.Denied)
 }
 
 func agentRunCollectionRunHasTool(run session.AgentRunSnapshot, toolName string) bool {
@@ -503,6 +528,7 @@ func renderAgentRunMarkdownExport(replay agentRunReplay, query agentRunQuery) st
 	if strings.TrimSpace(run.RetryOf) != "" {
 		workflowRunMarkdownKV(&builder, "Retry Of", run.RetryOf)
 	}
+	writeResourcePinsMarkdown(&builder, run.ResourcePins)
 	if strings.TrimSpace(run.Request) != "" {
 		builder.WriteString("\n## Request\n\n")
 		builder.WriteString(workflowRunMarkdownCode(run.Request, "text"))
@@ -647,12 +673,13 @@ func (s *Server) agentRunActions(run session.AgentRunSnapshot) []agentRunAction 
 	}
 	eventsPath := agentRunEventsStreamPath(id)
 	pendingRisk := s.agentRunPendingApprovalRisk(run)
-	actions := make([]agentRunAction, 0, 5)
+	actions := make([]agentRunAction, 0, 6)
 	status := strings.ToLower(strings.TrimSpace(run.Status))
+	approvalResumable := false
 	if agentRunStatusCancellable(status) {
 		actions = append(actions, agentRunAction{
 			Name:        "cancel",
-			Label:       "Cancel",
+			Label:       "取消任务",
 			Method:      http.MethodPost,
 			Path:        "/api/agent-runs/" + id + "/cancel",
 			EventsPath:  eventsPath,
@@ -663,13 +690,41 @@ func (s *Server) agentRunActions(run session.AgentRunSnapshot) []agentRunAction 
 		})
 	}
 	if strings.EqualFold(status, "awaiting_tool_approval") {
+		// Rehydrate persisted approval context before deciding whether the
+		// action is available. This covers worker restarts and short races
+		// between the run snapshot and the in-memory approval store.
+		s.runtime.RestoreAgentRunApproval(id)
+		// RestoreAgentRunApproval can normalize a stale snapshot by deriving
+		// PendingApprovals from ResumeContext.SuspendedCalls. Re-read the run
+		// before calculating action availability so callers do not get a
+		// misleading retry action during that short persistence race.
+		if restored, ok := s.runtime.AgentRun(id); ok {
+			run = restored
+			pendingRisk = s.agentRunPendingApprovalRisk(run)
+		}
 		callID := s.agentRunPendingApprovalCallID(run)
-		resumable := s.agentRunToolApprovalResumable(callID)
+		resumable := agentRunHasPersistedPendingApproval(run, callID) && s.agentRunToolApprovalResumable(callID)
+		approvalResumable = resumable
 		resumeReason := agentRunToolApprovalActionReason(resumable)
 		approveAvailable := resumable
 		approveReason := resumeReason
 		if approveAvailable {
 			approveAvailable, approveReason = s.agentRunToolApprovalAllowed(callID, approveReason)
+		}
+		if taskScopeAvailable, taskScopeReason := s.agentRunTaskScopeApprovalAvailable(run); approveAvailable && taskScopeAvailable {
+			actions = append(actions, agentRunAction{
+				Name:       "approve_task_scope",
+				Label:      "批准本任务的工作区操作",
+				Method:     http.MethodPost,
+				Path:       agentRunActionPath(id, "approve_task_scope"),
+				StreamPath: agentRunActionStreamPath(id, "approve_task_scope"),
+				EventsPath: eventsPath,
+				Available:  true,
+				Durable:    true,
+				Background: true,
+				Reason:     taskScopeReason,
+				Risk:       pendingRisk,
+			})
 		}
 		rememberAvailable, rememberReason := s.agentRunRememberToolApprovalAvailable(callID, approveAvailable, approveReason)
 		if len(run.PendingApprovals) > 1 {
@@ -687,9 +742,9 @@ func (s *Server) agentRunActions(run session.AgentRunSnapshot) []agentRunAction 
 				available bool
 				reason    string
 			}{
-				{name: "approve_all_tools", label: "Approve all tools", available: approveAllAvailable, reason: approveAllReason},
-				{name: "approve_remember_all_tools", label: "Approve and remember all tools", available: rememberAllAvailable, reason: rememberAllReason},
-				{name: "deny_all_tools", label: "Deny all tools", available: allResumable, reason: allResumeReason},
+				{name: "approve_all_tools", label: "批准全部工具", available: approveAllAvailable, reason: approveAllReason},
+				{name: "approve_remember_all_tools", label: "批准全部并记住", available: rememberAllAvailable, reason: rememberAllReason},
+				{name: "deny_all_tools", label: "拒绝全部工具", available: allResumable, reason: allResumeReason},
 			} {
 				actions = append(actions, agentRunAction{
 					Name:       item.name,
@@ -712,9 +767,9 @@ func (s *Server) agentRunActions(run session.AgentRunSnapshot) []agentRunAction 
 			available bool
 			reason    string
 		}{
-			{name: "approve_tool", label: "Approve tool", available: approveAvailable, reason: approveReason},
-			{name: "approve_remember_tool", label: "Approve and remember tool", available: rememberAvailable, reason: rememberReason},
-			{name: "deny_tool", label: "Deny tool", available: resumable, reason: resumeReason},
+			{name: "approve_tool", label: "批准工具", available: approveAvailable, reason: approveReason},
+			{name: "approve_remember_tool", label: "批准并记住", available: rememberAvailable, reason: rememberReason},
+			{name: "deny_tool", label: "拒绝工具", available: resumable, reason: resumeReason},
 		} {
 			actions = append(actions, agentRunAction{
 				Name:       item.name,
@@ -731,10 +786,34 @@ func (s *Server) agentRunActions(run session.AgentRunSnapshot) []agentRunAction 
 			})
 		}
 	}
-	if agentRunStatusRetryable(status) && strings.TrimSpace(run.Request) != "" {
+	if status == "paused_need_more_budget" && !agentRunContinuationAvailable(run) {
+		if rebuilt, ok := s.runtime.RebuildIncompleteAgentRunContinuation(id); ok {
+			run = rebuilt
+		}
+	}
+	_, workerActive := s.agentRunCancelFunc(id)
+	if status == "paused_need_more_budget" && !workerActive {
+		available := agentRunContinuationAvailable(run)
+		reason := "已保存完整对话、工具结果和任务暂存区，可在同一次运行中继续完成未完成实现且不重放已完成工具"
+		if !available {
+			reason = "旧运行缺少可恢复对话上下文，只能取消或重新运行"
+		}
+		actions = append(actions, agentRunAction{
+			Name:       "continue_output",
+			Label:      "继续执行",
+			Method:     http.MethodPost,
+			Path:       agentRunActionPath(id, "continue_output"),
+			EventsPath: eventsPath,
+			Available:  available,
+			Durable:    available,
+			Background: true,
+			Reason:     reason,
+		})
+	}
+	if agentRunStatusRetryable(status) && strings.TrimSpace(run.Request) != "" && !approvalResumable && !workerActive {
 		actions = append(actions, agentRunAction{
 			Name:       "retry",
-			Label:      "Retry",
+			Label:      "重新运行",
 			Method:     http.MethodPost,
 			Path:       "/api/agent-runs/" + id + "/retry",
 			EventsPath: eventsPath,
@@ -743,6 +822,12 @@ func (s *Server) agentRunActions(run session.AgentRunSnapshot) []agentRunAction 
 			Background: true,
 			Reason:     agentRunRetryActionReason(status),
 		})
+	}
+	if action, ok := s.agentRunStagedChangesAction(run); ok {
+		actions = append(actions, action)
+	}
+	if action, ok := s.agentRunDiscardStagedChangesAction(run); ok {
+		actions = append(actions, action)
 	}
 	return normalizeAgentRunActions(actions)
 }
@@ -776,7 +861,13 @@ func agentRunActionKind(name string) string {
 		return "lifecycle"
 	case "retry":
 		return "retry"
-	case "approve_tool", "approve_remember_tool", "approve_all_tools", "approve_remember_all_tools", "deny_tool", "deny_all_tools":
+	case "continue_output":
+		return "continuation"
+	case "apply_staged_changes", "discard_staged_changes":
+		return "delivery"
+	case "restore_staged_changes":
+		return "recovery"
+	case "approve_task_scope", "approve_tool", "approve_remember_tool", "approve_all_tools", "approve_remember_all_tools", "deny_tool", "deny_all_tools":
 		return "tool_approval"
 	default:
 		return "action"
@@ -785,7 +876,7 @@ func agentRunActionKind(name string) string {
 
 func agentRunActionAcceptsBody(name string) bool {
 	switch strings.TrimSpace(name) {
-	case "retry", "approve_tool", "approve_remember_tool", "approve_all_tools", "approve_remember_all_tools", "deny_tool", "deny_all_tools":
+	case "retry", "continue_output", "approve_task_scope", "approve_tool", "approve_remember_tool", "approve_all_tools", "approve_remember_all_tools", "deny_tool", "deny_all_tools":
 		return true
 	default:
 		return false
@@ -831,7 +922,7 @@ func agentRunActionDiscoveryFor(run session.AgentRunSnapshot, actions []agentRun
 		Meta:          runActionDiscoveryMetaForActions(),
 		RunID:         id,
 		Status:        strings.TrimSpace(run.Status),
-		NeedsAction:   agentRunCollectionRunNeedsAction(run),
+		NeedsAction:   agentRunCollectionRunNeedsAction(run) || agentRunActionIsAvailable(actions, "apply_staged_changes"),
 		EventsPath:    agentRunEventsStreamPath(id),
 		TimelinePath:  "/api/agent-runs/" + id + "/timeline",
 		ReplayPath:    "/api/agent-runs/" + id + "/replay",
@@ -846,6 +937,15 @@ func agentRunActionDiscoveryFor(run session.AgentRunSnapshot, actions []agentRun
 func agentRunActionExists(actions []agentRunAction, name string) bool {
 	for _, action := range actions {
 		if action.Name == name {
+			return true
+		}
+	}
+	return false
+}
+
+func agentRunActionIsAvailable(actions []agentRunAction, name string) bool {
+	for _, action := range actions {
+		if action.Name == name && action.Available {
 			return true
 		}
 	}
@@ -874,7 +974,7 @@ func agentRunActionCounts(actions []agentRunAction) runActionCounts {
 }
 
 func recommendedAgentRunAction(actions []agentRunAction) string {
-	for _, name := range []string{"approve_tool", "approve_all_tools", "deny_tool", "retry", "cancel"} {
+	for _, name := range []string{"approve_task_scope", "approve_tool", "approve_all_tools", "apply_staged_changes", "continue_output", "deny_tool", "retry", "cancel"} {
 		for _, action := range actions {
 			if action.Name == name && action.Available {
 				return name
@@ -906,13 +1006,27 @@ func (s *Server) handleAgentRunAction(w http.ResponseWriter, r *http.Request, ru
 		return
 	}
 	action := normalizeAgentRunActionPath(parts[1])
+	switch action {
+	case "continue_output", "retry", "approve_task_scope", "approve_tool", "approve_remember_tool", "approve_all_tools", "approve_remember_all_tools":
+		if !s.requireResourcePinsCurrent(w, run.ResourcePins) {
+			return
+		}
+	}
 	stream := len(parts) == 3 && parts[2] == "stream"
 	switch action {
 	case "cancel":
 		s.handleAgentRunCancel(w, run)
+	case "continue_output":
+		s.handleAgentRunContinueOutput(w, r, run)
 	case "retry":
 		s.handleAgentRunRetry(w, r, run)
-	case "approve_tool", "approve_remember_tool", "deny_tool", "approve_all_tools", "approve_remember_all_tools", "deny_all_tools":
+	case "apply_staged_changes":
+		s.handleAgentRunApplyStagedChanges(w, run)
+	case "restore_staged_changes":
+		s.handleAgentRunRestoreStagedChanges(w, run)
+	case "discard_staged_changes":
+		s.handleAgentRunDiscardStagedChanges(w, run)
+	case "approve_task_scope", "approve_tool", "approve_remember_tool", "deny_tool", "approve_all_tools", "approve_remember_all_tools", "deny_all_tools":
 		s.handleAgentRunToolApproval(w, r, run, action, stream)
 	default:
 		http.NotFound(w, r)
@@ -938,6 +1052,57 @@ func (s *Server) handleAgentRunCancel(w http.ResponseWriter, run session.AgentRu
 	writeJSON(w, updated)
 }
 
+func agentRunContinuationAvailable(run session.AgentRunSnapshot) bool {
+	if !strings.EqualFold(strings.TrimSpace(run.Status), "paused_need_more_budget") || run.ResumeContext == nil {
+		return false
+	}
+	context := run.ResumeContext
+	return (len(context.Messages) > 0 || context.MessagesCount > 0 || strings.TrimSpace(context.MessagesArtifactRef) != "") &&
+		(len(context.CollectedResults) > 0 || context.CollectedResultCount > 0 || strings.TrimSpace(context.CollectedResultsArtifactRef) != "")
+}
+
+func (s *Server) handleAgentRunContinueOutput(w http.ResponseWriter, r *http.Request, run session.AgentRunSnapshot) {
+	if !agentRunContinuationAvailable(run) {
+		http.Error(w, "agent run has no resumable continuation context", http.StatusConflict)
+		return
+	}
+	var req agentRunActionRequest
+	if r.Body != nil {
+		_ = json.NewDecoder(r.Body).Decode(&req)
+	}
+	accepted, err := s.startAgentRunBackgroundAction(run.ID, "continue_output", func(ctx context.Context) error {
+		ctx = agent.WithAgentRunID(ctx, run.ID)
+		ctx = agent.WithAgentTarget(ctx, run.AgentID)
+		ctx = agent.WithExecutionTarget(ctx, run.TargetID)
+		ctx = agent.WithTaskAttachments(ctx, run.Attachments)
+		ctx = agent.WithRunControls(ctx, agent.RunControls{ReasoningEffort: run.ReasoningEffort, PermissionMode: run.PermissionMode})
+		if _, ok := s.runtime.BeginAgentRunContinuation(run.ID); !ok {
+			return fmt.Errorf("agent run could not enter continuation state")
+		}
+		record := s.recordAgentRunEvents(run.ID, nil)
+		result, resumeErr := s.runtime.ResumeInterruptedAgentRun(ctx, run.ID, record)
+		if resumeErr != nil {
+			if errors.Is(resumeErr, context.Canceled) {
+				s.runtime.CancelAgentRun(run.ID, "agent run cancelled")
+				return resumeErr
+			}
+			s.runtime.FailAgentRun(run.ID, resumeErr.Error())
+			return resumeErr
+		}
+		_ = record(schema.StreamEvent{Type: schema.StreamEventFinalMessage, Content: result.Output, AgentID: result.AgentID, Mode: result.Mode})
+		s.runtime.CompleteAgentRun(run.ID, agentRunStatusForResult(result), result)
+		return nil
+	})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
+	_ = req
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusAccepted)
+	_ = json.NewEncoder(w).Encode(accepted)
+}
+
 func (s *Server) handleAgentRunRetry(w http.ResponseWriter, r *http.Request, run session.AgentRunSnapshot) {
 	if strings.TrimSpace(run.Request) == "" {
 		http.Error(w, "agent run cannot be retried without request", http.StatusBadRequest)
@@ -957,7 +1122,7 @@ func (s *Server) handleAgentRunRetry(w http.ResponseWriter, r *http.Request, run
 	if r.Body != nil {
 		_ = json.NewDecoder(r.Body).Decode(&req)
 	}
-	accepted, err := s.startAgentBackgroundWithRetry(run.Request, run.ID, "retry")
+	accepted, err := s.startAgentBackgroundWithSelectionAndRetry(run.Request, run.AgentID, "", "", run.ID, "retry")
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusConflict)
 		return
@@ -969,6 +1134,10 @@ func (s *Server) handleAgentRunRetry(w http.ResponseWriter, r *http.Request, run
 }
 
 func (s *Server) handleAgentRunToolApproval(w http.ResponseWriter, r *http.Request, run session.AgentRunSnapshot, action string, stream bool) {
+	s.runtime.RestoreAgentRunApproval(run.ID)
+	if refreshed, ok := s.runtime.AgentRun(run.ID); ok {
+		run = refreshed
+	}
 	if !strings.EqualFold(strings.TrimSpace(run.Status), "awaiting_tool_approval") {
 		http.Error(w, "agent run is not awaiting tool approval", http.StatusConflict)
 		return
@@ -1033,7 +1202,15 @@ func (s *Server) runAgentRunToolApprovalAction(ctx context.Context, runID, callI
 
 func (s *Server) runAgentRunToolApprovalActionLocked(ctx context.Context, runID, callID, action string, handler func(schema.StreamEvent) error) error {
 	ctx = agent.WithAgentRunID(ctx, runID)
+	if run, ok := s.runtime.AgentRun(runID); ok {
+		ctx = agent.WithExecutionTarget(ctx, run.TargetID)
+	}
 	record := s.recordAgentRunEvents(runID, handler)
+	if action == "approve_task_scope" {
+		if run, ok := s.runtime.AgentRun(runID); ok && len(run.PendingApprovals) > 1 {
+			return s.runAgentRunToolApprovalAllAction(ctx, runID, action, record)
+		}
+	}
 	if agentRunToolApprovalAllAction(action) {
 		return s.runAgentRunToolApprovalAllAction(ctx, runID, action, record)
 	}
@@ -1045,6 +1222,8 @@ func (s *Server) runAgentRunToolApprovalActionLocked(ctx context.Context, runID,
 		err    error
 	)
 	switch action {
+	case "approve_task_scope":
+		result, err = s.runtime.ApproveToolCallForAgentTask(ctx, callID)
 	case "approve_tool":
 		result, err = s.runtime.ApproveToolCall(ctx, callID)
 	case "approve_remember_tool":
@@ -1058,9 +1237,10 @@ func (s *Server) runAgentRunToolApprovalActionLocked(ctx context.Context, runID,
 		s.runtime.FailAgentRun(runID, err.Error())
 		return err
 	}
-	if err := record(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: result.ToolName, ToolCallID: result.CallID, Content: result.Content, IsError: result.IsError, Suspended: result.Suspended}); err != nil {
+	if err := record(result.WithStreamEvent(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: result.ToolName, ToolCallID: result.CallID, Content: result.Content, IsError: result.IsError, Suspended: result.Suspended})); err != nil {
 		return err
 	}
+	s.runtime.MarkAgentRunApprovalResuming(runID)
 	resumeResult, resumed, err := s.runtime.ResumeApprovedOrdinaryToolCall(ctx, callID, record)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1092,7 +1272,13 @@ func (s *Server) runAgentRunToolApprovalAllAction(ctx context.Context, runID, ac
 	if !s.runtime.OrdinaryToolApprovalsResumable(callIDs) {
 		return fmt.Errorf("%s", agentRunToolApprovalActionReason(false))
 	}
+	if action == "approve_task_scope" {
+		if available, reason := s.agentRunTaskScopeApprovalAvailable(run); !available {
+			return fmt.Errorf("%s", reason)
+		}
+	}
 	var lastCallID string
+	taskScopeGranted := false
 	for _, pending := range run.PendingApprovals {
 		callID := strings.TrimSpace(pending.CallID)
 		if callID == "" {
@@ -1104,6 +1290,13 @@ func (s *Server) runAgentRunToolApprovalAllAction(ctx context.Context, runID, ac
 			err    error
 		)
 		switch action {
+		case "approve_task_scope":
+			if !taskScopeGranted {
+				result, err = s.runtime.ApproveToolCallForAgentTask(ctx, callID)
+				taskScopeGranted = err == nil
+			} else {
+				result, err = s.runtime.ApproveToolCall(ctx, callID)
+			}
 		case "approve_all_tools":
 			result, err = s.runtime.ApproveToolCall(ctx, callID)
 		case "approve_remember_all_tools":
@@ -1117,13 +1310,14 @@ func (s *Server) runAgentRunToolApprovalAllAction(ctx context.Context, runID, ac
 			s.runtime.FailAgentRun(runID, err.Error())
 			return err
 		}
-		if err := record(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: result.ToolName, ToolCallID: result.CallID, Content: result.Content, IsError: result.IsError, Suspended: result.Suspended}); err != nil {
+		if err := record(result.WithStreamEvent(schema.StreamEvent{Type: schema.StreamEventToolResult, ToolName: result.ToolName, ToolCallID: result.CallID, Content: result.Content, IsError: result.IsError, Suspended: result.Suspended})); err != nil {
 			return err
 		}
 	}
 	if strings.TrimSpace(lastCallID) == "" {
 		return fmt.Errorf("agent run has no pending tool approval call id")
 	}
+	s.runtime.MarkAgentRunApprovalResuming(runID)
 	resumeResult, resumed, err := s.runtime.ResumeApprovedOrdinaryToolCall(ctx, lastCallID, record)
 	if err != nil {
 		if errors.Is(err, context.Canceled) {
@@ -1138,6 +1332,24 @@ func (s *Server) runAgentRunToolApprovalAllAction(ctx context.Context, runID, ac
 		s.runtime.CompleteAgentRun(runID, agentRunStatusForResult(resumeResult), resumeResult)
 	}
 	return nil
+}
+
+func (s *Server) agentRunTaskScopeApprovalAvailable(run session.AgentRunSnapshot) (bool, string) {
+	callIDs := s.agentRunPendingApprovalCallIDs(run)
+	if len(callIDs) == 0 {
+		return false, "pending approval is not available"
+	}
+	reason := ""
+	for _, callID := range callIDs {
+		available, itemReason := s.runtime.CanApproveAgentTaskScope(callID)
+		if !available {
+			return false, itemReason
+		}
+		if reason == "" {
+			reason = itemReason
+		}
+	}
+	return true, reason
 }
 
 func (s *Server) handleAgentRunEventsStream(w http.ResponseWriter, r *http.Request, runID string) {
@@ -1188,24 +1400,88 @@ func (s *Server) handleAgentRunEventsStream(w http.ResponseWriter, r *http.Reque
 }
 
 func (s *Server) startAgentBackground(input, action string) (agentRunBackgroundResponse, error) {
-	return s.startAgentBackgroundWithRetry(input, "", action)
+	return s.startAgentBackgroundWithSelection(input, "", "", "", action)
 }
 
 func (s *Server) startAgentBackgroundWithRetry(input, retryOf, action string) (agentRunBackgroundResponse, error) {
+	return s.startAgentBackgroundWithSelectionAndRetry(input, "", "", "", retryOf, action)
+}
+
+func (s *Server) startAgentBackgroundWithSelection(input, agentID, skillName, toolName, action string) (agentRunBackgroundResponse, error) {
+	return s.startAgentBackgroundWithSelectionAndTarget(input, agentID, skillName, toolName, "", action)
+}
+
+func (s *Server) startAgentBackgroundWithSelectionAndRetry(input, agentID, skillName, toolName, retryOf, action string) (agentRunBackgroundResponse, error) {
+	return s.startAgentBackgroundWithSelectionAndRetryTarget(input, agentID, skillName, toolName, "", retryOf, action)
+}
+
+func (s *Server) startAgentBackgroundWithSelectionAndTarget(input, agentID, skillName, toolName, targetID, action string) (agentRunBackgroundResponse, error) {
+	return s.startAgentBackgroundWithSelectionAndRetryTarget(input, agentID, skillName, toolName, targetID, "", action)
+}
+
+func (s *Server) startAgentBackgroundWithSelectionTargetAndAttachments(input, agentID, skillName, toolName, targetID string, attachments []schema.AttachmentRef, action string) (agentRunBackgroundResponse, error) {
+	return s.startAgentBackgroundWithSelectionAndRetryTargetAttachments(input, agentID, skillName, toolName, targetID, "", attachments, agent.RunControls{}, action)
+}
+
+func (s *Server) startAgentBackgroundWithSelectionTargetAttachmentsAndControls(input, agentID, skillName, toolName, targetID string, attachments []schema.AttachmentRef, controls agent.RunControls, action string, routingPins ...[]session.ResourcePin) (agentRunBackgroundResponse, error) {
+	return s.startAgentBackgroundWithSelectionAndRetryTargetAttachments(input, agentID, skillName, toolName, targetID, "", attachments, controls, action, routingPins...)
+}
+
+func (s *Server) startAgentBackgroundWithSelectionAndRetryTarget(input, agentID, skillName, toolName, targetID, retryOf, action string) (agentRunBackgroundResponse, error) {
+	return s.startAgentBackgroundWithSelectionAndRetryTargetAttachments(input, agentID, skillName, toolName, targetID, retryOf, nil, agent.RunControls{}, action)
+}
+
+func (s *Server) startAgentBackgroundWithSelectionAndRetryTargetAttachments(input, agentID, skillName, toolName, targetID, retryOf string, attachments []schema.AttachmentRef, controls agent.RunControls, action string, routingPins ...[]session.ResourcePin) (agentRunBackgroundResponse, error) {
 	if !s.agentExecMu.TryLock() {
 		return agentRunBackgroundResponse{}, fmt.Errorf("another agent run is already active")
 	}
-	runID := s.runtime.StartAgentRunWithOptions(input, session.AgentRunStartOptions{RetryOf: retryOf})
+	if strings.TrimSpace(agentID) != "" {
+		if err := s.runtime.SetActiveAgent(strings.TrimSpace(agentID)); err != nil {
+			s.agentExecMu.Unlock()
+			return agentRunBackgroundResponse{}, err
+		}
+	}
+	pins := s.agentTaskResourcePins(agentID, skillName, toolName)
+	if len(routingPins) > 0 && len(routingPins[0]) > 0 {
+		pins = session.CopyResourcePins(routingPins[0])
+	}
+	if strings.TrimSpace(retryOf) != "" {
+		if previous, ok := s.runtime.AgentRun(retryOf); ok {
+			if len(previous.ResourcePins) > 0 {
+				pins = session.CopyResourcePins(previous.ResourcePins)
+			}
+			if strings.TrimSpace(targetID) == "" {
+				targetID = previous.TargetID
+			}
+			if len(attachments) == 0 {
+				attachments = append([]schema.AttachmentRef(nil), previous.Attachments...)
+			}
+			if strings.TrimSpace(controls.ReasoningEffort) == "" {
+				controls.ReasoningEffort = previous.ReasoningEffort
+			}
+			if strings.TrimSpace(controls.PermissionMode) == "" {
+				controls.PermissionMode = previous.PermissionMode
+			}
+		}
+	}
+	controls.ReasoningEffort = agent.NormalizeRunReasoningEffort(controls.ReasoningEffort)
+	controls.PermissionMode = agent.NormalizeRunPermissionMode(controls.PermissionMode)
+	runID := s.runtime.StartAgentRunWithOptions(input, session.AgentRunStartOptions{RetryOf: retryOf, AgentID: s.runtime.ActiveAgent(), TargetID: targetID, ResourcePins: pins, Attachments: attachments, ReasoningEffort: controls.ReasoningEffort, PermissionMode: controls.PermissionMode})
 	if strings.TrimSpace(runID) == "" {
 		s.agentExecMu.Unlock()
 		return agentRunBackgroundResponse{}, fmt.Errorf("agent run could not be started")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	ctx = agent.WithAgentRunID(ctx, runID)
-	s.registerActiveAgentRun(runID, cancel)
+	ctx = agent.WithAgentTarget(ctx, s.runtime.ActiveAgent())
+	ctx = agent.WithAgentSkill(ctx, skillName)
+	ctx = agent.WithExecutionTarget(ctx, targetID)
+	ctx = agent.WithTaskAttachments(ctx, attachments)
+	ctx = agent.WithRunControls(ctx, controls)
+	activeToken := s.registerActiveAgentRun(runID, cancel)
 	go func() {
 		defer s.agentExecMu.Unlock()
-		defer s.unregisterActiveAgentRun(runID)
+		defer s.unregisterActiveAgentRun(runID, activeToken)
 		defer cancel()
 		record := s.recordAgentRunEvents(runID, nil)
 		expanded, err := s.expandAtReferences(ctx, input, record)
@@ -1232,16 +1508,16 @@ func (s *Server) startAgentBackgroundWithRetry(input, retryOf, action string) (a
 }
 
 func (s *Server) startAgentRunBackgroundAction(runID, action string, run func(context.Context) error) (agentRunBackgroundResponse, error) {
-	if !s.agentExecMu.TryLock() {
+	if !s.tryLockSettlingAgentRun(runID, settlingRunActionTimeout) {
 		return agentRunBackgroundResponse{}, fmt.Errorf("another agent run is already active")
 	}
 	ctx, cancel := context.WithCancel(context.Background())
-	s.registerActiveAgentRun(runID, cancel)
+	activeToken := s.registerActiveAgentRun(runID, cancel)
 	go func() {
 		defer s.agentExecMu.Unlock()
-		defer s.unregisterActiveAgentRun(runID)
+		defer s.unregisterActiveAgentRun(runID, activeToken)
 		defer cancel()
-		if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) {
+		if err := run(ctx); err != nil && !errors.Is(err, context.Canceled) && !agentRunEventIsRecoverableApprovalContextError(err.Error()) {
 			s.runtime.AppendAgentRunEvent(runID, session.AgentRunEventSnapshot{
 				Type:    string(schema.StreamEventError),
 				Content: err.Error(),
@@ -1250,6 +1526,45 @@ func (s *Server) startAgentRunBackgroundAction(runID, action string, run func(co
 		}
 	}()
 	return s.agentRunBackgroundResponse(runID, action, ""), nil
+}
+
+// settlingRunActionTimeout covers the short interval in which a worker has
+// already exposed a durable approval state but is still compacting and
+// externalizing the completed turn. Approval actions for that same run wait
+// for the worker; other runs remain excluded by the execution mutex.
+const settlingRunActionTimeout = 30 * time.Second
+
+func (s *Server) tryLockSettlingAgentRun(runID string, timeout time.Duration) bool {
+	if s.agentExecMu.TryLock() {
+		return true
+	}
+	if !s.agentRunCanSettle(runID) {
+		return false
+	}
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+		if s.agentExecMu.TryLock() {
+			return true
+		}
+		if !s.agentRunCanSettle(runID) {
+			return false
+		}
+	}
+	return false
+}
+
+func (s *Server) agentRunCanSettle(runID string) bool {
+	if strings.TrimSpace(runID) == "" {
+		return false
+	}
+	s.activeAgentMu.Lock()
+	defer s.activeAgentMu.Unlock()
+	if len(s.activeAgentRuns) == 0 {
+		return true
+	}
+	_, sameRunActive := s.activeAgentRuns[runID]
+	return sameRunActive
 }
 
 func (s *Server) agentRunBackgroundResponse(runID, action, retryOf string) agentRunBackgroundResponse {
@@ -1293,52 +1608,68 @@ func (s *Server) recordAgentRunEvents(runID string, handler func(event schema.St
 
 func agentRunEventSnapshot(event schema.StreamEvent) session.AgentRunEventSnapshot {
 	return session.AgentRunEventSnapshot{
-		Type:              string(event.Type),
-		Content:           event.Content,
-		ToolName:          event.ToolName,
-		ToolCallID:        event.ToolCallID,
-		ArgumentsSummary:  event.ArgumentsSummary,
-		AgentID:           event.AgentID,
-		Mode:              event.Mode,
-		IsError:           event.IsError,
-		NeedsAction:       event.NeedsAction,
-		Suspended:         event.Suspended,
-		TaskStage:         event.TaskStage,
-		PromptTokens:      event.PromptTokens,
-		OutputTokens:      event.OutputTokens,
-		CachedTokens:      event.CachedTokens,
-		Reason:            event.Reason,
-		Severity:          event.Severity,
-		BudgetScope:       event.BudgetScope,
-		ContractCheck:     event.ContractCheck,
-		SourceRef:         event.SourceRef,
-		StopReason:        event.StopReason,
-		ContinuationCount: event.ContinuationCount,
-		Incomplete:        event.Incomplete,
-		PromptBudget:      event.PromptBudget,
-		Risk:              event.Risk,
+		Type:                string(event.Type),
+		Content:             event.Content,
+		ToolName:            event.ToolName,
+		ToolCallID:          event.ToolCallID,
+		DurationMs:          event.DurationMs,
+		ToolResultSummary:   event.ToolResultSummary,
+		ArtifactRef:         event.ArtifactRef,
+		ArtifactHash:        event.ArtifactHash,
+		ToolResultBytes:     event.ToolResultContentBytes,
+		ToolResultStored:    event.ToolResultStoredBytes,
+		ToolResultTruncated: event.ToolResultTruncated,
+		ArtifactRetention:   event.ArtifactRetention,
+		Redaction:           event.Redaction,
+		ArgumentsSummary:    event.ArgumentsSummary,
+		ArgumentsHash:       event.ArgumentsHash,
+		AgentID:             event.AgentID,
+		Mode:                event.Mode,
+		IsError:             event.IsError,
+		NeedsAction:         event.NeedsAction,
+		Suspended:           event.Suspended,
+		TaskStage:           event.TaskStage,
+		PromptTokens:        event.PromptTokens,
+		OutputTokens:        event.OutputTokens,
+		CachedTokens:        event.CachedTokens,
+		OutputKind:          event.OutputKind,
+		CacheHitRate:        event.CacheHitRate,
+		Reason:              event.Reason,
+		Severity:            event.Severity,
+		BudgetScope:         event.BudgetScope,
+		ContractCheck:       event.ContractCheck,
+		SourceRef:           event.SourceRef,
+		StopReason:          event.StopReason,
+		ContinuationCount:   event.ContinuationCount,
+		Incomplete:          event.Incomplete,
+		PromptBudget:        event.PromptBudget,
+		Risk:                event.Risk,
 	}
 }
 
-func (s *Server) registerActiveAgentRun(runID string, cancel context.CancelFunc) {
+func (s *Server) registerActiveAgentRun(runID string, cancel context.CancelFunc) *activeAgentRunToken {
 	if strings.TrimSpace(runID) == "" || cancel == nil {
-		return
+		return nil
 	}
+	token := &activeAgentRunToken{marker: 1}
 	s.activeAgentMu.Lock()
 	defer s.activeAgentMu.Unlock()
 	if s.activeAgentRuns == nil {
-		s.activeAgentRuns = make(map[string]context.CancelFunc)
+		s.activeAgentRuns = make(map[string]activeAgentRun)
 	}
-	s.activeAgentRuns[runID] = cancel
+	s.activeAgentRuns[runID] = activeAgentRun{cancel: cancel, token: token}
+	return token
 }
 
-func (s *Server) unregisterActiveAgentRun(runID string) {
-	if strings.TrimSpace(runID) == "" {
+func (s *Server) unregisterActiveAgentRun(runID string, token *activeAgentRunToken) {
+	if strings.TrimSpace(runID) == "" || token == nil {
 		return
 	}
 	s.activeAgentMu.Lock()
 	defer s.activeAgentMu.Unlock()
-	delete(s.activeAgentRuns, runID)
+	if active, ok := s.activeAgentRuns[runID]; ok && active.token == token {
+		delete(s.activeAgentRuns, runID)
+	}
 }
 
 func (s *Server) agentRunCancelFunc(runID string) (context.CancelFunc, bool) {
@@ -1347,8 +1678,8 @@ func (s *Server) agentRunCancelFunc(runID string) (context.CancelFunc, bool) {
 	}
 	s.activeAgentMu.Lock()
 	defer s.activeAgentMu.Unlock()
-	cancel, ok := s.activeAgentRuns[runID]
-	return cancel, ok
+	active, ok := s.activeAgentRuns[runID]
+	return active.cancel, ok
 }
 
 func agentRunByID(runs []session.AgentRunSnapshot, id string) (session.AgentRunSnapshot, bool) {
@@ -1374,6 +1705,8 @@ func agentRunActionStreamPath(runID, action string) string {
 
 func agentRunActionPathSegment(action string) string {
 	switch strings.TrimSpace(action) {
+	case "approve_task_scope":
+		return "approve-task"
 	case "approve_tool":
 		return "approve-tool"
 	case "approve_remember_tool":
@@ -1386,6 +1719,12 @@ func agentRunActionPathSegment(action string) string {
 		return "approve-remember-tools"
 	case "deny_all_tools":
 		return "deny-tools"
+	case "apply_staged_changes":
+		return "apply-staged-changes"
+	case "restore_staged_changes":
+		return "restore-staged-changes"
+	case "discard_staged_changes":
+		return "discard-staged-changes"
 	default:
 		return strings.TrimSpace(action)
 	}
@@ -1393,6 +1732,8 @@ func agentRunActionPathSegment(action string) string {
 
 func normalizeAgentRunActionPath(action string) string {
 	switch strings.TrimSpace(action) {
+	case "approve-task":
+		return "approve_task_scope"
 	case "approve-tool":
 		return "approve_tool"
 	case "approve-remember-tool":
@@ -1405,6 +1746,14 @@ func normalizeAgentRunActionPath(action string) string {
 		return "approve_remember_all_tools"
 	case "deny-tools":
 		return "deny_all_tools"
+	case "apply-staged-changes":
+		return "apply_staged_changes"
+	case "restore-staged-changes":
+		return "restore_staged_changes"
+	case "discard-staged-changes":
+		return "discard_staged_changes"
+	case "continue-output", "continue":
+		return "continue_output"
 	default:
 		return strings.TrimSpace(action)
 	}
@@ -1467,6 +1816,19 @@ func (s *Server) agentRunPendingApprovalCallIDs(run session.AgentRunSnapshot) []
 		}
 	}
 	return ids
+}
+
+func agentRunHasPersistedPendingApproval(run session.AgentRunSnapshot, callID string) bool {
+	callID = strings.TrimSpace(callID)
+	if callID == "" {
+		return false
+	}
+	for _, pending := range run.PendingApprovals {
+		if strings.EqualFold(strings.TrimSpace(pending.CallID), callID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Server) agentRunToolApprovalResumable(callID string) bool {
@@ -1564,6 +1926,18 @@ func agentRunToolApprovalActionReason(resumable bool) string {
 	return "ordinary agent tool approval context is not available yet or is missing from the persisted agent run snapshot; retry or cancel the agent run"
 }
 
+// agentRunEventIsRecoverableApprovalContextError identifies a short-lived
+// approval-store/persisted-snapshot race. The background approval action may
+// start after the run has already resumed or completed; recording that control
+// flow as a tool error would make an otherwise verified delivery fail quality
+// gates. Real tool failures and explicit denials use different messages and
+// remain blocking.
+func agentRunEventIsRecoverableApprovalContextError(message string) bool {
+	lower := strings.ToLower(strings.TrimSpace(message))
+	return strings.Contains(lower, "ordinary agent tool approval context is not available") ||
+		strings.Contains(lower, "ordinary agent tool approval context is missing")
+}
+
 func agentRunStatusActive(status string) bool {
 	switch strings.ToLower(strings.TrimSpace(status)) {
 	case "running", "cancelling", "paused_need_more_budget":
@@ -1637,6 +2011,18 @@ func agentRunQueryFromRequest(r *http.Request) agentRunQuery {
 		SuspendedOnly:   workflowRunQueryBool(values.Get("suspended")),
 		IncludeContent:  workflowRunQueryBool(values.Get("include_content")) || workflowRunQueryBool(values.Get("content")),
 	}
+}
+
+func agentRunQueryWithDefaultWindow(r *http.Request, events []session.AgentRunEventSnapshot, limit int) agentRunQuery {
+	query := agentRunQueryFromRequest(r)
+	if limit <= 0 || r == nil || r.URL == nil || strings.TrimSpace(r.URL.Query().Get("limit")) != "" || query.Since > 0 {
+		return query
+	}
+	query.Limit = limit
+	if len(events) > limit {
+		query.Since = events[len(events)-limit-1].Seq
+	}
+	return query
 }
 
 func agentRunEventsForQuery(events []session.AgentRunEventSnapshot, query agentRunQuery) []session.AgentRunEventSnapshot {

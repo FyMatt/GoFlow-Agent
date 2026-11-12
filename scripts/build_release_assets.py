@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build cross-platform GoFlow release archives.
+"""Build Windows amd64 GoFlow release archives.
 
 The script intentionally uses only the Python standard library so it can run in
 local shells and GitHub Actions without extra packaging dependencies.
@@ -19,32 +19,41 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
 DEFAULT_TARGETS = [
-    ("linux", "amd64"),
-    ("linux", "arm64"),
     ("windows", "amd64"),
-    ("windows", "arm64"),
 ]
 GO_PROJECTS = [
     ("goflow", "./cmd/goflow"),
+    ("goflow-install", "./cmd/goflow-install"),
     ("file_tools", "./mcp_servers/file_tools"),
+    ("command_tools", "./mcp_servers/command_tools"),
     ("skill_runner", "./mcp_servers/skill_runner"),
     ("web_tools", "./mcp_servers/web_tools"),
     ("network_tools", "./mcp_servers/network_tools"),
+    ("office_tools", "./mcp_servers/office_tools"),
+    ("host_tools", "./mcp_servers/host_tools"),
+    ("ssh_tools", "./mcp_servers/ssh_tools"),
+    ("notification_tools", "./mcp_servers/notification_tools"),
 ]
-COMMON_DIRS = ["configs", "skills", "docs", "kits", "templates", "examples"]
+COMMON_DIRS = ["configs", "skills", "docs", "kits", "templates", "workflows", "examples"]
 COMMON_FILES = [
     ".env.example",
+    "LICENSE",
     "README.md",
     "README.zh-CN.md",
     "mcp_servers/python_notes.py",
+    "mcp_servers/notification_tools/README.md",
+    "mcp_servers/notification_tools/README.zh-CN.md",
 ]
 
 
 def parse_target(value: str) -> tuple[str, str]:
     parts = value.split("/")
     if len(parts) != 2 or not parts[0] or not parts[1]:
-        raise argparse.ArgumentTypeError("target must use GOOS/GOARCH, for example linux/amd64")
-    return parts[0], parts[1]
+        raise argparse.ArgumentTypeError("target must use GOOS/GOARCH, for example windows/amd64")
+    target = (parts[0], parts[1])
+    if target not in DEFAULT_TARGETS:
+        raise argparse.ArgumentTypeError("supported release target is windows/amd64")
+    return target
 
 
 def run(command: list[str], env: dict[str, str]) -> None:
@@ -61,6 +70,16 @@ def binary_name(name: str, goos: str) -> str:
 def build_go_binary(name: str, package: str, version: str, goos: str, goarch: str, out_dir: Path) -> None:
     env = os.environ.copy()
     env.update({"CGO_ENABLED": "0", "GOOS": goos, "GOARCH": goarch})
+    # Release builds must not depend on a user-owned, potentially read-only
+    # global Go build cache. Keep generated cache data outside the archive.
+    cache_dir = Path(os.environ.get("GOFLOW_RELEASE_GOCACHE", str(ROOT / ".artifacts" / "release-gocache")))
+    cache_dir.mkdir(parents=True, exist_ok=True)
+    env["GOCACHE"] = str(cache_dir)
+    module_cache_dir = Path(
+        os.environ.get("GOFLOW_RELEASE_GOMODCACHE", str(ROOT / ".artifacts" / "release-modcache"))
+    )
+    module_cache_dir.mkdir(parents=True, exist_ok=True)
+    env["GOMODCACHE"] = str(module_cache_dir)
     output = out_dir / binary_name(name, goos)
     ldflags = "-s -w"
     if name == "goflow":
@@ -101,15 +120,18 @@ def write_launchers(stage_dir: Path, goos: str) -> None:
 setlocal
 chcp 65001 >nul
 set "ROOT=%~dp0"
+if "%GOFLOW_DATA_ROOT%"=="" set "GOFLOW_DATA_ROOT=%LOCALAPPDATA%\\GoFlow\\data"
 set "GOFLOW_FILE_TOOLS_CMD=%ROOT%bin\\file_tools.exe"
+set "GOFLOW_COMMAND_TOOLS_CMD=%ROOT%bin\\command_tools.exe"
 set "GOFLOW_SKILL_RUNNER_CMD=%ROOT%bin\\skill_runner.exe"
 set "GOFLOW_WEB_TOOLS_CMD=%ROOT%bin\\web_tools.exe"
 set "GOFLOW_NETWORK_TOOLS_CMD=%ROOT%bin\\network_tools.exe"
+set "GOFLOW_OFFICE_TOOLS_CMD=%ROOT%bin\\office_tools.exe"
+set "GOFLOW_HOST_TOOLS_CMD=%ROOT%bin\\host_tools.exe"
+set "GOFLOW_SSH_TOOLS_CMD=%ROOT%bin\\ssh_tools.exe"
+set "GOFLOW_NOTIFICATION_TOOLS_CMD=%ROOT%bin\\notification_tools.exe"
 if "%GOFLOW_PYTHON_CMD%"=="" set "GOFLOW_PYTHON_CMD=python"
 set "GOFLOW_PYTHON_NOTES_PATH=%ROOT%mcp_servers\\python_notes.py"
-if "%GOFLOW_BACKUP_BASE_URL%"=="" set "GOFLOW_BACKUP_BASE_URL=%GOFLOW_BASE_URL%"
-if "%GOFLOW_BACKUP_API_KEY%"=="" set "GOFLOW_BACKUP_API_KEY=%GOFLOW_API_KEY%"
-if "%GOFLOW_BACKUP_MODEL%"=="" set "GOFLOW_BACKUP_MODEL=%GOFLOW_MODEL%"
 if "%~1"=="" (
   set "WORKSPACE=%CD%\\workspace"
 ) else (
@@ -128,15 +150,18 @@ echo Starting GoFlow Web Studio at http://127.0.0.1:8080/console
         """#!/usr/bin/env sh
 set -eu
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+export GOFLOW_DATA_ROOT="${GOFLOW_DATA_ROOT:-${XDG_DATA_HOME:-$HOME/.local/share}/goflow}"
 export GOFLOW_FILE_TOOLS_CMD="$ROOT/bin/file_tools"
+export GOFLOW_COMMAND_TOOLS_CMD="$ROOT/bin/command_tools"
 export GOFLOW_SKILL_RUNNER_CMD="$ROOT/bin/skill_runner"
 export GOFLOW_WEB_TOOLS_CMD="$ROOT/bin/web_tools"
 export GOFLOW_NETWORK_TOOLS_CMD="$ROOT/bin/network_tools"
+export GOFLOW_OFFICE_TOOLS_CMD="$ROOT/bin/office_tools"
+export GOFLOW_HOST_TOOLS_CMD="$ROOT/bin/host_tools"
+export GOFLOW_SSH_TOOLS_CMD="$ROOT/bin/ssh_tools"
+export GOFLOW_NOTIFICATION_TOOLS_CMD="$ROOT/bin/notification_tools"
 export GOFLOW_PYTHON_CMD="${GOFLOW_PYTHON_CMD:-python3}"
 export GOFLOW_PYTHON_NOTES_PATH="$ROOT/mcp_servers/python_notes.py"
-export GOFLOW_BACKUP_BASE_URL="${GOFLOW_BACKUP_BASE_URL:-${GOFLOW_BASE_URL:-}}"
-export GOFLOW_BACKUP_API_KEY="${GOFLOW_BACKUP_API_KEY:-${GOFLOW_API_KEY:-}}"
-export GOFLOW_BACKUP_MODEL="${GOFLOW_BACKUP_MODEL:-${GOFLOW_MODEL:-}}"
 WORKSPACE="${1:-$PWD/workspace}"
 echo "Starting GoFlow Web Studio at http://127.0.0.1:8080/console"
 exec "$ROOT/bin/goflow" --config "$ROOT/configs/goflow.binary.yaml" --workspace "$WORKSPACE" --http :8080
@@ -160,6 +185,13 @@ def archive_target(stage_dir: Path, archive_base: Path, goos: str) -> Path:
     return archive_path
 
 
+def display_path(path: Path) -> Path:
+    try:
+        return path.relative_to(ROOT)
+    except ValueError:
+        return path
+
+
 def build_target(version: str, goos: str, goarch: str, dist_dir: Path) -> Path:
     package_name = f"goflow-agent_{version}_{goos}_{goarch}"
     stage_dir = dist_dir / package_name
@@ -172,7 +204,7 @@ def build_target(version: str, goos: str, goarch: str, dist_dir: Path) -> Path:
     copy_common_assets(stage_dir)
     write_launchers(stage_dir, goos)
     archive = archive_target(stage_dir, dist_dir / package_name, goos)
-    print(f"created {archive.relative_to(ROOT)}")
+    print(f"created {display_path(archive)}")
     return archive
 
 
@@ -183,7 +215,7 @@ def write_checksums(archives: list[Path], dist_dir: Path) -> Path:
         digest = hashlib.sha256(archive.read_bytes()).hexdigest()
         lines.append(f"{digest}  {archive.name}")
     checksum_path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-    print(f"created {checksum_path.relative_to(ROOT)}")
+    print(f"created {display_path(checksum_path)}")
     return checksum_path
 
 

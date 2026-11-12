@@ -94,15 +94,9 @@ vertical_pack:
     - "{{.}}"
 {{ end }}
 {{ end }}
-{{ if .SimpleMode }}
-  simple_mode:
-{{ range .SimpleMode }}
-    - "{{.}}"
-{{ end }}
-{{ end }}
-{{ if .ExpertMode }}
-  expert_mode:
-{{ range .ExpertMode }}
+{{ if .PresentationGuidance }}
+  presentation_guidance:
+{{ range .PresentationGuidance }}
     - "{{.}}"
 {{ end }}
 {{ end }}

@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -14,6 +15,39 @@ import (
 	skillpkg "github.com/FyMatt/GoFlow-Agent/internal/skill"
 	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
 )
+
+func TestFailWorkflowRunTreatsWrappedCancellationAsCancelled(t *testing.T) {
+	runtimeRef := newWorkflowTestRuntimeWithSuspendedFixTool()
+	runID := runtimeRef.session.StartWorkflowRun(workflowNameSkillChain, "run tests")
+	runtimeRef.WorkflowRunner().failWorkflowRun(runID, workflowNameSkillChain, "run tests", errors.New("llm chat: read Responses stream error: context canceled"))
+	run, ok := runtimeRef.session.WorkflowRun(runID)
+	if !ok || run.Status != "cancelled" {
+		t.Fatalf("wrapped cancellation must remain cancelled, got %#v", run)
+	}
+}
+
+func TestWorkflowFinalSummaryPreservesCompleteFinalStageOutput(t *testing.T) {
+	final := "最终结论\n\n" + strings.Repeat("完整验证证据。", 40)
+	stages := []WorkflowStageResult{
+		{Stage: "plan", Agent: "planner", Result: schema.AgentResult{Output: "plan"}},
+		{Stage: "consolidate", Agent: "auditor", Result: schema.AgentResult{Output: final}},
+	}
+	if got := workflowFinalSummary(stages); got != final {
+		t.Fatalf("final workflow summary was truncated or replaced: %q", got)
+	}
+	if compact := summarizeWorkflow(stages); len(compact) >= len(final) {
+		t.Fatalf("progress summary should remain compact, got %d bytes", len(compact))
+	}
+}
+
+func TestWorkflowFinalDecisionStatusDoesNotMarkBlockedDeliveryCompleted(t *testing.T) {
+	if got := workflowFinalDecisionStatus(`{"summary":"tests unavailable","decision":"blocked"}`); got != "blocked" {
+		t.Fatalf("blocked final decision status = %q", got)
+	}
+	if got := workflowFinalDecisionStatus(`{"summary":"done","decision":"passed"}`); got != "completed" {
+		t.Fatalf("passed final decision status = %q", got)
+	}
+}
 
 type workflowStubLLMClient struct {
 	responses []schema.ChatResponse
@@ -351,9 +385,10 @@ func newWorkflowTestRuntimeWithSuspendedFixTool() *Runtime {
 
 func newWorkflowTestRuntimeWithSuspendedFixToolAndDefaultAgent(defaultAgent string) *Runtime {
 	cfg := &config.Config{
-		Audit:        config.AuditConfig{},
-		Session:      config.SessionConfig{MaxHistory: 8},
-		DefaultAgent: defaultAgent,
+		Audit:         config.AuditConfig{},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		WorkspaceRoot: "C:/repo",
+		DefaultAgent:  defaultAgent,
 		Agents: map[string]config.AgentProfile{
 			"chat": {
 				Name:             "Chat",
@@ -441,9 +476,10 @@ type repeatedFixSuspensionCapture struct {
 
 func newWorkflowTestRuntimeWithRepeatedSuspendedFixTools() repeatedFixSuspensionCapture {
 	cfg := &config.Config{
-		Audit:        config.AuditConfig{},
-		Session:      config.SessionConfig{MaxHistory: 8},
-		DefaultAgent: workflowAgentPlanner,
+		Audit:         config.AuditConfig{},
+		Session:       config.SessionConfig{MaxHistory: 8},
+		WorkspaceRoot: "C:/repo",
+		DefaultAgent:  workflowAgentPlanner,
 		Agents: map[string]config.AgentProfile{
 			workflowAgentPlanner: {
 				Name:             "Planner",

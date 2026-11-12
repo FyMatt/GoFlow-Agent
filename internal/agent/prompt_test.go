@@ -152,7 +152,7 @@ func TestCompactMessagesForSummaryPromptDropsOlderConversation(t *testing.T) {
 	if len(compacted) != 11 {
 		t.Fatalf("expected leading context plus marker plus latest eight messages, got %d: %#v", len(compacted), compacted)
 	}
-	if !strings.Contains(compacted[2].Content, "compacted 4 earlier conversation messages") {
+	if !strings.Contains(compacted[2].Content, "compacted earlier conversation messages") {
 		t.Fatalf("expected compaction marker, got %#v", compacted[2])
 	}
 	if compacted[0].Content == "" || compacted[1].Content == "" || !strings.Contains(compacted[0].Content, "message-00") || !strings.Contains(compacted[1].Content, "message-01") {
@@ -187,22 +187,59 @@ func TestCompactMessagesForResumePromptStartsAtAssistantBeforeTool(t *testing.T)
 }
 
 func TestCompactMessagesForConversationRetainsLeadingContext(t *testing.T) {
+	long := strings.Repeat("detail ", 400)
 	messages := []schema.Message{
 		{Role: "system", Content: "stable system"},
 		{Role: "user", Content: "original request"},
 	}
 	for i := 0; i < 18; i++ {
-		messages = append(messages, schema.Message{Role: "assistant", Content: fmt.Sprintf("assistant-%02d", i)})
+		messages = append(messages, schema.Message{Role: "assistant", Content: fmt.Sprintf("assistant-%02d %s", i, long)})
 	}
-	compacted := compactMessagesForConversation(messages)
-	if len(compacted) < 3 {
-		t.Fatalf("expected preserved leading context plus compacted tail, got %#v", compacted)
+	pruned := pruneMessagesForConversation(messages, 4, 1200, 900)
+	if len(pruned) != len(messages) {
+		t.Fatalf("pruning must keep every message so the prefix stays append-only, got %d of %d", len(pruned), len(messages))
 	}
-	if compacted[0].Role != "system" || compacted[1].Role != "user" {
-		t.Fatalf("expected leading context preserved, got %#v", compacted[:2])
+	if pruned[0].Role != "system" || pruned[1].Role != "user" {
+		t.Fatalf("expected leading context preserved, got %#v", pruned[:2])
 	}
-	if !strings.Contains(compacted[2].Content, "compacted") {
-		t.Fatalf("expected compacted marker after leading context, got %#v", compacted)
+	if len(pruned[2].Content) >= len(messages[2].Content) {
+		t.Fatalf("expected older entries to be pruned, got %d bytes", len(pruned[2].Content))
+	}
+	if pruned[len(pruned)-1].Content != messages[len(messages)-1].Content {
+		t.Fatalf("expected the recent window untouched, got %q", pruned[len(pruned)-1].Content)
+	}
+}
+
+func TestNormalizeToolConversationMessagesCompletesEveryAssistantToolCall(t *testing.T) {
+	messages := []schema.Message{
+		{Role: "user", Content: "inspect"},
+		{Role: "assistant", ToolCalls: []schema.ToolCall{
+			{ID: "call-1", Name: "read_file"},
+			{ID: "call-2", Name: "read_file_range"},
+		}},
+		{Role: "tool", Name: "read_file", ToolCallID: "call-1", Content: "ok"},
+		{Role: "user", Content: "continue"},
+	}
+
+	normalized, repairs := normalizeToolConversationMessages(messages)
+	if repairs != 1 {
+		t.Fatalf("expected one missing tool result repair, got %d: %#v", repairs, normalized)
+	}
+	if len(normalized) != 5 || normalized[2].ToolCallID != "call-1" || normalized[3].ToolCallID != "call-2" || normalized[4].Role != "user" {
+		t.Fatalf("expected ordered complete tool response block, got %#v", normalized)
+	}
+	if !strings.Contains(normalized[3].Content, "must not be treated as success") {
+		t.Fatalf("expected explicit unavailable-result evidence, got %#v", normalized[3])
+	}
+}
+
+func TestAssistantToolMessageUsesCanonicalResponseCalls(t *testing.T) {
+	message := assistantToolMessage(schema.ChatResponse{
+		Message:   schema.Message{Role: "assistant", ToolCalls: []schema.ToolCall{{ID: "stale", Name: "old"}}},
+		ToolCalls: []schema.ToolCall{{ID: "current", Name: "read_file"}},
+	})
+	if len(message.ToolCalls) != 1 || message.ToolCalls[0].ID != "current" {
+		t.Fatalf("expected canonical response tool calls, got %#v", message.ToolCalls)
 	}
 }
 
@@ -214,21 +251,23 @@ func TestCompactMessagesForConversationIsIdempotent(t *testing.T) {
 	for i := 0; i < 22; i++ {
 		messages = append(messages, schema.Message{Role: "assistant", Content: fmt.Sprintf("turn-%02d", i)})
 	}
-	once := compactMessagesForConversation(messages)
-	twice := compactMessagesForConversation(once)
-	markers := 0
-	latestMarker := ""
-	for _, message := range twice {
-		if isGoFlowConversationCompactionMarker(message.Content) {
-			markers++
-			latestMarker = message.Content
+	once := pruneMessagesForConversation(messages, 4, 1200, 900)
+	twice := pruneMessagesForConversation(once, 4, 1200, 900)
+	if len(twice) != len(messages) {
+		t.Fatalf("expected every message retained, got %d of %d", len(twice), len(messages))
+	}
+	// Pruning must be a pure function of the message: running it again on its
+	// own output has to produce identical bytes, otherwise the prompt prefix
+	// would drift every turn and the provider cache would miss.
+	for index := range once {
+		if once[index].Content != twice[index].Content {
+			t.Fatalf("pruning is not idempotent at message %d: %q vs %q", index, once[index].Content, twice[index].Content)
 		}
 	}
-	if markers != 1 {
-		t.Fatalf("expected one compaction marker after repeated compaction, got %d: %#v", markers, twice)
-	}
-	if !strings.Contains(latestMarker, "earlier conversation messages") || !strings.Contains(latestMarker, "latest") {
-		t.Fatalf("expected readable compaction marker, got %q", latestMarker)
+	for _, message := range twice {
+		if isGoFlowConversationCompactionMarker(message.Content) {
+			t.Fatalf("unexpected dropped-window marker: %q", message.Content)
+		}
 	}
 }
 

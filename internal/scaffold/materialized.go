@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strings"
 	"text/template"
+
+	"gopkg.in/yaml.v3"
 )
 
 //go:embed templates/kits/materialized/*/*.tmpl
@@ -53,7 +55,7 @@ type MaterializedKitTemplateData struct {
 
 func RenderMaterializedKitYAML(runtimeHome string, preset KitPreset, names MaterializedKitNames) (string, error) {
 	toolNames := materializedToolNames(preset, names)
-	return renderMaterializedTemplate(runtimeHome, preset.Name, "kit.yaml.tmpl", MaterializedKitTemplateData{
+	content, err := renderMaterializedTemplate(runtimeHome, preset.Name, "kit.yaml.tmpl", MaterializedKitTemplateData{
 		Preset:          preset,
 		Names:           names,
 		PrimaryProvider: primaryProvider(preset),
@@ -62,6 +64,40 @@ func RenderMaterializedKitYAML(runtimeHome string, preset KitPreset, names Mater
 		DomainToolNotes: domainToolBoundaryNotes(toolNames),
 		WorkflowTitle:   firstOrDefault(preset.RecommendedWorkflow, names.Workflow),
 	})
+	if err != nil || preset.Routing == nil {
+		return content, err
+	}
+	routing := NormalizeKitRouting(preset.Routing)
+	if routing.EntryAgent != "" {
+		routing.EntryAgent = names.Agent
+	}
+	if routing.EntryWorkflow != "" {
+		routing.EntryWorkflow = names.Workflow
+	}
+	var document, node yaml.Node
+	if err := yaml.Unmarshal([]byte(content), &document); err != nil {
+		return "", fmt.Errorf("parse materialized Kit routing: %w", err)
+	}
+	if len(document.Content) != 1 || document.Content[0].Kind != yaml.MappingNode {
+		return "", fmt.Errorf("materialized Kit must be a YAML mapping")
+	}
+	if err := node.Encode(routing); err != nil {
+		return "", err
+	}
+	mapping := document.Content[0]
+	found := false
+	for i := 0; i < len(mapping.Content); i += 2 {
+		if mapping.Content[i].Value == "routing" {
+			mapping.Content[i+1] = &node
+			found = true
+			break
+		}
+	}
+	if !found {
+		mapping.Content = append(mapping.Content, &yaml.Node{Kind: yaml.ScalarNode, Value: "routing"}, &node)
+	}
+	data, err := yaml.Marshal(&document)
+	return string(data), err
 }
 
 func RenderMaterializedAgentConfig(runtimeHome string, preset KitPreset, names MaterializedKitNames) (string, error) {

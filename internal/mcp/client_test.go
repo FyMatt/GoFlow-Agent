@@ -1,7 +1,10 @@
 package mcp
 
 import (
+	"bufio"
 	"context"
+	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -12,6 +15,55 @@ import (
 
 	"github.com/FyMatt/GoFlow-Agent/internal/config"
 )
+
+func TestMCPDelayHelperProcess(t *testing.T) {
+	if os.Getenv("GOFLOW_MCP_DELAY_HELPER") != "1" {
+		return
+	}
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		var request map[string]any
+		_ = json.Unmarshal(scanner.Bytes(), &request)
+		time.Sleep(10 * time.Second)
+		encoded, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request["id"],
+			"result":  map[string]any{"tools": []any{}},
+		})
+		fmt.Fprintln(os.Stdout, string(encoded))
+	}
+	os.Exit(0)
+}
+
+func TestMCPResyncHelperProcess(t *testing.T) {
+	if os.Getenv("GOFLOW_MCP_RESYNC_HELPER") != "1" {
+		return
+	}
+	marker := os.Getenv("GOFLOW_MCP_RESYNC_MARKER")
+	scanner := bufio.NewScanner(os.Stdin)
+	for scanner.Scan() {
+		var request map[string]any
+		_ = json.Unmarshal(scanner.Bytes(), &request)
+		if _, err := os.Stat(marker); os.IsNotExist(err) {
+			_ = os.WriteFile(marker, []byte("first request received"), 0o600)
+			time.Sleep(10 * time.Second)
+		}
+		encoded, _ := json.Marshal(map[string]any{
+			"jsonrpc": "2.0",
+			"id":      request["id"],
+			"result": map[string]any{"tools": []map[string]any{{
+				"name":        "resynced_tool",
+				"description": "available after restart",
+				"kind":        "read",
+				"input_schema": map[string]any{
+					"type": "object",
+				},
+			}}},
+		})
+		fmt.Fprintln(os.Stdout, string(encoded))
+	}
+	os.Exit(0)
+}
 
 func TestNewClientAppliesIsolationConfig(t *testing.T) {
 	t.Setenv("PATH", "/usr/local/bin")
@@ -130,6 +182,148 @@ func TestAcquireCallSlotReportsQueuedAndActiveMetrics(t *testing.T) {
 	}
 }
 
+func TestCallTimeoutStopsServerBeforeReturning(t *testing.T) {
+	t.Setenv("GOFLOW_MCP_DELAY_HELPER", "1")
+	binary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	client := NewClient(config.MCPServerRef{
+		Name:               "delay_helper",
+		Command:            binary,
+		Args:               []string{"-test.run=TestMCPDelayHelperProcess"},
+		EnvAllowlist:       []string{"GOFLOW_MCP_DELAY_HELPER", "PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "TMP", "TEMP"},
+		Isolation:          "process_group",
+		Timeout:            50 * time.Millisecond,
+		MaxRequestBytes:    64 * 1024,
+		MaxResponseBytes:   64 * 1024,
+		MaxConcurrentCalls: 1,
+	})
+	client.killTimeout = 100 * time.Millisecond
+	_, err = client.ListTools(context.Background())
+	if err == nil || !strings.Contains(err.Error(), "mcp call timeout") {
+		t.Fatalf("expected timeout, got %v", err)
+	}
+	client.mu.Lock()
+	defer client.mu.Unlock()
+	if client.cmd != nil || client.stdin != nil || client.stdout != nil {
+		t.Fatalf("expected timed-out server process and pipes to be cleared")
+	}
+}
+
+func TestCallCancellationRestartsAndResynchronizesServer(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "first-request.marker")
+	t.Setenv("GOFLOW_MCP_RESYNC_HELPER", "1")
+	t.Setenv("GOFLOW_MCP_RESYNC_MARKER", marker)
+	binary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	client := NewClient(config.MCPServerRef{
+		Name:               "resync_helper",
+		Command:            binary,
+		Args:               []string{"-test.run=TestMCPResyncHelperProcess"},
+		EnvAllowlist:       []string{"GOFLOW_MCP_RESYNC_HELPER", "GOFLOW_MCP_RESYNC_MARKER", "PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "TMP", "TEMP"},
+		Isolation:          "process_group",
+		Timeout:            5 * time.Second,
+		MaxRequestBytes:    64 * 1024,
+		MaxResponseBytes:   64 * 1024,
+		MaxConcurrentCalls: 1,
+	})
+	client.killTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { _ = client.Close() })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	firstResult := make(chan error, 1)
+	go func() {
+		_, err := client.ListTools(ctx)
+		firstResult <- err
+	}()
+
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for helper to receive first request")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	if err := <-firstResult; err == nil || !strings.Contains(err.Error(), "mcp call cancelled: context canceled") {
+		t.Fatalf("expected explicit cancellation error, got %v", err)
+	}
+	if status := client.HealthStatus(context.Background()); !strings.HasPrefix(status, "idle") || strings.Contains(status, "error") {
+		t.Fatalf("caller cancellation must not poison MCP health, got %q", status)
+	}
+
+	tools, err := client.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools after cancellation: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "resynced_tool" {
+		t.Fatalf("expected clean response from restarted server, got %#v", tools)
+	}
+	client.mu.Lock()
+	restarts := client.restartCount
+	client.mu.Unlock()
+	if restarts < 2 {
+		t.Fatalf("expected server restart after cancellation, got %d starts", restarts)
+	}
+}
+
+func TestHealthStatusCallerCancellationRemainsIdle(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "health-request-seen")
+	if err := os.WriteFile(marker, []byte("allow initial response"), 0o600); err != nil {
+		t.Fatalf("seed marker: %v", err)
+	}
+	t.Setenv("GOFLOW_MCP_RESYNC_HELPER", "1")
+	t.Setenv("GOFLOW_MCP_RESYNC_MARKER", marker)
+	binary, err := filepath.Abs(os.Args[0])
+	if err != nil {
+		t.Fatalf("resolve test binary: %v", err)
+	}
+	client := NewClient(config.MCPServerRef{
+		Name:               "health_cancel_helper",
+		Command:            binary,
+		Args:               []string{"-test.run=TestMCPResyncHelperProcess"},
+		EnvAllowlist:       []string{"GOFLOW_MCP_RESYNC_HELPER", "GOFLOW_MCP_RESYNC_MARKER", "PATH", "HOME", "USERPROFILE", "LOCALAPPDATA", "TMP", "TEMP"},
+		Isolation:          "process_group",
+		Timeout:            5 * time.Second,
+		MaxRequestBytes:    64 * 1024,
+		MaxResponseBytes:   64 * 1024,
+		MaxConcurrentCalls: 1,
+	})
+	client.killTimeout = 100 * time.Millisecond
+	t.Cleanup(func() { _ = client.Close() })
+	if _, err := client.ListTools(context.Background()); err != nil {
+		t.Fatalf("initial ListTools: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("remove marker: %v", err)
+	}
+
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan string, 1)
+	go func() { result <- client.HealthStatus(ctx) }()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		if _, err := os.Stat(marker); err == nil {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("timed out waiting for health request")
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	cancel()
+	status := <-result
+	if !strings.HasPrefix(status, "idle") || strings.Contains(status, "error") {
+		t.Fatalf("cancelled health request must remain idle, got %q", status)
+	}
+}
+
 func TestNormalizeIsolationModeDefaultsToNone(t *testing.T) {
 	if got := normalizeIsolationMode(""); got != "none" {
 		t.Fatalf("expected empty isolation to normalize to none, got %q", got)
@@ -143,11 +337,21 @@ func TestNormalizeIsolationModeDefaultsToNone(t *testing.T) {
 	if got := normalizeIsolationMode(" WINDOWS_RESTRICTED_TOKEN "); got != "windows_restricted_token" {
 		t.Fatalf("expected windows_restricted_token isolation to normalize, got %q", got)
 	}
-	if got := normalizeIsolationMode(" CONTAINER "); got != "container" {
-		t.Fatalf("expected container isolation to normalize, got %q", got)
-	}
 	if got := normalizeIsolationMode(" LINUX_NETNS "); got != "linux_netns" {
 		t.Fatalf("expected linux_netns isolation to normalize, got %q", got)
+	}
+}
+
+func TestAutomaticUnknownMCPServerNeverResolvesToUnisolatedProcess(t *testing.T) {
+	resolved, err := config.ResolveAutomaticMCPIsolation(config.MCPServerRef{Name: "third_party_helper", Command: "go", Isolation: "auto"})
+	if err != nil {
+		if !strings.Contains(err.Error(), "原生强沙箱") || !strings.Contains(err.Error(), "拒绝") {
+			t.Fatalf("expected a clear native sandbox refusal, got %v", err)
+		}
+		return
+	}
+	if resolved.Isolation != "native_strong" {
+		t.Fatalf("unknown MCP must resolve only to native_strong, got %#v", resolved)
 	}
 }
 
@@ -264,119 +468,4 @@ func TestNewClientAddsWorkspaceRootEnv(t *testing.T) {
 	if !strings.Contains(joined, "GOFLOW_WORKSPACE_ROOT="+workspaceRoot) {
 		t.Fatalf("expected workspace env in %#v", client.env)
 	}
-}
-
-func TestBuildContainerRunCommandUsesWorkspaceMountEnvAndLimits(t *testing.T) {
-	t.Setenv("PATH", "/usr/local/bin")
-	t.Setenv("API_TOKEN", "secret")
-	workspaceRoot := t.TempDir()
-
-	runtimeCommand, args, env, err := buildContainerRunCommand(containerRunConfig{
-		ServerName:      "file_tools",
-		Command:         "/app/bin/file_tools",
-		Args:            []string{"--stdio"},
-		EnvAllowlist:    []string{"API_TOKEN", "API_TOKEN", "MISSING"},
-		WorkspaceRoot:   workspaceRoot,
-		NetworkDisabled: true,
-		Options: map[string]string{
-			"image":             "goflow/mcp-tools:latest",
-			"runtime":           "docker",
-			"workspace_mount":   "ro",
-			"workspace_target":  "/workspace",
-			"container_workdir": "/app",
-			"ipc":               "none",
-			"userns":            "auto",
-			"tool_source":       filepath.Join(workspaceRoot, "tools", "helper.py"),
-			"tool_target":       "/goflow-tools/helper.py",
-			"tool_mount":        "ro",
-			"memory":            "256m",
-			"memory_swap":       "256m",
-			"cpus":              "0.5",
-			"pids_limit":        "64",
-			"pull_policy":       "missing",
-			"readonly_rootfs":   "true",
-			"no_new_privileges": "true",
-			"cap_drop":          "all",
-			"security_opt":      "seccomp=/etc/goflow/seccomp.json;apparmor=goflow-mcp",
-			"tmpfs":             "/tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m",
-			"init":              "true",
-		},
-	})
-	if err != nil {
-		t.Fatalf("build container command: %v", err)
-	}
-	if runtimeCommand != "docker" {
-		t.Fatalf("expected docker runtime, got %q", runtimeCommand)
-	}
-	joinedArgs := strings.Join(args, "\n")
-	for _, want := range []string{
-		"run",
-		"--rm",
-		"--network\nnone",
-		"--ipc\nnone",
-		"--userns\nauto",
-		"--memory\n256m",
-		"--memory-swap\n256m",
-		"--cpus\n0.5",
-		"--pids-limit\n64",
-		"--read-only",
-		"--security-opt\nno-new-privileges",
-		"--security-opt\nseccomp=/etc/goflow/seccomp.json",
-		"--security-opt\napparmor=goflow-mcp",
-		"--init",
-		"--cap-drop\nall",
-		"--tmpfs\n/tmp:rw,noexec,nosuid,size=64m",
-		"--tmpfs\n/run:rw,noexec,nosuid,size=8m",
-		"--workdir\n/app",
-		"--env\nAPI_TOKEN=secret",
-		"--env\nGOFLOW_WORKSPACE_ROOT=/workspace",
-		"--pull\nmissing",
-		"goflow/mcp-tools:latest",
-		"/app/bin/file_tools",
-		"--stdio",
-	} {
-		if !strings.Contains(joinedArgs, want) {
-			t.Fatalf("expected args to contain %q, got %#v", want, args)
-		}
-	}
-	mount := "type=bind,source=" + filepath.Clean(workspaceRoot) + ",target=/workspace,readonly"
-	if !strings.Contains(joinedArgs, mount) {
-		t.Fatalf("expected read-only workspace mount %q in %#v", mount, args)
-	}
-	toolMount := "type=bind,source=" + filepath.Clean(filepath.Join(workspaceRoot, "tools", "helper.py")) + ",target=/goflow-tools/helper.py,readonly"
-	if !strings.Contains(joinedArgs, toolMount) {
-		t.Fatalf("expected read-only tool mount %q in %#v", toolMount, args)
-	}
-	if strings.Contains(joinedArgs, "MISSING=") {
-		t.Fatalf("unexpected missing env in args %#v", args)
-	}
-	if !containsEnv(env, "PATH=/usr/local/bin") {
-		t.Fatalf("expected docker runtime PATH env, got %#v", env)
-	}
-}
-
-func TestBuildContainerRunCommandSupportsNoWorkspaceMount(t *testing.T) {
-	_, args, _, err := buildContainerRunCommand(containerRunConfig{
-		ServerName: "stateless",
-		Command:    "helper",
-		Options: map[string]string{
-			"image":           "goflow/stateless:latest",
-			"workspace_mount": "none",
-		},
-	})
-	if err != nil {
-		t.Fatalf("build stateless container command: %v", err)
-	}
-	if strings.Contains(strings.Join(args, "\n"), "type=bind") {
-		t.Fatalf("did not expect a workspace mount in %#v", args)
-	}
-}
-
-func containsEnv(env []string, target string) bool {
-	for _, item := range env {
-		if item == target {
-			return true
-		}
-	}
-	return false
 }

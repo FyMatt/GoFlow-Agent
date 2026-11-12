@@ -28,7 +28,7 @@ func HostFolderPickerCapability() FolderPickerCapability {
 	capability := FolderPickerCapability{
 		Available: false,
 		Mode:      "client_or_text",
-		Reason:    "host folder picker is disabled by default; use a browser/client picker or type a workspace path",
+		Reason:    "host folder picker was disabled by GOFLOW_ENABLE_HOST_FOLDER_PICKER",
 		Platform:  platform,
 		OptInEnv:  hostFolderPickerEnv,
 	}
@@ -43,7 +43,7 @@ func HostFolderPickerCapability() FolderPickerCapability {
 	}
 	capability.Available = true
 	capability.Mode = "host_dialog"
-	capability.Reason = "host folder picker is enabled for this local runtime"
+	capability.Reason = "host folder picker is available for this local runtime"
 	capability.Command = command
 	return capability
 }
@@ -75,11 +75,17 @@ func PickFolder(ctx context.Context, initialPath string) (string, bool, error) {
 }
 
 func folderPickerEnvEnabled() bool {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv(hostFolderPickerEnv))) {
+	raw := strings.ToLower(strings.TrimSpace(os.Getenv(hostFolderPickerEnv)))
+	if raw == "" {
+		return true
+	}
+	switch raw {
 	case "1", "true", "yes", "y", "on", "enabled":
 		return true
-	default:
+	case "0", "false", "no", "n", "off", "disabled":
 		return false
+	default:
+		return true
 	}
 }
 

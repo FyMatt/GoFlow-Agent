@@ -95,16 +95,20 @@ func (s *Server) handleWorkflowTemplateResourceItem(w http.ResponseWriter, r *ht
 	case http.MethodPut:
 		template, err := decodeWorkflowTemplateResource(r)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
-		saved, err := s.runtime.SaveWorkflowTemplateResource(name, template)
+		saved, err := s.saveWorkflowTemplateResource(name, template)
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		writeJSON(w, saved)
 	case http.MethodDelete:
+		if err := s.ensureResourceNotInUse("workflow", name); err != nil {
+			http.Error(w, err.Error(), http.StatusConflict)
+			return
+		}
 		if err := s.runtime.DeleteWorkflowTemplateResource(name); err != nil {
 			http.NotFound(w, r)
 			return
@@ -134,7 +138,7 @@ func (s *Server) handleWorkflowTemplateResourceCapture(w http.ResponseWriter, r 
 	if r.Body != nil {
 		data, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		if strings.TrimSpace(string(data)) != "" {
@@ -144,9 +148,13 @@ func (s *Server) handleWorkflowTemplateResourceCapture(w http.ResponseWriter, r 
 			}
 		}
 	}
+	if err := s.ensureResourceNotInUse("workflow", name); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	template, err := s.runtime.CaptureWorkflowTemplateResource(name, req.Workflow, req.Title, req.Description)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 		return
 	}
 	writeJSONStatus(w, http.StatusCreated, template)
@@ -157,7 +165,7 @@ func (s *Server) handleWorkflowTemplateResourceFork(w http.ResponseWriter, r *ht
 	if r.Body != nil {
 		data, err := io.ReadAll(io.LimitReader(r.Body, 1<<20))
 		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+			http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 			return
 		}
 		if strings.TrimSpace(string(data)) != "" {
@@ -171,9 +179,13 @@ func (s *Server) handleWorkflowTemplateResourceFork(w http.ResponseWriter, r *ht
 	if source == "" {
 		source = strings.TrimSpace(req.Template)
 	}
+	if err := s.ensureResourceNotInUse("workflow", name); err != nil {
+		http.Error(w, err.Error(), http.StatusConflict)
+		return
+	}
 	template, err := s.runtime.ForkWorkflowTemplateResource(name, source, req.Title, req.Description)
 	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
+		http.Error(w, err.Error(), resourceErrorStatus(err, http.StatusBadRequest))
 		return
 	}
 	writeJSONStatus(w, http.StatusCreated, template)

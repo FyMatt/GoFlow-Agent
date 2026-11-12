@@ -1,132 +1,62 @@
-# Skill 开发
+# Skill 编写
 
-[English](./skill-authoring.md) | [简体中文](./skill-authoring.zh-CN.md)
+Skill 用于打包特定领域的说明、参考资料、模板、确定性脚本和验收规则。GoFlow 兼容常见 `SKILL.md`，也会读取仓库中的 `AGENTS.md` 与 `CLAUDE.md`。
 
-Skill 是可复用的任务指导，存放在 `skills/<name>/SKILL.md`。
-
-当任务需要领域流程、工具偏好、输出结构或可复用工作方式时，应使用 Skill。
-
-## CLI 脚手架
-
-```text
-/skill-templates
-/new-skill <template> <name>
-```
-
-内置模板：
-
-- `code-writing`
-- `code-audit`
-- `web-vulnerability-research`
-- `binary-vulnerability-research`
-- `execution-plan`
-
-示例：
-
-```text
-/new-skill code-audit custom-audit
-```
-
-生成后会写入 `skills/custom-audit/SKILL.md`，并进行校验和 reload。
-
-## Web Studio
-
-```text
-http://127.0.0.1:8080/console#catalog
-```
-
-Skill editor 会写入 `skills/<name>/SKILL.md`，使用与启动时相同的 parser 校验 frontmatter 和 instructions。
-
-## 最小格式
-
-兼容 Claude/Codex 风格的最小 Skill：
+## 最小结构
 
 ```markdown
 ---
-name: image-workflow
-description: Use when the user asks to generate, edit, or evaluate bitmap images.
-metadata:
-  short-description: Image workflow helper
+name: source-verification
+description: 对互联网资料中的重要结论进行来源核验。
 ---
 
-# Image Workflow
+# 来源核验
 
-Use this skill for image tasks.
+在任务需要观点到来源证据时使用。
+
+## 步骤
+
+1. 记录待核验结论与范围。
+2. 收集权威来源和独立来源。
+3. 报告一致、冲突、日期和限制。
+
+## 验收
+
+- 每个重要结论都能对应来源。
+- 冲突与不确定性必须明确保留。
 ```
 
-## 原生 GoFlow 格式
+触发条件要具体。较长资料放入 `references/`，可复用文档输入放入 `templates/`，确定性辅助代码放入 `scripts/`。
 
-原生格式可以增加：
+## 声明脚本
 
-- 激活关键词。
-- 推荐 Agent。
-- 工具声明。
-- 参数。
-- 输出类型。
-- 后续 Skill。
-- 资源文件。
-
-这些字段让 Skill 更适合复杂工作流编排。
-
-## 复杂 Skill 脚本
-
-复杂 Skill 可以在 frontmatter 里声明确定性的辅助脚本，而不是把所有逻辑都塞进说明文字里。适合做重复的数据采集、解析、归一化等任务，但仍然要走正常的审批和隔离策略。
-
-示例：
+脚本必须按名称声明，并且路径保持在 Skill 目录内：
 
 ```yaml
 scripts:
-  - name: collect-assets
-    description: Fetch and summarize page assets for review.
-    path: scripts/collect_assets.py
+  - name: compile-evidence
+    path: scripts/compile_evidence.py
     runtime: python
     output: json
     timeout: 30s
-    isolation: container
-    workspace_mount: ro
-    network: disabled
     approval: required
     args_schema:
       type: object
       additionalProperties: false
       properties:
-        url:
+        input:
           type: string
-      required: [url]
+      required: [input]
 ```
 
-GoFlow 会校验这些声明，并通过正常运行时暴露出来：
+脚本通过 `skill_runner/run_script` 执行，并继续受 Schema、智能体权限、内联审批、审计、任务副本和 MCP 原生隔离策略约束。脚本元数据只能描述意图，不能自行授予权限。第三方脚本所在连接使用 `auto` 或 `native_strong`。
 
-- 脚本路径必须在 Skill 目录的 `scripts/` 内。
-- runtime、isolation、network、approval、timeout、output 都会校验。
-- args_schema 必须是 object，且默认关闭额外字段。
-- 声明的脚本会暴露到运行时提示词和资源 API。
-- 匹配到包含脚本的 Skill 后，只有当前 Agent profile 仍允许 `exec` 时，才会暴露 `skill_runner/run_script`。
+## 质量要求
 
-脚本执行不是隐藏的后门能力，而是普通工具调用。模型需要通过
-`skill_runner/run_script` 调用：
+- 明确输入、输出和验收证据。
+- 解析、文件转换、校验和导出优先使用确定性代码。
+- 不在说明文字中隐藏网络、写入、执行或主机变更。
+- 不写入 API Key、SSH 私钥、密码或个人数据。
+- 交付可直接使用的产物与校验结果，而不是只有描述。
 
-```json
-{"skill":"my-skill","script":"collect-assets","args":{"url":"https://example.test"}}
-```
-
-该调用会继续经过 Agent 工具权限、审批策略、审计日志、风险元数据和 MCP
-隔离配置，和其他 `exec` 工具一致。
-
-脚本会从 stdin 和 `GOFLOW_SKILL_ARGS_JSON` 环境变量接收 JSON 参数。返回值是
-JSON 对象，包含 Skill 名称、脚本名称、声明的 runtime/output/network
-元数据、stdout、退出码、耗时、是否超时，以及声明 `output: json` 时的 JSON
-输出校验状态。
-
-`isolation`、`network`、`workspace_mount` 字段用于表达脚本意图。真正的执行边界
-由 MCP server 配置决定。需要强隔离时，使用 MCP `isolation: container`
-启用 Docker/Podman 沙箱；默认本地二进制配置使用 `process_group`，它主要是进程生命周期边界，不是强安全沙箱。
-
-## 编写建议
-
-- 明确触发场景。
-- 明确允许使用的工具和输出格式。
-- 把复杂参考材料放到 `references/`。
-- 把可执行辅助脚本放到 `scripts/`。
-- 把模板文件放到 `templates/`。
-- 不要在 Skill 中授予 Agent 本来没有的权限；权限仍由 Agent profile 和 runtime policy 控制。
+参见 [Skills](./skills.zh-CN.md)、[MCP](./mcp.zh-CN.md) 和 [资源](./resources.zh-CN.md)。

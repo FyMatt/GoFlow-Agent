@@ -108,7 +108,12 @@ func compactWorkflowRunForPersist(run WorkflowRunSnapshot) WorkflowRunSnapshot {
 	run.PendingArgsSummary = compactSessionText(run.PendingArgsSummary, maxWorkflowRunText)
 	run.PendingFields = copyWorkflowInputFields(run.PendingFields)
 	run.CompletedStages = compactWorkflowStagesForPersist(run.CompletedStages)
+	run.ChangeSlices = copyWorkflowChangeSlices(run.ChangeSlices)
 	run.Artifacts = compactWorkflowArtifactsForPersist(run.Artifacts)
+	run.ToolOperations = copyWorkflowToolOperations(run.ToolOperations)
+	for i := range run.ToolOperations {
+		run.ToolOperations[i].Result.Content = compactSessionText(run.ToolOperations[i].Result.Content, maxWorkflowRunText)
+	}
 	run.Events = append([]WorkflowRunEventSnapshot(nil), run.Events...)
 	for i := range run.Events {
 		run.Events[i].Content = compactSessionText(run.Events[i].Content, maxWorkflowRunText)
@@ -136,6 +141,13 @@ func compactPendingApprovalsForPersist(items []PendingApprovalSnapshot) []Pendin
 		out[i].Arguments = compactSessionText(out[i].Arguments, maxAgentRunText)
 		out[i].Request = compactSessionText(out[i].Request, maxAgentRunText)
 		out[i].CompletedSummary = compactSessionText(out[i].CompletedSummary, maxAgentRunText)
+		out[i].WorkflowSystemPrompt = compactSessionText(out[i].WorkflowSystemPrompt, maxAgentRunText)
+		for messageIndex := range out[i].WorkflowMessages {
+			out[i].WorkflowMessages[messageIndex].Content = compactSessionText(out[i].WorkflowMessages[messageIndex].Content, maxAgentRunText)
+		}
+		for resultIndex := range out[i].WorkflowCollected {
+			out[i].WorkflowCollected[resultIndex].Content = compactSessionText(out[i].WorkflowCollected[resultIndex].Content, maxAgentRunText)
+		}
 	}
 	return out
 }
@@ -152,6 +164,7 @@ func compactWorkflowStagesForPersist(stages []WorkflowRunStageSnapshot) []Workfl
 		out[i].Outputs = copyWorkflowRunStringMap(stage.Outputs)
 		out[i].OutputValues = compactWorkflowRunAnyMapForPersist(stage.OutputValues)
 		out[i].Metadata = copyWorkflowRunStringMap(stage.Metadata)
+		out[i].ChangeSlices = copyWorkflowChangeSlices(stage.ChangeSlices)
 		out[i].Summary = compactSessionText(stage.Summary, maxWorkflowRunText)
 		out[i].Result = compactAgentResultForPersist(copyAgentResult(stage.Result))
 		out[i].Artifacts = compactWorkflowArtifactsForPersist(stage.Artifacts)

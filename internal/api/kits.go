@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/FyMatt/GoFlow-Agent/internal/agent"
+	"github.com/FyMatt/GoFlow-Agent/internal/config"
 	"github.com/FyMatt/GoFlow-Agent/internal/scaffold"
 	skillpkg "github.com/FyMatt/GoFlow-Agent/internal/skill"
 	"gopkg.in/yaml.v3"
@@ -22,6 +23,7 @@ const kitBundleKind = "goflow.kit_bundle"
 const kitBundleVersion = 1
 
 type kitResourceDocument struct {
+	Routing           *scaffold.KitRouting      `json:"routing,omitempty" yaml:"routing,omitempty"`
 	Kind              string                    `json:"kind,omitempty" yaml:"kind,omitempty"`
 	Version           int                       `json:"version,omitempty" yaml:"version,omitempty"`
 	MinVersion        int                       `json:"min_supported_version,omitempty" yaml:"min_supported_version,omitempty"`
@@ -42,8 +44,19 @@ type kitResourceDocument struct {
 	Examples          []kitExample              `json:"examples,omitempty" yaml:"examples,omitempty"`
 	Metadata          map[string]string         `json:"metadata,omitempty" yaml:"metadata,omitempty"`
 	VerticalPack      *scaffold.KitVerticalPack `json:"vertical_pack,omitempty" yaml:"vertical_pack,omitempty"`
+	Acceptance        *kitAcceptance            `json:"acceptance,omitempty" yaml:"acceptance,omitempty"`
 	Path              string                    `json:"path,omitempty" yaml:"-"`
 	Validation        kitValidationResult       `json:"validation,omitempty" yaml:"-"`
+}
+
+// kitAcceptance declares how a domain proves itself. Keeping the bar next to
+// the domain materials means adding a domain is adding resources plus its
+// acceptance contract, not editing the kernel or the acceptance scripts.
+type kitAcceptance struct {
+	SampleRequest   string   `json:"sample_request" yaml:"sample_request"`
+	VerifyCommands  []string `json:"verify_commands" yaml:"verify_commands"`
+	Deliverables    []string `json:"deliverables,omitempty" yaml:"deliverables,omitempty"`
+	MinQualityScore int      `json:"min_quality_score,omitempty" yaml:"min_quality_score,omitempty"`
 }
 
 type kitExample struct {
@@ -71,6 +84,9 @@ type kitValidationItem struct {
 }
 
 type kitSummary struct {
+	ClaimedMaturity      string                    `json:"claimed_maturity,omitempty"`
+	VerificationStatus   string                    `json:"verification_status"`
+	Routing              *scaffold.KitRouting      `json:"routing,omitempty" yaml:"routing,omitempty"`
 	Name                 string                    `json:"name"`
 	Title                string                    `json:"title,omitempty"`
 	Description          string                    `json:"description,omitempty"`
@@ -99,6 +115,7 @@ type kitSummary struct {
 }
 
 type kitScaffoldPreset struct {
+	Routing             *scaffold.KitRouting      `json:"routing,omitempty" yaml:"routing,omitempty"`
 	Name                string                    `json:"name"`
 	DefaultKitName      string                    `json:"default_kit_name"`
 	Title               string                    `json:"title"`
@@ -123,6 +140,7 @@ type kitScaffoldPreset struct {
 }
 
 type kitScaffoldRequest struct {
+	Routing           *scaffold.KitRouting      `json:"routing,omitempty" yaml:"routing,omitempty"`
 	Name              string                    `json:"name,omitempty"`
 	Title             string                    `json:"title,omitempty"`
 	Description       string                    `json:"description,omitempty"`
@@ -413,6 +431,14 @@ func (s *Server) handleKitResourceValidate(w http.ResponseWriter, r *http.Reques
 	}
 	doc = normalizeKitResource(doc, normalized)
 	result := s.validateKitResource(doc)
+	if doc.Routing != nil {
+		for _, issue := range s.kitRoutingDependencyIssues(r.Context(), doc) {
+			result.Issues = append(result.Issues, kitValidationItem{Severity: issue.Severity, Code: issue.Code, Field: issue.Field, Message: issue.Message, Ref: issue.ResourceName, Recommendation: issue.Recommendation})
+			if issue.Severity == "error" {
+				result.Valid = false
+			}
+		}
+	}
 	result.Name = doc.Name
 	result.Normalized = &doc
 	writeJSON(w, result)
@@ -557,29 +583,40 @@ func kitResourceListForRuntime(runtimeRef *agent.Runtime) []kitSummary {
 		return nil
 	}
 	server := &Server{runtime: runtimeRef}
-	root, err := server.kitResourceRoot()
+	roots, err := server.kitResourceReadRoots()
 	if err != nil {
 		return nil
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		return nil
-	}
-	out := make([]kitSummary, 0, len(entries))
-	for _, entry := range entries {
-		if !entry.IsDir() && !isYAMLFile(entry.Name()) {
+	names := make(map[string]struct{})
+	for _, root := range roots {
+		entries, err := os.ReadDir(root)
+		if os.IsNotExist(err) {
 			continue
 		}
-		name := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
-		if entry.IsDir() {
-			name = entry.Name()
+		if err != nil {
+			return nil
 		}
+		for _, entry := range entries {
+			if !entry.IsDir() && !isYAMLFile(entry.Name()) {
+				continue
+			}
+			name := entry.Name()
+			if !entry.IsDir() {
+				name = strings.TrimSuffix(name, filepath.Ext(name))
+			}
+			names[normalizeResourceName(name)] = struct{}{}
+		}
+	}
+	out := make([]kitSummary, 0, len(names))
+	for name := range names {
 		doc, ok := server.kitResourceByName(name)
 		if !ok {
 			continue
 		}
 		validation := server.validateKitResource(doc)
 		out = append(out, kitSummary{
+			ClaimedMaturity:      kitClaimedMaturity(doc),
+			VerificationStatus:   "unverified",
 			Name:                 doc.Name,
 			Title:                doc.Title,
 			Description:          doc.Description,
@@ -602,6 +639,7 @@ func kitResourceListForRuntime(runtimeRef *agent.Runtime) []kitSummary {
 			WorkflowTemplateRefs: append([]string(nil), doc.WorkflowTemplates...),
 			TeamTemplateRefs:     append([]string(nil), doc.TeamTemplates...),
 			PolicyRuleRefs:       append([]string(nil), doc.PolicyRules...),
+			Routing:              scaffold.NormalizeKitRouting(doc.Routing),
 			VerticalPack:         cloneKitVerticalPack(doc.VerticalPack),
 			Valid:                validation.Valid,
 			Issues:               validation.Issues,
@@ -618,24 +656,13 @@ func kitResourceListForRuntime(runtimeRef *agent.Runtime) []kitSummary {
 
 func (s *Server) kitResourceByName(name string) (kitResourceDocument, bool) {
 	normalized := normalizeResourceName(name)
-	if normalized == "" {
-		return kitResourceDocument{}, false
-	}
-	path, err := s.kitResourcePath(normalized)
+	path, err := s.kitResourceReadPath(normalized)
 	if err != nil {
 		return kitResourceDocument{}, false
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		legacy, legacyErr := s.kitLegacyResourcePath(normalized)
-		if legacyErr != nil {
-			return kitResourceDocument{}, false
-		}
-		data, err = os.ReadFile(legacy)
-		if err != nil {
-			return kitResourceDocument{}, false
-		}
-		path = legacy
+		return kitResourceDocument{}, false
 	}
 	var doc kitResourceDocument
 	if err := yaml.Unmarshal(data, &doc); err != nil {
@@ -654,6 +681,14 @@ func (s *Server) saveKitResource(name string, doc kitResourceDocument) (kitResou
 	doc = normalizeKitResource(doc, normalized)
 	if err := validateKitResourceDocument(doc); err != nil {
 		return kitResourceDocument{}, err
+	}
+	if doc.Routing != nil {
+		validation := s.validateKitResource(doc)
+		for _, issue := range validation.Issues {
+			if issue.Severity == "error" {
+				return kitResourceDocument{}, fmt.Errorf("%s: %s", issue.Code, issue.Message)
+			}
+		}
 	}
 	path, err := s.kitResourcePath(normalized)
 	if err != nil {
@@ -683,6 +718,9 @@ func (s *Server) saveKitResource(name string, doc kitResourceDocument) (kitResou
 		_ = os.Remove(tmp)
 		return kitResourceDocument{}, fmt.Errorf("replace kit resource: %w", err)
 	}
+	if err := s.runtime.SetResourceTombstone("kits", normalized, false); err != nil {
+		return kitResourceDocument{}, fmt.Errorf("restore Kit visibility: %w", err)
+	}
 	doc.Path = path
 	doc.Validation = s.validateKitResource(doc)
 	return doc, nil
@@ -693,18 +731,20 @@ func (s *Server) deleteKitResource(name string) error {
 	if !resourceNamePattern.MatchString(normalized) {
 		return fmt.Errorf("invalid kit name %q: use lowercase letters, numbers, hyphen, or underscore", normalized)
 	}
-	path, err := s.kitResourcePath(normalized)
+	root, err := s.kitResourceRoot()
 	if err != nil {
 		return err
 	}
 	if _, ok := s.kitResourceByName(normalized); !ok {
 		return fmt.Errorf("kit %q not found", normalized)
 	}
-	if err := os.Remove(path); err != nil {
-		return fmt.Errorf("delete kit resource: %w", err)
+	for _, path := range kitResourcePathsAt(root, normalized) {
+		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+			return fmt.Errorf("delete kit resource: %w", err)
+		}
 	}
-	_ = os.Remove(filepath.Dir(path))
-	return nil
+	_ = os.Remove(filepath.Join(root, normalized))
+	return s.runtime.SetResourceTombstone("kits", normalized, true)
 }
 
 func (s *Server) kitScaffoldPresets() []kitScaffoldPreset {
@@ -788,6 +828,7 @@ func kitScaffoldPresetFromShared(preset scaffold.KitPreset) kitScaffoldPreset {
 		RecommendedAgent:    preset.RecommendedAgent,
 		Examples:            examples,
 		Metadata:            cloneKitStringMap(preset.Metadata),
+		Routing:             scaffold.NormalizeKitRouting(preset.Routing),
 		VerticalPack:        cloneKitVerticalPack(preset.VerticalPack),
 	}
 }
@@ -822,6 +863,7 @@ func kitDocumentFromScaffold(preset kitScaffoldPreset, req kitScaffoldRequest) k
 		RequiredEnv:       mergeKitStringRefs(preset.RequiredEnv, req.RequiredEnv, true),
 		Examples:          append([]kitExample(nil), preset.Examples...),
 		Metadata:          mergeKitMetadata(preset.Metadata, req.Metadata),
+		Routing:           overrideKitRouting(preset.Routing, req.Routing),
 		VerticalPack:      overrideKitVerticalPack(preset.VerticalPack, req.VerticalPack),
 	}
 	if len(req.Examples) > 0 {
@@ -943,7 +985,7 @@ func (s *Server) materializedKitBundle(preset kitScaffoldPreset, req kitScaffold
 	doc.Metadata["recommended_team"] = names.TeamTemplate
 	doc.Examples = []kitExample{{
 		Title:       "Run the generated starter workflow",
-		Description: "Uses the generated agent, skill, containerized helper tool, team template, and policy gate.",
+		Description: "使用生成的智能体、Skill、本地 MCP 工具、团队模板和策略门。",
 		Request:     firstKitScaffoldValue(presetExampleRequest(preset), "Describe the task, scope, expected output, and acceptance criteria."),
 		Workflow:    names.Workflow,
 		Agent:       names.Agent,
@@ -996,7 +1038,7 @@ func (s *Server) materializedKitBundle(preset kitScaffoldPreset, req kitScaffold
 		WorkflowTemplates: []agent.WorkflowTemplate{template},
 		Warnings: []string{
 			"Generated agent and MCP tool modules require a runtime restart before active execution.",
-			"The generated helper tool uses Docker/Podman-style container isolation defaults and read-only workspace access.",
+			"生成的辅助工具使用本地进程边界和工作区路径防护。",
 		},
 	}, nil
 }
@@ -1233,6 +1275,7 @@ func materializedKitPresetForTemplate(preset kitScaffoldPreset, doc kitResourceD
 		RecommendedAgent:    doc.Metadata["recommended_agent"],
 		Examples:            examples,
 		Metadata:            copyMap(doc.Metadata),
+		Routing:             scaffold.NormalizeKitRouting(doc.Routing),
 		VerticalPack:        cloneKitVerticalPack(doc.VerticalPack),
 	}
 }
@@ -1255,7 +1298,7 @@ func (s *Server) materializedKitToolDocument(preset kitScaffoldPreset, names kit
 	}
 	doc := toolResourceFromServerDocument(cfg.MCPServers[0])
 	doc.Name = names.Tool
-	doc.Description = fmt.Sprintf("Read-only containerized helper MCP server for the %s kit.", names.Kit)
+	doc.Description = fmt.Sprintf("用于 %s 能力包的本地只读辅助 MCP 服务。", names.Kit)
 	doc.Path = ""
 	doc.ConfigPath = ""
 	doc.Code = ""
@@ -1345,7 +1388,7 @@ func kitMaterializedActivationSteps(names kitMaterializedResourceNames) []string
 		fmt.Sprintf("Restart GoFlow or reload modules so configs/agents/%s.yaml and configs/mcp_servers/%s.yaml are active.", names.Agent, names.Tool),
 		fmt.Sprintf("Run the generated workflow %q with a request and optional scope input.", names.Workflow),
 		fmt.Sprintf("Open %q in Workflow Studio to customize node positions, policy routing, and team roles.", names.WorkflowTemplate),
-		"Switch the helper tool scaffold to a write-capable container preset only when the workflow truly needs workspace mutation.",
+		"仅在工作流确实需要修改文件时，才为辅助工具开放写入权限。",
 	}
 }
 
@@ -1450,6 +1493,13 @@ func (s *Server) buildKitBundle(name string, includeSecrets bool) (kitBundleDocu
 			if provider, found := s.runtime.Provider(ref); found {
 				item = providerResourceFromConfig(normalizeResourceName(ref), provider, true)
 			}
+		}
+		if includeSecrets && strings.HasPrefix(strings.TrimSpace(item.APIKey), "secret://") {
+			resolved, err := config.ResolveSecretReference(s.runtime.DataRoot(), item.APIKey)
+			if err != nil {
+				return kitBundleDocument{}, fmt.Errorf("resolve provider %s secret for export: %w", ref, err)
+			}
+			item.APIKey = resolved
 		}
 		if !includeSecrets {
 			item.APIKey = ""
@@ -1617,7 +1667,7 @@ func (s *Server) importKitBundle(bundle kitBundleDocument, overwrite bool) kitBu
 		exists := err == nil
 		doc := item
 		save("workflow", name, exists, func() error {
-			return runner.SaveWorkflowGraphDocument(name, doc)
+			return s.saveWorkflowGraphResource(name, doc)
 		})
 	}
 	for _, item := range bundle.WorkflowTemplates {
@@ -1625,7 +1675,7 @@ func (s *Server) importKitBundle(bundle kitBundleDocument, overwrite bool) kitBu
 		_, exists := runner.WorkflowTemplate(name)
 		doc := item
 		save("workflow_template", name, exists, func() error {
-			_, err := s.runtime.SaveWorkflowTemplateResource(name, doc)
+			_, err := s.saveWorkflowTemplateResource(name, doc)
 			return err
 		})
 	}
@@ -1804,6 +1854,25 @@ func truthyQuery(value string) bool {
 	}
 }
 
+// kitAcceptanceIssues keeps the acceptance contract honest: a domain that
+// declares acceptance must say what to run and what it must deliver.
+func kitAcceptanceIssues(doc kitResourceDocument) []kitValidationItem {
+	if doc.Acceptance == nil {
+		return nil
+	}
+	issues := make([]kitValidationItem, 0, 3)
+	if strings.TrimSpace(doc.Acceptance.SampleRequest) == "" {
+		issues = append(issues, kitValidationItem{Severity: "error", Code: "kit_acceptance_incomplete", Field: "acceptance.sample_request", Message: "acceptance.sample_request is required when acceptance is declared"})
+	}
+	if len(doc.Acceptance.VerifyCommands) == 0 && len(doc.Acceptance.Deliverables) == 0 {
+		issues = append(issues, kitValidationItem{Severity: "error", Code: "kit_acceptance_incomplete", Field: "acceptance.verify_commands", Message: "acceptance must declare verify_commands or deliverables"})
+	}
+	if doc.Acceptance.MinQualityScore < 0 || doc.Acceptance.MinQualityScore > 100 {
+		issues = append(issues, kitValidationItem{Severity: "error", Code: "kit_acceptance_incomplete", Field: "acceptance.min_quality_score", Message: "acceptance.min_quality_score must be between 0 and 100"})
+	}
+	return issues
+}
+
 func (s *Server) validateKitResource(doc kitResourceDocument) kitValidationResult {
 	result := kitValidationResult{Valid: true, Name: doc.Name}
 	add := func(severity, code, message, ref string) {
@@ -1821,6 +1890,9 @@ func (s *Server) validateKitResource(doc kitResourceDocument) kitValidationResul
 	}
 	if err := validateKitResourceDocument(doc); err != nil {
 		add("error", "kit_invalid", err.Error(), doc.Name)
+	}
+	for _, issue := range kitAcceptanceIssues(doc) {
+		add(issue.Severity, issue.Code, issue.Message, issue.Field)
 	}
 	for _, name := range doc.Providers {
 		if _, ok := s.providerResourceByName(name); !ok {
@@ -1858,20 +1930,21 @@ func (s *Server) validateKitResource(doc kitResourceDocument) kitValidationResul
 	}
 	workflowSet := make(map[string]struct{})
 	runner := s.runtime.WorkflowRunner()
-	for _, name := range []string{"plan-fix-audit", "skill-chain"} {
-		workflowSet[normalizeResourceName(name)] = struct{}{}
+	for _, item := range runner.WorkflowExecutors() {
+		workflowSet[normalizeResourceName(item.Name)] = struct{}{}
 	}
 	for _, item := range runner.ListWorkflowGraphs() {
+		workflowSet[normalizeResourceName(item.Name)] = struct{}{}
+	}
+	templateSet := make(map[string]struct{})
+	for _, item := range runner.WorkflowTemplates() {
+		templateSet[normalizeResourceName(item.Name)] = struct{}{}
 		workflowSet[normalizeResourceName(item.Name)] = struct{}{}
 	}
 	for _, name := range doc.Workflows {
 		if _, ok := workflowSet[normalizeResourceName(name)]; !ok {
 			add("error", "workflow_missing", "workflow "+name+" is not available", name)
 		}
-	}
-	templateSet := make(map[string]struct{})
-	for _, item := range runner.WorkflowTemplates() {
-		templateSet[normalizeResourceName(item.Name)] = struct{}{}
 	}
 	for _, name := range doc.WorkflowTemplates {
 		if _, ok := templateSet[normalizeResourceName(name)]; !ok {
@@ -1973,7 +2046,7 @@ func kitValidationRecommendationForCode(code string) string {
 	case "vertical_pack_missing":
 		return "add vertical_pack metadata before marking this kit as a professional domain pack"
 	case "vertical_pack_field_missing":
-		return "complete the vertical_pack contract: supported tasks, inputs, tool boundaries, safety gates, quality gates, evidence, Simple mode, Expert mode, token strategy, and model routes"
+		return "complete the vertical_pack contract: supported tasks, inputs, tool boundaries, safety gates, quality gates, evidence, presentation guidance, token strategy, and model routes"
 	case "vertical_pack_maturity_invalid":
 		return "use one of generic, guided, professional, or production-ready"
 	default:
@@ -1982,6 +2055,9 @@ func kitValidationRecommendationForCode(code string) string {
 }
 
 func validateKitResourceDocument(doc kitResourceDocument) error {
+	if err := scaffold.ValidateKitRouting(doc.Routing, doc.Agents, doc.Workflows); err != nil {
+		return err
+	}
 	if strings.TrimSpace(doc.Kind) != "" && strings.TrimSpace(doc.Kind) != kitResourceKind {
 		return fmt.Errorf("unsupported kit kind %q", doc.Kind)
 	}
@@ -2021,6 +2097,7 @@ func normalizeKitResource(doc kitResourceDocument, fallbackName string) kitResou
 	doc.TeamTemplates = normalizeKitRefs(doc.TeamTemplates)
 	doc.PolicyRules = normalizeKitRefs(doc.PolicyRules)
 	doc.RequiredEnv = normalizeKitEnvRefs(doc.RequiredEnv)
+	doc.Routing = scaffold.NormalizeKitRouting(doc.Routing)
 	doc.VerticalPack = normalizeKitVerticalPack(doc.VerticalPack)
 	return doc
 }
@@ -2081,8 +2158,7 @@ func validateKitVerticalPack(pack *scaffold.KitVerticalPack) []kitValidationItem
 	requireList(pack.SafetyGates, "safety_gates")
 	requireList(pack.QualityGates, "quality_gates")
 	requireList(pack.EvidenceArtifacts, "evidence_artifacts")
-	requireList(pack.SimpleMode, "simple_mode")
-	requireList(pack.ExpertMode, "expert_mode")
+	requireList(pack.PresentationGuidance, "presentation_guidance")
 	requireList(pack.TokenStrategy, "token_strategy")
 	requireList(pack.ModelRoutes.Strong, "model_routes.strong")
 	requireList(pack.ModelRoutes.Worker, "model_routes.worker")
@@ -2111,8 +2187,7 @@ func cloneKitVerticalPack(pack *scaffold.KitVerticalPack) *scaffold.KitVerticalP
 	clone.SafetyGates = append([]string(nil), normalized.SafetyGates...)
 	clone.QualityGates = append([]string(nil), normalized.QualityGates...)
 	clone.EvidenceArtifacts = append([]string(nil), normalized.EvidenceArtifacts...)
-	clone.SimpleMode = append([]string(nil), normalized.SimpleMode...)
-	clone.ExpertMode = append([]string(nil), normalized.ExpertMode...)
+	clone.PresentationGuidance = append([]string(nil), normalized.PresentationGuidance...)
 	clone.TokenStrategy = append([]string(nil), normalized.TokenStrategy...)
 	clone.ModelRoutes.Strong = append([]string(nil), normalized.ModelRoutes.Strong...)
 	clone.ModelRoutes.Worker = append([]string(nil), normalized.ModelRoutes.Worker...)
@@ -2134,8 +2209,7 @@ func normalizeKitVerticalPack(pack *scaffold.KitVerticalPack) *scaffold.KitVerti
 	normalized.SafetyGates = normalizeKitFreeformRefs(normalized.SafetyGates)
 	normalized.QualityGates = normalizeKitFreeformRefs(normalized.QualityGates)
 	normalized.EvidenceArtifacts = normalizeKitFreeformRefs(normalized.EvidenceArtifacts)
-	normalized.SimpleMode = normalizeKitFreeformRefs(normalized.SimpleMode)
-	normalized.ExpertMode = normalizeKitFreeformRefs(normalized.ExpertMode)
+	normalized.PresentationGuidance = normalizeKitFreeformRefs(normalized.PresentationGuidance)
 	normalized.TokenStrategy = normalizeKitFreeformRefs(normalized.TokenStrategy)
 	normalized.ModelRoutes.Strong = normalizeKitFreeformRefs(normalized.ModelRoutes.Strong)
 	normalized.ModelRoutes.Worker = normalizeKitFreeformRefs(normalized.ModelRoutes.Worker)
@@ -2144,7 +2218,7 @@ func normalizeKitVerticalPack(pack *scaffold.KitVerticalPack) *scaffold.KitVerti
 		len(normalized.SupportedTasks) == 0 && len(normalized.RequiredInputs) == 0 &&
 		len(normalized.ToolBoundaries) == 0 && len(normalized.SafetyGates) == 0 &&
 		len(normalized.QualityGates) == 0 && len(normalized.EvidenceArtifacts) == 0 &&
-		len(normalized.SimpleMode) == 0 && len(normalized.ExpertMode) == 0 &&
+		len(normalized.PresentationGuidance) == 0 &&
 		len(normalized.TokenStrategy) == 0 && len(normalized.ModelRoutes.Strong) == 0 &&
 		len(normalized.ModelRoutes.Worker) == 0 && len(normalized.ModelRoutes.Verifier) == 0 {
 		return nil
@@ -2234,18 +2308,6 @@ func (s *Server) kitResourcePath(name string) (string, error) {
 	}
 	name = normalizeResourceName(name)
 	path := filepath.Clean(filepath.Join(root, name, "kit.yaml"))
-	if !referenceWithinBase(root, path) {
-		return "", fmt.Errorf("kit path escapes runtime kit directory")
-	}
-	return path, nil
-}
-
-func (s *Server) kitLegacyResourcePath(name string) (string, error) {
-	root, err := s.kitResourceRoot()
-	if err != nil {
-		return "", err
-	}
-	path := filepath.Clean(filepath.Join(root, normalizeResourceName(name)+".yaml"))
 	if !referenceWithinBase(root, path) {
 		return "", fmt.Errorf("kit path escapes runtime kit directory")
 	}

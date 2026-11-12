@@ -5,10 +5,32 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
+	"slices"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/FyMatt/GoFlow-Agent/internal/nativesandbox"
+	"github.com/FyMatt/GoFlow-Agent/internal/persistence"
 )
+
+func TestNormalizeReasoningEffortMapsOperatorAliases(t *testing.T) {
+	for input, want := range map[string]string{
+		"":       "",
+		"mid":    "medium",
+		"MID":    "medium",
+		"med":    "medium",
+		"medium": "medium",
+		"low":    "low",
+		"high":   "high",
+		"xhigh":  "high",
+		"max":    "high",
+	} {
+		if got := NormalizeReasoningEffort(input); got != want {
+			t.Fatalf("NormalizeReasoningEffort(%q)=%q, want %q", input, got, want)
+		}
+	}
+}
 
 func TestLoadExpandsEnvAndDefaults(t *testing.T) {
 	t.Setenv("GOFLOW_BASE_URL", "http://localhost:9999/v1")
@@ -100,6 +122,33 @@ skill:
 	}
 	if cfg.Providers["backup"].APIKey != "backup-secret" {
 		t.Fatalf("unexpected backup api key: %q", cfg.Providers["backup"].APIKey)
+	}
+}
+
+func TestLoadAllowsMissingProviderSecretForFirstRunSetup(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`providers:
+  primary:
+    provider: openai-compatible
+    base_url: https://api.example.test/v1
+    api_key: secret://providers/primary/api_key
+    model: test-model
+agents:
+  chat:
+    provider: primary
+skill:
+  directory: ./skills
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("first-run config with missing key must load: %v", err)
+	}
+	if got := cfg.Providers["primary"].APIKey; got != "" {
+		t.Fatalf("missing secret should produce an unconfigured provider, got %q", got)
 	}
 }
 
@@ -790,6 +839,55 @@ mcp_servers:
 	}
 }
 
+func TestResolveAutomaticMCPIsolationUsesTrustedHostBoundary(t *testing.T) {
+	server, err := ResolveAutomaticMCPIsolation(MCPServerRef{Name: "office_tools", Isolation: "auto"})
+	if err != nil {
+		t.Fatalf("resolve office auto isolation: %v", err)
+	}
+	if server.Isolation != "process_group" {
+		t.Fatalf("expected Office to use controlled host execution, got %q", server.Isolation)
+	}
+}
+
+func TestResolveAutomaticMCPIsolationRefusesUnknownHostFallback(t *testing.T) {
+	server, err := ResolveAutomaticMCPIsolation(MCPServerRef{Name: "third_party_helper", Isolation: "auto"})
+	if err != nil {
+		if !strings.Contains(err.Error(), "原生强沙箱") || !strings.Contains(err.Error(), "拒绝") {
+			t.Fatalf("expected unknown automatic server to require the native strong sandbox, got %v", err)
+		}
+		return
+	}
+	if server.Isolation != "native_strong" {
+		t.Fatalf("unknown automatic server must resolve only to native_strong, got %#v", server)
+	}
+}
+
+func TestResolveAutomaticMCPIsolationUsesNativeStrongForUnknownServerWhenReady(t *testing.T) {
+	server, err := resolveAutomaticMCPIsolation(MCPServerRef{Name: "third_party_helper", Isolation: "auto"}, nativesandbox.Report{
+		StrongReady: true,
+		Level:       "strong",
+	})
+	if err != nil {
+		t.Fatalf("resolve strong automatic isolation: %v", err)
+	}
+	if server.Isolation != "native_strong" || !server.NetworkDisabled || len(server.IsolationOptions) != 0 {
+		t.Fatalf("unexpected native strong automatic isolation: %#v", server)
+	}
+}
+
+func TestNotificationConnectorUsesDeclaredDataRootRatherThanTaskSandbox(t *testing.T) {
+	server, err := resolveAutomaticMCPIsolation(MCPServerRef{Name: "notification_tools", Isolation: "auto"}, nativesandbox.Report{})
+	if err != nil || server.Isolation != "process_group" || server.NetworkDisabled {
+		t.Fatalf("bundled notification connector needs its data-root boundary and normal network approval: %#v err=%v", server, err)
+	}
+}
+
+func TestValidateMCPServerPlatformAcceptsAutomaticIsolation(t *testing.T) {
+	if err := ValidateMCPServerPlatform(MCPServerRef{Name: "helper", Isolation: "auto"}); err != nil {
+		t.Fatalf("expected auto isolation to be accepted before runtime resolution, got %v", err)
+	}
+}
+
 func TestLoadAcceptsMCPMaxConcurrentCalls(t *testing.T) {
 	tmp := t.TempDir()
 	configPath := filepath.Join(tmp, "goflow.yaml")
@@ -834,6 +932,33 @@ func TestValidateMCPServerRefRejectsInvalidMaxConcurrentCalls(t *testing.T) {
 	}
 	if err := ValidateMCPServerRef(server); err == nil || !strings.Contains(err.Error(), "max_concurrent_calls") {
 		t.Fatalf("expected max_concurrent_calls validation error, got %v", err)
+	}
+}
+
+func TestValidateMCPServerRefValidatesHostTargetScope(t *testing.T) {
+	server := MCPServerRef{
+		Name:               "host_tools",
+		TargetScope:        " HOST ",
+		Command:            "go",
+		Enabled:            true,
+		WorkDir:            ".",
+		AllowedCommands:    []string{"go"},
+		RestartLimit:       1,
+		Cooldown:           time.Second,
+		MaxConcurrentCalls: 1,
+		MaxRequestBytes:    1,
+		MaxResponseBytes:   1,
+	}
+	ApplyMCPServerDefaults(&server)
+	if server.TargetScope != "host" {
+		t.Fatalf("expected normalized host target scope, got %q", server.TargetScope)
+	}
+	if err := ValidateMCPServerRef(server); err != nil {
+		t.Fatalf("expected host target scope to validate: %v", err)
+	}
+	server.TargetScope = "remote"
+	if err := ValidateMCPServerRef(server); err == nil || !strings.Contains(err.Error(), "target_scope") {
+		t.Fatalf("expected invalid target_scope rejection, got %v", err)
 	}
 }
 
@@ -951,34 +1076,6 @@ mcp_servers:
 
 	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "only supported on Windows") {
 		t.Fatalf("expected Windows-only validation error, got %v", err)
-	}
-}
-
-func TestLoadRejectsUnimplementedMCPWindowsAppContainerIsolation(t *testing.T) {
-	for _, isolation := range []string{"appcontainer", "app_container", "windows_appcontainer", "windows_app_container"} {
-		t.Run(isolation, func(t *testing.T) {
-			tmp := t.TempDir()
-			configPath := filepath.Join(tmp, "goflow.yaml")
-			content := []byte(`llm:
-  base_url: http://localhost:9999/v1
-  model: test-model
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: helper
-    command: go
-    enabled: true
-    allowed_commands: [go]
-    isolation: ` + isolation + `
-`)
-			if err := os.WriteFile(configPath, content, 0o644); err != nil {
-				t.Fatalf("write config: %v", err)
-			}
-
-			if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "use isolation: container") {
-				t.Fatalf("expected AppContainer unsupported validation error, got %v", err)
-			}
-		})
 	}
 }
 
@@ -1144,91 +1241,8 @@ mcp_servers:
 	}
 }
 
-func TestLoadRejectsIsolationOptionsWithoutLinuxCgroup(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "goflow.yaml")
-	content := []byte(`llm:
-  base_url: http://localhost:9999/v1
-  model: test-model
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: helper
-    command: go
-    enabled: true
-    allowed_commands: [go]
-    isolation: process_group
-    isolation_options:
-      memory_max: 256M
-`)
-	if err := os.WriteFile(configPath, content, 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "only supported with linux_cgroup, linux_netns, or container") {
-		t.Fatalf("expected isolation_options mode validation error, got %v", err)
-	}
-}
-
-func TestDockerConfigLoadsWithCompiledMCPCommands(t *testing.T) {
-	t.Setenv("GOFLOW_BASE_URL", "http://localhost:9999/v1")
-	t.Setenv("GOFLOW_API_KEY", "secret")
-	t.Setenv("GOFLOW_MODEL", "test-model")
-	t.Setenv("GOFLOW_BACKUP_BASE_URL", "http://localhost:9999/v1")
-	t.Setenv("GOFLOW_BACKUP_API_KEY", "secret")
-	t.Setenv("GOFLOW_BACKUP_MODEL", "test-model")
-
-	originalLookPath := execLookPath
-	execLookPath = func(file string) (string, error) {
-		switch file {
-		case "/app/bin/file_tools", "/app/bin/skill_runner", "/app/bin/web_tools", "/app/bin/network_tools":
-			return file, nil
-		case "python3":
-			return "/usr/bin/python3", nil
-		default:
-			return originalLookPath(file)
-		}
-	}
-	t.Cleanup(func() { execLookPath = originalLookPath })
-
-	repoRoot := filepath.Join("..", "..")
-	configPath := filepath.Join(repoRoot, "configs", "goflow.docker.yaml")
-	workspaceRoot := t.TempDir()
-	cfg, err := LoadForWorkspace(configPath, workspaceRoot)
-	if err != nil {
-		t.Fatalf("LoadForWorkspace docker config: %v", err)
-	}
-	if cfg.Skill.Directory != filepath.Clean("/app/skills") {
-		t.Fatalf("expected docker skill dir, got %q", cfg.Skill.Directory)
-	}
-	if cfg.Session.PersistPath != filepath.Clean("/workspace/.goflow/session.json") {
-		t.Fatalf("expected docker session path, got %q", cfg.Session.PersistPath)
-	}
-	if len(cfg.MCP) != 5 {
-		t.Fatalf("expected 5 docker MCP servers, got %d", len(cfg.MCP))
-	}
-	servers := map[string]MCPServerRef{}
-	for _, server := range cfg.MCP {
-		servers[server.Name] = server
-	}
-	if servers["file_tools"].Command != "/app/bin/file_tools" {
-		t.Fatalf("expected compiled file_tools command, got %#v", servers["file_tools"])
-	}
-	if servers["web_tools"].Command != "/app/bin/web_tools" {
-		t.Fatalf("expected compiled web_tools command, got %#v", servers["web_tools"])
-	}
-	if servers["network_tools"].Command != "/app/bin/network_tools" {
-		t.Fatalf("expected compiled network_tools command, got %#v", servers["network_tools"])
-	}
-	if servers["skill_runner"].Command != "/app/bin/skill_runner" {
-		t.Fatalf("expected compiled skill_runner command, got %#v", servers["skill_runner"])
-	}
-	if servers["python_notes"].Command != "python3" {
-		t.Fatalf("expected python3 command, got %#v", servers["python_notes"])
-	}
-}
-
 func TestBinaryConfigLoadsWithLauncherEnv(t *testing.T) {
+	t.Setenv("GOFLOW_DATA_ROOT", t.TempDir())
 	t.Setenv("GOFLOW_BASE_URL", "http://localhost:9999/v1")
 	t.Setenv("GOFLOW_API_KEY", "secret")
 	t.Setenv("GOFLOW_MODEL", "test-model")
@@ -1236,9 +1250,14 @@ func TestBinaryConfigLoadsWithLauncherEnv(t *testing.T) {
 	t.Setenv("GOFLOW_BACKUP_API_KEY", "secret")
 	t.Setenv("GOFLOW_BACKUP_MODEL", "test-model")
 	t.Setenv("GOFLOW_FILE_TOOLS_CMD", "/opt/goflow/bin/file_tools")
+	t.Setenv("GOFLOW_COMMAND_TOOLS_CMD", "/opt/goflow/bin/command_tools")
 	t.Setenv("GOFLOW_SKILL_RUNNER_CMD", "/opt/goflow/bin/skill_runner")
 	t.Setenv("GOFLOW_WEB_TOOLS_CMD", "/opt/goflow/bin/web_tools")
 	t.Setenv("GOFLOW_NETWORK_TOOLS_CMD", "/opt/goflow/bin/network_tools")
+	t.Setenv("GOFLOW_OFFICE_TOOLS_CMD", "/opt/goflow/bin/office_tools")
+	t.Setenv("GOFLOW_HOST_TOOLS_CMD", "/opt/goflow/bin/host_tools")
+	t.Setenv("GOFLOW_SSH_TOOLS_CMD", "/opt/goflow/bin/ssh_tools")
+	t.Setenv("GOFLOW_NOTIFICATION_TOOLS_CMD", "/opt/goflow/bin/notification_tools")
 	t.Setenv("GOFLOW_PYTHON_CMD", "python3")
 	t.Setenv("GOFLOW_PYTHON_NOTES_PATH", "/opt/goflow/mcp_servers/python_notes.py")
 
@@ -1256,14 +1275,33 @@ func TestBinaryConfigLoadsWithLauncherEnv(t *testing.T) {
 	if servers["file_tools"].Command != "/opt/goflow/bin/file_tools" {
 		t.Fatalf("expected binary file_tools command, got %#v", servers["file_tools"])
 	}
+	if servers["command_tools"].Command != "/opt/goflow/bin/command_tools" {
+		t.Fatalf("expected binary command_tools command, got %#v", servers["command_tools"])
+	}
 	if servers["web_tools"].Command != "/opt/goflow/bin/web_tools" {
 		t.Fatalf("expected binary web_tools command, got %#v", servers["web_tools"])
 	}
 	if servers["network_tools"].Command != "/opt/goflow/bin/network_tools" {
 		t.Fatalf("expected binary network_tools command, got %#v", servers["network_tools"])
 	}
+	if servers["office_tools"].Command != "/opt/goflow/bin/office_tools" {
+		t.Fatalf("expected binary office_tools command, got %#v", servers["office_tools"])
+	}
+	if servers["host_tools"].Command != "/opt/goflow/bin/host_tools" || !servers["host_tools"].Enabled || servers["host_tools"].TargetScope != "host" {
+		t.Fatalf("expected enabled host-scoped binary diagnostics, got %#v", servers["host_tools"])
+	}
+	if servers["ssh_tools"].Command != "/opt/goflow/bin/ssh_tools" || !servers["ssh_tools"].Enabled || servers["ssh_tools"].TargetScope != "host" {
+		t.Fatalf("expected enabled host-scoped binary SSH tools, got %#v", servers["ssh_tools"])
+	}
 	if servers["skill_runner"].Command != "/opt/goflow/bin/skill_runner" {
 		t.Fatalf("expected binary skill_runner command, got %#v", servers["skill_runner"])
+	}
+	notifications := servers["notification_tools"]
+	if notifications.Command != "/opt/goflow/bin/notification_tools" || len(notifications.Args) != 0 || !notifications.Enabled || !notifications.Optional || notifications.WorkDir != cfg.RuntimeHome {
+		t.Fatalf("expected optional compiled notification connector in runtime home, got %#v", notifications)
+	}
+	if !slices.Contains(notifications.EnvAllowlist, "GOFLOW_DATA_ROOT") || !slices.Contains(notifications.EnvAllowlist, "GOFLOW_NETWORK_DISABLED") || !slices.Contains(notifications.AllowedCommands, notifications.Command) {
+		t.Fatalf("notification execution boundaries missing: %#v", notifications)
 	}
 	if servers["python_notes"].Command != "python3" {
 		t.Fatalf("expected python3 command, got %#v", servers["python_notes"])
@@ -1273,306 +1311,38 @@ func TestBinaryConfigLoadsWithLauncherEnv(t *testing.T) {
 	}
 }
 
-func TestLoadAcceptsMCPContainerIsolation(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "goflow.yaml")
-	content := []byte(`llm:
-  base_url: http://localhost:9999/v1
-  model: test-model
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: helper
-    command: go
-    enabled: true
-    allowed_commands: [go]
-    isolation: container
-    network_disabled: true
-    isolation_options:
-      image: goflow/mcp-tools:latest
-      runtime: docker
-      workspace_mount: ro
-      workspace_target: /workspace
-      container_workdir: /app
-      network: disabled
-      ipc: none
-      userns: auto
-      memory: 256m
-      memory_swap: 256m
-      cpus: "0.5"
-      pids_limit: "64"
-      pull_policy: missing
-      readonly_rootfs: "true"
-      no_new_privileges: "true"
-      cap_drop: all
-      security_opt: seccomp=/etc/goflow/seccomp.json;apparmor=goflow-mcp
-      tmpfs: /tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m
-      init: "true"
-      tool_source: ${TOOL_SOURCE}
-      tool_target: /goflow-tools/helper.py
-      tool_mount: ro
-`)
-	t.Setenv("TOOL_SOURCE", filepath.Join(tmp, "mcp_servers", "helper.py"))
-	if err := os.WriteFile(configPath, content, 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
+func TestNotificationSourceConfigResolvesRelativeDataRootFromRuntimeHome(t *testing.T) {
+	runtimeHome := filepath.Join(t.TempDir(), "runtime")
+	configDir := filepath.Join(runtimeHome, "configs")
+	moduleDir := filepath.Join(configDir, "mcp_servers")
+	if err := os.MkdirAll(moduleDir, 0o700); err != nil {
+		t.Fatal(err)
 	}
-
-	cfg, err := Load(configPath)
+	module, err := os.ReadFile(filepath.Join("..", "..", "configs", "mcp_servers", "notification_tools.yaml"))
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatal(err)
 	}
-	if cfg.MCP[0].Isolation != "container" || cfg.MCP[0].IsolationOptions["image"] != "goflow/mcp-tools:latest" {
-		t.Fatalf("expected container isolation options, got %#v", cfg.MCP[0])
+	if err := os.WriteFile(filepath.Join(moduleDir, "notification_tools.yaml"), module, 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if cfg.MCP[0].IsolationOptions["tool_source"] != filepath.Join(tmp, "mcp_servers", "helper.py") {
-		t.Fatalf("expected expanded tool_source, got %#v", cfg.MCP[0].IsolationOptions)
+	path := filepath.Join(configDir, "goflow.yaml")
+	if err := os.WriteFile(path, []byte("agent: {name: fixture}\nllm: {base_url: 'http://127.0.0.1:9999/v1', model: fixture}\n"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if cfg.MCP[0].IsolationOptions["tmpfs"] != "/tmp:rw,noexec,nosuid,size=64m;/run:rw,noexec,nosuid,size=8m" {
-		t.Fatalf("expected tmpfs option, got %#v", cfg.MCP[0].IsolationOptions)
-	}
-	if cfg.MCP[0].IsolationOptions["ipc"] != "none" || cfg.MCP[0].IsolationOptions["userns"] != "auto" || cfg.MCP[0].IsolationOptions["memory_swap"] != "256m" || cfg.MCP[0].IsolationOptions["pull_policy"] != "missing" {
-		t.Fatalf("expected container hardening options, got %#v", cfg.MCP[0].IsolationOptions)
-	}
-}
-
-func TestLoadAppliesMCPContainerIsolationProfileDefaultsAndOverrides(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "goflow.yaml")
-	content := []byte(`llm:
-  base_url: http://localhost:9999/v1
-  model: test-model
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: helper
-    command: python
-    enabled: true
-    allowed_commands: [python]
-    isolation: container
-    isolation_profile: readonly
-    isolation_options:
-      image: goflow/mcp-helper:1.0.0
-      memory: 512m
-      tool_source: ${TOOL_SOURCE}
-      tool_target: /goflow-tools/helper.py
-`)
-	t.Setenv("TOOL_SOURCE", filepath.Join(tmp, "mcp_servers", "helper.py"))
-	if err := os.WriteFile(configPath, content, 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	cfg, err := Load(configPath)
+	t.Setenv("GOFLOW_DATA_ROOT", filepath.Join("..", "user-data"))
+	cfg, err := LoadForWorkspace(path, t.TempDir())
 	if err != nil {
-		t.Fatalf("load config: %v", err)
+		t.Fatal(err)
 	}
-	server := cfg.MCP[0]
-	if server.IsolationProfile != "readonly" {
-		t.Fatalf("expected readonly profile, got %#v", server)
-	}
-	if server.IsolationOptions["workspace_mount"] != "ro" ||
-		server.IsolationOptions["network"] != "disabled" ||
-		server.IsolationOptions["ipc"] != "none" ||
-		server.IsolationOptions["user"] != "65532:65532" ||
-		server.IsolationOptions["memory_swap"] != "256m" ||
-		server.IsolationOptions["tool_mount"] != "ro" {
-		t.Fatalf("expected readonly profile defaults, got %#v", server.IsolationOptions)
-	}
-	if server.IsolationOptions["memory"] != "512m" {
-		t.Fatalf("expected explicit memory override to win, got %#v", server.IsolationOptions)
-	}
-	if server.IsolationOptions["tool_source"] != filepath.Join(tmp, "mcp_servers", "helper.py") {
-		t.Fatalf("expected expanded tool_source, got %#v", server.IsolationOptions)
+	if len(cfg.MCP) != 1 || cfg.MCP[0].WorkDir != runtimeHome || cfg.DataRoot != ResolveDataRoot(cfg.MCP[0].WorkDir) {
+		t.Fatalf("notification launcher and application data roots disagree: data=%q, servers=%#v", cfg.DataRoot, cfg.MCP)
 	}
 }
 
-func TestValidateMCPServerRefAcceptsContainerIsolationProfile(t *testing.T) {
-	server := MCPServerRef{
-		Name:               "helper",
-		Command:            "python",
-		Enabled:            true,
-		WorkDir:            ".",
-		Isolation:          "container",
-		IsolationProfile:   "production",
-		AllowedCommands:    []string{"python"},
-		RestartLimit:       1,
-		Cooldown:           time.Second,
-		MaxConcurrentCalls: 1,
-		MaxRequestBytes:    1,
-		MaxResponseBytes:   1,
-		IsolationOptions: map[string]string{
-			"image": "goflow/mcp-helper@sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-		},
-	}
-	if err := ValidateMCPServerRef(server); err != nil {
-		t.Fatalf("expected production profile to validate, got %v", err)
-	}
-}
-
-func TestLoadRejectsMCPContainerIsolationWithoutImage(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "goflow.yaml")
-	content := []byte(`llm:
-  base_url: http://localhost:9999/v1
-  model: test-model
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: helper
-    command: go
-    enabled: true
-    allowed_commands: [go]
-    isolation: container
-`)
-	if err := os.WriteFile(configPath, content, 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "isolation_options.image") {
-		t.Fatalf("expected missing container image validation error, got %v", err)
-	}
-}
-
-func TestLoadRejectsMCPContainerNetworkConflict(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "goflow.yaml")
-	content := []byte(`llm:
-  base_url: http://localhost:9999/v1
-  model: test-model
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: helper
-    command: go
-    enabled: true
-    allowed_commands: [go]
-    isolation: container
-    network_disabled: true
-    isolation_options:
-      image: goflow/mcp-tools:latest
-      network: bridge
-`)
-	if err := os.WriteFile(configPath, content, 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "conflicts with network_disabled") {
-		t.Fatalf("expected container network conflict validation error, got %v", err)
-	}
-}
-
-func TestLoadRejectsMCPContainerInvalidMemory(t *testing.T) {
-	tmp := t.TempDir()
-	configPath := filepath.Join(tmp, "goflow.yaml")
-	content := []byte(`llm:
-  base_url: http://localhost:9999/v1
-  model: test-model
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: helper
-    command: go
-    enabled: true
-    allowed_commands: [go]
-    isolation: container
-    isolation_options:
-      image: goflow/mcp-tools:latest
-      memory: many
-`)
-	if err := os.WriteFile(configPath, content, 0o644); err != nil {
-		t.Fatalf("write config: %v", err)
-	}
-
-	if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), "isolation_options.memory is invalid") {
-		t.Fatalf("expected invalid container memory validation error, got %v", err)
-	}
-}
-
-func TestLoadRejectsMCPContainerInvalidIPCAndUserNamespace(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		body string
-		want string
-	}{
-		{
-			name: "ipc host",
-			body: "      ipc: host\n",
-			want: "isolation_options.ipc is invalid",
-		},
-		{
-			name: "userns host",
-			body: "      userns: host\n",
-			want: "isolation_options.userns is invalid",
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			tmp := t.TempDir()
-			configPath := filepath.Join(tmp, "goflow.yaml")
-			content := []byte(`llm:
-  base_url: http://localhost:9999/v1
-  model: test-model
-skill:
-  directory: ./skills
-mcp_servers:
-  - name: helper
-    command: go
-    enabled: true
-    allowed_commands: [go]
-    isolation: container
-    isolation_options:
-      image: goflow/mcp-tools:latest
-` + tc.body)
-			if err := os.WriteFile(configPath, content, 0o644); err != nil {
-				t.Fatalf("write config: %v", err)
-			}
-			if _, err := Load(configPath); err == nil || !strings.Contains(err.Error(), tc.want) {
-				t.Fatalf("expected %s validation error, got %v", tc.want, err)
-			}
-		})
-	}
-}
-
-func TestValidateContainerMemory(t *testing.T) {
-	valid := []string{"", "1", "256m", "512M", "1g", "64k", "1024b", "2T"}
-	for _, value := range valid {
-		if err := validateContainerMemory(value); err != nil {
-			t.Fatalf("expected memory value %q to be valid, got %v", value, err)
-		}
-	}
-	invalid := []string{"0", "-1", "1.5g", "many", "1mb", "g"}
-	for _, value := range invalid {
-		if err := validateContainerMemory(value); err == nil {
-			t.Fatalf("expected memory value %q to be invalid", value)
-		}
-	}
-}
-
-func TestValidateContainerUser(t *testing.T) {
-	valid := []string{"", "65532", "65532:65532", "nobody", "app-user:app.group", "root:root"}
-	for _, value := range valid {
-		if err := validateContainerUser(value); err != nil {
-			t.Fatalf("expected user value %q to be valid, got %v", value, err)
-		}
-	}
-	invalid := []string{"user name", "user:group:extra", ":1000", "1000:", "user/name", "user\nname"}
-	for _, value := range invalid {
-		if err := validateContainerUser(value); err == nil {
-			t.Fatalf("expected user value %q to be invalid", value)
-		}
-	}
-}
-
-func TestValidateContainerCapDrop(t *testing.T) {
-	valid := []string{"", "all", "ALL", "NET_ADMIN", "net_admin,sys_admin", "CHOWN;DAC_OVERRIDE"}
-	for _, value := range valid {
-		if err := validateContainerCapDrop(value); err != nil {
-			t.Fatalf("expected cap_drop value %q to be valid, got %v", value, err)
-		}
-	}
-	invalid := []string{"CAP-NET", "NET/ADMIN", "NET_ADMIN=1", "\"ALL\""}
-	for _, value := range invalid {
-		if err := validateContainerCapDrop(value); err == nil {
-			t.Fatalf("expected cap_drop value %q to be invalid", value)
-		}
+func TestValidateMCPServerPlatformRejectsRemovedContainerIsolation(t *testing.T) {
+	server := MCPServerRef{Name: "helper", Isolation: "container"}
+	if err := ValidateMCPServerPlatform(server); err == nil || !strings.Contains(err.Error(), "has been removed") {
+		t.Fatalf("expected removed container isolation error, got %v", err)
 	}
 }
 
@@ -1649,6 +1419,55 @@ skill:
 	wantSessionPath := filepath.Join(tmp, ".goflow", "session.json")
 	if cfg.Session.PersistPath != wantSessionPath {
 		t.Fatalf("expected default session persist path %q, got %q", wantSessionPath, cfg.Session.PersistPath)
+	}
+}
+
+func TestLoadWorkspaceLocalOnly(t *testing.T) {
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+workspace:
+  local_only: true
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if !cfg.Workspace.LocalOnly {
+		t.Fatalf("expected workspace.local_only to be true")
+	}
+}
+
+func TestLoadExpandsHTTPTokenEnvironmentReference(t *testing.T) {
+	t.Setenv("GOFLOW_TEST_HTTP_TOKEN", "local-test-token")
+	tmp := t.TempDir()
+	configPath := filepath.Join(tmp, "goflow.yaml")
+	content := []byte(`llm:
+  base_url: http://localhost:9999/v1
+  model: test-model
+skill:
+  directory: ./skills
+http:
+  token: ${GOFLOW_TEST_HTTP_TOKEN}
+`)
+	if err := os.WriteFile(configPath, content, 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	cfg, err := Load(configPath)
+	if err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	if cfg.HTTP.Token != "local-test-token" {
+		t.Fatalf("expected expanded HTTP token, got %q", cfg.HTTP.Token)
 	}
 }
 
@@ -1791,5 +1610,79 @@ skill:
 
 	if _, err := LoadForWorkspace(configPath, "."); err == nil {
 		t.Fatal("expected relative workspace root validation error")
+	}
+}
+
+func TestLoadDataRootUserModuleOverridesBuiltin(t *testing.T) {
+	runtimeHome := filepath.Join(t.TempDir(), "runtime")
+	configPath := filepath.Join(runtimeHome, "configs", "goflow.yaml")
+	dataRoot := filepath.Join(t.TempDir(), "data")
+	workspaceRoot := filepath.Join(t.TempDir(), "workspace")
+	for _, dir := range []string{
+		filepath.Dir(configPath),
+		filepath.Join(runtimeHome, "configs", "agents"),
+		filepath.Join(dataRoot, "resources", "agents"),
+		workspaceRoot,
+	} {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatalf("mkdir %s: %v", dir, err)
+		}
+	}
+	mainConfig := []byte(`providers:
+  primary:
+    base_url: http://localhost:9999/v1
+    model: test-model
+agents:
+  chat:
+    name: Chat
+    provider: primary
+skill:
+  directory: ../skills
+`)
+	if err := os.WriteFile(configPath, mainConfig, 0o644); err != nil {
+		t.Fatalf("write main config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(runtimeHome, "configs", "agents", "review.yaml"), []byte(`review:
+  name: Built-in review
+  description: Built-in description
+  provider: primary
+`), 0o644); err != nil {
+		t.Fatalf("write built-in agent: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(dataRoot, "resources", "agents", "review.yaml"), []byte(`review:
+  name: User review
+  description: User override
+  provider: primary
+`), 0o644); err != nil {
+		t.Fatalf("write user agent: %v", err)
+	}
+	t.Setenv("GOFLOW_DATA_ROOT", dataRoot)
+	cfg, err := LoadForWorkspace(configPath, workspaceRoot)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if cfg.DataRoot != filepath.Clean(dataRoot) {
+		t.Fatalf("unexpected data root %q", cfg.DataRoot)
+	}
+	if cfg.Agents["review"].Description != "User override" {
+		t.Fatalf("expected user override, got %#v", cfg.Agents["review"])
+	}
+	if cfg.WorkspaceDataRoot == workspaceRoot || !strings.HasPrefix(cfg.WorkspaceDataRoot, filepath.Join(dataRoot, "workspaces")) {
+		t.Fatalf("unexpected workspace data root %q", cfg.WorkspaceDataRoot)
+	}
+	wantSession := filepath.Join(cfg.WorkspaceDataRoot, ".goflow", "session.json")
+	if cfg.Session.PersistPath != wantSession {
+		t.Fatalf("expected data-root session path %q, got %q", wantSession, cfg.Session.PersistPath)
+	}
+	store := persistence.New(dataRoot)
+	if err := store.SetTombstone("agents", "review", true); err != nil {
+		t.Fatalf("set Agent tombstone: %v", err)
+	}
+	cfg, err = LoadForWorkspace(configPath, workspaceRoot)
+	if err != nil {
+		t.Fatalf("reload with tombstone: %v", err)
+	}
+	if _, ok := cfg.Agents["review"]; ok {
+		t.Fatalf("expected Agent tombstone to hide built-in and override")
 	}
 }

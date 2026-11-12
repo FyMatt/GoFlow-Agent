@@ -26,7 +26,7 @@ presets:
     category: security
     tags: [security, audit, evidence]
     base_template: audit-security-team
-    recommended_workflow: human-input-security-review
+    recommended_workflow: security-audit-evidence-gate
     recommended_entry_agent: auditor
 
   - name: web-research
@@ -38,6 +38,16 @@ presets:
     base_template: web-research-team
     recommended_workflow: web-research-risk
     recommended_entry_agent: auditor
+
+  - name: internet-research
+    default_name: custom-internet-research-team
+    title: 自定义互联网资料研究团队
+    description: 面向资料搜索、来源核验和多格式交付的可复用研究团队。
+    category: research
+    tags: [research, sources, verification]
+    base_template: internet-research-team
+    recommended_workflow: parallel-research-review
+    recommended_entry_agent: research-specialist
 
   - name: binary-triage
     default_name: custom-binary-triage-team
@@ -51,10 +61,10 @@ presets:
 
   - name: documentation
     default_name: custom-documentation-team
-    title: Custom Documentation Team
-    description: Plan, draft, review, and publication-handoff team for documentation changes.
+    title: 自定义办公文档团队
+    description: 整理需求、制作真实办公文档、转换 PDF、生成预览并复核交付质量。
     category: documentation
-    tags: [docs, review, publish]
+    tags: [office, document, delivery]
     base_template: documentation-team
     recommended_workflow: docs-review-publish
     recommended_entry_agent: planner

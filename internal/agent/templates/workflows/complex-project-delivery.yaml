@@ -2,64 +2,79 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: complex-project-delivery
-title: Complex Project Delivery Loop
-description: Analyze a user's requirement, produce a confirmed project plan, then repeatedly implement, verify, review, and update the plan until the work is complete before running final validation and producing a completion report.
+title: 复杂项目交付
+description: 规划边界明确的项目改动，经一次确认后实施并可靠重试，用一次统一验证完成测试、构建和静态检查，审计证据并输出统一交付结果。
 category: software
 tags:
+    - golden-reference
+    - runnable
+    - golden-scenario-2
     - complex-task
-    - project-plan
-    - implementation-loop
-    - verification
-    - audit
     - approval
-    - durable-run
-    - quality_gate
+    - durable-retry
+    - focused-verification
+    - recovery
     - report
-stages: 13
+stages: 15
 graph:
     name: complex-project-delivery
-    description: Long-running delivery workflow for complex software tasks with user plan confirmation, iterative implementation, verification, review, plan updates, final full validation, and a final report.
+    description: 精简的复杂本地项目交付流程：一次计划确认、幂等实施、统一验证、独立审计、质量门、必要恢复和最终证据。
+    budget:
+        soft_llm_calls: 45
+        hard_llm_calls: 72
+        soft_continuations: 2
+        hard_continuations: 4
     stages:
         - name: start
           node_type: start
           agent: ""
           skill: ""
           next:
-            - intake
+            - plan
           position:
-            x: 80
-            "y": 300
-        - name: intake
+            x: 60
+            "y": 260
+        - name: plan
           node_type: agent
           agent: planner
           skill: execution-plan
           params:
-            output_contract: Emit sections named User Goal, Problem Context, Functional Requirements, Non-Functional Requirements, Constraints, Unknowns, Acceptance Criteria, Risks, and Clarifying Questions.
-            purpose: Turn the user's high-level request into a stable requirement analysis before planning implementation.
-            stability_rule: Preserve the full requirement history as artifacts and summaries; do not rely on raw chat history.
+            max_total_model_calls: "8"
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            change_slice_policy: "required"
+            seed_plan_intake: "true"
+            output_contract: Emit sections named Intake Mode, 设计方案 or 需求确认, Delivery Plan, 界面设计 when the request is HTML/web, Target Files, Change Slices, Dependencies, Acceptance Checks, Verification Commands, Failure Recovery, and Definition of Done. If the user prompt is short, write 设计方案 and explicitly ask whether it is feasible; do not treat that as already approved implementation. If the user prompt is detailed, write 需求确认 restating scope, pages, visual bar, tests, and out-of-scope items, then the delivery plan. End with a fenced block labelled goflow-change-slices containing a JSON array. Every item must contain id, title, mode, depends_on, input_files, target_files, and verification_commands. mode must be read for side-effect-free analysis or write for any filesystem mutation. IDs must be stable ASCII identifiers; paths must be workspace-relative; dependencies must form a DAG; commands must be executable argument-safe command lines selected from repository evidence.
+            flaky_rule: 并发相关改动必须用 go test ./... -count=2 连跑两遍，两遍都通过才算验证通过；偶发失败按失败处理并继续修复。
+            purpose: Call repository_map once for the overview, then read only the modules, callers and tests that map identifies; never substitute an entry point for a module. input_files holds unchanged fixtures and tests; target_files names only files that must change. No write slice for verification-only work. Classify intake first; short prompts need a design confirmation, detailed prompts need requirements confirmation. Batch reads and reuse observations. Split changes into dependency-ordered slices. Emit at most three change slices; merge each module's implementation and its tests into one slice, because every extra slice costs a full discovery round and long deliveries miss their budget. A web plan must include a real stylesheet, layout and visual acceptance.
+            verification_policy: Keep verification proportional. Do not add race, coverage, benchmark, or generated-report gates unless the request or repository instructions explicitly require them.
+            tools: file_tools/repository_map,file_tools/read_file,file_tools/read_file_range,file_tools/read_files,file_tools/read_file_outline,file_tools/search_files,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+            max_iterations: "12"
+            max_model_calls: "6"
+          retry:
+            max_attempts: 3
           outputs:
-            requirements: result.output
+            plan: result.output
             summary: result.summary
-            risks: result.findings
           artifacts:
-            - name: requirement-analysis
-              kind: report
-              title: Requirement analysis
+            - name: delivery-plan
+              kind: plan
+              title: Delivery plan
               ref: result.output
-              summary: User goal, functional requirements, constraints, acceptance criteria, risks, and open questions.
+              summary: Target files, change slices, dependencies, acceptance checks, verification commands, recovery, and definition of done.
           acceptance_criteria:
-            - name: has-functional-requirements
+            - name: has-change-slices
               ref: result.output
-              contains: Functional Requirements
-              expected: requirement analysis lists functional requirements
-            - name: has-acceptance-criteria
+              contains: goflow-change-slices
+              expected: plan must contain machine-checkable bounded change slices
+            - name: has-verification-commands
               ref: result.output
-              contains: Acceptance Criteria
-              expected: requirement analysis defines user-visible success criteria
-            - name: has-risks
+              exists: true
+              expected: plan must name concrete verification commands
+            - name: has-failure-recovery
               ref: result.output
-              contains: Risks
-              expected: requirement analysis records project risks
+              exists: true
+              expected: plan must explain failure recovery
           context:
             include:
                 - memory.project
@@ -67,369 +82,494 @@ graph:
             exclude:
                 - raw_tool_logs
                 - large_file_contents
-            max_tokens: 3200
-            prompt_max_tokens: 5600
-            request_max_tokens: 1600
-            inputs_max_tokens: 1000
-            parameters_max_tokens: 800
-            retrieval:
-                enabled: true
-                query: "{{input.goal}}"
-          next:
-            - plan
-          position:
-            x: 520
-            "y": 300
-        - name: plan
-          node_type: skill
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Project Plan, Milestones, Work Slices, Dependencies, Target Files, Verification Strategy, Review Strategy, Stop Conditions, User Checkpoints, and Definition of Done.
-            purpose: Build a user-reviewable project plan that can be executed in small stable slices.
-            planning_rule: Each work slice must include objective, expected files or modules, acceptance checks, validation command or manual check, risk, rollback note, and completion signal.
-          input:
-            request: workflow.input
-            requirements: stages.intake.outputs.requirements
-          outputs:
-            project_plan: result.output
-            summary: result.summary
-          artifacts:
-            - name: project-plan
-              kind: report
-              title: Project plan
-              ref: result.output
-              summary: Milestones, work slices, dependencies, verification strategy, review strategy, stop conditions, and definition of done.
-          acceptance_criteria:
-            - name: has-work-slices
-              ref: result.output
-              contains: Work Slices
-              expected: plan decomposes the project into executable slices
-            - name: has-verification-strategy
-              ref: result.output
-              contains: Verification Strategy
-              expected: plan explains how implementation will be checked
-            - name: has-definition-of-done
-              ref: result.output
-              contains: Definition of Done
-              expected: plan states what complete means
-          context:
-            include:
-                - memory.project
-                - stages.intake.outputs.requirements
-                - previous.summary
-            exclude:
-                - raw_tool_logs
-                - large_file_contents
-            max_tokens: 3800
-            prompt_max_tokens: 6200
-            request_max_tokens: 1400
-            inputs_max_tokens: 1800
-            parameters_max_tokens: 850
-            retrieval:
-                enabled: true
-                query: "{{input.goal}}"
-          next:
-            - confirm-plan
-          position:
-            x: 1020
-            "y": 300
-        - name: confirm-plan
-          node_type: checkpoint
-          agent: ""
-          skill: ""
-          params:
-            prompt: Review the requirement analysis and project plan. Approve only when the plan, work slices, acceptance criteria, verification strategy, and stop conditions match the user's intent.
-          next:
-            - delivery-loop
-          position:
-            x: 1520
-            "y": 300
-        - name: delivery-loop
-          node_type: loop
-          agent: ""
-          skill: ""
-          params:
-            stage: iteration
-            max_iterations: "20"
-            until: contains(previous.raw_output, "PROJECT_COMPLETE")
-          outputs:
-            iteration_count: result.iteration_count
-            loop_outputs: result.outputs
-            loop_summaries: result.summaries
-            complete: result.passed
-          artifacts:
-            - name: iteration-history
-              kind: report
-              title: Iteration history
-              ref: result.outputs
-              summary: Aggregated outputs from each implementation, verification, review, and plan-update iteration.
-          acceptance_criteria:
-            - name: loop-recorded-iterations
-              ref: outputs.iteration_count
-              exists: true
-              expected: loop records how many delivery iterations ran
-            - name: loop-reached-completion
-              ref: outputs.passed
-              equals: "true"
-              expected: delivery loop only passes when the iteration body emits PROJECT_COMPLETE
-          context:
-            include:
-                - previous.summary
-                - previous.artifacts.project-plan
-                - files.changed
-            exclude:
-                - raw_tool_logs
-                - large_file_contents
                 - unrelated_session_history
             max_tokens: 3600
+            prompt_max_tokens: 8200
+            request_max_tokens: 1600
+            # 2600 -> 1600 tokens: every stage carried the whole plan, which
+            # dominated each cold start; target files and acceptance checks
+            # stay in their own sections.
+            inputs_max_tokens: 1600
+            parameters_max_tokens: 1000
           next:
-            - loop-quality
+            - approve-plan
           position:
-            x: 2020
-            "y": 300
-        - name: iteration
+            x: 340
+            "y": 260
+        - name: approve-plan
+          node_type: input_gate
+          agent: ""
+          skill: ""
+          params:
+            manual: "true"
+            prompt: 请选择交付档位并确认规划。提示偏短时先确认「设计方案」是否可行；提示具体时先确认「需求确认」。MVP 必须能跑通核心流程、测试，且页面引用样式表。完整产品还要有顶栏/导航/主区结构和可日常使用的界面。Web 门户禁止只交无样式表格。
+            fields_json: '{"fields":[{"name":"delivery_scope","type":"select","label":"Delivery scope","label_zh":"交付档位","required":true,"options":["MVP","完整产品"],"default":"MVP","description":"MVP is the smallest working loop. 完整产品 adds daily-use layout and visual completeness."}]}'
+          outputs:
+            delivery_scope: params.delivery_scope
+          next:
+            - implement
+          position:
+            x: 640
+            "y": 260
+        - name: implement
           node_type: agent
           agent: fixer
           skill: code-writing
-          params:
-            worker_contract: engineering_v1
-            output_contract: Return compact JSON with summary, changed_files, evidence, verification, blockers, next_actions, and plan_update. Plan Update must record completed slice status and remaining work. Include PROJECT_COMPLETE in summary only when every accepted requirement is implemented, verified, reviewed, and the plan has no remaining work.
-            purpose: Execute one project delivery slice, verify it, review it, update the project plan, and decide whether another iteration is needed.
-            iteration_policy: Use the project plan and previous iteration summaries to choose the next unfinished slice. Preserve user edits. Keep changes scoped. Run or describe the most relevant verification. Review your own result before declaring completion.
-            failure_policy: If implementation or verification fails, update the plan with the failure, next fix, and required evidence instead of hiding it.
-          input:
-            request: workflow.input
-            requirements: stages.intake.outputs.requirements
-            project_plan: stages.plan.outputs.project_plan
-            previous_iterations: stages.delivery-loop.outputs.loop_summaries
-          outputs:
-            changed_files: result.changed_files
-            iteration_report: result.output
-            plan_update: result.plan_update
-            summary: result.summary
-            verification: result.verification
-            blockers: result.blockers
-            next_actions: result.next_actions
-            changes: result.changes
-            findings: result.findings
-          artifacts:
-            - name: iteration-report
-              kind: report
-              title: Iteration report
-              ref: result.output
-              summary: Implemented slice, verification performed, review findings, plan update, remaining work, and completion decision.
-          acceptance_criteria:
-            - name: has-selected-slice
-              ref: result.output
-              contains: Selected Work Slice
-              expected: iteration chooses the next planned slice
-            - name: has-verification
-              ref: result.output
-              contains: Verification Performed
-              expected: iteration records tests, checks, or why they could not run
-            - name: has-plan-update
-              ref: result.output
-              contains: Plan Update
-              expected: iteration updates project plan status
-            - name: has-completion-decision
-              ref: result.output
-              contains: Completion Decision
-              expected: iteration states whether more work remains
-          retry:
-            max_attempts: 2
           approval: true
+          params:
+            max_total_model_calls: "24"
+            require_workspace_mutation: "true"
+            use_change_slice_scheduler: "true"
+            worker_contract: engineering_v1
+            output_contract: Return one compact engineering_v1 JSON object. Write summary, evidence, verification, blockers, and next_actions in the user's language; for Chinese requests use clear Simplified Chinese. Populate changed_files with every workspace-relative path changed by this stage and include a 变更摘要. Keep the final message under 400 characters; never paste file contents or diffs into it.
+            edit_policy: >-
+              The approve-plan gate already approved this delivery. Do not wait for another approval; write the approved target files in this stage. Keep each change slice within two model turns: one batched read of the files that slice targets, then one batched edit of all of them. Do not re-read a file you already read in this stage and do not run tests inside a slice; the verify stage runs the full suite once.
+              Follow the approved plan, preserve user edits, use exact patches for existing files, create explicitly requested deliverables when absent, and leave unrelated files untouched.
+              Before creating a source file, list the workspace root and search for the requested package, symbol, or filename. Modify an existing implementation at its exact relative path; never create a root-level duplicate because a guessed path was missing. Never edit an existing *_test.go file; add new tests in a new file whose Test function names do not already exist (search the package first). A duplicate test name breaks the whole package build, and rewriting an assertion silently corrupts the suite.
+              Match the user's language for documentation; for Chinese requests, write Simplified Chinese and preserve literal acceptance terms.
+              Do not weaken observable requirements as design trade-offs: stateful, time-based, and concurrent APIs must verify key state transitions through every exported observer, and expired or deleted data must not remain visible through count or length APIs unless the user explicitly requires that behavior. Shared maps and caches that are called concurrently must be mutex-protected on every exported read and write, including Set, Get, and Len.
+              Reuse the approved plan's exact paths and execute its change slices in dependency order. Batch independent reads and edits in one response; read several files with one file_tools/read_files call and apply small changes to several files with one file_tools/apply_edits call instead of one call per file. Do not reread unchanged files, and write each new file once. After each slice, inspect the resulting Diff or run one focused package test only when it can catch an integration error before the next slice. Across the whole implementation stage run at most four distinct immediate checks. Do not run the complete repository test suite, race detector, vet, build matrix, or independent audit commands in this stage; those belong exclusively to verify. If a retry prompt includes FAIL output from an existing public test, patch that implementation until Applied, Failed, RolledBack, and StoppedBefore match the test, then write requested JSON or Markdown deliverables. Never rewrite existing tests; create requested new test files that are absent. When the request is an HTML or campus/web portal, unstyled markup is not delivery: ship a real stylesheet (static .css or a style block) with layout, color, type, spacing, and classed forms/tables. Do not ship table border=1 as the only visual design. Avoid purple gradients and marketing-hero layouts; pages must look like an operational console a person can use. Honor delivery_scope: MVP is a working loop plus a linked stylesheet; 完整产品 also requires header/nav/main or an equivalent classed shell so the UI can be used as a daily product. If a slice fails, repair that slice or stop with concrete evidence instead of continuing on an invalid base. Concurrency rules: every read and write of shared state (maps, slices, counters) must happen under one lock; a value written by Set must be readable by Get immediately for the same key; never write while holding a read lock and never copy a struct that contains a mutex. Before finishing, run exactly one build check for the touched language (go build ./... for Go); if it fails, fix it in this stage instead of spending a whole repair round. After all approved slices and immediate checks finish, stop calling tools and produce the implementation report.
+            tools: file_tools/list_tree,file_tools/read_file,file_tools/read_file_range,file_tools/read_files,file_tools/read_file_outline,file_tools/search_files,file_tools/apply_patch,file_tools/apply_edits,file_tools/write_file,file_tools/mkdir,command_tools/run_command
+            max_iterations: "40"
+            max_model_calls: "16"
+            max_command_calls: "4"
+            allowed_command_classes: format,test,build
+            approved_plan_scope: "true"
+          input:
+            plan: stages.plan.outputs.plan
+            request: workflow.input
+            delivery_scope: stages.approve-plan.outputs.delivery_scope
+          outputs:
+            implementation: result.output
+            changed_files: result.changed_files
+            changes: result.changes
+            verification: result.verification
+            summary: result.summary
+          artifacts:
+            - name: implementation-report
+              kind: report
+              title: Implementation report
+              ref: result.output
+              summary: Changed files, requirements covered, verification attempted, recovery actions, and remaining risks.
+          acceptance_criteria:
+            - name: has-change-summary
+              ref: result.summary
+              exists: true
+              expected: implementation explains the delivered behavior
+            - name: has-files-changed
+              ref: result.changed_files
+              exists: true
+              expected: implementation lists all changed files
+            - name: has-verification-attempted
+              ref: result.verification
+              exists: true
+              expected: implementation records immediate checks
+          retry:
+            max_attempts: 4
           context:
             include:
-                - memory.project
-                - stages.intake.outputs.requirements
-                - stages.plan.outputs.project_plan
-                - previous.summary
-                - previous.artifacts.iteration-report
+                - stages.plan.outputs.plan
                 - files.changed
             exclude:
                 - raw_tool_logs
                 - large_file_contents
                 - unrelated_session_history
-            max_tokens: 5200
-            prompt_max_tokens: 6400
-            request_max_tokens: 1000
-            inputs_max_tokens: 2400
-            parameters_max_tokens: 900
-            retrieval:
-                enabled: true
-                query: "{{input.goal}}"
-          next: []
-          position:
-            x: 2020
-            "y": 560
-        - name: loop-quality
-          node_type: quality_gate
-          agent: ""
-          skill: ""
-          params:
-            stage: delivery-loop
-            min_score: "85"
-            reason: delivery loop did not produce enough iteration evidence or did not reach the declared completion signal
-            require_acceptance: "true"
-            require_evidence: "true"
-            require_verification: "true"
-            allow_unknown: "false"
-          routes:
-            pass: final-validation
-            warning: operator-review
-            fail: recovery-plan
-          position:
-            x: 2520
-            "y": 300
-        - name: operator-review
-          node_type: checkpoint
-          agent: ""
-          skill: ""
-          params:
-            prompt: The delivery loop completed with warnings. Review iteration reports, changed files, verification evidence, and remaining work before final validation.
+            max_tokens: 5600
+            prompt_max_tokens: 12000
+            request_max_tokens: 1800
+            inputs_max_tokens: 4600
+            parameters_max_tokens: 1200
           next:
-            - final-validation
+            - verify
           position:
-            x: 3020
-            "y": 80
-        - name: recovery-plan
+            x: 940
+            "y": 260
+        - name: verify
           node_type: skill
-          agent: planner
-          skill: execution-plan
+          agent: quality-engineer
+          skill: code-audit
+          approval: true
           params:
-            output_contract: Emit sections named Recovery Decision, Failed Iterations, Missing Evidence, Updated Plan, Recommended Next Action, and User Decision Needed.
-            purpose: Explain why the delivery loop did not meet the bar and provide a safe recovery plan.
+            max_total_model_calls: "10"
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            use_change_slice_scheduler: "false"
+            output_contract: First line must be exactly 总体结论：通过 or 总体结论：未通过 using plain text without Markdown decoration. Then emit sections named Verification Result, Commands Run, Tests and Build, Static Analysis, Formatting, Failure Evidence, Infrastructure Limits, and Residual Risk. Decide 未通过 only for a required check you actually ran and that failed, or for a missing deliverable. When a required command has not run yet and the command budget still allows it, run it before deciding; never mark 未通过 for a check that was simply not attempted. A documented and approved race infrastructure deferral alone does not fail the overall result; explicitly state that local race did not run.
+            verification_scope: Run the exact verification selected by the approved plan in one bounded pass. Start with focused checks for changed modules, then run the smallest complete integration gate that covers the delivered behavior. Execute at most six distinct commands, never repeat a passing command or run equivalent variants. For Go, run the ordinary go test command first so it is the verified fallback, then use exactly gofmt -l . for a non-mutating formatting check when required, then go vet, and run go test -race last when required. Never use go fmt -l because go fmt does not support that check. One successful full go test command already covers compilation; do not add a duplicate go build unless the request explicitly requires a binary. If race is unavailable because of CGO or a missing C compiler, reuse the already successful ordinary test as the fallback, verify an Ubuntu CI race gate, and report the limitation without another command or retry loop. Do not modify source files.
+            tools: file_tools/read_file,file_tools/read_file_range,file_tools/read_file_outline,command_tools/run_command,command_tools/start_process,command_tools/process_status,command_tools/stop_process,web_tools/browser_snapshot,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+            max_iterations: "8"
+            max_model_calls: "8"
+            max_command_calls: "6"
+            max_read_calls: "4"
+            allowed_command_classes: format,test,build,lint
+            approved_plan_scope: "true"
           input:
-            iteration_history: stages.delivery-loop.outputs.loop_summaries
-            loop_quality: stages.loop-quality.outputs.quality_status
-            failures: stages.loop-quality.outputs.failures
+            implementation: stages.implement.outputs.implementation
+            plan: stages.plan.outputs.plan
+            request: workflow.input
           outputs:
-            recovery_plan: result.output
+            verification_report: result.output
+            verification: result.verification
             summary: result.summary
           artifacts:
-            - name: recovery-plan
-              kind: report
-              title: Recovery plan
+            - name: verification-report
+              kind: verification
+              title: Verification report
               ref: result.output
-              summary: Failed iterations, missing evidence, updated plan, and recommended next action.
+              summary: Tests, compilation, static analysis, formatting, failure evidence, infrastructure limits, and residual risk.
           acceptance_criteria:
-            - name: has-recovery-decision
+            - name: has-verification-result
+              ref: result.first_line
+              equals: 总体结论：通过
+              expected: 整体验证明确通过后才可验收；未通过的报告保留用于修复。
+            - name: has-verification-commands
               ref: result.output
-              contains: Recovery Decision
-              expected: recovery plan states how to proceed safely
+              contains: Commands Run
+              expected: report records exact commands
+            - name: has-failure-evidence
+              ref: result.output
+              contains: Failure Evidence
+              expected: injected or real failures remain visible
+          retry:
+            max_attempts: 2
           context:
             include:
-                - previous.summary
-                - previous.artifacts.iteration-history
-                - stages.delivery-loop.outputs.loop_summaries
-                - stages.loop-quality.outputs.failures
+                - stages.plan.outputs.plan
+                - stages.implement.outputs.implementation
             exclude:
                 - raw_tool_logs
                 - large_file_contents
-            max_tokens: 4200
-            prompt_max_tokens: 5200
-            request_max_tokens: 800
-            inputs_max_tokens: 1700
-            parameters_max_tokens: 700
+                - unrelated_session_history
+            max_tokens: 5000
+            prompt_max_tokens: 11000
+            request_max_tokens: 1600
+            inputs_max_tokens: 4200
           next:
-            - final-quality
+            - verification-route
           position:
-            x: 3020
-            "y": 520
-        - name: final-validation
+            x: 1260
+            "y": 260
+        - name: verification-route
+          node_type: quality_gate
+          params:
+            stages: verify
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            verification_mode: command
+            allow_unknown: "false"
+            allowed_infrastructure_failures: go_race_unavailable
+          routes:
+            pass: audit
+            warning: quality
+            fail: quality
+          position:
+            x: 1660
+            "y": 260
+        - name: audit
+          model:
+            max_tokens: 1400
           node_type: skill
           agent: auditor
           skill: code-audit
           params:
-            output_contract: Emit sections named Final Validation Result, Full Test Pass, Commands Run, Requirements Coverage, Failures, Residual Risks, and Release Recommendation.
-            purpose: Run or describe the broadest practical validation across the whole project after all iterations are complete.
-            validation_policy: Prefer real project commands from memory or the plan. If a command cannot run, explain the blocker and provide substitute checks.
+            max_total_model_calls: "6"
+            require_workspace_mutation: "false"
+            change_slice_policy: "if_missing"
+            output_contract: First line must be exactly 总体结论：通过 or 总体结论：未通过 using plain text without Markdown decoration. Then emit sections named Audit Decision, Requirements Coverage, Verification Evidence, Blocking Findings, Recovery Status, and Recommendation. Decide 未通过 for unresolved requested work, missing deliverables or failed verification. A documented and approved infrastructure deferral alone is not a blocking defect; never claim the deferred check actually ran.
+            review_scope: Compare the implementation and the unified verification evidence with the user request and approved plan. Treat any unapproved weakening of observable semantics as a blocking defect, especially when state transitions leave expired or deleted data visible through other exported observers. Lead with concrete defects and missing evidence. Evidence is already supplied in the stage inputs; do not execute commands or perform broad repository discovery. Use the read_file tool at most once only when one specific conflict cannot be resolved from the supplied evidence.
+            tools: file_tools/read_file
+            max_iterations: "3"
+            max_read_calls: "1"
           input:
-            requirements: stages.intake.outputs.requirements
-            project_plan: stages.plan.outputs.project_plan
-            iteration_history: stages.delivery-loop.outputs.loop_summaries
+            implementation: stages.implement.outputs.implementation
+            plan: stages.plan.outputs.plan
+            verification: stages.verify.outputs.verification_report
           outputs:
-            final_validation: result.output
-            summary: result.summary
+            audit: result.output
             findings: result.findings
+            summary: result.summary
           artifacts:
-            - name: final-validation-report
-              kind: verification
-              title: Final validation report
+            - name: delivery-audit
+              kind: audit
+              title: Delivery audit
               ref: result.output
-              summary: Full-project validation result, commands, coverage, failures, residual risks, and release recommendation.
+              summary: Requirements coverage, unified verification evidence, blocking findings, recovery status, and recommendation.
           acceptance_criteria:
-            - name: has-final-result
-              ref: result.output
-              contains: Final Validation Result
-              expected: final validation declares pass, warning, or fail
+            - name: has-audit-decision
+              ref: result.first_line
+              equals: 总体结论：通过
+              expected: 审计明确通过后才可验收；未通过的报告保留用于修复。
             - name: has-requirements-coverage
               ref: result.output
               contains: Requirements Coverage
-              expected: final validation maps results back to accepted requirements
-            - name: has-commands
+              expected: audit maps evidence to requirements
+            - name: has-recovery-status
               ref: result.output
-              contains: Commands Run
-              expected: final validation records exact commands or explains why none ran
+              contains: Recovery Status
+              expected: audit reports whether injected or real failures recovered
+          retry:
+            max_attempts: 2
           context:
-            include:
-                - memory.project
-                - previous.summary
-                - previous.artifacts.iteration-history
-                - stages.intake.outputs.requirements
-                - stages.plan.outputs.project_plan
-                - stages.delivery-loop.outputs.loop_summaries
-                - files.changed
             exclude:
-                - raw_tool_logs
-                - large_file_contents
-            max_tokens: 5200
-            prompt_max_tokens: 6500
+              - raw_tool_logs
+              - large_file_contents
+              - unrelated_session_history
+            max_tokens: 1800
+            prompt_max_tokens: 5200
             request_max_tokens: 900
-            inputs_max_tokens: 2400
-            parameters_max_tokens: 800
-            retrieval:
-                enabled: true
-                query: "{{input.goal}}"
+            inputs_max_tokens: 3800
+            parameters_max_tokens: 650
+          next:
+            - quality
+          position:
+            x: 2140
+            "y": 260
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            max_repair_rounds: "2"
+            stages: implement,verify,audit
+            min_score: "85"
+            reason: complex delivery lacks implementation, unified verification, recovery, or audit evidence
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            verification_mode: command
+            allow_unknown: "false"
+            allowed_infrastructure_failures: go_race_unavailable
+          routes:
+            pass: final-report
+            warning: final-report
+            fail: repair
+          position:
+            x: 2440
+            "y": 260
+        - name: repair
+          node_type: skill
+          agent: fixer
+          skill: code-writing
+          approval: true
+          params:
+            max_total_model_calls: "12"
+            require_workspace_mutation: "false"
+            no_op_policy: 若审查确认没有遗留阻塞项，直接输出“无需修改”并说明依据，不要为满足变更要求而改无关文件。
+            use_change_slice_scheduler: "false"
+            worker_contract: engineering_v1
+            output_contract: Return one compact engineering_v1 JSON object. Write summary, evidence, verification, blockers, and next_actions in the user's language; for Chinese requests use clear Simplified Chinese. Populate changed_files with every workspace-relative path changed by this repair.
+            repair_policy: Fix the concrete blocking findings and incomplete deliverables identified by the implementation, verification, audit and quality gate. Use the approved plan and original task scope; completed initial slices do not prohibit a corrective patch. Locate before reading; use search_files with context_lines or read_file_outline to find the exact function, then read only that range with read_file_range. read_file returns at most 300 lines and reports next_offset; use read_file_range for the rest instead of re-reading the whole file. Read only the smallest affected files, preserve unrelated user work and existing test assertions, add new regression tests for repaired observable defects, and do not weaken the original request. Formatting existing tests is allowed without changing their assertions. Complete requested upgrade and rollback documents when missing. A package that fails to build always needs a change; when the suite reports duplicate declarations, remove the duplicate file or rename the conflicting function. Run at most formatting plus one focused test; leave the unified command set to recovery-verify. When the bounded repair and immediate check finish, stop calling tools and produce the repair report.
+            tools: file_tools/read_file,file_tools/read_file_range,file_tools/read_files,file_tools/read_file_outline,file_tools/apply_patch,file_tools/apply_edits,file_tools/write_file,command_tools/run_command
+            max_iterations: "12"
+            max_model_calls: "8"
+            max_command_calls: "3"
+            max_read_calls: "6"
+            allowed_command_classes: format,test,build,lint
+            approved_plan_scope: "true"
+          input:
+            audit: stages.audit.outputs.audit
+            failures: stages.quality.outputs.failures
+            implementation: stages.implement.outputs.implementation
+            plan: stages.plan.outputs.plan
+            request: workflow.input
+            verification: stages.verify.outputs.verification_report
+          outputs:
+            repair: result.output
+            changed_files: result.changed_files
+            changes: result.changes
+            verification: result.verification
+            summary: result.summary
+          artifacts:
+            - name: repair-report
+              kind: repair
+              title: Repair report
+              ref: result.output
+              summary: Blocking findings repaired, regression coverage added, immediate checks, recovery actions, and remaining risks.
+          acceptance_criteria:
+            - name: has-repair-summary
+              ref: result.summary
+              exists: true
+              expected: repair report explains the bounded corrective change
+            - name: has-defect-coverage
+              ref: result.changed_files
+              exists: true
+              expected: repair maps regression coverage to the blocking finding
+            - name: has-repair-verification
+              ref: result.verification
+              exists: true
+              expected: repair records its focused regression check
+          next:
+            - recovery-verify
+          position:
+            x: 2740
+            "y": 400
+        - name: recovery-verify
+          node_type: skill
+          agent: quality-engineer
+          skill: code-audit
+          approval: true
+          params:
+            max_total_model_calls: "8"
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            use_change_slice_scheduler: "false"
+            output_contract: First line must be exactly 总体结论：通过 or 总体结论：未通过 using plain text without Markdown decoration. Then emit sections named Recovery Verification Result, Commands Run, Regression Evidence, Full Test Result, Static Analysis, Infrastructure Limits, and Residual Risk. Decide 未通过 for remaining required failures. An approved race infrastructure deferral alone does not fail the overall result; state that local race did not run.
+            verification_scope: Verify the repaired blocking findings first, then run the approved plan's bounded unified checks once. Execute at most four distinct test, build, lint, or non-mutating format commands. For Go, run ordinary go test first, use exactly gofmt -l . for the formatting check, run go vet next, and run go test -race last. Never use go fmt -l. Do not run repository discovery, shell wrappers, or equivalent duplicate commands. If race is unavailable because of CGO or a missing C compiler, reuse the already successful ordinary test as the fallback and confirm the CI race gate without another command or retry loop. Do not modify files.
+            tools: file_tools/read_file,file_tools/read_file_outline,command_tools/run_command,command_tools/start_process,command_tools/process_status,command_tools/stop_process,web_tools/browser_snapshot,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+            max_iterations: "8"
+            max_model_calls: "6"
+            max_command_calls: "6"
+            max_read_calls: "3"
+            allowed_command_classes: format,test,build,lint
+            approved_plan_scope: "true"
+          input:
+            audit: stages.audit.outputs.audit
+            plan: stages.plan.outputs.plan
+            repair: stages.repair.outputs.repair
+            request: workflow.input
+          outputs:
+            verification_report: result.output
+            verification: result.verification
+            summary: result.summary
+          artifacts:
+            - name: recovery-verification-report
+              kind: verification
+              title: Recovery verification report
+              ref: result.output
+              summary: Regression evidence, full tests, static analysis, infrastructure limits, and residual risks after repair.
+          acceptance_criteria:
+            - name: has-recovery-verification-result
+              ref: result.first_line
+              equals: 总体结论：通过
+              expected: 复验明确通过后才可验收。
+            - name: has-regression-evidence
+              ref: result.output
+              contains: Regression Evidence
+              expected: verification checks the previously blocking defect
+            - name: has-full-test-result
+              ref: result.output
+              contains: Full Test Result
+              expected: verification records the final project test outcome
+          retry:
+            max_attempts: 2
+          next:
+            - recovery-verification-route
+          position:
+            x: 3040
+            "y": 400
+        - name: recovery-verification-route
+          node_type: quality_gate
+          params:
+            stages: recovery-verify
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            verification_mode: command
+            allow_unknown: "false"
+            allowed_infrastructure_failures: go_race_unavailable
+          routes:
+            pass: recovery-audit
+            warning: final-quality
+            fail: final-quality
+          position:
+            x: 3180
+            "y": 600
+        - name: recovery-audit
+          model:
+            max_tokens: 1400
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          params:
+            max_total_model_calls: "4"
+            require_workspace_mutation: "false"
+            output_contract: First line must be exactly 总体结论：通过 or 总体结论：未通过 using plain text without Markdown decoration. Then emit sections named Recovery Audit Decision, Finding Resolution, Requirements Coverage, Verification Evidence, Blocking Findings, and Recommendation. Decide 未通过 for remaining requested work or missing evidence. An approved infrastructure deferral alone is not blocking, so when the reported findings are repaired and the ordinary tests pass, a race run that cannot start because CGO or a C compiler is unavailable is deferred and not failed. Do not require an already-executed Ubuntu CI result as a condition of this delivery; require the recorded Ubuntu race workflow and keep the statement that local race did not run.
+            review_scope: Decide whether every original blocking finding was actually repaired and regression-tested without weakening the user request. Use supplied repair and verification evidence. Change slices are tracked by the durable scheduler and consumed by the implementation; the missing separate slice report is not missing evidence when the repair and verification reports list the changed files. Read at most one specific file only if one unresolved conflict requires it; do not execute commands or perform repository discovery.
+            tools: file_tools/read_file
+            max_iterations: "3"
+            max_read_calls: "1"
+          input:
+            initial_audit: stages.audit.outputs.audit
+            repair: stages.repair.outputs.repair
+            request: workflow.input
+            verification: stages.recovery-verify.outputs.verification_report
+          outputs:
+            audit: result.output
+            findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: recovery-audit
+              kind: audit
+              title: Recovery audit
+              ref: result.output
+              summary: Finding resolution, requirements coverage, final verification evidence, remaining blockers, and recommendation.
+          acceptance_criteria:
+            - name: has-recovery-audit-decision
+              ref: result.first_line
+              equals: 总体结论：通过
+              expected: 复审明确通过后才可验收。
+            - name: has-finding-resolution
+              ref: result.output
+              contains: Finding Resolution
+              expected: every initial blocker is mapped to repaired or unresolved
+            - name: has-blocking-findings
+              ref: result.output
+              contains: Blocking Findings
+              expected: remaining blockers are explicit
+          retry:
+            max_attempts: 2
           next:
             - final-quality
           position:
-            x: 3020
-            "y": 300
+            x: 3340
+            "y": 400
         - name: final-quality
           node_type: quality_gate
           agent: ""
           skill: ""
           params:
-            stages: delivery-loop,final-validation
-            min_score: "88"
-            reason: final validation did not provide enough acceptance, verification, or artifact evidence for delivery
+            stages: repair,recovery-verify,recovery-audit
+            min_score: "85"
+            reason: repaired delivery still lacks regression, unified verification, or independent audit evidence
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
+            verification_mode: command
             allow_unknown: "false"
+            allowed_infrastructure_failures: go_race_unavailable
           routes:
             pass: final-report
             warning: final-report
             fail: final-report
           position:
-            x: 3520
-            "y": 300
+            x: 3640
+            "y": 400
         - name: final-report
+          model:
+            max_tokens: 1500
           node_type: skill
           agent: planner
           skill: execution-plan
           params:
-            output_contract: Emit sections named Completion Summary, Requirements Delivered, Files Changed, Verification Evidence, Review Notes, Residual Risks, User Follow-Up, and Artifact References.
-            purpose: Produce the final user-facing completion report after the project is implemented and validated.
+            max_total_model_calls: "3"
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Emit sections named Delivery Status, Changes Delivered, Files Changed, Verification Evidence, Audit Decision, Recovery, Residual Risks, and Artifact References. Write the finished report only; never leave 待补充, 待生成, TODO or placeholder text, and every conclusion must cite a real Diff, command result or artifact already recorded in this run. Keep the report under 1200 characters; quote command names and file paths, not their content.
+            purpose: Produce one concise final result from the approved plan and durable evidence.
+            max_iterations: "1"
+            max_model_calls: "2"
+            disable_tools: "true"
+            verify_evidence_hashes: "true"
           input:
-            requirements: stages.intake.outputs.requirements
-            project_plan: stages.plan.outputs.project_plan
-            iteration_history: stages.delivery-loop.outputs.loop_summaries
-            final_validation: stages.final-validation.outputs.final_validation
-            final_quality_status: stages.final-quality.outputs.quality_status
-            recovery_plan: stages.recovery-plan.outputs.recovery_plan
+            audit: stages.audit.outputs.audit
+            final_audit: stages.recovery-audit.outputs.audit
+            implementation: stages.implement.outputs.implementation
+            initial_quality: stages.quality.outputs.quality_status
+            final_quality: stages.final-quality.outputs.quality_status
+            repair: stages.repair.outputs.repair
+            recovery_verification: stages.recovery-verify.outputs.verification_report
+            verification: stages.verify.outputs.verification_report
           outputs:
             final_report: result.output
             summary: result.summary
@@ -438,47 +578,50 @@ graph:
               kind: report
               title: Completion report
               ref: result.output
-              summary: Final user-facing report with delivered requirements, changed files, verification evidence, risks, and artifact references.
+              summary: Delivered changes, files, verification evidence, audit decision, recovery, risks, and artifact references.
           acceptance_criteria:
-            - name: has-completion-summary
+            - name: has-delivery-status
               ref: result.output
-              contains: Completion Summary
-              expected: final report summarizes completion status
+              contains: Delivery Status
+              expected: final report declares completed, blocked, or needs action
             - name: has-verification-evidence
               ref: result.output
               contains: Verification Evidence
-              expected: final report includes final validation evidence
+              expected: final report includes the unified verification evidence
             - name: has-artifact-references
               ref: result.output
               contains: Artifact References
-              expected: final report references reusable artifacts or reports
+              expected: final report links reusable evidence
+          retry:
+            max_attempts: 2
           context:
             include:
-                - previous.summary
-                - previous.artifacts.final-validation-report
-                - previous.artifacts.recovery-plan
-                - previous.artifacts.iteration-history
-                - stages.final-quality.outputs.quality_status
-                - stages.final-validation.outputs.final_validation
-                - stages.recovery-plan.outputs.recovery_plan
-                - files.changed
+              - stages.implement.outputs.implementation
+              - stages.verify.outputs.verification_report
+              - stages.audit.outputs.audit
+              - stages.recovery-audit.outputs.audit
+              - stages.quality.outputs.quality_status
+              - stages.final-quality.outputs.quality_status
+              - stages.repair.outputs.repair
+              - stages.recovery-verify.outputs.verification_report
             exclude:
-                - raw_tool_logs
-                - large_file_contents
-            max_tokens: 4600
-            prompt_max_tokens: 5600
+              - raw_tool_logs
+              - large_file_contents
+              - unrelated_session_history
+            max_tokens: 1400
+            prompt_max_tokens: 4800
             request_max_tokens: 800
-            inputs_max_tokens: 1800
-            parameters_max_tokens: 700
+            inputs_max_tokens: 3600
+            parameters_max_tokens: 600
           next:
             - end
           position:
-            x: 4020
-            "y": 300
+            x: 3940
+            "y": 260
         - name: end
           node_type: end
           agent: ""
           skill: ""
           position:
-            x: 4520
-            "y": 300
+            x: 4240
+            "y": 260

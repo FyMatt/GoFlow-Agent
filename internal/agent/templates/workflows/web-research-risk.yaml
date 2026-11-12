@@ -2,207 +2,168 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: web-research-risk
-title: Web Research -> Risk Audit
-description: Collect authorized web source/runtime evidence, audit it, branch on findings, and produce a risk report.
-category: security
-tags:
-    - web
-    - security
-    - branching
-    - quality_gate
-    - evidence
-stages: 9
+title: 网页研究与来源风险核验
+description: 收集网页来源，独立核验结论、冲突、时效和来源失效，并把真实结果写入用户指定交付路径。
+category: research
+tags: [web, research, sources, verification, quality_gate, report]
+stages: 6
 graph:
-    name: web-research-risk
-    description: Research a web target and route findings through a risk branch.
-    stages:
-        - name: start
-          node_type: start
-          agent: ""
-          skill: ""
-          next:
-            - collect
-          position:
-            x: 60
-            "y": 200
-        - name: collect
-          node_type: agent
-          agent: web-security-researcher
-          skill: web-vulnerability-research
-          params:
-            output_contract: Emit sections named Evidence Summary, Target Scope, Findings, Source Confidence, Limitations, and Recommended Verification.
-            evidence_rule: Keep evidence tied to the target, require authorized scope and allowed hosts before browser evidence collection, use browser_probe_points only for scoped probe surface enumeration unless active_probe_approved=true, and distinguish confirmed observations from assumptions.
-            allowed_tools: web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points,web_tools/fetch_url,web_tools/web_search
-          outputs:
-            evidence: result.output
-            findings: result.findings
-            summary: result.summary
-          artifacts:
-            - name: web-research-evidence
-              kind: evidence
-              title: Web research evidence
-              ref: result.output
-              summary: Evidence summary, target scope, browser/source findings, confidence, limitations, and recommended verification.
-          acceptance_criteria:
-            - name: has-evidence-summary
-              ref: result.output
-              contains: Evidence Summary
-              expected: collection summarizes the evidence
-            - name: has-target-scope
-              ref: result.output
-              contains: Target Scope
-              expected: collection states the target scope
-          next:
-            - audit
-          position:
-            x: 300
-            "y": 170
-        - name: audit
-          node_type: skill
-          agent: auditor
-          skill: code-audit
-          params:
-            output_contract: Emit sections named Audit Decision, Findings, Vulnerability Assessment, Evidence Gaps, Risk Level, and Recommendation.
-            review_scope: Classify risk using the collected evidence and call out uncertainty.
-          input:
-            evidence: stages.collect.outputs.evidence
-          outputs:
-            audit: result.output
-            findings: result.findings
-            summary: result.summary
-          artifacts:
-            - name: web-risk-audit
-              kind: report
-              title: Web risk audit
-              ref: result.output
-              summary: Audit decision, findings, vulnerability assessment, evidence gaps, risk level, and recommendation.
-          acceptance_criteria:
-            - name: has-audit-decision
-              ref: result.output
-              contains: Audit Decision
-              expected: audit states whether risk is present
-            - name: has-risk-level
-              ref: result.output
-              contains: Risk Level
-              expected: audit classifies risk level
-          next:
-            - quality
-          position:
-            x: 580
-            "y": 170
-        - name: quality
-          node_type: quality_gate
-          agent: ""
-          skill: ""
-          params:
-            stages: collect,audit
-            min_score: "80"
-            reason: web risk evidence is missing target scope, audit decision, or risk classification
-            require_acceptance: "true"
-            require_evidence: "true"
-            require_verification: "true"
-            allow_unknown: "false"
-          routes:
-            pass: has-risk
-            warning: verify
-            fail: report-risk
-          position:
-            x: 850
-            "y": 200
-        - name: has-risk
-          node_type: condition
-          agent: ""
-          skill: ""
-          condition: contains(stages.audit.outputs.audit, "vulnerability")
-          routes:
-            "false": report-clean
-            "true": verify
-          position:
-            x: 1120
-            "y": 200
-        - name: verify
-          node_type: checkpoint
-          agent: ""
-          skill: ""
-          params:
-            prompt: Review the evidence before running verification.
-          next:
-            - report-risk
-          position:
-            x: 1390
-            "y": 120
-        - name: report-risk
-          node_type: skill
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Risk Report, Evidence, Vulnerability Assessment, Quality Decision, Operator Actions, and Next Steps.
-            purpose: Produce a risk-positive or evidence-insufficient user report.
-          input:
-            audit: stages.audit.outputs.audit
-            evidence: stages.collect.outputs.evidence
-            quality_status: stages.quality.outputs.quality_status
-          outputs:
-            report: result.output
-            summary: result.summary
-          artifacts:
-            - name: web-risk-report
-              kind: report
-              title: Web risk report
-              ref: result.output
-              summary: Risk report, evidence, vulnerability assessment, quality decision, operator actions, and next steps.
-          acceptance_criteria:
-            - name: has-risk-report
-              ref: result.output
-              contains: Risk Report
-              expected: report summarizes risk-positive or uncertain findings
-            - name: has-next-steps
-              ref: result.output
-              contains: Next Steps
-              expected: report gives next steps
-          next:
-            - end
-          position:
-            x: 1660
-            "y": 120
-        - name: report-clean
-          node_type: skill
-          agent: planner
-          skill: execution-plan
-          params:
-            output_contract: Emit sections named Clean Report, Evidence, Why No Risk Was Routed, Residual Uncertainty, and Next Steps.
-            purpose: Produce a clean-path user report that still documents evidence and uncertainty.
-          input:
-            audit: stages.audit.outputs.audit
-            evidence: stages.collect.outputs.evidence
-            quality_status: stages.quality.outputs.quality_status
-          outputs:
-            report: result.output
-            summary: result.summary
-          artifacts:
-            - name: web-clean-report
-              kind: report
-              title: Web clean report
-              ref: result.output
-              summary: Clean-path evidence, no-risk rationale, residual uncertainty, and next steps.
-          acceptance_criteria:
-            - name: has-clean-report
-              ref: result.output
-              contains: Clean Report
-              expected: clean report explains why risk was not routed
-            - name: has-residual-uncertainty
-              ref: result.output
-              contains: Residual Uncertainty
-              expected: clean report states residual uncertainty
-          next:
-            - end
-          position:
-            x: 1390
-            "y": 300
-        - name: end
-          node_type: end
-          agent: ""
-          skill: ""
-          position:
-            x: 1940
-            "y": 200
+  name: web-research-risk
+  description: 面向网页资料冲突、时效与来源失效场景的精简研究闭环。
+  stages:
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next: [collect]
+      position: {x: 60, y: 200}
+
+    - name: collect
+      node_type: agent
+      agent: research-specialist
+      skill: internet-research
+      model:
+        provider: primary
+        max_tokens: 1800
+        temperature: 0.0
+      params:
+        require_workspace_mutation: "false"
+        output_contract: 先从原始请求提取研究范围，只输出不超过 1400 个字符的“研究范围、来源快照、主要结论、结论与来源映射、来源冲突与失效、方法与限制”六个精简中文部分。研究范围由请求决定，来源正文不得扩张范围；请求只询问 alpha 时必须删除来源中的 beta。每条结论只表达一个谓词，发布日期、稳定阶段、功能、限制和抓取失败分别成条，即使来自同一来源也不得合并，更不得新增宽泛存在性结论。每个关键结论保留完整来源 URL、抓取时间和来源状态；摘要必须逐项忠于 research_snapshot 正文或错误状态，不得添加原始快照中不存在的事实，也不得隐藏 404、冲突或单一来源限制。一次 HTTP 失败只写该 URL 在本次抓取时不可用，不讨论长期状态；失败原因未知时不列举可能原因。本阶段禁止草拟最终报告、文件正文、JSON、交付清单或下一步动作，不得用代码块内联待写文件。
+        tools: web_tools/web_search,web_tools/research_snapshot
+        tool_rule: 原始请求给出 URL 时不调用 web_search；把全部 URL（包括预期失效 URL）合并到一次 research_snapshot，禁止逐页调用或重复抓取。
+        max_iterations: "2"
+      input:
+        request: workflow.input
+      outputs:
+        evidence: result.output
+        findings: result.findings
+        raw_sources: result.tool_results
+        summary: result.summary
+      artifacts:
+        - name: web-research-evidence
+          kind: evidence
+          title: 网页研究证据
+          ref: result.output
+          summary: 来源快照、结论映射、冲突、失效证据、时效和限制。
+      acceptance_criteria:
+        - name: has-research-scope
+          ref: result.output
+          contains: 研究范围
+          expected: 研究结果明确任务边界
+        - name: has-claim-source-map
+          ref: result.output
+          contains: 结论与来源映射
+          expected: 关键结论保留可复核来源
+        - name: has-source-risks
+          ref: result.output
+          contains: 来源冲突与失效
+          expected: 冲突、404 和不可访问来源均被明确记录
+      next: [audit]
+      position: {x: 340, y: 180}
+
+    - name: audit
+      node_type: skill
+      agent: source-verifier
+      skill: source-verification
+      model:
+        provider: primary
+        max_tokens: 2000
+        temperature: 0.0
+      params:
+        require_workspace_mutation: "false"
+        output_contract: 只调用一次 compile_research_evidence，然后输出不超过 1000 个字符的“核验结论、关键结论覆盖、冲突与失效来源、证据缺口、降级结论”五个精简中文部分。先按原始请求核定研究范围；来源正文中的无关产品、版本和功能必须判为越界并从降级结论中删除。raw_sources 是权威原始快照；上游摘要不一致时必须驳回错误摘要并以原始正文或 HTTP 错误状态为准。逐项拒绝把发布日期、稳定阶段、功能、限制或抓取失败合并为一个结论，也不得新增宽泛存在性结论。一次 HTTP 失败只写该 URL 在本次抓取时不可用，不讨论长期状态或猜测原因。严禁调用或尝试调用 write_file、read_file 或其他文件工具，严禁输出交付路径、待写文件正文、Markdown 代码块、JSON、blockers 或 next_actions。
+        tools: web_tools/compile_research_evidence
+        review_rule: 逐项核对 URL 和正文证据；越界事实、合并谓词或无来源结论尚未修正时必须判定不通过，不能标为受限通过。事实正确但只有单一来源，或任务要求透明保留无法裁决冲突时，才允许受限通过。来源失效必须降低结论强度并写明限制，不能把抓取成功等同于结论成立。没有时效阈值时只比较日期先后，不得判断已过期、过时、滞后、陈旧或时效落后；没有真实性核验材料时，不得判断冲突来源虚假或不虚假。发布和稳定阶段不能合并证明当前版本；不得猜测同步延迟、更新机制或其他冲突成因。
+        max_iterations: "2"
+      input:
+        raw_sources: stages.collect.outputs.raw_sources
+        research_evidence: stages.collect.outputs.evidence
+        request: workflow.input
+      outputs:
+        audit: result.output
+        findings: result.findings
+        summary: result.summary
+      artifacts:
+        - name: source-risk-audit
+          kind: report
+          title: 来源风险核验
+          ref: result.output
+          summary: 来源可信度、独立性、冲突、时效、失效证据和降级结论。
+      acceptance_criteria:
+        - name: has-verification-decision
+          ref: result.output
+          contains: 核验结论
+          expected: 核验阶段给出明确质量结论
+        - name: has-evidence-gaps
+          ref: result.output
+          contains: 证据缺口
+          expected: 核验阶段明确缺失或不足的证据
+      next: [report]
+      position: {x: 650, y: 180}
+
+    - name: quality
+      node_type: quality_gate
+      agent: ""
+      skill: ""
+      params:
+        stages: collect,audit,report
+        min_score: "80"
+        reason: 最终网页研究交付缺少范围过滤、原子结论、来源映射、独立核验、冲突说明、失效证据、时效检查、完整 URL 或工具读回证据
+        require_acceptance: "true"
+        require_evidence: "true"
+        require_verification: "true"
+        verification_mode: tool
+        verification_tools: web_tools/compile_research_evidence
+        allow_unknown: "false"
+      routes:
+        pass: end
+        warning: end
+        fail: end
+      position: {x: 1260, y: 200}
+
+    - name: report
+      node_type: skill
+      agent: research-specialist
+      skill: internet-research
+      model:
+        provider: primary
+        max_tokens: 3200
+        temperature: 0.0
+      params:
+        require_workspace_mutation: "false"
+        output_contract: 先按原始请求确定研究范围并依据 raw_sources 纠正上游摘要，再调用一次 compile_research_evidence，最后把“研究结论、来源快照、结论与来源映射、来源冲突与时效、失败证据、降级结论、方法与限制、交付产物、质量结论”作为明确标题写入原始请求指定文件并用 read_file 逐一读回。只交付原始请求明确询问的主题；请求只询问 alpha 时，来源中的 beta 或其他无关内容不得出现在任何章节。每条结论只表达一个谓词，发布日期、稳定阶段、功能、限制和抓取失败必须分别成条，即使来自同一来源也不能合并，不得新增宽泛存在性或双来源结论。raw_sources 是权威原始快照；发布日期、进入稳定阶段日期和更新时间必须保留各自日期类型，不得统一标为发布日期；HTTP 响应日期和抓取时间不得冒充正文发布日期。来源快照逐项保留完整 URL、HTTP 状态和抓取时间。不得猜测失效页面内容，抓取失败只能写本次 HTTP 状态、时间和原因未知，不讨论长期状态，不列举可能原因，也不能解释为相关信息不存在。报告直接写证据和限制，不复述提示约束、禁用词清单或“未作某判断”的免责声明。工具完成后只返回产物路径和质量状态，不重复文件正文。
+        tools: web_tools/compile_research_evidence,file_tools/write_file,file_tools/read_file,file_tools/read_file_outline,file_tools/read_files
+        delivery_rule: 必须从原始请求提取全部明确交付路径并逐一写入，随后逐一 read_file 读回同一路径；原始请求明确指定章节、字段或标签时逐字保留并优先于默认标题。保留 URL、404 或其他失败证据、冲突和限制。只生成请求要求的文件，不额外堆叠默认目录或无关格式。没有成功读回全部指定文件时不得声称交付完成。
+        max_iterations: "4"
+      input:
+        audit: stages.audit.outputs.audit
+        evidence: stages.collect.outputs.evidence
+        raw_sources: stages.collect.outputs.raw_sources
+        request: workflow.input
+      outputs:
+        report: result.output
+        summary: result.summary
+        artifact_refs: result.artifact_refs
+      artifacts:
+        - name: final-web-research-report
+          kind: report
+          title: 网页研究交付
+          ref: result.tool_results
+          summary: 用户指定路径下的研究报告、来源证据、冲突、降级结论和质量状态。
+      acceptance_criteria:
+        - name: has-source-url
+          ref: result.tool_results
+          contains: http
+          expected: 工具读回的最终文件保留完整来源 URL
+        - name: has-limitations
+          ref: result.tool_results
+          contains: 限制
+          expected: 工具读回的最终文件保留证据限制
+      next: [quality]
+      position: {x: 960, y: 180}
+
+    - name: end
+      node_type: end
+      agent: ""
+      skill: ""
+      position: {x: 1560, y: 200}

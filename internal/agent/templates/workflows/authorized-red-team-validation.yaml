@@ -2,8 +2,8 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: authorized-red-team-validation
-title: Authorized Red-Team Validation
-description: Scope, approve, validate, and report bounded offensive security checks with non-destructive evidence and blue-team handoff.
+title: 授权红队验证
+description: 在明确范围和审批下执行受控攻击面验证，保留非破坏性证据并完成蓝队修复交接。
 category: security
 tags:
     - security
@@ -12,19 +12,30 @@ tags:
     - authorization
     - evidence
     - quality_gate
-stages: 10
+stages: 11
 graph:
     name: authorized-red-team-validation
-    description: Authorized red-team workflow with explicit scope, approval, bounded validation, evidence gate, and remediation handoff.
+    description: 带明确授权范围、人工审批、受限验证、证据门禁和修复交接的授权红队流程。
     stages:
         - name: start
           node_type: start
           agent: ""
           skill: ""
           next:
-            - scope
+            - authorization-check
           position:
             x: 60
+            "y": 240
+        - name: authorization-check
+          node_type: condition
+          agent: ""
+          skill: ""
+          condition: contains(workflow.input, "authorized_scope=true")
+          routes:
+            "false": blocked-report
+            "true": scope
+          position:
+            x: 300
             "y": 240
         - name: scope
           node_type: input_gate
@@ -35,9 +46,9 @@ graph:
             risk_level: high
             boundary: authorized-red-team-scope
           params:
-            fields_json: '{"fields":[{"name":"target","type":"text","label":"Authorized target","required":true},{"name":"authorization","type":"textarea","label":"Authorization statement","required":true},{"name":"allowed_hosts","type":"textarea","label":"Allowed hosts or systems","required":true},{"name":"allowed_actions","type":"textarea","label":"Allowed validation actions and payload classes","required":true},{"name":"exclusions","type":"textarea","label":"Explicit exclusions"},{"name":"rate_limit","type":"text","label":"Rate limit","default":"low-volume manual validation only"},{"name":"active_probe_approved","type":"checkbox","label":"Active canary validation approved","default":false}]}'
+            fields_json: '{"fields":[{"name":"target","type":"text","label":"已授权目标","required":true},{"name":"authorization","type":"textarea","label":"授权声明","required":true},{"name":"allowed_hosts","type":"textarea","label":"允许的主机或系统","required":true},{"name":"allowed_actions","type":"textarea","label":"允许的验证动作与载荷类别","required":true},{"name":"exclusions","type":"textarea","label":"明确排除项"},{"name":"rate_limit","type":"text","label":"速率限制","default":"仅允许低频人工验证"},{"name":"active_probe_approved","type":"checkbox","label":"已批准主动金丝雀验证","default":false}]}'
             manual: "true"
-            prompt: Provide written authorization, target scope, allowlists, allowed actions, exclusions, and rate limits before red-team validation.
+            prompt: 开始红队验证前，请提供书面授权、目标范围、白名单、允许动作、排除项和速率限制（rate limits）。
           outputs:
             active_probe_approved: params.active_probe_approved
             allowed_actions: params.allowed_actions
@@ -60,8 +71,10 @@ graph:
             risk_level: high
             boundary: authorized-red-team-plan
           params:
-            output_contract: Emit sections named Authorization Boundary, Attack Path Hypothesis, Validation Plan, Evidence Needed, Blocked Actions, and Approval Request.
-            planning_rule: Build only a bounded, non-destructive validation plan. Do not perform active validation in this stage.
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: 中文说明：输出授权边界、攻击路径假设、验证计划、所需证据、已阻止动作和审批请求。机器解析契约：保留英文标题 Authorization Boundary, Attack Path Hypothesis, Validation Plan, Evidence Needed, Blocked Actions, Approval Request。
+            planning_rule: 只制定范围受限、非破坏性的验证计划，本阶段不得执行主动验证。
           input:
             active_probe_approved: stages.scope.outputs.active_probe_approved
             allowed_actions: stages.scope.outputs.allowed_actions
@@ -76,22 +89,22 @@ graph:
           artifacts:
             - name: red-team-validation-plan
               kind: plan
-              title: Authorized red-team validation plan
+              title: 授权红队验证计划
               ref: result.output
-              summary: Authorization boundary, attack-path hypothesis, validation plan, evidence requirements, blocked actions, and approval request.
+              summary: 授权边界、攻击路径假设、验证计划、证据要求、已阻止动作和审批请求。
           acceptance_criteria:
             - name: has-authorization-boundary
               ref: result.output
               contains: Authorization Boundary
-              expected: plan states the authorization boundary
+              expected: 计划明确说明授权边界
             - name: has-validation-plan
               ref: result.output
               contains: Validation Plan
-              expected: plan includes bounded validation steps
+              expected: 计划包含范围受限的验证步骤
             - name: has-blocked-actions
               ref: result.output
               contains: Blocked Actions
-              expected: plan records out-of-scope or disallowed actions
+              expected: 计划记录超出范围或被禁止的动作
           next:
             - approve-validation
           position:
@@ -106,7 +119,7 @@ graph:
             risk_level: high
             boundary: operator-approval
           params:
-            prompt: Review the red-team validation plan, authorization boundary, allowlists, exclusions, rate limits, and non-destructive payload constraints before validation.
+            prompt: 验证前请复核红队验证计划、授权边界、白名单、排除项、速率限制和非破坏载荷约束。
           next:
             - validate
           position:
@@ -124,9 +137,10 @@ graph:
             requires_authorized_scope: true
             requires_allowlist: true
           params:
-            output_contract: Emit sections named Authorization Boundary, Attack Path Hypothesis, Validation Plan, Evidence Collected, Confirmed Findings, Blocked Or Out-Of-Scope Actions, Blue-Team Handoff, and Follow-Up Validation.
-            validation_rule: Use only approved, non-destructive, low-volume validation inside the stated allowlist. If tooling cannot safely validate, report a blocker and do not improvise.
-            allowed_tools: web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points,web_tools/fetch_url,web_tools/web_search,file_tools/read_file,file_tools/search_files
+            require_workspace_mutation: "false"
+            output_contract: 中文说明：输出授权边界、攻击路径假设、验证计划、已收集证据、已确认发现、被阻止或超出范围的动作、蓝队交接和后续验证。机器解析契约：保留英文标题 Authorization Boundary, Attack Path Hypothesis, Validation Plan, Evidence Collected, Confirmed Findings, Blocked Or Out-Of-Scope Actions, Blue-Team Handoff, Follow-Up Validation。
+            validation_rule: 只允许在声明的白名单内执行已批准、非破坏、低频验证。工具无法安全验证时必须报告阻塞，不得自行扩大动作。
+            allowed_tools: web_tools/fetch_page_assets,web_tools/browser_snapshot,web_tools/browser_probe_points,web_tools/fetch_url,web_tools/web_search,file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/search_files
             authorized_scope: stages.scope.outputs.authorization
             allowed_hosts: stages.scope.outputs.allowed_hosts
             active_probe_approved: stages.scope.outputs.active_probe_approved
@@ -147,18 +161,18 @@ graph:
           artifacts:
             - name: red-team-validation-evidence
               kind: evidence
-              title: Authorized red-team validation evidence
+              title: 授权红队验证证据
               ref: result.output
-              summary: Evidence collected, confirmed findings, blocked actions, and blue-team handoff.
+              summary: 已收集证据、已确认发现、已阻止动作和蓝队交接。
           acceptance_criteria:
             - name: has-evidence-collected
               ref: result.output
               contains: Evidence Collected
-              expected: validation records collected evidence or a blocker
+              expected: 验证记录已收集证据，或明确说明阻塞原因
             - name: has-blue-team-handoff
               ref: result.output
               contains: Blue-Team Handoff
-              expected: validation produces remediation-oriented handoff
+              expected: 验证产出面向修复的蓝队交接
           next:
             - quality
           position:
@@ -171,10 +185,12 @@ graph:
           params:
             stages: plan,validate
             min_score: "80"
-            reason: authorized red-team validation lacks scope, approval, evidence, blocked-action handling, or blue-team handoff
+            reason: 授权红队验证缺少范围、审批、证据、禁止动作处理或蓝队交接
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
+            verification_mode: tool
+            verification_tools: web_tools/fetch_url
             allow_unknown: "false"
           routes:
             pass: report
@@ -192,7 +208,7 @@ graph:
             risk_level: medium
             boundary: warning-review
           params:
-            prompt: Review warning-level red-team evidence before producing the report.
+            prompt: 生成报告前请复核警告级红队证据。
           next:
             - report
           position:
@@ -207,8 +223,10 @@ graph:
             risk_level: medium
             boundary: remediation-handoff
           params:
-            output_contract: Emit sections named Red-Team Validation Report, Authorization Boundary, Evidence, Confirmed Findings, Blue-Team Handoff, Residual Risk, and Next Steps.
-            purpose: Produce a remediation-oriented report from the approved validation evidence.
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: 中文说明：输出红队验证报告、授权边界、证据、已确认发现、蓝队交接、剩余风险和后续步骤。机器解析契约：保留英文标题 Red-Team Validation Report, Authorization Boundary, Evidence, Confirmed Findings, Blue-Team Handoff, Residual Risk, Next Steps。
+            purpose: 根据已批准的验证证据生成面向修复的报告。
           input:
             evidence: stages.validate.outputs.evidence
             plan: stages.plan.outputs.plan
@@ -219,18 +237,18 @@ graph:
           artifacts:
             - name: red-team-validation-report
               kind: report
-              title: Red-team validation report
+              title: 红队验证报告
               ref: result.output
-              summary: Authorization boundary, validation evidence, confirmed findings, blue-team handoff, residual risk, and next steps.
+              summary: 授权边界、验证证据、已确认发现、蓝队交接、剩余风险和后续步骤。
           acceptance_criteria:
             - name: has-red-team-report
               ref: result.output
               contains: Red-Team Validation Report
-              expected: report summarizes the authorized validation result
+              expected: 报告总结授权验证结果
             - name: has-next-steps
               ref: result.output
               contains: Next Steps
-              expected: report includes next steps
+              expected: 报告包含后续步骤
           next:
             - end
           position:
@@ -238,33 +256,39 @@ graph:
             "y": 160
         - name: blocked-report
           node_type: skill
-          agent: planner
-          skill: execution-plan
+          agent: security-researcher
+          skill: authorized-red-team-validation
           execution:
             mode: planning
             risk_level: high
             boundary: blocked-validation
           params:
-            output_contract: Emit sections named Validation Blocked, Blocking Issues, Missing Authorization Or Evidence, Safe Follow-Up Plan, and Next Steps.
-            purpose: Explain why validation is blocked and what safe evidence or approval is required.
+            require_workspace_mutation: "false"
+            output_contract: 使用“停止决定、缺失授权、允许的被动工作、继续条件、禁止动作”五个中文标题，并在标题后保留机器解析词 Validation Blocked, Blocking Issues, Missing Authorization Or Evidence, Safe Follow-Up Plan, Next Steps。正文必须明确写出“停止主动行为”。
+            purpose: 说明验证被阻塞的原因，以及继续处理所需的安全证据或审批。
+            tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/write_file
+            delivery_rule: 从原始请求提取用户指定的工作区交付路径，即使授权不足也必须写入真实阻塞报告并读回校验；不得访问远程目标或修改本地证据。
+            operation_rule: 不要预读尚未生成的输出，也不要读取目录。对用户指定文件只调用一次 write_file，获批写入后只调用一次 read_file 读取同一文件；随后立即完成。
+            max_iterations: "4"
           input:
             evidence: stages.validate.outputs.evidence
             failures: stages.quality.outputs.failures
             plan: stages.plan.outputs.plan
+            request: workflow.input
           outputs:
             report: result.output
             summary: result.summary
           artifacts:
             - name: red-team-blocked-report
               kind: report
-              title: Red-team validation blocked report
+              title: 红队验证阻塞报告
               ref: result.output
-              summary: Blocking issues, missing authorization/evidence, safe follow-up plan, and next steps.
+              summary: 阻塞问题、缺失授权或证据、安全后续计划和后续步骤。
           acceptance_criteria:
             - name: has-validation-blocked
-              ref: result.output
+              ref: result.tool_results
               contains: Validation Blocked
-              expected: blocked report explains why validation cannot proceed
+              expected: 阻塞报告说明验证无法继续的原因
           next:
             - end
           position:

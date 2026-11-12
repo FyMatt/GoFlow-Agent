@@ -2,8 +2,8 @@ kind: goflow.workflow_template_resource
 version: 2
 min_supported_version: 1
 name: binary-triage
-title: Binary Triage
-description: Plan binary analysis, collect triage evidence, classify risk, and report next steps.
+title: 二进制风险初筛
+description: 规划二进制分析、收集初筛证据、判定风险等级并给出后续步骤。
 category: security
 tags:
     - binary
@@ -30,6 +30,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Analysis Plan, Target Assumptions, Static Tools Needed, Evidence Checklist, Sample Scope, Unsafe Dynamic Analysis Blockers, Risk Criteria, and Stop Conditions.
             purpose: Scope a defensive static triage before collecting binary evidence. Dynamic analysis is disabled unless a separate sandbox plan, approval, and artifact isolation are supplied.
           outputs:
@@ -64,6 +66,7 @@ graph:
           agent: auditor
           skill: binary-vulnerability-research
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Evidence Summary, Format Summary, Sections, Imports Exports, Entropy Packing Hints, Symbol Hints, Offset References, Static Indicators, Risk Classification, Confidence, Limitations, Unsafe Dynamic Analysis Blockers, and Recommended Next Step.
             evidence_rule: Prefer reproducible static observations from python_notes/binary_file_info, python_notes/binary_format_summary, python_notes/binary_entropy_map, python_notes/binary_symbol_hints, python_notes/binary_strings, python_notes/hex_preview, and python_notes/binary_extract_window. Clearly mark assumptions and keep raw binary data out of prompts.
             tools: python_notes/binary_file_info,python_notes/binary_format_summary,python_notes/binary_entropy_map,python_notes/binary_symbol_hints,python_notes/binary_strings,python_notes/hex_preview,python_notes/binary_extract_window
@@ -116,6 +119,8 @@ graph:
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
+            verification_mode: tool
+            verification_tools: python_notes/binary_format_summary,python_notes/binary_entropy_map,python_notes/binary_symbol_hints
             allow_unknown: "false"
           routes:
             pass: risk
@@ -151,6 +156,7 @@ graph:
           agent: auditor
           skill: code-audit
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Deep Review Findings, Exploitability Notes, False Positive Checks, Evidence Gaps, Unsafe Dynamic Analysis Blockers, Sandbox Plan Needed, and Containment Advice.
           input:
             evidence: stages.triage.outputs.evidence
@@ -178,6 +184,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Final Risk Summary, Static Evidence, Format Summary, Entropy Packing Hints, Symbol and Offset References, Classification, Confidence, Unsafe Action Blockers, Operator Actions, and Artifact References.
             purpose: Produce a defensive user-facing binary triage report for either clean, warning, or critical paths.
           input:

@@ -180,7 +180,10 @@ func validateSkillScripts(path string, scripts []schema.SkillScript) error {
 		if script.Output != "" && !allowedSkillScriptValue(script.Output, "text", "json", "files", "artifact") {
 			return fmt.Errorf("skill %s script %q has unsupported output %q", path, script.Name, script.Output)
 		}
-		if script.Isolation != "" && !allowedSkillScriptValue(script.Isolation, "container", "process_group", "windows_job", "windows_restricted_token", "linux_cgroup", "linux_netns") {
+		if strings.EqualFold(strings.TrimSpace(script.Isolation), "container") {
+			return fmt.Errorf("skill %s script %q uses removed container isolation; use isolation: auto or native_strong on the skill_runner MCP connection", path, script.Name)
+		}
+		if script.Isolation != "" && !allowedSkillScriptValue(script.Isolation, "auto", "native_strong", "process_group", "windows_job", "windows_restricted_token", "linux_cgroup", "linux_netns") {
 			return fmt.Errorf("skill %s script %q has unsupported isolation %q", path, script.Name, script.Isolation)
 		}
 		if script.WorkspaceMount != "" && !allowedSkillScriptValue(script.WorkspaceMount, "none", "ro", "rw") {

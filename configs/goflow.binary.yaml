@@ -1,7 +1,10 @@
 agent:
-  name: GoFlow Agent
+  name: 本地智能体工作流平台
   max_iterations: 8
   timeout: 2m
+
+http:
+  token: ${GOFLOW_HTTP_TOKEN}
 
 default_agent: chat
 
@@ -21,11 +24,27 @@ mcp_servers:
     max_request_bytes: 65536
     max_response_bytes: 2097152
 
+  - name: command_tools
+    command: ${GOFLOW_COMMAND_TOOLS_CMD}
+    enabled: true
+    timeout: 5m
+    workdir: .
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, APPDATA, TMP, TEMP, GOPATH, GOCACHE, GOMODCACHE, GOENV, GOFLAGS, CGO_ENABLED, CC, CXX, NODE_OPTIONS, NPM_CONFIG_CACHE, PNPM_HOME, CI]
+    isolation: process_group
+    restart_limit: 3
+    cooldown: 10s
+    max_concurrent_calls: 1
+    allowed_commands:
+      - ${GOFLOW_COMMAND_TOOLS_CMD}
+    max_request_bytes: 65536
+    max_response_bytes: 524288
+
   - name: python_notes
     command: ${GOFLOW_PYTHON_CMD}
     args:
       - ${GOFLOW_PYTHON_NOTES_PATH}
     enabled: true
+    optional: true
     timeout: 30s
     workdir: .
     env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP, GOFLOW_NETWORK_TOOLS_ENABLE_LIVE, GOFLOW_NETWORK_TOOLS_TOKEN, GOFLOW_RESTCONF_TOKEN]
@@ -44,6 +63,7 @@ mcp_servers:
       - --skills-dir
       - ./skills
     enabled: true
+    optional: true
     timeout: 2m
     workdir: .
     env_allowlist:
@@ -70,6 +90,7 @@ mcp_servers:
   - name: web_tools
     command: ${GOFLOW_WEB_TOOLS_CMD}
     enabled: true
+    optional: true
     timeout: 30s
     workdir: .
     env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
@@ -85,6 +106,7 @@ mcp_servers:
   - name: network_tools
     command: ${GOFLOW_NETWORK_TOOLS_CMD}
     enabled: true
+    optional: true
     timeout: 30s
     workdir: .
     env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
@@ -96,6 +118,72 @@ mcp_servers:
       - ${GOFLOW_NETWORK_TOOLS_CMD}
     max_request_bytes: 65536
     max_response_bytes: 1048576
+
+  - name: office_tools
+    command: ${GOFLOW_OFFICE_TOOLS_CMD}
+    enabled: true
+    optional: true
+    timeout: 150s
+    workdir: .
+    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, APPDATA, PROGRAMFILES, PROGRAMFILES(X86), TMP, TEMP, GOFLOW_WORKSPACE_ROOT]
+    isolation: process_group
+    restart_limit: 2
+    cooldown: 10s
+    max_concurrent_calls: 1
+    allowed_commands:
+      - ${GOFLOW_OFFICE_TOOLS_CMD}
+    max_request_bytes: 1048576
+    max_response_bytes: 4194304
+
+  - name: host_tools
+    target_scope: host
+    command: ${GOFLOW_HOST_TOOLS_CMD}
+    enabled: true
+    optional: true
+    timeout: 30s
+    workdir: .
+    env_allowlist: [PATH, HOME, USERPROFILE, SystemRoot, ProgramData, LOCALAPPDATA, TMP, TEMP, GOFLOW_TARGET_ID, GOFLOW_HOST_LOG_ROOTS, GOFLOW_HOST_MANAGED_CONFIG_ROOTS, GOFLOW_HOST_CHANGE_BACKUP_ROOT]
+    isolation: process_group
+    restart_limit: 3
+    cooldown: 10s
+    max_concurrent_calls: 1
+    allowed_commands:
+      - ${GOFLOW_HOST_TOOLS_CMD}
+    max_request_bytes: 65536
+    max_response_bytes: 2097152
+
+  - name: ssh_tools
+    target_scope: host
+    command: ${GOFLOW_SSH_TOOLS_CMD}
+    enabled: true
+    optional: true
+    timeout: 150s
+    workdir: .
+    env_allowlist: [PATH, HOME, USERPROFILE, USERNAME, USERDOMAIN, SystemRoot, ProgramData, ProgramFiles, LOCALAPPDATA, TMP, TEMP, GOFLOW_DATA_ROOT, GOFLOW_SSH_CMD, GOFLOW_SSH_KEYSCAN_CMD]
+    isolation: process_group
+    restart_limit: 3
+    cooldown: 10s
+    max_concurrent_calls: 2
+    allowed_commands:
+      - ${GOFLOW_SSH_TOOLS_CMD}
+    max_request_bytes: 65536
+    max_response_bytes: 2097152
+
+  - name: notification_tools
+    command: ${GOFLOW_NOTIFICATION_TOOLS_CMD}
+    enabled: true
+    optional: true
+    timeout: 15s
+    workdir: ./
+    env_allowlist: [PATH, HOME, USERPROFILE, SystemRoot, TMP, TEMP, GOFLOW_DATA_ROOT, GOFLOW_NETWORK_DISABLED]
+    isolation: process_group
+    restart_limit: 3
+    cooldown: 10s
+    max_concurrent_calls: 1
+    allowed_commands:
+      - ${GOFLOW_NOTIFICATION_TOOLS_CMD}
+    max_request_bytes: 65536
+    max_response_bytes: 65536
 
 skill:
   directory: ./skills
@@ -110,8 +198,7 @@ audit:
 verifier:
   enabled: true
   agent: auditor
-  # Optional: route the verifier pass to a cheaper configured provider/model.
-  # provider: backup
+  # Optional: route the verifier pass to another configured provider/model.
   # model: ${GOFLOW_VERIFIER_MODEL}
   modes: [fix, audit]
   max_tokens: 768
@@ -119,15 +206,13 @@ verifier:
 cost_control:
   router:
     enabled: false
-    # Optional: classify otherwise-unmatched requests with a cheaper model.
-    # provider: backup
+    # Optional: classify otherwise-unmatched requests with another model.
     # model: ${GOFLOW_ROUTER_MODEL}
     max_tokens: 96
     temperature: 0
   summarizer:
     enabled: false
-    # Optional: summarize exhausted tool loops with a cheaper model.
-    # provider: backup
+    # Optional: summarize exhausted tool loops with another model.
     # model: ${GOFLOW_SUMMARIZER_MODEL}
     max_tokens: 512
     temperature: 0

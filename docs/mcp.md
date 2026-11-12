@@ -1,462 +1,76 @@
-﻿# MCP Integration
+# MCP Connections
 
-[English](./mcp.md) | [简体中文](./mcp.zh-CN.md)
+GoFlow uses standard stdio MCP connections for deterministic tools. The model chooses intent; Go code validates schemas, permissions, workspace scope, approvals, execution, evidence, and recovery.
 
-## Current scope
+## Built-In Connections
 
-GoFlow Agent currently supports stdio-based MCP servers.
+| Connection | Purpose | Boundary |
+| --- | --- | --- |
+| `file_tools` | Read, search, patch, and write task files | confirmed live workspace plus per-file recovery journal |
+| `command_tools` | Build, test, lint, run approved commands, and manage development servers | confirmed live workspace |
+| `web_tools` | Search, fetch, browser evidence, and source collection | explicit network tools |
+| `network_tools` | Network operations planning and authorized device actions | approval and target policy |
+| `office_tools` | Read, create, template-edit, merge, validate, and export Office/WPS documents | task workspace and Office host bridge |
+| `host_tools` | Local host facts, logs, and bounded managed configuration | `target_scope: host` |
+| `ssh_tools` | Explicit remote host inspection and approved operations | `target_scope: host` |
+| `skill_runner` | Run deterministic scripts declared by a Skill | native execution policy |
 
-The MCP layer is split into:
-- `internal/mcp/client.go` - process lifecycle, RPC I/O, env injection, and restart behavior
-- `internal/mcp/manager.go` - configured server registry, cached tools, and routing
+`host_tools` reads logs only under `GOFLOW_HOST_LOG_ROOTS`. The `managed-local-config` Skill governs bounded local changes. The `remote-host-diagnostics` Skill governs remote inspection. Credentials are referenced and redacted.
 
-## What the manager does
+## Native Isolation
 
-The manager exposes a narrow runtime-facing API:
+GoFlow V3 does not use container runtimes or virtual machines. Supported modes are:
 
-- `ListTools`
-- `RefreshTools`
-- `CallTool`
-- `HealthStatus`
-- `ToolNames`
+- `auto`: choose the smallest available native boundary; refuse unsafe fallback.
+- `native_strong`: Windows AppContainer/restricted token/ACL/Job Object, or Linux Landlock/namespaces/seccomp/rlimit/cgroup v2.
+- `process_group`: lifecycle cleanup for trusted built-ins.
+- `windows_job` and `windows_restricted_token`: explicit Windows fallback boundaries.
+- `linux_cgroup` and `linux_netns`: explicit Linux resource or network boundaries.
 
-Behavior today:
-- cached tool lists are reused after discovery
-- the first `ListTools` call refreshes lazily if needed
-- `RefreshTools` rebuilds the cache and routing index explicitly
-- `RefreshTools` rejects malformed third-party tool metadata before it reaches an agent
-- `HealthStatus` reports server availability for operator-facing status output
+Unknown code and third-party MCP connections use `auto` or `native_strong` and are bounded to the confirmed workspace and declared environment. Writes still require the configured task approval. Pre-task snapshots and file journals provide recovery, and quality-gated work can be saved into the three-version workspace history.
 
-## Naming and routing
+## Runtime Contract
 
-Each discovered tool is tagged with its MCP server name.
-
-Tools can be addressed by:
-- short name, such as `read_file`
-- qualified name, such as `file_tools/read_file`
-
-When tools come from named servers, the CLI prefers the qualified form for display.
-
-Discovery validates each advertised tool:
-
-- `name` must be non-empty and match `[A-Za-z0-9_-]+`
-- `kind` must be one of `read`, `write`, `exec`, `network`, or `unknown`
-- `input_schema` must be a strict object schema with `properties` and `additionalProperties=false`
-- duplicate tool names from the same server are rejected
-
-## Runtime home and workspace propagation
-
-Built-in MCP servers are now launched from runtime-home-relative paths while being pointed at the active workspace with:
-
-```text
-GOFLOW_WORKSPACE_ROOT=<workspace path>
-```
-
-This means:
-- the server code can live inside the GoFlow project
-- the server still reads/writes files only inside the target workspace
-- GoFlow can be launched against an external empty folder without copying runtime assets into that folder
-
-## Built-in `file_tools` server (Go)
-
-### Tools
-
-- `read_file`
-- `write_file`
-- `delete_file`
-- `list_dir`
-- `list_tree`
-- `file_info`
-- `search_files`
-
-### Behavior
-
-- validates explicit paths
-- resolves relative paths under the workspace root
-- rejects path escape attempts
-- rejects symlink escapes that resolve outside the workspace root
-- rejects directory reads through `read_file`
-- decodes text reads as UTF-8 and strips UTF-8 BOM when present
-- enforces request and response byte limits
-- returns structured JSON payloads
-- creates parent directories for writes when needed
-- only deletes directories when `recursive=true` is explicitly provided
-
-## Built-in `web_tools` server (Go)
-
-### Tools
-
-- `web_search`
-- `fetch_url`
-- `fetch_page_assets`
-- `browser_snapshot`
-- `browser_probe_points`
-
-### Behavior
-
-- classifies tools as `network`
-- searches the public web through DuckDuckGo Lite and returns compact result metadata
-- fetches HTTP(S) URLs with byte limits, status, content type, title, text preview, and truncated content
-- fetches an HTML page plus referenced JavaScript and CSS assets for source-oriented web security review
-- opens authorized HTTP(S) targets in a local headless browser for compact DOM,
-  form, link, script, storage, signal, and optional screenshot evidence through
-  `browser_snapshot`
-- enumerates scoped XSS/SQLi-oriented GET query, link, and form probe surfaces
-  through `browser_probe_points`
-- requires `authorized_scope=true` and a non-empty `allowed_hosts` list before
-  either browser automation tool runs
-- only runs active GET canary probes when `active_probe_approved=true`; without
-  that approval, `browser_probe_points` remains passive surface enumeration
-- never brute-forces, broadly crawls, submits POST forms, or probes hosts
-  outside `allowed_hosts`
-- rejects non-HTTP(S) URL schemes
-
-Set `GOFLOW_BROWSER_PATH` when Chrome, Edge, or Chromium is not discoverable on
-the host. `configs/mcp_servers/web_tools.yaml` already allowlists this
-environment variable for the built-in server. Browser automation is intended
-for explicitly authorized defensive testing and evidence collection; workflow
-templates should carry the authorization boundary, allowed host list, and active
-probe approval as explicit inputs.
-
-## Built-in `network_tools` server (Go)
-
-### Tools
-
-- `device_discovery_plan`
-- `device_command_plan`
-- `device_config_dry_run`
-- `device_restconf_live_apply`
-
-### Behavior
-
-- classifies tools as `network`
-- accepts device IP or hostname, platform, connection type, credential ref,
-  authorized-scope flag, host allowlist, and command allowlists
-- validates `authorized_scope=true` and rejects targets outside `allowed_hosts`
-- builds a read-only discovery plan with compact default show/display commands
-- checks read-only command requests against the operator-provided allowlist
-- builds configuration dry-run plans with rollback, precheck, postcheck,
-  approval, and audit evidence requirements
-- exposes `device_restconf_live_apply` as a controlled live HTTPS RESTCONF/API
-  connector for expert/operator-owned deployments
-- the live connector requires `authorized_scope=true`, `change_approved=true`,
-  `dry_run_confirmed=true`, `credential_ref`, `approval_ref`, `change_ticket`,
-  `allowed_hosts`, `allowed_methods`, `allowed_paths`, JSON payload, and
-  `rollback_plan`
-- the live connector only sends a request when
-  `GOFLOW_NETWORK_TOOLS_ENABLE_LIVE=1` is present in the MCP server
-  environment; otherwise it returns a blocked audit payload and sends no HTTP
-  request
-- `credential_ref` currently supports `env:NAME` or `env://NAME`; the referenced
-  environment variable may contain a bearer token or a complete `Bearer ...` /
-  `Basic ...` authorization value, and the tool does not return that secret
-- live requests are limited to HTTPS `POST`, `PUT`, or `PATCH` against an
-  allowlisted host and allowlisted endpoint path, with a bounded JSON body and
-  compact response preview
-
-`network_tools` is the default operations-domain boundary for network-device
-workflows. Its planning tools are intentionally planning and policy-check tools,
-not raw SSH/API executors. `device_restconf_live_apply` is the first narrow live
-connector and should be used only from a workflow stage with
-`stage.execution.mode: live`, `allow_live_tools:
-[network_tools/device_restconf_live_apply]`, explicit approval, authorized
-scope, credential ref, allowlists, rollback, and operator-controlled live
-enablement. Raw SSH and NETCONF apply remain out of scope until they have the
-same testable contracts, transcript storage, rollback repository, and sandbox
-story.
-
-## Built-in `python_notes` server (Python)
-
-### Tools
-
-- `write_note`
-- `read_note`
-- `python_ast_summary`
-- `json_query`
-- `binary_file_info`
-- `binary_strings`
-- `hex_preview`
-- `binary_format_summary`
-- `binary_entropy_map`
-- `binary_symbol_hints`
-- `binary_extract_window`
-- `markdown_link_check`
-- `support_case_summary`
-- `redaction_check`
-
-### Purpose
-
-This server proves cross-language MCP support and hosts Python-native inspection helpers that are awkward or less useful to duplicate in Go.
-
-It shows that MCP tools do **not** need to be implemented in Go. Any language can be used as long as the process can:
-- start from the configured command
-- speak the expected stdio/JSON-RPC protocol
-- return the expected response structure
-
-All Python tools resolve paths under `GOFLOW_WORKSPACE_ROOT` and reject path traversal or symlink escapes outside the active workspace.
-
-The extra inspection tools support:
-- Python source structure summaries through `python_ast_summary`
-- bounded JSON field extraction through `json_query`
-- binary triage metadata, strings, hex previews, format/section summaries,
-  import/export hints, entropy/packing hints, symbol hints, and bounded
-  artifact windows through the binary helpers
-- documentation publish checks through `markdown_link_check`, which validates
-  local Markdown links and anchors without network access
-- support ticket structure through `support_case_summary`, including priority,
-  customer impact, escalation flags, privacy flags, and missing information
-- disclosure, docs, and support redaction review through `redaction_check`
-
-## Built-in `skill_runner` server (Go)
-
-### Tools
-
-- `run_script`
-
-### Purpose
-
-This server executes deterministic helper scripts declared in a matched
-`skills/<name>/SKILL.md` `scripts:` manifest. It is intentionally exposed as an
-`exec` tool named `skill_runner/run_script`, so script execution uses the same
-agent permissions, approval prompts, audit trail, risk display, and MCP
-isolation as other executable tools.
-
-Behavior:
-
-- loads skills from `--skills-dir` or `GOFLOW_SKILLS_DIR`
-- rejects path-like skill and script names
-- executes only scripts declared by name in `SKILL.md`
-- requires the script path to stay under the skill's `scripts/` directory
-- validates `args` against the declared `args_schema`
-- passes JSON arguments on stdin and in `GOFLOW_SKILL_ARGS_JSON`
-- returns JSON with stdout, exit code, duration, timeout status, and declared metadata
-
-Use `isolation: container` on this MCP server when running generated or
-third-party skill scripts that need a strong Docker/Podman sandbox.
-
-## Runtime behavior
-
-The stdio client is designed to be restartable:
-
-- starts processes lazily
-- resets internal pipes when the child exits
-- interrupts then kills hung processes on shutdown paths
-- reports restart count and last known error through health status
-- applies environment allowlists plus required platform variables
-- passes only minimal platform variables when `env_allowlist` is omitted
-- injects `GOFLOW_WORKSPACE_ROOT` for workspace-aware servers
-- can start MCP servers in a separate process group with `isolation: process_group`
-- can opt into Windows Job Object lifecycle isolation with `isolation: windows_job` on Windows hosts
-- can opt into Windows restricted-token privilege reduction with `isolation: windows_restricted_token` on Windows hosts
-- can opt into Linux cgroup resource-control isolation with `isolation: linux_cgroup` on Linux hosts
-- can opt into Linux network namespace isolation with `isolation: linux_netns` on Linux hosts
-- should prefer container isolation with `isolation: container` through Docker
-  or Podman for generated, third-party, write-capable, exec-capable,
-  network-capable, or otherwise untrusted tools
-
-`network_disabled` is surfaced in health/status output as a capability declaration. It is enforced only when a real adapter such as `isolation: container` maps it to `--network none` or `isolation: linux_netns` maps execution through `unshare --net`; otherwise it remains advisory. Network-capable tools should still declare kind `network` so agent profiles can gate them.
-
-`isolation: process_group` is the first conservative OS-level adapter. On supported platforms it starts the MCP child in a separate process group so lifecycle cleanup can target the server boundary more reliably. It does not provide network filtering, filesystem sandboxing, containerization, or privilege dropping.
-
-`isolation: windows_job` is an opt-in Windows adapter. It places the MCP child process in a Windows Job Object with kill-on-close behavior, so timeout shutdown can terminate the job boundary instead of only the direct process. It is still lifecycle isolation, not a filesystem or network sandbox.
-
-`isolation: windows_restricted_token` is an opt-in Windows adapter. It starts
-the MCP child with a restricted primary token and low integrity level, then
-attaches it to a kill-on-close Job Object for process-tree cleanup. This is real
-privilege reduction plus lifecycle cleanup, but it does not install filesystem
-or network policy.
-
-`isolation: linux_cgroup` is an opt-in Linux adapter. It creates or uses a child cgroup under `isolation_options.cgroup_parent`, writes configured `memory.max`, `pids.max`, and `cpu.max` values, and attaches the MCP process to that cgroup. It requires a writable cgroup v2 parent for the GoFlow user and is still resource control, not filesystem or network sandboxing.
-
-`isolation: linux_netns` is an opt-in Linux adapter. It starts the MCP command
-through `unshare --net -- <command> ...`, so network egress is isolated when the
-host permits network namespace creation. It is network isolation only; it is not
-a filesystem, mount, seccomp, or privilege sandbox.
-
-`isolation: container` is the recommended Docker/Podman adapter for strong MCP
-sandboxing. GoFlow runs:
-
-```text
-docker run --rm -i ... <image> <command> <args...>
-```
-
-The configured `command` and `args` are executed inside the container image, not directly on the host. `isolation_options.workspace_mount` controls whether the host workspace is mounted read-write, read-only, or not mounted; `workspace_target` sets the container-side `GOFLOW_WORKSPACE_ROOT`; `network: disabled` or `network_disabled: true` maps to `--network none`; `memory`, `cpus`, and `pids_limit` map to container runtime limits, with `memory` validated as a positive integer plus optional `b`/`k`/`m`/`g`/`t` suffix; `readonly_rootfs`, `no_new_privileges`, `cap_drop`, `security_opt`, `tmpfs`, `init`, and `user` expose container hardening knobs. `user` and `cap_drop` are validated before startup so invalid values are reported through config diagnostics instead of failing only when Docker/Podman starts. If Docker/Podman is unavailable, the MCP server reports a startup error instead of silently falling back to host execution.
-
-For the isolation roadmap and adapter tradeoffs, see [MCP Isolation Strategy](./mcp-isolation.md).
-
-## Config example
+Each connection declares a fixed command, `allowed_commands` or `allowed_command_paths`, minimal `env_allowlist`, request/response limits, timeout, restart limit, cooldown, and maximum concurrent calls. A process that exceeds the circuit breaker enters cooldown instead of restarting forever.
 
 ```yaml
 mcp_servers:
   - name: file_tools
     command: go
-    args:
-      - run
-      - ./mcp_servers/file_tools
+    args: [run, ./mcp_servers/file_tools]
     enabled: true
-    timeout: 30s
     workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
+    allowed_commands: [go]
     isolation: process_group
     restart_limit: 3
     cooldown: 10s
-    allowed_commands:
-      - go
-    max_request_bytes: 65536
-    max_response_bytes: 2097152
-
-  - name: python_notes
-    command: python
-    args:
-      - ./mcp_servers/python_notes.py
-    enabled: true
-    timeout: 30s
-    workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
-    isolation: process_group
-    restart_limit: 3
-    cooldown: 10s
-    allowed_commands:
-      - python
-    max_request_bytes: 65536
-    max_response_bytes: 2097152
-
-  - name: web_tools
-    command: go
-    args:
-      - run
-      - ./mcp_servers/web_tools
-    enabled: true
-    timeout: 30s
-    workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
-    isolation: process_group
-    restart_limit: 3
-    cooldown: 10s
-    allowed_commands:
-      - go
-    max_request_bytes: 65536
-    max_response_bytes: 2097152
-
-  - name: network_tools
-    command: go
-    args:
-      - run
-      - ./mcp_servers/network_tools
-    enabled: true
-    timeout: 30s
-    workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
-    isolation: process_group
-    restart_limit: 3
-    cooldown: 10s
-    allowed_commands:
-      - go
-    max_request_bytes: 65536
-    max_response_bytes: 1048576
-
-  - name: skill_runner
-    command: go
-    args:
-      - run
-      - ./mcp_servers/skill_runner
-      - --skills-dir
-      - ./skills
-    enabled: true
-    timeout: 2m
-    workdir: .
-    env_allowlist: [PATH, HOME, USERPROFILE, LOCALAPPDATA, TMP, TEMP]
-    isolation: process_group
-    restart_limit: 3
-    cooldown: 10s
-    allowed_commands:
-      - go
-    max_request_bytes: 65536
-    max_response_bytes: 2097152
+    max_concurrent_calls: 1
 ```
 
-## How to inspect MCP tools
+`network_disabled` is only considered enforced when the selected native boundary actually blocks egress.
 
-Start the CLI and run:
+## Network Operations
 
-```text
-/tools
-```
+`network_tools` requires `authorized_scope`, `allowed_hosts`, credential references, dry-run planning, approval metadata, rollback information, and artifact references. `device_batch_command_plan` prepares bounded multi-device work. `device_restconf_live_apply` is an explicit high-risk action and cannot run from an unapproved plan.
 
-The CLI now renders each tool with structured operator-facing metadata, including:
+## Browser Evidence
 
-- qualified tool name such as `file_tools/read_file`
-- tool kind such as `read` or `write`
-- description
-- MCP server name
-- current server health summary
-- compact input schema summary when available
+`browser_snapshot` captures the page and structured state. `browser_probe_points` identifies bounded inspection points. Any active probe requires `active_probe_approved`. Browser actions are cached where safe to reduce duplicate navigation and Token use.
 
-Current built-in output should include entries for:
+## Binary Evidence
 
-- `file_tools/list_dir`
-- `file_tools/list_tree`
-- `file_tools/file_info`
-- `file_tools/read_file`
-- `file_tools/search_files`
-- `file_tools/write_file`
-- `file_tools/delete_file`
-- `web_tools/web_search`
-- `web_tools/fetch_url`
-- `web_tools/fetch_page_assets`
-- `web_tools/browser_snapshot`
-- `web_tools/browser_probe_points`
-- `network_tools/device_discovery_plan`
-- `network_tools/device_command_plan`
-- `network_tools/device_config_dry_run`
-- `skill_runner/run_script`
-- `python_notes/read_note`
-- `python_notes/write_note`
-- `python_notes/python_ast_summary`
-- `python_notes/json_query`
-- `python_notes/binary_file_info`
-- `python_notes/binary_strings`
-- `python_notes/hex_preview`
-- `python_notes/binary_format_summary`
-- `python_notes/binary_entropy_map`
-- `python_notes/binary_symbol_hints`
-- `python_notes/binary_extract_window`
-- `python_notes/markdown_link_check`
-- `python_notes/support_case_summary`
-- `python_notes/redaction_check`
+Static analysis tools include `binary_format_summary`, `binary_entropy_map`, `binary_symbol_hints`, and `binary_extract_window`. They produce bounded evidence and do not imply unsafe dynamic execution.
 
-## Current limitations
+## Research Evidence
 
-- transport is stdio only
-- `network_disabled` is advisory rather than a cross-platform kernel sandbox
-- `isolation: process_group` is process-lifecycle isolation, not a security sandbox
-- `isolation: windows_job` improves Windows process-tree cleanup, but does not restrict filesystem or network access
-- `isolation: linux_cgroup` requires host cgroup setup and does not restrict filesystem or network access
+`research_snapshot` records sources and retrieval metadata. `compile_research_evidence` produces claim-to-source evidence with caching and exports usable Markdown, JSON, and CSV artifacts.
 
-## Reliability Controls
+## Documents
 
-Each MCP server has per-call timeout, request/response byte caps, restart
-limits, cooldown, and `max_concurrent_calls`. The current stdio transport uses a
-single connection, so the default `max_concurrent_calls: 1` keeps requests
-serialized and prevents unbounded call pileups. `restart_limit` plus `cooldown`
-acts as a lightweight circuit breaker: repeated startup or call failures move
-the server into cooldown instead of restarting indefinitely.
+`office_tools` supports new documents, reads, template-based edits, precise edits that preserve formatting, merges, validation, and PDF export. Development, security, operations, and research workflows use the same document capability for requirements, reports, runbooks, and evidence packages.
 
-`GET /api/runtime` also exposes live per-server call-slot pressure under
-`mcp_servers[]`: `max_concurrent_calls`, `active_calls`, `queued_calls`, and
-`available_call_slots`. Studio and operators can use those fields to spot a
-long-running tool, a saturated stdio server, or an over-aggressive workflow.
-The Web Studio Observability page renders the same fields as the MCP tool
-pressure panel, so users can distinguish tool saturation from model wait,
-approval pauses, or workflow orchestration issues without opening raw JSON.
+## Success Evidence
 
-## Future direction
+An MCP call is not success by itself. Delivery requires relevant files, Diff, build/test/lint output, source evidence, post-change checks, or document validation. Tool errors remain structured and cannot be replaced by model self-assessment.
 
-Planned next steps for MCP should build on the existing manager/client split:
-- runtime transports beyond the current HTTP/SSE surface where they fit the same schema contracts
-- stronger container hardening and narrowly scoped native fallback controls only where they are enforceable and testable
-- operator controls for long-running MCP tools
-- more cross-language examples beyond Python
-
-For adding new servers and tools, see [MCP Tool Authoring](./mcp-authoring.md).
-
+See [configuration](./configuration.md), [isolation](./mcp-isolation.md), and [resources](./resources.md).

@@ -32,6 +32,7 @@ graph:
           agent: web-security-researcher
           skill: web-vulnerability-research
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Evidence Summary, Target Scope, Browser Evidence, Findings, Source Confidence, Limitations, and Recommended Verification.
             evidence_rule: Keep evidence tied to the operator-provided target, require authorized_scope=true and allowed_hosts before browser evidence collection, and use browser_probe_points only for scoped probe surface enumeration unless active_probe_approved=true.
             authorization_boundary: Only run on systems the operator owns or is explicitly authorized to test. Do not probe hosts outside allowed_hosts.
@@ -65,6 +66,7 @@ graph:
           agent: auditor
           skill: code-audit
           params:
+            require_workspace_mutation: "false"
             output_contract: Emit sections named Audit Decision, Findings, Vulnerability Assessment, Evidence Gaps, Risk Level, and Recommendation.
             review_scope: Classify risk using the collected evidence and call out uncertainty.
           input:
@@ -104,6 +106,8 @@ graph:
             require_acceptance: "true"
             require_evidence: "true"
             require_verification: "true"
+            verification_mode: tool
+            verification_tools: web_tools/fetch_url
             allow_unknown: "false"
           routes:
             pass: has-risk
@@ -139,6 +143,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Risk Report, Evidence, Vulnerability Assessment, Quality Decision, Operator Actions, and Next Steps.
             purpose: Produce a risk-positive or evidence-insufficient user report.
           input:
@@ -173,6 +179,8 @@ graph:
           agent: planner
           skill: execution-plan
           params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
             output_contract: Emit sections named Clean Report, Evidence, Why No Risk Was Routed, Residual Uncertainty, and Next Steps.
             purpose: Produce a clean-path user report that still documents evidence and uncertainty.
           input:

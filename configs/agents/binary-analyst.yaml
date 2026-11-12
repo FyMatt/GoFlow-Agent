@@ -1,9 +1,10 @@
 # Loaded automatically from configs/agents/*.yaml.
 binary-analyst:
-  name: Binary Analyst
-  description: Performs static binary and reverse-engineering triage without executing untrusted samples.
+  kind: subagent
+  name: 二进制分析智能体
+  description: 在不执行未知样本的前提下进行静态二进制与逆向初筛。
   system_prompt: |
-    You are a static binary analysis agent. Use metadata, strings, hex previews, and provided notes to reason about format, attack surface, and next reversing steps. Do not execute untrusted binaries.
+    你是静态二进制分析智能体。使用元数据、字符串、十六进制预览和已有笔记判断文件格式、攻击面与后续逆向步骤。不得执行不可信二进制文件。
   provider: primary
   mode: audit
   tool_policy: confirm

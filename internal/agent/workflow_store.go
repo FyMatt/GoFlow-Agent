@@ -1,7 +1,9 @@
 package agent
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -186,6 +188,19 @@ type WorkflowGraphValidationResult struct {
 	Parallel []WorkflowGraphParallelValidation `json:"parallel,omitempty"`
 }
 
+// WorkflowGraphStageRequirement exposes the runtime resources one persisted
+// stage needs without leaking the workflow engine's internal graph types.
+type WorkflowGraphStageRequirement struct {
+	Stage        string   `json:"stage"`
+	Executable   bool     `json:"executable,omitempty"`
+	DisableTools bool     `json:"disable_tools,omitempty"`
+	Agent        string   `json:"agent,omitempty"`
+	Skill        string   `json:"skill,omitempty"`
+	Provider     string   `json:"provider,omitempty"`
+	Tools        []string `json:"tools,omitempty"`
+	SubWorkflow  string   `json:"sub_workflow,omitempty"`
+}
+
 // WorkflowGraphParallelValidation explains whether a parallel node can use
 // goroutine-level concurrent execution and why a branch is not eligible.
 type WorkflowGraphParallelValidation struct {
@@ -246,6 +261,7 @@ type WorkflowOptionSet struct {
 	Providers           []WorkflowProviderOption           `json:"providers,omitempty"`
 	Skills              []WorkflowSkillOption              `json:"skills"`
 	Tools               []string                           `json:"tools"`
+	ToolCatalog         []WorkflowToolOption               `json:"tool_catalog,omitempty"`
 	WorkflowExecutors   []WorkflowExecutorOption           `json:"workflow_executors,omitempty"`
 	NodeTypes           []WorkflowNodeTypeOption           `json:"node_types,omitempty"`
 	PolicyRules         []WorkflowPolicyRuleOption         `json:"policy_rules,omitempty"`
@@ -274,27 +290,42 @@ type WorkflowSkillOption struct {
 	NextSkills     []string `json:"next_skills,omitempty"`
 }
 
+type WorkflowToolOption struct {
+	Name        string          `json:"name"`
+	Server      string          `json:"server,omitempty"`
+	Kind        string          `json:"kind,omitempty"`
+	Description string          `json:"description,omitempty"`
+	InputSchema json.RawMessage `json:"input_schema,omitempty"`
+}
+
 func (w *WorkflowRunner) ListWorkflowGraphs() []WorkflowGraphSummary {
 	summaries := []WorkflowGraphSummary{}
-	root, err := w.workflowGraphRoot()
+	roots, err := w.workflowGraphRoots()
 	if err != nil {
 		return summaries
 	}
-	entries, err := os.ReadDir(root)
-	if err != nil {
-		if os.IsNotExist(err) {
-			return summaries
-		}
-		summaries = append(summaries, WorkflowGraphSummary{Name: "(custom workflows)", Source: "custom", Path: root, Valid: false, Error: err.Error()})
-		return summaries
-	}
-	for _, entry := range entries {
-		if !entry.IsDir() {
+	names := make(map[string]struct{})
+	for _, root := range roots {
+		entries, readErr := os.ReadDir(root)
+		if readErr != nil {
+			if os.IsNotExist(readErr) {
+				continue
+			}
+			summaries = append(summaries, WorkflowGraphSummary{Name: "(custom workflows)", Source: "custom", Path: root, Valid: false, Error: readErr.Error()})
 			continue
 		}
-		name := entry.Name()
-		path, err := w.workflowGraphPath(name)
+		for _, entry := range entries {
+			if entry.IsDir() {
+				names[normalizePersistedWorkflowName(entry.Name())] = struct{}{}
+			}
+		}
+	}
+	for name := range names {
+		path, err := w.workflowGraphReadPath(name)
 		if err != nil {
+			if errors.Is(err, os.ErrNotExist) {
+				continue
+			}
 			summaries = append(summaries, WorkflowGraphSummary{Name: name, Source: "custom", Valid: false, Error: err.Error()})
 			continue
 		}
@@ -327,7 +358,7 @@ func (w *WorkflowRunner) ListWorkflowGraphs() []WorkflowGraphSummary {
 // graph with the same name.
 func (w *WorkflowRunner) WorkflowExecutors() []WorkflowExecutorOption {
 	graphs := w.ListWorkflowGraphs()
-	out := make([]WorkflowExecutorOption, 0, len(graphs)+len(w.registry))
+	out := make([]WorkflowExecutorOption, 0, len(graphs)+len(w.registry)+4)
 	graphByName := make(map[string]WorkflowGraphSummary, len(graphs))
 	legacyNames := legacyWorkflowExecutorNames()
 	for _, graph := range graphs {
@@ -350,6 +381,34 @@ func (w *WorkflowRunner) WorkflowExecutors() []WorkflowExecutorOption {
 			OverridesLegacy: overridesLegacy,
 			OverridePath:    overridePath,
 			Detail:          workflowExecutorDetail(graph.Source, overridesLegacy, graph.Valid),
+		})
+	}
+	for _, template := range w.WorkflowTemplates() {
+		name := normalizePersistedWorkflowName(template.Name)
+		if !workflowTemplateHasTag(template, "runnable") {
+			continue
+		}
+		if _, exists := graphByName[name]; exists {
+			continue
+		}
+		detail, ok := w.WorkflowTemplate(name)
+		if !ok {
+			continue
+		}
+		validation := w.ValidateWorkflowGraphDocument(name, detail.Graph)
+		errorMessage := ""
+		if !validation.Valid && len(validation.Issues) > 0 {
+			errorMessage = validation.Issues[0].Message
+		}
+		out = append(out, WorkflowExecutorOption{
+			Name:        name,
+			Description: template.Description,
+			Source:      "built_in",
+			Stages:      len(detail.Graph.Stages),
+			Valid:       validation.Valid,
+			Error:       errorMessage,
+			Editable:    false,
+			Detail:      workflowExecutorDetail("built_in", false, validation.Valid),
 		})
 	}
 	for _, name := range legacyWorkflowExecutorNameList(w.registry) {
@@ -378,6 +437,15 @@ func (w *WorkflowRunner) WorkflowExecutors() []WorkflowExecutorOption {
 		return out[i].Name < out[j].Name
 	})
 	return out
+}
+
+func workflowTemplateHasTag(template WorkflowTemplateSummary, wanted string) bool {
+	for _, tag := range template.Tags {
+		if strings.EqualFold(strings.TrimSpace(tag), strings.TrimSpace(wanted)) {
+			return true
+		}
+	}
+	return false
 }
 
 func legacyWorkflowExecutorNameList(registry map[string]workflowDefinition) []string {
@@ -428,6 +496,12 @@ func workflowExecutorDetail(source string, overridden, valid bool) string {
 	if source == "legacy_executor" {
 		return "built-in compatibility executor; fork the matching workflow template or save a graph with the same name to customize it"
 	}
+	if source == "built_in" {
+		if valid {
+			return "bundled runnable workflow; save a workflow graph with the same name to customize it"
+		}
+		return "bundled workflow is unavailable because its graph is invalid"
+	}
 	return "editable workflow graph"
 }
 
@@ -438,10 +512,12 @@ func workflowExecutorSourceRank(item WorkflowExecutorOption) int {
 	switch item.Source {
 	case "default":
 		return 0
-	case "custom":
+	case "built_in":
 		return 1
-	case "legacy_executor":
+	case "custom":
 		return 2
+	case "legacy_executor":
+		return 3
 	default:
 		return 4
 	}
@@ -459,7 +535,7 @@ func sourceRank(source string) int {
 }
 
 func (w *WorkflowRunner) LoadWorkflowGraphDocument(name string) (WorkflowGraphDocument, error) {
-	path, err := w.workflowGraphPath(name)
+	path, err := w.workflowGraphReadPath(name)
 	if err != nil {
 		return WorkflowGraphDocument{}, err
 	}
@@ -470,6 +546,31 @@ func (w *WorkflowRunner) LoadWorkflowGraphDocument(name string) (WorkflowGraphDo
 	var doc WorkflowGraphDocument
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return WorkflowGraphDocument{}, fmt.Errorf("parse workflow graph: %w", err)
+	}
+	if err := w.validateWorkflowGraph(normalizePersistedWorkflowName(name), doc.toInternalGraph()); err != nil {
+		return WorkflowGraphDocument{}, err
+	}
+	return doc, nil
+}
+
+// LoadRunnableWorkflowGraphDocument resolves an editable workflow first and
+// falls back to a validated workflow template with the same name. This keeps
+// bundled workflows runnable without requiring a duplicate persisted graph.
+func (w *WorkflowRunner) LoadRunnableWorkflowGraphDocument(name string) (WorkflowGraphDocument, error) {
+	doc, err := w.LoadWorkflowGraphDocument(name)
+	if err == nil {
+		return doc, nil
+	}
+	if !errors.Is(err, os.ErrNotExist) {
+		return WorkflowGraphDocument{}, err
+	}
+	template, ok := w.WorkflowTemplate(name)
+	if !ok {
+		return WorkflowGraphDocument{}, err
+	}
+	doc = template.Graph
+	if strings.TrimSpace(doc.Name) == "" {
+		doc.Name = normalizePersistedWorkflowName(name)
 	}
 	if err := w.validateWorkflowGraph(normalizePersistedWorkflowName(name), doc.toInternalGraph()); err != nil {
 		return WorkflowGraphDocument{}, err
@@ -491,7 +592,10 @@ func (w *WorkflowRunner) SaveWorkflowGraphDocument(name string, doc WorkflowGrap
 	if err := w.validateWorkflowGraph(name, doc.toInternalGraph()); err != nil {
 		return err
 	}
-	path, err := w.workflowGraphPath(name)
+	if issues := w.workflowGraphDependencyIssues(name, doc); workflowGraphExpressionHasError(issues) {
+		return fmt.Errorf("%s", issues[0].Message)
+	}
+	path, err := w.workflowGraphWritePath(name)
 	if err != nil {
 		return err
 	}
@@ -506,7 +610,10 @@ func (w *WorkflowRunner) SaveWorkflowGraphDocument(name string, doc WorkflowGrap
 	if err := os.WriteFile(tmp, data, 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp, path)
+	if err := os.Rename(tmp, path); err != nil {
+		return err
+	}
+	return w.runtime.SetResourceTombstone("workflows", name, false)
 }
 
 // ValidateWorkflowGraphDocument validates a graph document without saving it.
@@ -518,9 +625,159 @@ func (w *WorkflowRunner) ValidateWorkflowGraphDocument(name string, doc Workflow
 	graph := doc.toInternalGraph()
 	result := WorkflowGraphValidationResult{Name: name, Stages: len(doc.Stages), Parallel: w.workflowGraphParallelValidations(graph)}
 	issues := w.validateWorkflowGraphDocumentIssues(name, doc)
+	issues = append(issues, w.workflowGraphDependencyIssues(name, doc)...)
 	result.Valid = !workflowGraphExpressionHasError(issues)
 	result.Issues = issues
 	return result
+}
+
+func (w *WorkflowRunner) workflowGraphDependencyIssues(rootName string, rootDoc WorkflowGraphDocument) []WorkflowGraphValidationIssue {
+	rootName = normalizePersistedWorkflowName(rootName)
+	if rootName == "" || w == nil {
+		return nil
+	}
+	issues := make([]WorkflowGraphValidationIssue, 0)
+	seenIssues := make(map[string]struct{})
+	var visit func(string, WorkflowGraphDocument, []string, string)
+	visit = func(name string, doc WorkflowGraphDocument, path []string, originStage string) {
+		for _, requirement := range w.WorkflowGraphStageRequirements(doc) {
+			child := normalizePersistedWorkflowName(requirement.SubWorkflow)
+			if child == "" || child == normalizePersistedWorkflowName(name) {
+				continue
+			}
+			origin := originStage
+			if origin == "" {
+				origin = requirement.Stage
+			}
+			cycleAt := -1
+			for index, ancestor := range path {
+				if normalizePersistedWorkflowName(ancestor) == child {
+					cycleAt = index
+					break
+				}
+			}
+			if cycleAt >= 0 {
+				chain := append(append([]string(nil), path[cycleAt:]...), child)
+				message := fmt.Sprintf("workflow graph %s has an indirect sub-workflow cycle: %s", rootName, strings.Join(chain, " -> "))
+				if _, exists := seenIssues[message]; !exists {
+					seenIssues[message] = struct{}{}
+					issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: origin, Field: "params.workflow", Message: message})
+				}
+				continue
+			}
+			if len(path) >= maxWorkflowSubWorkflowDepth {
+				chain := append(append([]string(nil), path...), child)
+				message := fmt.Sprintf("workflow graph %s sub-workflow depth exceeds maximum %d: %s", rootName, maxWorkflowSubWorkflowDepth, strings.Join(chain, " -> "))
+				if _, exists := seenIssues[message]; !exists {
+					seenIssues[message] = struct{}{}
+					issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: origin, Field: "params.workflow", Message: message})
+				}
+				continue
+			}
+			childDoc, err := w.LoadWorkflowGraphDocument(child)
+			if err != nil {
+				continue
+			}
+			visit(child, childDoc, append(append([]string(nil), path...), child), origin)
+		}
+	}
+	visit(rootName, rootDoc, []string{rootName}, "")
+	return issues
+}
+
+// WorkflowGraphStageRequirements returns the resources selected by each stage.
+// API preflight uses this same interpretation as execution, including tools
+// declared through stage params and control-node classification.
+func (w *WorkflowRunner) WorkflowGraphStageRequirements(doc WorkflowGraphDocument) []WorkflowGraphStageRequirement {
+	requirements := make([]WorkflowGraphStageRequirement, 0, len(doc.Stages))
+	for _, stage := range doc.Stages {
+		internalStage := workflowGraphStage{
+			Name:      stage.Name,
+			NodeType:  stage.NodeType,
+			Agent:     stage.Agent,
+			Skill:     stage.Skill,
+			Tool:      stage.Tool,
+			Model:     workflowGraphStageModelToInternal(stage.Model),
+			Execution: workflowGraphExecutionToInternal(stage.Execution),
+			Params:    copyStringMap(stage.Params),
+		}
+		requirement := WorkflowGraphStageRequirement{Stage: stage.Name}
+		if isSubWorkflowNode(internalStage) {
+			requirement.SubWorkflow = workflowGraphSubWorkflowName(internalStage)
+			requirements = append(requirements, requirement)
+			continue
+		}
+		requirement.Executable = !isVisualOnlyWorkflowNode(internalStage) &&
+			!isControlWorkflowNode(internalStage) &&
+			!isRepeatWorkflowNode(internalStage) &&
+			!isTeamWorkflowNode(internalStage)
+		if requirement.Executable {
+			requirement.Agent = strings.TrimSpace(stage.Agent)
+			requirement.Skill = strings.TrimSpace(stage.Skill)
+			requirement.Provider = strings.TrimSpace(stage.Model.Provider)
+			requirement.DisableTools = workflowTruthy(internalStage.Params["disable_tools"])
+			if !requirement.DisableTools {
+				requirement.Tools = workflowGraphStageAllowedTools(internalStage)
+			}
+		}
+		requirements = append(requirements, requirement)
+	}
+	return requirements
+}
+
+// ValidateWorkflowGraphStartup checks contracts that are intentionally
+// evaluated at run start rather than while editing a graph.
+func (w *WorkflowRunner) ValidateWorkflowGraphStartup(name string, doc WorkflowGraphDocument, approved bool) []WorkflowGraphValidationIssue {
+	graphName := fallbackWorkflowGraphValue(normalizePersistedWorkflowName(name), normalizePersistedWorkflowName(doc.Name))
+	issues := make([]WorkflowGraphValidationIssue, 0)
+	for _, stage := range doc.Stages {
+		internalStage := workflowGraphStage{
+			Name:      stage.Name,
+			NodeType:  stage.NodeType,
+			Agent:     stage.Agent,
+			Skill:     stage.Skill,
+			Tool:      stage.Tool,
+			Execution: workflowGraphExecutionToInternal(stage.Execution),
+			Params:    copyStringMap(stage.Params),
+		}
+		if readiness := workflowGraphStageExecutionReadiness(internalStage, approved); readiness.Blocked {
+			issues = append(issues, WorkflowGraphValidationIssue{
+				Level:   "error",
+				Stage:   stage.Name,
+				Field:   readiness.SourceRef,
+				Message: readiness.Reason,
+			})
+		}
+		if !isManualInputWorkflowNode(internalStage) {
+			continue
+		}
+		for _, key := range []string{"fields_json", "input_fields", "input_fields_json", "input_schema", "schema"} {
+			raw := strings.TrimSpace(stage.Params[key])
+			if raw != "" && !json.Valid([]byte(raw)) {
+				issues = append(issues, WorkflowGraphValidationIssue{
+					Level:   "error",
+					Stage:   stage.Name,
+					Field:   "params." + key,
+					Message: fmt.Sprintf("workflow graph %s stage %s has invalid input field JSON", graphName, stage.Name),
+				})
+				break
+			}
+		}
+		for _, field := range workflowGraphInputGateFields(internalStage) {
+			if strings.TrimSpace(field.Default) == "" {
+				continue
+			}
+			if err := validateWorkflowGraphInputFieldValue(field, field.Default); err != nil {
+				issues = append(issues, WorkflowGraphValidationIssue{
+					Level:   "error",
+					Stage:   stage.Name,
+					Field:   "params.input_fields",
+					Message: fmt.Sprintf("workflow graph %s stage %s has invalid default input: %v", graphName, stage.Name, err),
+				})
+			}
+		}
+	}
+	return issues
 }
 
 // ValidateWorkflowExpression validates a Studio-authored expression or reference against a graph document.
@@ -597,15 +854,34 @@ func (w *WorkflowRunner) DeleteWorkflowGraphDocument(name string) error {
 	if err := validatePersistedWorkflowName(name); err != nil {
 		return err
 	}
-	path, err := w.workflowGraphPath(name)
+	writePath, err := w.workflowGraphWritePath(name)
 	if err != nil {
 		return err
 	}
-	dir := filepath.Dir(path)
-	if _, err := os.Stat(path); err != nil {
+	removed := false
+	if _, err := os.Stat(writePath); err == nil {
+		if err := os.RemoveAll(filepath.Dir(writePath)); err != nil {
+			return err
+		}
+		removed = true
+	} else if !os.IsNotExist(err) {
 		return err
 	}
-	return os.RemoveAll(dir)
+	builtinPath, err := w.workflowGraphPathAt(w.runtime.RuntimeHome(), name)
+	if err != nil {
+		return err
+	}
+	if !sameRuntimePath(w.runtime.DataRoot(), w.runtime.RuntimeHome()) {
+		if _, err := os.Stat(builtinPath); err == nil {
+			return w.runtime.SetResourceTombstone("workflows", name, true)
+		} else if !os.IsNotExist(err) {
+			return err
+		}
+	}
+	if !removed {
+		return os.ErrNotExist
+	}
+	return nil
 }
 
 func (w *WorkflowRunner) WorkflowOptions() WorkflowOptionSet {
@@ -644,6 +920,22 @@ func (w *WorkflowRunner) WorkflowOptions() WorkflowOptionSet {
 	sort.Slice(options.Skills, func(i, j int) bool { return options.Skills[i].Name < options.Skills[j].Name })
 	options.Tools = w.runtime.ToolNames()
 	sort.Strings(options.Tools)
+	if tools, err := w.runtime.Tools(context.Background()); err == nil {
+		for _, tool := range tools {
+			name := formatQualifiedToolName(tool)
+			if strings.TrimSpace(name) == "" {
+				continue
+			}
+			options.ToolCatalog = append(options.ToolCatalog, WorkflowToolOption{
+				Name:        name,
+				Server:      strings.TrimSpace(tool.Server),
+				Kind:        strings.TrimSpace(tool.Kind),
+				Description: strings.TrimSpace(tool.Description),
+				InputSchema: append(json.RawMessage(nil), tool.InputSchema...),
+			})
+		}
+		sort.Slice(options.ToolCatalog, func(i, j int) bool { return options.ToolCatalog[i].Name < options.ToolCatalog[j].Name })
+	}
 	options.WorkflowExecutors = w.WorkflowExecutors()
 	options.NodeTypes = w.WorkflowNodeTypes()
 	options.PolicyRules = w.WorkflowPolicyRules()
@@ -873,11 +1165,15 @@ func (w *WorkflowRunner) validateWorkflowGraphDocumentIssues(name string, doc Wo
 		if isVisualOnlyWorkflowNode(internalStage) || isControlWorkflowNode(internalStage) {
 			continue
 		}
-		if strings.TrimSpace(stage.Agent) == "" {
+		connectedTool := isConnectedWorkflowToolNode(internalStage)
+		if !connectedTool && strings.TrimSpace(stage.Agent) == "" {
 			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "agent", Message: fmt.Sprintf("workflow graph %s stage %s missing agent", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
 		}
-		if strings.TrimSpace(stage.Skill) == "" {
+		if !connectedTool && strings.TrimSpace(stage.Skill) == "" {
 			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "skill", Message: fmt.Sprintf("workflow graph %s stage %s missing skill", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
+		}
+		if connectedTool && strings.TrimSpace(stage.Tool) == "" {
+			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "tool", Message: fmt.Sprintf("workflow graph %s stage %s connected tool node requires an MCP tool", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
 		}
 		if stage.Retry.MaxAttempts < 0 {
 			issues = append(issues, WorkflowGraphValidationIssue{Level: "error", Stage: stage.Name, Field: "retry.max_attempts", Message: fmt.Sprintf("workflow graph %s stage %s retry.max_attempts must not be negative", fallbackWorkflowGraphValue(doc.Name, name), stage.Name)})
@@ -1018,6 +1314,9 @@ func (w *WorkflowRunner) validateWorkflowGraphStageModelEscalationParamIssues(gr
 }
 
 func (w *WorkflowRunner) validateWorkflowGraphStageToolIssues(graphName, stageName, tool string, params map[string]string) []WorkflowGraphValidationIssue {
+	if workflowTruthy(params["disable_tools"]) {
+		return nil
+	}
 	tools := workflowGraphStageAllowedTools(workflowGraphStage{Tool: tool, Params: copyStringMap(params)})
 	if len(tools) == 0 || w == nil || w.runtime == nil {
 		return nil
@@ -1868,10 +2167,24 @@ func (w *WorkflowRunner) workflowGraphRoot() (string, error) {
 	if w == nil || w.runtime == nil || strings.TrimSpace(w.runtime.RuntimeHome()) == "" {
 		return "", fmt.Errorf("workflow runtime not configured")
 	}
-	return filepath.Join(w.runtime.RuntimeHome(), "workflows"), nil
+	if sameRuntimePath(w.runtime.DataRoot(), w.runtime.RuntimeHome()) {
+		return filepath.Join(w.runtime.RuntimeHome(), "workflows"), nil
+	}
+	return filepath.Join(w.runtime.DataRoot(), "resources", "workflows"), nil
 }
 
-func (w *WorkflowRunner) workflowGraphPath(name string) (string, error) {
+func (w *WorkflowRunner) workflowGraphRoots() ([]string, error) {
+	root, err := w.workflowGraphRoot()
+	if err != nil {
+		return nil, err
+	}
+	if sameRuntimePath(w.runtime.DataRoot(), w.runtime.RuntimeHome()) {
+		return []string{root}, nil
+	}
+	return []string{filepath.Join(w.runtime.RuntimeHome(), "workflows"), root}, nil
+}
+
+func (w *WorkflowRunner) workflowGraphWritePath(name string) (string, error) {
 	name = normalizePersistedWorkflowName(name)
 	if err := validatePersistedWorkflowName(name); err != nil {
 		return "", err
@@ -1880,6 +2193,45 @@ func (w *WorkflowRunner) workflowGraphPath(name string) (string, error) {
 	if err != nil {
 		return "", err
 	}
+	path := filepath.Clean(filepath.Join(root, name, "workflow.yaml"))
+	rel, err := filepath.Rel(root, path)
+	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("workflow path escapes runtime workflows directory")
+	}
+	return path, nil
+}
+
+func (w *WorkflowRunner) workflowGraphReadPath(name string) (string, error) {
+	name = normalizePersistedWorkflowName(name)
+	if err := validatePersistedWorkflowName(name); err != nil {
+		return "", err
+	}
+	hidden, err := w.runtime.IsResourceTombstoned("workflows", name)
+	if err != nil {
+		return "", err
+	}
+	if hidden {
+		return "", os.ErrNotExist
+	}
+	writePath, err := w.workflowGraphWritePath(name)
+	if err != nil {
+		return "", err
+	}
+	if _, err := os.Stat(writePath); err == nil || !os.IsNotExist(err) {
+		return writePath, err
+	}
+	if sameRuntimePath(w.runtime.DataRoot(), w.runtime.RuntimeHome()) {
+		return writePath, nil
+	}
+	return w.workflowGraphPathAt(w.runtime.RuntimeHome(), name)
+}
+
+func (w *WorkflowRunner) workflowGraphPathAt(root, name string) (string, error) {
+	name = normalizePersistedWorkflowName(name)
+	if err := validatePersistedWorkflowName(name); err != nil {
+		return "", err
+	}
+	root = filepath.Join(root, "workflows")
 	path := filepath.Clean(filepath.Join(root, name, "workflow.yaml"))
 	rel, err := filepath.Rel(root, path)
 	if err != nil || rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {

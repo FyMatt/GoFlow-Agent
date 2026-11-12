@@ -1,6 +1,7 @@
 package api
 
 import (
+	"encoding/json"
 	"net/http"
 	"strings"
 	"unicode/utf8"
@@ -20,6 +21,7 @@ func sessionSnapshotForAPI(snapshot session.Snapshot, details bool) session.Snap
 		return snapshot
 	}
 	snapshot.Workflow = summarizeWorkflowSnapshotForAPI(snapshot.Workflow)
+	snapshot.UsageRecords = nil
 	snapshot.AgentRuns = summarizeAgentRunsForAPI(snapshot.AgentRuns)
 	snapshot.WorkflowRuns = summarizeWorkflowRunsForAPI(snapshot.WorkflowRuns)
 	snapshot.Artifacts = summarizeSessionArtifactsForAPI(snapshot.Artifacts)
@@ -105,6 +107,7 @@ func summarizeAgentRunsForAPI(runs []session.AgentRunSnapshot) []session.AgentRu
 }
 
 func summarizeAgentRunForAPI(run session.AgentRunSnapshot) session.AgentRunSnapshot {
+	run.UsageRecords = nil
 	run.EventsCount = len(run.Events)
 	run.DiffsCount = len(agentRunDiffs(run, agentRunQuery{}))
 	run.ArtifactsCount = agentRunArtifactCount(run)
@@ -144,6 +147,8 @@ func summarizeWorkflowRunsForAPI(runs []session.WorkflowRunSnapshot) []session.W
 }
 
 func summarizeWorkflowRunForAPI(run session.WorkflowRunSnapshot) session.WorkflowRunSnapshot {
+	run.UsageRecords = nil
+	run.Status = effectiveWorkflowRunStatus(run)
 	run.StagesCount = len(run.CompletedStages)
 	run.ArtifactsCount = len(run.Artifacts)
 	run.EventsCount = len(run.Events)
@@ -157,6 +162,52 @@ func summarizeWorkflowRunForAPI(run session.WorkflowRunSnapshot) session.Workflo
 	run.Artifacts = nil
 	run.Events = nil
 	return run
+}
+
+func effectiveWorkflowRunStatus(run session.WorkflowRunSnapshot) string {
+	status := strings.ToLower(strings.TrimSpace(run.Status))
+	switch status {
+	case "completed", "complete", "success", "succeeded", "finished", "done":
+	default:
+		return run.Status
+	}
+	for index := len(run.CompletedStages) - 1; index >= 0; index-- {
+		stage := run.CompletedStages[index]
+		if stage.NodeType == "quality_gate" || stage.NodeType == "quality_guard" {
+			quality := stage.Outputs["quality_status"]
+			if value, ok := stage.OutputValues["quality_status"].(string); ok && strings.TrimSpace(value) != "" {
+				quality = value
+			}
+			if workflowRunQualityStatusFailed(quality) {
+				return "blocked"
+			}
+			if workflowRunQualityStatusPassed(quality) {
+				return run.Status
+			}
+		}
+		decision := ""
+		if value, ok := stage.OutputValues["decision"].(string); ok {
+			decision = value
+		}
+		if strings.TrimSpace(decision) == "" {
+			decision = stage.Outputs["decision"]
+		}
+		if strings.TrimSpace(decision) == "" {
+			var payload struct {
+				Decision string `json:"decision"`
+			}
+			if json.Unmarshal([]byte(strings.TrimSpace(stage.Result.Output)), &payload) == nil {
+				decision = payload.Decision
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(decision)) {
+		case "blocked", "needs_action", "needs-action":
+			return "blocked"
+		case "failed", "failure", "error", "rejected":
+			return "failed"
+		}
+	}
+	return run.Status
 }
 
 func summarizeWorkflowSnapshotForAPI(snapshot session.WorkflowSnapshot) session.WorkflowSnapshot {
