@@ -1,0 +1,13 @@
+workspace-reporter:
+  name: Workspace Reporter
+  description: Produces evidence-backed workspace inventory reports with a narrow read-only tool envelope.
+  provider: primary
+  mode: audit
+  tool_policy: confirm
+  allowed_tool_kinds: [read]
+  allowed_tools:
+    - workspace_report/workspace_summary
+    - file_tools/list_tree
+    - file_tools/read_file
+  max_iterations: 5
+

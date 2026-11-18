@@ -1,0 +1,96 @@
+rules:
+  - name: expression
+    label: Expression
+    source: built_in
+    operator: expression
+    description: Evaluate stage.policy or stage.condition with the baseline expression language.
+    params:
+      - name: policy
+        label: Policy
+        type: expression
+        required: true
+
+  - name: ref_truthy
+    label: Reference Is Present
+    source: built_in
+    operator: ref_truthy
+    description: Pass when params.ref resolves to a truthy non-empty value.
+    params:
+      - name: params.ref
+        label: Reference
+        type: reference
+        required: true
+
+  - name: contains
+    label: Contains Text
+    source: built_in
+    operator: contains
+    description: Pass when params.ref contains params.needle, case-insensitively.
+    params:
+      - name: params.ref
+        label: Reference
+        type: reference
+        required: true
+      - name: params.needle
+        label: Needle
+        type: text
+        required: true
+
+  - name: min_count
+    label: Minimum Count
+    source: built_in
+    operator: min_count
+    description: Pass when len(params.ref) is greater than or equal to params.minimum.
+    params:
+      - name: params.ref
+        label: Reference
+        type: reference
+        required: true
+      - name: params.minimum
+        label: Minimum
+        type: number
+        required: true
+
+  - name: risk_at_least
+    label: Risk At Least
+    source: built_in
+    operator: risk_at_least
+    description: Pass when a referenced severity is at or above info, low, medium, high, or critical.
+    params:
+      - name: params.ref
+        label: Reference
+        type: reference
+        required: true
+      - name: params.minimum
+        label: Minimum severity
+        type: select
+        required: true
+        options: [info, low, medium, high, critical]
+
+  - name: team_approval_gate
+    label: Team Approval Gate
+    source: built_in
+    operator: team_approval_gate
+    description: Pass when prior executable team role approval/rejection packets satisfy the configured quorum status.
+    params:
+      - name: params.team
+        label: Team
+        type: text
+        description: Optional team name filter.
+      - name: params.status
+        label: Required status
+        type: select
+        required: true
+        options: [passed, pending, blocked, not_blocked]
+      - name: params.approval_quorum
+        label: Approval quorum
+        type: number
+        description: Override required approvals when not inherited from the team node.
+      - name: params.approval_roles
+        label: Approval roles
+        type: text
+        description: Comma-separated role names counted by the gate.
+      - name: params.reject_blocks
+        label: Reject blocks
+        type: boolean
+        description: Treat counted rejections as a blocking gate status.

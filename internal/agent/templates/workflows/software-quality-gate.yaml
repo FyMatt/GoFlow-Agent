@@ -1,0 +1,270 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: software-quality-gate
+title: 软件质量门禁
+description: 依次完成规划、实现、验证和审计，并通过有证据支持的质量门禁后交付。
+category: software
+tags:
+    - coding
+    - tests
+    - audit
+    - quality_gate
+    - approval
+    - report
+stages: 10
+graph:
+    name: software-quality-gate
+    description: Complex software implementation workflow with explicit acceptance criteria, artifacts, verifier evidence, and quality-gate routing.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - plan
+          position:
+            x: 60
+            "y": 220
+        - name: plan
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Emit sections named Implementation Plan, Target Files, Acceptance Checks, Verification Commands, Risks, and Rollback Notes.
+          outputs:
+            plan: result.output
+            summary: result.summary
+          artifacts:
+            - name: implementation-plan
+              kind: report
+              title: Implementation plan
+              ref: result.output
+              summary: Implementation plan, target files, acceptance checks, verification commands, risks, and rollback notes.
+          acceptance_criteria:
+            - name: has-implementation-plan
+              ref: result.output
+              contains: Implementation Plan
+              expected: plan describes the implementation approach
+            - name: has-verification-commands
+              ref: result.output
+              contains: Verification Commands
+              expected: plan declares verification commands or checks
+          next:
+            - implement
+          position:
+            x: 300
+            "y": 200
+        - name: implement
+          node_type: agent
+          agent: fixer
+          skill: code-writing
+          params:
+            require_workspace_mutation: "false"
+            output_contract: Emit sections named Change Summary, Files Changed, Verification Attempted, Deviations, and Residual Risk.
+            edit_policy: Apply scoped changes, preserve user edits, and leave unrelated files untouched.
+          input:
+            plan: stages.plan.outputs.plan
+          outputs:
+            changes: result.changes
+            implementation_report: result.output
+            summary: result.summary
+          artifacts:
+            - name: change-summary
+              kind: report
+              title: Change summary
+              ref: result.output
+              summary: Change summary, files changed, verification attempted, deviations, and residual risk.
+          acceptance_criteria:
+            - name: changes-recorded
+              ref: result.output
+              contains: Change Summary
+              expected: implementation explains changed behavior
+            - name: files-recorded
+              ref: result.output
+              contains: Files Changed
+              expected: implementation lists changed files or explains none
+          retry:
+            max_attempts: 2
+          approval: true
+          next:
+            - verify
+          position:
+            x: 580
+            "y": 200
+        - name: verify
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Emit sections named Verification Result, Commands Run, Coverage, Failures, Evidence, and Residual Risk.
+            verification_command: go test ./...
+          input:
+            changes: stages.implement.outputs.implementation_report
+            plan: stages.plan.outputs.plan
+          outputs:
+            verification: result.output
+            summary: result.summary
+          artifacts:
+            - name: verification-report
+              kind: verification
+              title: Verification report
+              ref: result.output
+              summary: Verification result, commands run, coverage, failures, evidence, and residual risk.
+          acceptance_criteria:
+            - name: verification-evidence
+              ref: result.output
+              contains: Verification Result
+              expected: verification mentions tests or equivalent checks
+            - name: commands-recorded
+              ref: result.output
+              contains: Commands Run
+              expected: verification lists commands or explains why none ran
+          next:
+            - audit
+          position:
+            x: 860
+            "y": 200
+        - name: audit
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          params:
+            require_workspace_mutation: "false"
+            output_contract: Emit sections named Audit Decision, Findings, Missed Requirements, Test Gaps, Safety Notes, Recommendation, and Release Readiness.
+            severity_order: Lead with concrete bugs, regressions, data loss, security risk, or broken acceptance criteria.
+          input:
+            changes: stages.implement.outputs.implementation_report
+            verification: stages.verify.outputs.verification
+          outputs:
+            audit: result.output
+            findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: audit-report
+              kind: report
+              title: Audit report
+              ref: result.output
+              summary: Audit decision, findings, missed requirements, test gaps, safety notes, recommendation, and release readiness.
+          acceptance_criteria:
+            - name: audit-risk-reviewed
+              ref: result.output
+              contains: Audit Decision
+              expected: audit mentions residual risk
+            - name: recommendation-present
+              ref: result.output
+              contains: Recommendation
+              expected: audit gives a concrete recommendation
+          next:
+            - quality
+          position:
+            x: 1140
+            "y": 200
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: implement,verify,audit
+            min_score: "80"
+            reason: software quality evidence did not meet the release threshold
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            verification_mode: command
+            allow_unknown: "false"
+          routes:
+            fail: revise
+            pass: handoff
+            warning: review
+          position:
+            x: 1420
+            "y": 220
+        - name: handoff
+          node_type: skill
+          agent: planner
+          skill: execution-plan
+          params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Emit sections named Delivery Status, Delivered Changes, Verification Evidence, Audit Outcome, Remaining Risks, and Next Steps.
+            purpose: Produce the final user-facing software delivery report for pass, warning, or revision paths.
+          input:
+            audit: stages.audit.outputs.audit
+            quality: stages.quality.outputs.quality_status
+            revision_plan: stages.revise.outputs.revision_plan
+            verification: stages.verify.outputs.verification
+          outputs:
+            handoff: result.output
+            summary: result.summary
+          artifacts:
+            - name: software-quality-handoff
+              kind: report
+              title: Software quality handoff
+              ref: result.output
+              summary: Delivery status, delivered changes, verification evidence, audit outcome, risks, and next steps.
+          acceptance_criteria:
+            - name: has-delivery-status
+              ref: result.output
+              contains: Delivery Status
+              expected: handoff declares delivery status
+            - name: has-verification-evidence
+              ref: result.output
+              contains: Verification Evidence
+              expected: handoff includes verification evidence
+          next:
+            - end
+          position:
+            x: 1700
+            "y": 120
+        - name: review
+          node_type: checkpoint
+          agent: ""
+          skill: ""
+          params:
+            prompt: Quality gate returned warnings. Review evidence before handoff.
+          next:
+            - handoff
+          position:
+            x: 1700
+            "y": 260
+        - name: revise
+          node_type: skill
+          agent: fixer
+          skill: code-writing
+          params:
+            require_workspace_mutation: "false"
+            output_contract: Emit sections named Revision Required, Blocking Issues, Missing Evidence, Safe Fix Plan, and Next Steps.
+          input:
+            audit: stages.audit.outputs.audit
+            failures: stages.quality.outputs.failures
+          outputs:
+            revision_plan: result.output
+            summary: result.summary
+          artifacts:
+            - name: software-revision-plan
+              kind: report
+              title: Software revision plan
+              ref: result.output
+              summary: Blocking issues, missing evidence, safe fix plan, and next steps.
+          acceptance_criteria:
+            - name: has-revision-required
+              ref: result.output
+              contains: Revision Required
+              expected: revision plan states why quality failed
+          next:
+            - handoff
+          position:
+            x: 1700
+            "y": 400
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 2020
+            "y": 220

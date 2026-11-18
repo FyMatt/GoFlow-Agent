@@ -1,0 +1,1077 @@
+# 工作流图
+
+报告阶段可显式设置 `params.verify_evidence_hashes: "true"`，配合 `retry.max_attempts: 2`。执行器会拒绝长度错误或未获当前运行成功采集结果支持的内联 SHA-256 主张，并仅重试报告节点，把失败原因反馈给模型。无内联哈希而引用证据索引时不加载历史正文。安全评估与事件调查的最终报告已启用此检查；旧资源默认不变。
+
+该检查针对 SHA-256 形式的长十六进制值及带 SHA256 标签的值；SSH 的 Base64 主机指纹须与实际采集元数据一致。持久化到对象存储的采集结果按需回读，只保留哈希元数据参与校验。不验证全部自然语言事实、文件与哈希的语义配对或采集后文件是否改变。报告仍须保留来源、采集时间和覆盖限制，无法核实的值应引用索引而非补猜。
+
+复杂项目交付在初次验证和修复后复验之后均设置本地质量分流：缺少实际检查命令、失败或未知的验证会直接进入修复或最终质量门；有通过证据才调用独立审计。整个流程保留一次修复闭环，仍未解决的问题以阻塞状态和最终报告交付，不会无限重试。最终报告禁用工具，并启用上述哈希校验。
+
+修复节点取得批准计划，按原任务授权修复具体阻塞项和未完成产物，不重复执行初次实施的已关闭分片调度。既有测试断言仍受保护；初次实施的依赖调度和复验门禁保留。格式检查不能只看退出码：`gofmt -l` 列出文件即未通过。race 环境限制只能豁免对应检查，不能把明确失败的整份报告改判通过。
+
+变更分片中的 `mode` 描述未来实施操作，不是规划节点当前的权限。规划仍只读；存在后续必需修改时，完整计划必须声明相应的 `write` 分片，不能只交一个查找分片。未实施的写入分片会使当前实施阶段保持可继续状态，而不会直接进入验证。续跑保留分片合同和实际进度；未结束检查点里的失败记录仍保留，但不会锁死后续修补。
+
+运行页会显示实际最终报告，不把产物说明当作正文。文本文件变更显示文件路径与新增、删除行数；进程启动结果提供经过校验的预览网址，停止后明确标注不可预览。需要任务结束后继续浏览时，请明确要求保留服务运行。运行总计与用量图表使用持久化模型用量账本，不依赖显示时间线的保留条数。
+
+[English](./workflows.md) | [简体中文](./workflows.zh-CN.md)
+
+## 运行质量与恢复
+
+`plan-implement-audit` 在初始门禁失败后，先记录修订说明，再执行一次有界修复、复测、复审和最终门禁。再次失败不会跳回修复造成无限循环；允许输出最终报告也不代表质量通过。
+
+计划明确列出的样式、模板和测试文件都必须保留在切片中，不能因为存在根目录源码而忽略其余目标。精确补丁零匹配表示零写入，不能把旧项目的冒烟测试通过当成本次需求完成。审计复用真实命令结果并进行有界只读检查，未请求的既有风险单列提示。
+
+“继续执行”保留同一运行的上下文、已完成动作与工具结果；“重试运行”创建新尝试。已有阶段的完成时间不应随后续检查点反复变化，尚未完成的阶段不应写入完成时间。新模板与技能主要作用于新运行，不能期待固定历史资源的旧运行自动获得全部修复。
+
+日常启停、预览实例管理和清理边界见[本机操作与维护](./local-operations.zh-CN.md)。
+
+GoFlow 支持两类工作流：
+
+- 内置工作流，例如 `plan-fix-audit` 和 `skill-chain`。
+- runtime home 下的图工作流：`workflows/<name>/workflow.yaml`。
+
+它们会通过两个相关但不同的目录暴露：
+
+- `/api/workflow-graphs`：只列出可编辑的图工作流文件。
+- `/api/workflow-options.workflow_executors`：列出可运行的 workflow
+  入口，包括可编辑图工作流，以及 `plan-fix-audit`、`skill-chain` 这类
+  兼容执行器。
+
+如果你保存了一个同名且有效的图工作流，比如
+`workflows/plan-fix-audit/workflow.yaml`，它会覆盖对应的兼容执行器。这样
+可以在不修改 Go 源码的情况下定制内置工作流。
+
+内置 Workflow Template 是文件化资源，默认从 `internal/agent/templates/workflows/*.yaml` 内嵌进二进制。运行目录下的 `templates/workflows/*.yaml` 可以新增模板，也可以用同名文件覆盖内置模板；同一套目录会影响 `/workflow-templates`、Workflow 创建、校验、fork 和 Studio 模板选择。
+
+当任务需要命名阶段、明确 Agent 分工、分支选择、审批边界、控制流或输出传递时，应使用工作流图。
+
+完整案例：
+
+- `examples/extension-workflow`：紧凑的 Python MCP server、只读 Agent、自定义 Skill 和图工作流示例。
+
+## 创建与运行
+
+```text
+/new-workflow release-check
+/workflow release-check review the auth changes
+```
+
+生成路径：
+
+```text
+workflows/release-check/workflow.yaml
+workflows/release-check/WORKFLOW.md
+```
+
+工作流文件属于框架配置，不属于目标项目文件。active workspace 仍然是文件工具读写目标。
+
+## Visual Workflow Studio
+
+启动 HTTP：
+
+```bash
+go run ./cmd/goflow --workspace /path/to/workspace --http :8080
+```
+
+打开：
+
+```text
+http://127.0.0.1:8080/workflows
+```
+
+Studio 可以：
+
+- 列出内置和自定义 workflow。
+- 创建自定义 workflow。
+- 拖拽节点到画布。
+- 拖动节点位置。
+- 自定义连线。
+- 编辑节点属性。
+- 保存到 `workflows/<name>/workflow.yaml`。
+- 运行 workflow 并显示 stage、token、approval、artifact、diff 和事件流。
+
+Workflow Studio 只有一个面向任务的编辑界面。画布、紧凑节点面板、校验、
+测试运行和属性检查器保持在主路径中；不常用字段通过当前编辑器里的折叠区
+逐步展开，不需要全局模式切换。选中对应节点后，已有工作流仍可访问完整字段，
+复杂能力不会因为界面简化而丢失。
+
+为了让右侧节点配置面板更容易上手，Studio 现在还支持：
+- 在“节点元数据”里直接套用默认配置或示例配置到当前节点。
+- 在“高级行为”说明卡片里一键把示例填入对应字段。
+- 在“结果与证据”里同时配置 `artifacts` 和 `acceptance_criteria`，直接把证据和验收标准写进工作流。
+- 在“结果与证据”说明卡片里一键添加常见报告产物、证据产物、包含检查和存在性检查。
+
+画布会把普通顺序流和控制语义分开显示：
+
+- 控制节点卡片会显示“控制节点”摘要，说明它控制循环体、分支或结束后的路径。
+- 分支连线会显示 `通过`、`失败`、`为真`、`默认` 等结果标签。
+- `loop` 和 `for_each` 的循环体会显示为辅助连线，区别于普通 `next` 顺序连线。
+- 选中或悬浮控制节点时，画布会用淡色范围框标出它控制的阶段，用户不需要先理解 YAML 字段也能看出节点作用范围。
+
+## 节点类型
+
+可视节点：
+
+- `start`
+- `end`
+
+执行节点：
+
+- `agent`
+- `skill`
+- `tool`
+- `custom`
+
+控制流节点：
+
+- `condition`
+- `switch`
+- `router`
+- `policy_guard`
+- `quality_gate`
+- `parallel`
+- `join`
+- `for_each`
+- `loop`
+- `sub_workflow`
+- `checkpoint`
+- `input_gate`
+
+控制流节点不一定自己调用 LLM，但可以选择路径、并行分支、等待汇合、重复执行、调用子工作流、暂停等待输入或阻断流程。
+对重复节点来说，`params.stage` 表示被控制的循环体阶段，`next` 表示循环结束后继续进入的阶段；这两种关系在运行时和 Studio 画布中都会区别显示。
+
+这些内置节点的字段、输出、提示、示例和默认 stage 来自
+`internal/agent/templates/workflow_nodes/*.yaml`，发布时会内嵌进二进制。
+运行目录可以通过 `templates/workflow_nodes/*.yaml` 或
+`metadata/workflow_nodes/*.yaml` 覆盖编辑器展示信息；这不会新增新的可执行
+节点类型，只会调整 Studio 和 CLI 看到的元数据。
+
+## 输出传递
+
+工作流应支持把前一个节点输出作为后一个节点输入：
+
+```yaml
+outputs:
+  plan: result.output
+input:
+  approved_plan: stages.triage.outputs.plan
+```
+
+这样工作流不是简单串行执行，而是真正协作。
+
+## 节点配置速查
+
+Web Studio 会从 `/api/workflow-options` 读取节点字段元数据。配置节点时可以按下面的规则填写：
+
+当界面需要“运行某个 workflow”的下拉框时，应优先使用
+`workflow_executors`；当界面需要“编辑某个图文件”时，才使用
+`/api/workflow-graphs`。这样用户既能运行兼容入口，也不会误把兼容执行器当成
+可直接编辑的图文件。
+
+| 字段 | 用途 | 常见值 |
+| --- | --- | --- |
+| `agent` | 指定哪个 Agent profile 执行这个阶段 | `planner`、`software-engineer`、`web-security-researcher`、`binary-analyst` |
+| `skill` | 指定这个阶段使用哪个可复用流程 | `execution-plan`、`code-writing`、`code-audit`、`web-vulnerability-research` |
+| `tool` | 给 tool 节点指定优先工具提示 | `file_tools/write_file`、`web_tools/fetch_page_assets`、`python_notes/binary_strings` |
+| `input` | 把上游输出映射成本阶段输入 | `plan: stages.plan.outputs.plan`、`target: workflow.input` |
+| `outputs` | 给下游发布稳定变量名 | `summary: result.summary`、`report: result.output`、`findings: result.findings`、`decision: result.first_line` |
+| `params` | 节点参数、团队名、规则名、表单字段、输出契约 | `team: software-task-team`、`rule: risk_at_least`、`fields: target:string:Target:required` |
+| `artifacts` | 声明报告、证据、diff 等可回放产物 | `name: audit-report, kind: report, ref: result.output` |
+| `acceptance_criteria` | 给质量门禁和回放声明验收检查 | `name: has-risk, ref: result.output, contains: risk` |
+| `approval` | 在高风险阶段前暂停审批 | 写文件、执行命令、外部副作用、发布阶段建议填 `true` |
+| `retry.max_attempts` | 限制自动重试次数 | `2`、`3` |
+| `on_error` | 重试失败后的备用阶段 | `revise`、`report-failure` |
+
+常用引用：
+
+- `workflow.input`：原始工作流请求。
+- `params.<name>`：当前节点参数。
+- `stages.<stage>.outputs.<name>`：上游阶段声明的输出。
+- `stages.<stage>.output_values.<name>`：可用时保留 JSON 类型的上游输出。
+- `stages.<stage>.result.output`：兼容旧图的上游原始输出。
+- `result.output`、`result.first_line`、`result.summary`、`result.findings`、`result.tool_results`、`result.changes`、`result.verification`：当前执行阶段可用于 `outputs`、artifact 和验收条件的结果引用。`result.first_line` 是第一行，可用 `equals` 检查机器可读的整体结论。
+
+推荐写法：
+
+1. 用 `input_gate` 或 planning agent 收集目标、范围、输出要求。
+2. 从 planning 节点发布少量稳定输出，例如 `plan` 和 `scope`。
+3. 下游实现、审计或领域专家节点只消费这些命名输出。
+4. 用 `condition`、`switch` 或 `policy_guard` 根据结构化输出路由。
+5. 把最终报告、发现、diff、证据声明为 `artifacts`，避免前端从自然语言里猜。
+
+## 对照 Studio 右侧面板填写
+
+如果你是在 Web Studio 里编辑节点，可以把右侧面板简单理解成三块：
+
+1. 基础信息：这个节点是谁来做、做什么、接到什么输入、做完去哪里。
+2. 高级行为：这个节点失败怎么办、怎么分支、是否暂停审批。
+3. 结果与证据：这个节点做完以后，要把哪些结果正式发布给下游，哪些内容要保留成可回放证据。
+
+大多数普通节点一开始只需要填这 5 个核心字段：
+
+- `agent`
+- `skill`
+- `input`
+- `outputs`
+- `next`
+
+只有当你真的需要“分支”“重试”“兜底”“审批”“证据”时，再去展开右侧的高级区和结果区。
+
+### 基础信息怎么填
+
+最常见的一个执行节点，最小可用写法通常是：
+
+```yaml
+- name: plan
+  node_type: agent
+  agent: planner
+  skill: execution-plan
+  input:
+    request: workflow.input
+  outputs:
+    plan: result.output
+  next: [implement]
+```
+
+这里分别表示：
+
+- `agent`：谁来执行，决定模型、权限和工具边界。
+- `skill`：按什么方法执行，决定流程和输出风格。
+- `input`：给这个节点看的上游信息。
+- `outputs`：这个节点做完后，正式对外公布哪些结果名。
+- `next`：正常完成后进入哪个节点。
+
+如果你不知道 `input` 和 `outputs` 怎么写，就先记住这一条：
+
+- `input` 左边写“你想给本节点取的局部变量名”
+- `input` 右边写“从哪里取值”
+- `outputs` 左边写“下游以后要怎么称呼这个结果”
+- `outputs` 右边写“当前节点结果里的哪个字段”
+
+例如：
+
+```yaml
+input:
+  target_url: stages.collect.outputs.target
+  scope: stages.collect.outputs.scope
+outputs:
+  evidence: result.output
+  summary: result.summary
+```
+
+这表示：
+
+- 把 `collect` 节点产出的 `target` 作为当前节点里的 `target_url`
+- 把 `collect` 节点产出的 `scope` 作为当前节点里的 `scope`
+- 当前节点完成后，把主结果发布成 `evidence`
+- 把摘要发布成 `summary`
+
+### 高级行为怎么填
+
+Studio 里的“高级行为”主要解决 5 件事：
+
+- 成功后怎么继续：`next`
+- 有多个候选下一步时怎么选：`next_strategy`
+- 失败后是否重试：`retry.max_attempts`
+- 重试后还是失败怎么办：`on_error`
+- 进入这个节点前是否必须人工确认：`approval`
+
+如果你没有明确需求，这一块可以大部分留空。推荐规则是：
+
+- 单一路径就只写 `next`
+- 有真假分支就用 `condition + routes`
+- 有多路分支就用 `switch_on + cases`
+- 写文件、执行命令、外部副作用节点加 `approval: true`
+- 可能偶发失败的节点加 `retry.max_attempts`
+- 高风险流程给失败路径补 `on_error`
+
+最常见示例：
+
+```yaml
+approval: true
+retry:
+  max_attempts: 2
+on_error: [report-failure]
+next: [verify]
+```
+
+这表示：
+
+- 进入节点前先审批
+- 最多自动重试 2 次
+- 还是失败就跳到 `report-failure`
+- 成功后进入 `verify`
+
+`next_strategy` 只在“存在多个候选后续节点”时才值得填。常见理解：
+
+- `select`：从多个候选里选一个
+- `best`：根据结果选最优分支
+- `conditional`：结合条件决定
+- `dynamic`：运行时动态决定
+
+如果你的节点本身已经是 `condition`、`switch`、`router` 这类控制流节点，通常优先直接写它们自己的 `routes` / `cases`，而不是再额外堆 `next_strategy`。
+
+控制流字段的最小用法：
+
+```yaml
+condition: contains(stages.audit.outputs.report, "high")
+routes:
+  true: verify
+  false: handoff
+```
+
+或：
+
+```yaml
+switch_on: stages.collect.outputs.domain
+cases:
+  software: plan-code
+  web-security: web-review
+  default: general-plan
+```
+
+### 结果与证据怎么填
+
+Studio 里的“结果与证据”主要对应 3 组字段：
+
+- `outputs`：给后续节点继续消费的正式输出
+- `artifacts`：给运行结果页、导出、回放、审批查看的证据产物
+- `acceptance_criteria`：给 `quality_gate` 或复核阶段使用的验收条件
+
+这三者的区别很重要：
+
+- `outputs` 是“工作流内部继续传值”
+- `artifacts` 是“运行结束后还要保留并展示的结果/证据”
+- `acceptance_criteria` 是“怎么判断这个节点结果合格不合格”
+
+#### 1. `outputs`
+
+最常见：
+
+```yaml
+outputs:
+  report: result.output
+  summary: result.summary
+  findings: result.findings
+```
+
+意思是把当前阶段结果中的这些字段，正式命名后发布给下游节点。
+
+#### 2. `artifacts`
+
+只有当这个节点确实产出了“报告、证据、差异、日志、发现”这类值得保留的内容时才添加。
+
+```yaml
+artifacts:
+  - name: audit-report
+    kind: report
+    title: 审计报告
+    ref: result.output
+    summary: result.summary
+```
+
+建议这样理解每个字段：
+
+- `name`：稳定 ID，后面界面和回放会靠它识别
+- `kind`：类别，如 `report`、`evidence`、`diff`、`log`、`finding`
+- `title`：给人看的标题
+- `ref`：正文或主要内容来自哪里，常见是 `result.output`
+- `summary`：简短摘要来自哪里，常见是 `result.summary`
+
+如果你只是想“让下游用这个结果”，只写 `outputs` 就够了；如果你还想“让审批页、运行历史、导出结果里也能稳定看到它”，再补 `artifacts`。
+
+#### 3. `acceptance_criteria`
+
+用于声明“这个节点做成什么样才算通过”。
+
+```yaml
+acceptance_criteria:
+  - name: has-scope
+    ref: result.output
+    contains: scope
+```
+
+常见思路：
+
+- 是否包含关键字段
+- 是否生成了报告
+- 是否存在发现
+- 是否写出了证据产物
+- 是否满足某个最低风险/评分阈值
+
+如果后面要接 `quality_gate`，建议上游节点至少声明一部分 `acceptance_criteria`，否则质量门禁只能根据有限上下文猜测是否通过。
+
+如果某个执行节点的输出必须满足契约，可以在 `params` 里设置 `contract_required: "true"` 或 `on_contract_fail: block`。运行时会在阶段执行后检查缺失的验收结果、验证/证据、声明的 artifact、映射 `outputs`、JSON worker 输出、必需 JSON 字段和必需章节；失败时会发出 `contract_validation_failed` 事件，并带上 `contract_check`、`contract_checks`、`source_ref` 和 `source_refs`，Studio 可以直接定位到出问题的节点和缺失输出。
+
+契约失败也可以配置模型升级恢复路径：设置 `params.on_contract_fail: escalate`，并配置 `escalate_provider`、`escalate_model`、`escalate_max_tokens` 或 `escalate_temperature` 中的任意一项（也支持 `model_escalation_*` 和 `contract_fail_*` 别名）。运行时只会用升级后的模型/预算路由重跑失败阶段，发出 `model_escalated` 和 `stage_retry` 事件，在阶段元数据中记录 `model.escalated`、`model.route` 和 `model.escalation_ref`，然后在同一个 workflow run 中继续下游阶段。没有配置自动升级但具备升级参数的阻塞运行，会在 Studio 和 `/actions` 中暴露 `escalate_model` 操作。
+
+### 新手推荐的最小套路
+
+如果你还不熟，先按这个固定模式写：
+
+1. `input_gate`：收集结构化输入
+2. `agent/skill`：做计划
+3. `agent/skill/tool`：执行或分析
+4. `quality_gate` 或 `policy_guard`：判断是否通过
+5. `end`：结束
+
+对应到字段就是：
+
+```yaml
+input:
+  request: workflow.input
+outputs:
+  main_result: result.output
+next: [next-stage]
+```
+
+然后只在下面这些场景再逐步加复杂度：
+
+- 要分真假路径：加 `condition` 和 `routes`
+- 要分多条路径：加 `switch_on` 和 `cases`
+- 要人工确认：加 `approval: true`
+- 要失败兜底：加 `retry.max_attempts` 和 `on_error`
+- 要保留报告/证据：加 `artifacts`
+- 要做质量门禁：加 `acceptance_criteria`
+
+## 各节点怎么用
+
+最简单的理解方式是：
+
+```text
+收集输入 -> 执行工作 -> 发布输出 -> 分支/门禁 -> 生成产物
+```
+
+执行节点通常需要 `agent` 和 `skill`。控制流节点通常读取上游输出，然后通过
+`routes`、`cases` 或 `next` 选择后续节点。
+
+### `start` 与 `end`
+
+只做可视化标记，不调用模型。
+
+```yaml
+- name: start
+  node_type: start
+  next: [collect]
+- name: end
+  node_type: end
+```
+
+常用字段：
+
+- `next`：起点连到哪个节点。
+- `position`：画布位置，不影响执行。
+
+### `input_gate`
+
+用于让用户先填写结构化输入，比如目标 URL、范围、严重性、输出类型、发布时间窗口等。
+
+```yaml
+- name: collect
+  node_type: input_gate
+  params:
+    manual: true
+    prompt: Provide target and scope.
+    fields: target:url:Target URL:required,scope:text:Scope:required
+    strict: true
+  next: [plan]
+```
+
+常用参数：
+
+- `manual: true`：暂停等待用户输入。
+- `prompt`：给用户看的提示。
+- `fields`：简写字段，格式是 `name:type:label:required`。
+- `fields_json`：更复杂的 JSON 表单 schema。
+- `required`：必填字段名，多个用逗号分隔。
+- `strict: true`：拒绝未声明字段。
+
+下游引用：
+
+- `stages.collect.outputs.target`
+- `stages.collect.outputs.scope`
+
+### `agent`
+
+普通 LLM 阶段。适合规划、实现、审计、文档、客服、领域分析等。
+
+```yaml
+- name: plan
+  node_type: agent
+  agent: planner
+  skill: execution-plan
+  input:
+    target: stages.collect.outputs.target
+    scope: stages.collect.outputs.scope
+  outputs:
+    plan: result.output
+    summary: result.summary
+  next: [implement]
+```
+
+常用字段：
+
+- `agent`：从 `/agents` 中选择，例如 `planner`、`software-engineer`。
+- `skill`：从 `/skills` 中选择，例如 `execution-plan`。
+- `input`：这个节点需要看的上游数据。
+- `outputs`：发布给下游的稳定变量名。
+- `approval`：高风险阶段填 `true`。
+- `retry.max_attempts`：失败后重试次数。
+- `on_error`：重试失败后跳到哪些节点。
+
+### `skill`
+
+当“流程/能力”比 Agent 身份更重要时使用。仍然需要 `agent`，因为权限来自 Agent。
+
+```yaml
+- name: audit
+  node_type: skill
+  agent: auditor
+  skill: code-audit
+  input:
+    changed_files: stages.implement.outputs.changes
+  outputs:
+    findings: result.findings
+    audit_report: result.output
+  next: [quality]
+```
+
+常见 Skill：
+
+- `code-audit`
+- `web-vulnerability-research`
+- `binary-vulnerability-research`
+- `reverse-engineering`
+- `execution-plan`
+
+### `tool`
+
+使用 `tool_mode: connected` 可以把一个 MCP 工具连接在两个带模型的节点之间。上游智能体会拿到该工具的完整输入 Schema，生成结构化参数，并在自身权限与审批策略下执行；工具节点不再调用第二次模型，只发布 `tool_result`、`tool_results`、`artifact_ref` 和 `artifact_hash` 给下游。
+
+```yaml
+- name: plan-report
+  node_type: agent
+  agent: fixer
+  skill: code-writing
+  next: [write-report]
+- name: write-report
+  node_type: tool
+  tool: file_tools/write_file
+  params:
+    tool_mode: connected
+  outputs:
+    tool_result: result.output
+    tool_results: result.tool_results
+  next: [review]
+- name: review
+  node_type: agent
+  agent: auditor
+  skill: code-audit
+  input:
+    write_result: stages.write-report.outputs.tool_result
+    artifact: stages.write-report.outputs.artifact_ref
+```
+
+没有设置 `tool_mode: connected` 的旧工具节点继续使用兼容的 assisted 行为，并仍需自己的 `agent` 与 `skill`。
+
+常见工具：
+
+- `file_tools/read_file`
+- `file_tools/search_files`
+- `file_tools/write_file`
+- `web_tools/web_search`
+- `web_tools/fetch_url`
+- `web_tools/fetch_page_assets`
+- `python_notes/binary_file_info`
+- `python_notes/binary_strings`
+- `python_notes/hex_preview`
+
+### `team`
+
+用于引用可复用多 Agent 团队模板。默认只发布团队上下文；设置 `params.execute: "true"` 后，会展开并执行团队角色。
+
+```yaml
+- name: team
+  node_type: team
+  params:
+    team: software-task-team
+    execute: "true"
+    approval_preset: software-review
+  input:
+    goal: workflow.input
+  outputs:
+    handoff: result.summary
+  next: [team-gate]
+```
+
+常用参数：
+
+- `team`：团队模板名，例如 `software-task-team`、`web-research-team`、`binary-triage-team`。
+- `execute`：`"true"` 表示执行团队角色；不填则只输出团队上下文。
+- `approval_preset`：给 `team_approval_gate` 使用的审批预设。
+
+### `condition`
+
+二选一分支。表达式为真走 `routes.true`，否则走 `routes.false`。
+
+```yaml
+- name: has-risk
+  node_type: condition
+  condition: contains(stages.audit.outputs.audit_report, "High")
+  routes:
+    true: verify
+    false: report-clean
+```
+
+常见表达式：
+
+- `exists(stages.audit.outputs.findings)`
+- `contains(stages.audit.outputs.audit_report, "vulnerability")`
+- `len(stages.collect.outputs.targets) > 0`
+- `risk_rank(stages.audit.outputs.risk) >= 4`
+- `stages.collect.outputs.domain == "web-security"`
+
+### `switch` / `router`
+
+多分支路由。适合按领域、严重性、输出类型分流。
+
+```yaml
+- name: route-domain
+  node_type: switch
+  switch_on: stages.collect.outputs.domain
+  cases:
+    software: plan-code
+    web-security: web-review
+    binary: binary-triage
+    docs: docs-update
+    default: general-plan
+```
+
+常用字段：
+
+- `switch_on`：要判断的引用。
+- `cases`：值到目标节点的映射。
+- 建议始终写 `default`、`else` 或 `*`。
+
+### `policy_guard`
+
+可复用门禁。适合风险阈值、团队审批、通用规则判断。
+
+```yaml
+- name: risk-gate
+  node_type: policy_guard
+  params:
+    rule: risk_at_least
+    ref: stages.audit.outputs.findings
+    minimum: high
+  routes:
+    allow: verify
+    deny: report
+```
+
+常见规则：
+
+- `expression`：执行 `policy` 或 `condition`。
+- `ref_truthy`：`params.ref` 有值即通过。
+- `contains`：`params.ref` 包含 `params.needle` 即通过。
+- `min_count`：`len(params.ref) >= params.minimum` 即通过。
+- `risk_at_least`：风险等级达到阈值即通过。
+- `team_approval_gate`：团队审批满足预设即通过。
+
+自定义 Policy Rule 存放在 `policies/workflow_rules/*.yaml`。如果不想从空 YAML 开始，可以使用脚手架 preset：`GET /api/resources/policy-rules/scaffolds`、`GET /api/resources/policy-rules/scaffolds/{preset}?name=<rule-name>`、`POST /api/resources/policy-rules/scaffolds/{preset}`，或者 CLI `/new-policy-rule <preset> <name>`。内置 preset 从 `internal/scaffold/templates/policies/scaffolds/presets.yaml` 内嵌进二进制，运行目录可以通过 `templates/policies/scaffolds/*.yaml` 添加或覆盖。`/api/workflow-options` 里的内置规则 metadata 也已经文件化，来自 `internal/agent/templates/policy_rules/*.yaml`；它只负责编辑器展示和参数说明，真正的自定义可执行规则仍然放在 `policies/workflow_rules/*.yaml`。
+
+### `quality_gate`
+
+质量门禁。通常放在实现、审计、报告之后，用于检查验收标准和产物证据。
+
+```yaml
+- name: quality
+  node_type: quality_gate
+  input:
+    report: stages.audit.outputs.audit_report
+  params:
+    min_score: "80"
+  routes:
+    pass: handoff
+    fail: revise
+```
+
+建议上游执行节点声明 `acceptance_criteria` 和 `artifacts`，否则质量门禁只能基于有限上下文判断。
+
+`require_verification: "true"` 的旧工作流未声明模式时，默认采用 `verification_mode: command`，要求实际执行成功的测试、构建或静态检查命令，报告中的“已通过”不能替代执行证据。其他领域可显式声明 `verification_mode: tool`，并用 `verification_tools` 列出逗号分隔的验证工具；`required_tools` 会增加必需工具。每个工具都必须有成功完成的调用、调用 ID，以及返回内容或持久化证据。`botany/check_specimen` 等限定名称保留服务端身份；此模式不要求软件测试命令。声明验证工具不会授予调用权限。
+
+执行阶段能力只由参数启用，与工作流名、领域名无关。`require_workspace_mutation: "true"` 要求本阶段的真实修改证据，模型声称修改的文件名和前一阶段的修改均不能代替。`change_slice_policy` 取 `off`、`required` 或 `if_missing`。`seed_plan_intake: "true"` 显式添加框架规划提示，并以 `resource_helper` 标明来源，不冒充模型或工具证据。`use_change_slice_scheduler: "true"` 要求 `approved_plan_scope: "true"` 和 `approval: true`，仍须用户批准并受原有工具权限限制。布尔能力只接受 `"true"` 或 `"false"`。未配置的阶段不自动补写业务文件、报告、测试、Office 文档或网页样式；资源阶段必须通过获准工具执行所需写入。
+
+请求公开技术文档时，规划与验证可以在 Agent、Skill 和用户授权边界内使用 `web_tools/web_search`、`web_tools/fetch_url`、`web_tools/research_snapshot`，记录来源 URL、产品/版本和抓取时间。明确要求仅本地、离线或仅使用既有证据时不得联网；不得向公共服务上传私有日志、凭据、配置或源码。查询新文档不代表获准扫描目标、访问主机或修改文件。
+
+`verification_any_tools` 可在 `verification_mode: tool` 下声明非空的限定工具名列表（`server/tool`），要求至少一个工具实际成功执行，适合离线文件、网页或 SSH 等替代证据来源。与 `verification_tools` 同时声明时，仍要求全部必需工具加至少一个替代工具成功。采集证据不等于完整领域覆盖，其他质量门禁失败仍然有效；这两个参数都不授予工具访问权限。
+
+### `parallel` 与 `join`
+
+用于并行分支，然后汇合。
+
+```yaml
+- name: split
+  node_type: parallel
+  next: [research, audit]
+- name: research
+  agent: planner
+  skill: execution-plan
+  next: [join]
+- name: audit
+  agent: auditor
+  skill: code-audit
+  next: [join]
+- name: join
+  node_type: join
+  params:
+    wait_for: research,audit
+  next: [synthesize]
+```
+
+常用参数：
+
+- `parallel.params.concurrent: true`：只在安全分支形状下启用真正并发。
+- `join.params.wait_for`：等待哪些分支，多个用逗号分隔。
+
+### `for_each`
+
+对列表里的每个元素执行一次 body 节点。
+
+```yaml
+- name: each-target
+  node_type: for_each
+  params:
+    items_ref: stages.collect.outputs.targets
+    stage: review-one
+  next: [summarize]
+- name: review-one
+  agent: auditor
+  skill: code-audit
+  outputs:
+    finding: result.output
+```
+
+常用参数：
+
+- `items`：逗号/换行文本或 JSON 数组。
+- `items_ref` / `ref`：引用上游列表。
+- `stage` / `body`：要重复执行的节点。
+
+body 节点会收到 `iteration.item`、`iteration.index` 等迭代变量。
+
+### `loop`
+
+有上限的循环改进。必须设置最大次数。
+
+```yaml
+- name: improve-loop
+  node_type: loop
+  params:
+    stage: revise
+    until: contains(previous.raw_output, "ready")
+    max_iterations: "3"
+  next: [handoff]
+- name: revise
+  agent: fixer
+  skill: code-writing
+  approval: true
+```
+
+常用参数：
+
+- `stage` / `body`：循环体节点。
+- `until`：每轮结束后判断的表达式。
+- `max_iterations`：硬上限。
+
+### `sub_workflow`
+
+调用另一个工作流作为子流程。
+
+```yaml
+- name: binary-subflow
+  node_type: sub_workflow
+  params:
+    workflow: binary-triage
+    request: stages.collect.outputs.target
+  outputs:
+    sub_run_id: result.sub_run_id
+    summary: result.summary
+  next: [handoff]
+```
+
+常用参数：
+
+- `workflow`：内置或自定义 workflow 名称。
+- `request`：传给子工作流的文本或引用。
+
+如果子工作流暂停，父工作流也会暂停，直到子工作流恢复。
+
+### `checkpoint`
+
+人工检查点，不调用模型。
+
+```yaml
+- name: approve-release
+  node_type: checkpoint
+  params:
+    prompt: Approve release execution?
+  next: [release]
+```
+
+常用参数：
+
+- `prompt` / `message` / `reason`：展示给操作员的审批说明。
+
+## 完整串联示例
+
+这个工作流会收集目标 URL，抓取网页资产，审计风险，根据风险门禁分支，然后生成报告：
+
+```yaml
+name: web-risk-review
+description: Collect a URL, inspect web assets, audit findings, and route by risk.
+stages:
+  - name: collect
+    node_type: input_gate
+    params:
+      manual: true
+      fields: target:url:Target URL:required,scope:text:Scope:required
+      strict: true
+    next: [fetch]
+
+  - name: fetch
+    node_type: skill
+    agent: web-security-researcher
+    skill: web-vulnerability-research
+    input:
+      target_url: stages.collect.outputs.target
+      scope: stages.collect.outputs.scope
+    outputs:
+      evidence: result.output
+      summary: result.summary
+    artifacts:
+      - name: collected-assets
+        kind: evidence
+        title: Collected web assets
+        ref: result.output
+    next: [audit]
+
+  - name: audit
+    node_type: skill
+    agent: security-researcher
+    skill: vulnerability-research
+    input:
+      evidence: stages.fetch.outputs.evidence
+    outputs:
+      findings: result.findings
+      report: result.output
+    acceptance_criteria:
+      - name: has-scope
+        ref: result.output
+        contains: scope
+    next: [risk-gate]
+
+  - name: risk-gate
+    node_type: policy_guard
+    params:
+      rule: risk_at_least
+      ref: stages.audit.outputs.findings
+      minimum: medium
+    routes:
+      allow: verify
+      deny: clean-report
+
+  - name: verify
+    node_type: agent
+    agent: auditor
+    skill: code-audit
+    input:
+      findings: stages.audit.outputs.findings
+    approval: true
+    outputs:
+      verification: result.verification
+    next: [handoff]
+
+  - name: clean-report
+    node_type: agent
+    agent: documentation-specialist
+    skill: code-writing
+    input:
+      report: stages.audit.outputs.report
+    outputs:
+      report: result.output
+    next: [handoff]
+
+  - name: handoff
+    node_type: quality_gate
+    input:
+      audit_report: stages.audit.outputs.report
+      verification: stages.verify.outputs.verification
+    routes:
+      pass: end
+      fail: clean-report
+
+  - name: end
+    node_type: end
+```
+
+## 内置多领域模板
+
+`multi-domain-intake-router` 是推荐的新手入口模板。它会先收集结构化需求，再由强模型规划节点把请求拆成有边界的领域切片，只激活被选中的领域 worker 并行执行，然后动态 join 这些分支，把 compact report 和 artifact 引用交给综合、审计、质量门禁和最终交接节点。当前可选分支覆盖：
+
+- 软件研发：`software-task-team`
+- Web 安全：`web-research-team`
+- 安全研究：`audit-security-team`
+- 二进制分析：`binary-triage-team`
+- 文档：`documentation-team`
+- 运维：`operations-runbook-team`
+- 客服：`customer-support-team`
+- 框架二开：`framework-extension-team`
+- 通用兜底：`general-worker`
+
+任务页面会突出需求录入、选中的领域、质量状态和最终交接；`active_branches_ref`、`wait_for_ref`、branch contracts、模型路由、上下文预算、artifact refs 和 `team_template_ref` 等细节会在对应任务或工作流详情中按需展开。这样不会固定运行所有团队，也能保留拆解、审计和并行执行能力。
+
+`complex-project-delivery` 是复杂实现任务的推荐模板。它会生成一次有边界的交付计划并通过检查点等待用户确认，确认后执行精确修改，并行运行测试、构建和静态检查，再由独立审计节点核对需求、Diff 和工具证据。质量门不接受模型自述作为强证据，失败会进入恢复路径。各阶段通过 `context.max_tokens`、`context.prompt_max_tokens`、摘要和产物引用控制上下文。边界清晰但仍需要完整交付闭环的任务，可以优先使用 `plan-implement-audit`。
+
+复杂工程任务建议采用“质量优先的省 token”模式：强模型先拆成有归属边界的小任务，worker 阶段使用 `worker_contract: engineering_v1` 产出稳定 JSON 字段（`summary`、`changed_files`、`evidence`、`verification`、`blockers`、`next_actions`），并把完整报告保存为 artifact；汇总和审计阶段只消费摘要、变更文件、验证结果、阻塞项和 artifact 引用。任务页面默认突出模板、资源、质量状态和最终结果，模型路由、上下文引用、prompt 预算、输出映射、验收条件和运行诊断在相关任务或工作流详情中按需展开。
+
+工作流模板列表会返回可视化选择器需要的构成信息：`node_types`、`agents`、`skills`、`tools`、`team_templates`、`policy_rules`、`has_control_flow`、`has_data_flow`、`has_approval` 和 `has_quality_gate`。Studio 会把这些字段展示成“节点构成、引用资源、能力标签”，让用户在应用模板前就知道它会创建什么、依赖哪些资源、是否包含分支、数据传递、审批或质量门禁。
+
+所有内置模板都按“可交付蓝图”维护，而不是松散示例。内置 Workflow Template 必须能通过图校验，包含明确结束节点，产出报告或证据产物，声明验收标准，经过 `quality_gate` 或 `policy_guard`，并最终收口到面向用户的报告、交接、发布摘要或可落地的工作流草案。这样简单起步模板也能作为复杂任务的稳定基础。
+
+## 执行准备契约
+
+`stage.execution` 用来声明一个节点到底是在做规划、干跑、人工交接，还是准备触发真实 live 动作。它和 `approval: true` 是两层控制：`approval` 负责在阶段开始前暂停给人确认，`execution` 负责记录目标边界、风险等级和 live 前必须具备的授权证据。
+
+常用字段：
+
+- `mode`: `planning`、`dry_run`、`manual`、`disabled` 或 `live`。
+- `risk_level`: `low`、`medium`、`high`、`critical`。
+- `boundary`: 给操作者看的边界说明，例如 `workspace-draft`、`lab`、`production`。
+- `requires_approval`、`requires_authorized_scope`、`requires_rollback`、`requires_credential_ref`、`requires_allowlist`: live 前需要满足的准备项。
+- `allow_live_tools`: live 阶段允许真正调用的工具白名单。
+- `required_params`: 额外要求存在的阶段参数。
+
+示例：
+
+```yaml
+- name: apply-change
+  node_type: tool
+  agent: fixer
+  skill: code-writing
+  tool: network_ops/apply_config
+  approval: true
+  execution:
+    mode: live
+    risk_level: high
+    boundary: production-router-change
+    requires_authorized_scope: true
+    requires_rollback: true
+    requires_credential_ref: true
+    requires_allowlist: true
+    allow_live_tools: [network_ops/apply_config]
+    required_params: [change_ticket]
+  params:
+    authorized_scope: router-edge-01
+    rollback_plan: artifacts://rollback-plan
+    credential_ref: vault://network/prod/operator
+    allowed_devices: router-edge-01
+    change_ticket: CHG-12345
+```
+
+当 `mode: live` 缺少审批、授权范围、回滚、凭据引用、allowlist、必填参数或 live 工具白名单时，GoFlow 会在模型或工具执行前阻断该节点。阻断结果会持久化 `contract_check=execution_readiness`、`contract_failed=true`、`execution.mode`、`execution.ready=false`、`execution.missing`、`execution.risk_level`、`execution.boundary` 和 `source_ref`，运行流也会发出 `execution_readiness_blocked` 事件。Workflow Studio 会在图节点、悬浮详情、选中节点诊断和运行日志里显示这些信息，方便定位到底是哪一个节点、哪一个准备项没满足。
+
+`planning`、`dry_run`、`manual` 和 `disabled` 不会触发 live 准备阻断，但仍会输出执行模式、风险和边界元数据。新工作流建议优先使用结构化的 `stage.execution`，旧的 `params.execution_mode`、`params.authorized_scope`、`params.rollback_plan`、`params.credential_ref`、`params.allowed_hosts`、`params.allowed_commands`、`params.allow_live_tools` 等兼容参数仍会被读取。
+
+受控 RESTCONF/API live connector 示例：
+
+```yaml
+- name: apply-restconf-change
+  node_type: tool
+  agent: operations-specialist
+  skill: execution-plan
+  tool: network_tools/device_restconf_live_apply
+  approval: true
+  execution:
+    mode: live
+    risk_level: high
+    boundary: production-restconf-change
+    requires_approval: true
+    requires_authorized_scope: true
+    requires_rollback: true
+    requires_credential_ref: true
+    requires_allowlist: true
+    allow_live_tools: [network_tools/device_restconf_live_apply]
+    required_params: [approval_ref, change_ticket, allowed_hosts, allowed_paths]
+  params:
+    host: router-edge-01.example.com
+    endpoint: https://router-edge-01.example.com/restconf/data/native/interface
+    method: PATCH
+    credential_ref: env:GOFLOW_RESTCONF_TOKEN
+    approval_ref: approval-123
+    change_ticket: CHG-12345
+    authorized_scope: true
+    allowed_hosts: [router-edge-01.example.com]
+    allowed_methods: [PATCH]
+    allowed_paths: [/restconf/data/native/*]
+    payload:
+      interface:
+        description: approved maintenance update
+    rollback_plan:
+      - restore previous interface description from backup artifact
+    dry_run_confirmed: true
+    change_approved: true
+```
+
+这个工具仍然需要 MCP server 环境里显式设置 `GOFLOW_NETWORK_TOOLS_ENABLE_LIVE=1` 才会发送 HTTPS 请求；否则只返回 blocked audit payload，不会假装成功。凭据只通过 `env:` / `env://` 引用在 MCP server 进程内读取，工具结果不会返回 secret。
+
+## Durable Run
+
+浏览器运行 workflow 时应使用后台 durable run：
+
+- 启动接口立即返回 `run_id`。
+- 刷新页面或切换板块不会取消 run。
+- 取消只能通过显式 cancel。
+- 客户端可通过 SSE 重新连接。
+- retry、input、approve、approve-tools、continue_output、approve_budget 和 escalate_model 写入同一个 run 快照。
+
+运行恢复动作会区分不同阻塞原因：`paused_need_more_budget` 暴露 `continue_output`，硬预算暂停暴露 `approve_budget`，带模型升级配置的必需契约失败暴露 `escalate_model`，接口是 `POST /api/workflow-runs/{id}/escalate-model` 和 `/escalate-model/stream`。Studio 会在运行操作、选中节点诊断、图节点标记和时间线事件里显示同一条恢复路径，方便定位是哪一个节点、哪一个契约或预算导致暂停。
+
+## 审批边界
+
+Stage approval 在阶段开始前暂停：
+
+```yaml
+- name: implement
+  agent: fixer
+  skill: code-writing
+  approval: true
+```
+
+Tool approval 来自 Agent profile 和 tool policy。一个阶段开始后，工具调用仍可能再次触发审批。
+
+## 编写建议
+
+1. 每个阶段只负责一个清晰角色。
+2. 写文件或执行命令的阶段加 `approval: true`。
+3. `next_strategy: select` 只用于真实分支。
+4. 显式声明 `next`，避免无限扩散。
+5. 用 `outputs` 和 `input` 传递关键结果。
+6. 为长任务加入 checkpoint、quality gate 和 retry。
+7. 先用小任务试跑，再放到复杂任务中。
+
+## 循环节点与阶段共用会话
+
+`for_each` 节点重复执行一个 body 阶段，适合逐来源抓取、逐文件检查等隔离场景：
+
+```yaml
+- name: per-source
+  node_type: for_each
+  params:
+    stage: fetch-source
+    items_ref: stages.catalog.outputs.urls
+```
+
+每次迭代使用独立上下文，父阶段只接收 body 阶段的结构化输出。
+
+阶段参数 `share_conversation: "true"` 可让该阶段复用上一阶段的转录（默认关闭）。
+实测在现有阶段结构下会增加输入，仅在明确需要连续上下文时启用。

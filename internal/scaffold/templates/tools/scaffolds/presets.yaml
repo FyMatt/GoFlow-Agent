@@ -1,0 +1,36 @@
+presets:
+  - name: python-local
+    default_name: workspace-helper
+    title: Python MCP 工具
+    description: 创建本地 Python stdio MCP 服务，包含工作区路径校验和文件读写示例。
+    category: local
+    tags: [python, workspace, starter]
+    language: python
+    isolation: auto
+    risk_level: medium
+    requires_restart: true
+    capabilities:
+      - stdio JSON-RPC
+      - 文本读取示例
+      - 文本写入示例
+      - 工作区文件访问
+    safety_guards:
+      - 严格 JSON Schema
+      - GOFLOW_WORKSPACE_ROOT 路径约束
+      - 拒绝路径穿越
+      - 拒绝符号链接越界
+      - 拒绝写入工作区根目录
+      - 限制 UTF-8 文本读取大小
+      - 工具级错误响应
+      - MCP 命令白名单
+    generated_paths:
+      - mcp_servers/<name>.py
+      - configs/mcp_servers/<name>.yaml
+    activation_steps:
+      - 审查生成的代码和工具说明
+      - 为智能体配置最小 allowed_tools
+      - 重启 GoFlow 以加载新的 MCP 连接
+      - 在资源页确认工具已上线
+    recommendations:
+      - 仅向需要该工具的智能体开放权限
+      - 启用写入能力前审查生成代码

@@ -1,0 +1,156 @@
+name: release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  RELEASE_VERSION: ${{ startsWith(github.ref, 'refs/tags/') && github.ref_name || 'dev' }}
+
+jobs:
+  preflight:
+    name: Windows release preflight
+    runs-on: windows-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Install govulncheck
+        run: go install golang.org/x/vuln/cmd/govulncheck@v1.6.0
+      - name: Scan reachable Go vulnerabilities
+        run: govulncheck ./...
+      - name: Shared preflight
+        run: python scripts/run_preflight.py --browser-required
+
+  archives:
+    name: Windows binary archive
+    runs-on: windows-latest
+    needs: preflight
+    permissions:
+      contents: read
+      id-token: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Build Windows release archive
+        run: python scripts/build_release_assets.py --clean --version "$env:RELEASE_VERSION" --target windows/amd64
+      - name: Generate SBOM and license inventory
+        run: python scripts/generate_sbom.py --version "$env:RELEASE_VERSION" --output dist/SBOM.spdx.json --license-output dist/THIRD_PARTY_LICENSES.json --update-checksums
+      - name: Install Cosign
+        uses: sigstore/cosign-installer@v3
+      - name: Sign release artifacts
+        run: python scripts/sign_release_artifacts.py --dist dist --verify-github-identity
+      - name: Validate Windows release artifacts
+        run: python scripts/validate_release_archives.py --dist dist --version "$env:RELEASE_VERSION" --target windows/amd64 --require-sbom --require-license-report --require-signatures
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: goflow-agent-archives
+          path: dist/*
+
+  windows-lifecycle:
+    name: Windows final archive lifecycle
+    runs-on: windows-latest
+    needs: archives
+    env:
+      GOFLOW_ACCEPTANCE_OUTPUT: .artifacts/windows-native-acceptance/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Download signed release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: goflow-agent-archives
+          path: dist
+      - name: Validate Windows final archive lifecycle
+        run: python scripts/windows_native_acceptance.py --archive "dist/goflow-agent_${env:RELEASE_VERSION}_windows_amd64.zip" --checksums dist/SHA256SUMS
+      - name: Upload lifecycle evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: windows-native-acceptance
+          path: .artifacts/windows-native-acceptance/${{ github.run_id }}-${{ github.run_attempt }}/
+
+  real-vision-engineering:
+    name: Real vision screenshot engineering task
+    runs-on:
+      - self-hosted
+      - windows
+      - x64
+      - goflow-vision-acceptance
+    needs: archives
+    timeout-minutes: 45
+    env:
+      GOFLOW_ACCEPTANCE_OUTPUT: .artifacts/real-vision-acceptance/${{ github.run_id }}-${{ github.run_attempt }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - name: Setup Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+      - name: Run real Provider vision hard gate
+        env:
+          GOFLOW_VISION_SECRET_FILE: ${{ vars.GOFLOW_VISION_SECRET_FILE }}
+          GOFLOW_VISION_PROVIDER_MODULE: ${{ vars.GOFLOW_VISION_PROVIDER_MODULE }}
+        run: python scripts/real_vision_acceptance.py --require-external-inputs
+      - name: Validate real vision evidence report
+        run: python scripts/validate_external_acceptance.py vision "${{ env.GOFLOW_ACCEPTANCE_OUTPUT }}/report.json"
+      - name: Upload vision evidence
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-vision-acceptance
+          path: .artifacts/real-vision-acceptance/${{ github.run_id }}-${{ github.run_attempt }}/
+
+  publish:
+    name: publish release
+    runs-on: windows-latest
+    needs:
+      - archives
+      - windows-lifecycle
+      - real-vision-engineering
+    if: startsWith(github.ref, 'refs/tags/')
+    permissions:
+      contents: write
+    steps:
+      - name: Download verified release archive
+        uses: actions/download-artifact@v4
+        with:
+          name: goflow-agent-archives
+          path: dist
+      - name: Publish GitHub release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*

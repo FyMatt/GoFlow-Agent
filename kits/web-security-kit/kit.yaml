@@ -1,0 +1,137 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: web-security-kit
+title: Web 安全研究资源包
+description: 收集目标页面和前端资源，审查 Web 攻击面，判定风险并输出防御性报告。
+category: security
+tags:
+    - web
+    - security
+    - client-assets
+    - evidence
+    - red-team
+agents:
+    - web-security-researcher
+    - security-researcher
+    - planner
+    - auditor
+providers:
+    - primary
+skills:
+    - execution-plan
+    - web-vulnerability-research
+    - vulnerability-research
+    - authorized-red-team-validation
+    - code-audit
+tools:
+    - web_tools/web_search
+    - web_tools/fetch_url
+    - web_tools/fetch_page_assets
+    - web_tools/browser_snapshot
+    - web_tools/browser_probe_points
+    - file_tools/read_file
+    - file_tools/search_files
+workflows:
+    - skill-chain
+workflow_templates:
+    - web-research-risk
+    - security-audit-evidence-gate
+    - authorized-red-team-validation
+team_templates:
+    - web-research-team
+    - audit-security-team
+policy_rules:
+    - contains
+    - risk_at_least
+    - ref_truthy
+    - expression
+examples:
+    - title: 审查目标网址
+      description: 获取页面源码和引用的前端资源，基于证据审查客户端风险。
+      request: 在已授权范围内审查 https://example.com 的客户端安全风险。
+      workflow: web-research-risk
+      agent: web-security-researcher
+    - title: 证据门禁 Web 报告
+      description: 报告前必须具备授权范围、已收集资源、风险发现和操作者最终复核。
+      request: 为这个已授权目标生成有证据支撑的 Web 安全报告。
+      workflow: security-audit-evidence-gate
+      agent: security-researcher
+vertical_pack:
+    domain: web-security
+    maturity: production-ready
+    summary: 收集已授权的网页源码和浏览器渲染证据，判定客户端风险，并通过审批门禁输出防御性发现。
+    supported_tasks:
+        - authorized web target intake
+        - page and asset collection
+        - browser DOM and form evidence collection
+        - browser probe surface enumeration and approved GET canary validation
+        - client-side XSS and security signal review
+        - authorized red-team attack-path validation
+        - non-destructive PoC and canary verification planning
+        - evidence-backed remediation report
+    required_inputs:
+        - target URL
+        - authorized scope confirmation
+        - allowed hosts
+        - desired evidence depth
+        - active verification approval status
+        - allowed actions and payload constraints for red-team validation
+    tool_boundaries:
+        - web_tools/browser_snapshot requires authorized_scope=true and allowed_hosts.
+        - web_tools/browser_probe_points requires authorized_scope=true and allowed_hosts, and only runs active GET canary probes when active_probe_approved=true.
+        - Browser automation returns compact DOM, form, link, script, signal, screenshot hash, and path summaries instead of full raw evidence by default.
+        - Active XSS or SQLi-style probing is not a default passive collection step and must be approval-gated, non-destructive, rate-limited, and scoped.
+        - Authorized red-team validation uses non-destructive canary evidence and stops when an action exceeds scope.
+    safety_gates:
+        - Reject browser collection without explicit authorized scope.
+        - Require host allowlist before browser automation.
+        - Route active probing requests through operator approval and evidence capture.
+        - Require written authorization, allowed actions, rate limits, and exclusions before offensive validation.
+    quality_gates:
+        - Requires target scope.
+        - Requires collected source or browser evidence.
+        - Requires confirmed vs hypothetical finding separation.
+        - Requires remediation and residual uncertainty.
+    evidence_artifacts:
+        - target scope
+        - page asset inventory
+        - browser snapshot summary
+        - browser probe-point summary
+        - security signal list
+        - risk report
+        - red-team validation plan
+        - red-team validation evidence
+        - blue-team handoff
+    presentation_guidance:
+        - Show target URL, allowed hosts, authorization checkbox, evidence status, risk level, and final report.
+        - Hide payload and browser runtime details unless approval is needed.
+        - Show whether red-team validation is approved, blocked, or complete.
+        - Show tool allowlists, browser evidence refs, context budgets, approval gates, route conditions, and raw workflow graph.
+        - Show authorization boundary, allowed actions, blocked actions, canary evidence, and red/blue handoff refs.
+    token_strategy:
+        - Keep browser outputs compact with DOM hashes and previews.
+        - Store screenshots as artifact paths and hashes instead of injecting image bytes.
+        - Pass evidence summaries and artifact refs to audit/report stages.
+    model_routes:
+        strong:
+            - scope and risk arbitration
+            - active verification decision
+            - red-team validation boundary review
+            - final remediation synthesis
+        worker:
+            - asset collection
+            - browser snapshot collection
+            - probe surface enumeration
+            - authorized canary validation
+            - client-side pattern review
+        verifier:
+            - evidence gate review
+            - finding confidence audit
+metadata:
+    preset: web-security
+    recommended_agent: web-security-researcher
+    recommended_workflow: web-research-risk
+    recommended_team: web-research-team
+    primary_skill: web-vulnerability-research
+    scaffold_preset: web-security

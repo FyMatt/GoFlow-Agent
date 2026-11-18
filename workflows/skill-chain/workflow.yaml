@@ -1,0 +1,134 @@
+name: skill-chain
+description: 将请求交给最合适的专业技能路径，再汇总为经过审阅的最终结果。
+stages:
+    - name: start
+      node_type: start
+      agent: ""
+      skill: ""
+      next:
+        - route-request
+      position:
+        x: 180
+        "y": 779
+    - name: route-request
+      node_type: agent
+      agent: planner
+      skill: execution-plan
+      params:
+        require_workspace_mutation: "false"
+        docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+        output: 'Select the most relevant next stage by ending with Next skill: <stage-name>.'
+        routing_targets: implementation-path for code changes, audit-path for code review, vulnerability-path for general security, web-security-path for client/web targets, binary-analysis-path for binaries or reverse engineering.
+      next_strategy: select
+      next:
+        - implementation-path
+        - audit-path
+        - vulnerability-path
+        - web-security-path
+        - binary-analysis-path
+      position:
+        x: 732
+        "y": 761
+    - name: implementation-path
+      node_type: agent
+      agent: fixer
+      skill: code-writing
+      params:
+        require_workspace_mutation: "false"
+        use_change_slice_scheduler: "false"
+        approved_plan_scope: "true"
+        guardrails: Use workspace-safe edits and preserve unrelated work.
+        output: Implement the requested change, keep scope tight, and summarize files changed plus verification.
+      approval: true
+      next:
+        - consolidate
+      position:
+        x: 1344
+        "y": 209
+    - name: audit-path
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        require_workspace_mutation: "false"
+        evidence: Point to concrete files, behavior, and missing tests.
+        output: Review code, configuration, tests, and operational risk with severity-ordered findings.
+      next:
+        - consolidate
+      position:
+        x: 1344
+        "y": 485
+    - name: vulnerability-path
+      node_type: skill
+      agent: auditor
+      skill: vulnerability-research
+      params:
+        require_workspace_mutation: "false"
+        evidence: Separate confirmed behavior from inference.
+        output: Investigate attack surface, exploitability, mitigations, and verification steps.
+      next:
+        - consolidate
+      position:
+        x: 1344
+        "y": 761
+    - name: web-security-path
+      node_type: tool
+      agent: auditor
+      skill: web-vulnerability-research
+      tool: web_tools/fetch_page_assets
+      params:
+        require_workspace_mutation: "false"
+        evidence: List fetched targets or note when network access was not used.
+        output: Inspect web-facing behavior, client assets, exposed routes, and browser-side security signals.
+      next:
+        - consolidate
+      position:
+        x: 1344
+        "y": 1037
+    - name: binary-analysis-path
+      node_type: skill
+      agent: auditor
+      skill: reverse-engineering
+      params:
+        require_workspace_mutation: "false"
+        evidence: Keep reverse-engineering observations factual and reproducible.
+        output: Summarize binary format, interesting strings/symbols, control flow, and follow-up targets.
+      next:
+        - binary-risk-review
+      position:
+        x: 1344
+        "y": 1313
+    - name: binary-risk-review
+      node_type: skill
+      agent: auditor
+      skill: binary-vulnerability-research
+      params:
+        require_workspace_mutation: "false"
+        evidence: Mark uncertainty explicitly.
+        output: Assess parser, memory-safety, privilege, protocol, and exploitability risks from the binary analysis.
+      next:
+        - consolidate
+      position:
+        x: 2030
+        "y": 1288
+    - name: consolidate
+      node_type: skill
+      agent: auditor
+      skill: code-audit
+      params:
+        require_workspace_mutation: "false"
+        tools: file_tools/read_file,file_tools/read_file_range,web_tools/web_search,web_tools/fetch_url
+        final_shape: Use completed stage evidence and successful write-tool relative_path values. Do not invent unperformed checks, modified files, persistent processes, or live URLs. If model claims conflict with actual Diff or command evidence, report the evidence-backed result and the conflict.
+        output: Merge prior stage results into a complete final answer with actual changed files, verification, blockers, residual risk, and next actions. A test client response is startup-level validation, not proof that a listening service remains available.
+      next:
+        - output
+      position:
+        x: 2568
+        "y": 761
+    - name: output
+      node_type: end
+      agent: ""
+      skill: ""
+      position:
+        x: 3180
+        "y": 779

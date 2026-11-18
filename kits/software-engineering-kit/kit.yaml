@@ -1,0 +1,143 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: software-engineering-kit
+title: 软件工程资源包
+description: 规划、实现、验证、审查并交付范围明确的软件改动。
+category: software
+routing:
+    version: 1
+    match_terms: [软件开发, 编写代码, 开发脚本, 修复代码, 修复 bug, 修复bug, 改代码, 实现功能, 补测试, 单元测试, 重构, 美化页面, 页面样式, 美化, 样式, 布局, 动画, 页面, 前端, 博客, 交互, 响应式, 改样式, 调整样式, software development, implement feature, write script, fix bug, restyle, layout, frontend]
+    entry_workflow: plan-implement-audit
+    required_tools: [file_tools/read_file, file_tools/apply_patch, command_tools/run_command]
+tags:
+    - coding
+    - review
+    - planning
+agents:
+    - chat
+    - planner
+    - fixer
+    - auditor
+    - software-engineer
+    - quality-engineer
+providers:
+    - primary
+skills:
+    - execution-plan
+    - code-writing
+    - code-audit
+tools:
+    - file_tools/read_file
+    - file_tools/search_files
+    - file_tools/write_file
+    - file_tools/read_file_range
+    - file_tools/apply_patch
+    - command_tools/run_command
+    - command_tools/start_process
+    - command_tools/process_status
+    - command_tools/stop_process
+    - web_tools/web_search
+    - web_tools/fetch_url
+    - web_tools/research_snapshot
+    - web_tools/browser_snapshot
+workflows:
+    - plan-fix-audit
+    - plan-implement-audit
+workflow_templates:
+    - complex-project-delivery
+    - plan-fix-audit
+    - software-quality-gate
+    - software-team-review-gate
+    - parallel-research-review
+team_templates:
+    - software-task-team
+policy_rules:
+    - expression
+    - team_approval_gate
+examples:
+    - title: 改进现有项目
+      description: 在审批约束下规划、修改并审查代码改动。
+      request: 优化这个项目，并补充聚焦测试。
+      workflow: plan-fix-audit
+      agent: software-engineer
+    - title: 通过质量门禁的改动
+      description: 产出计划、实现、验证证据、审计结果和最终交付说明。
+      request: 实现所需功能，并在最终答复前通过质量门禁。
+      workflow: software-quality-gate
+      agent: software-engineer
+vertical_pack:
+    domain: software-engineering
+    maturity: production-ready
+    summary: 使用工作区文件工具、受限上下文、审批感知写入、产物优先证据和质量门禁，完成软件改动的规划、拆解、实现、验证、审计与交付。
+    supported_tasks:
+        - scoped implementation
+        - bug fixing
+        - refactoring
+        - test and verification planning
+        - parallel bounded worker delivery
+        - code review handoff
+    required_inputs:
+        - user requirement
+        - target files or project area
+        - acceptance criteria
+        - verification command preference
+        - risk tolerance for writes
+        - confirmed workspace boundary
+    tool_boundaries:
+        - Read tools are used for discovery before edits.
+        - Write tools require fix-stage scope and approval policy.
+        - Exec verification should stay focused and report exact commands.
+        - File tools stay inside the confirmed workspace and reject outside-workspace paths.
+    safety_gates:
+        - Request approval before broad rewrites or risky writes.
+        - Keep changes inside the confirmed workspace.
+        - Preserve verification failures and unresolved risks for review.
+        - Use worker ownership boundaries before parallel writes.
+    quality_gates:
+        - Requires implementation summary.
+        - Requires verification evidence or a stated blocker.
+        - Requires audit findings or clean review rationale.
+        - Requires artifact refs or compact evidence for worker outputs.
+    evidence_artifacts:
+        - implementation plan
+        - changed file summary
+        - verification output
+        - audit report
+        - worker artifact refs
+        - final handoff
+    presentation_guidance:
+        - Show task, target area, approval prompts, verification result, and final handoff.
+        - Hide raw context budgets and route internals by default.
+        - Show workflow graph, stage models, allowed tools, context budgets, artifact refs, and retry state.
+    token_strategy:
+        - Use file summaries and hashes before full file reads.
+        - Pass compact stage outputs and artifact refs between stages.
+        - Route complex changes through complex-project-delivery for one approval and parallel test, build, and lint verification.
+        - Use artifact refs, changed-file summaries, and verification summaries instead of copying worker transcripts.
+    model_routes:
+        strong:
+            - task decomposition
+            - architecture tradeoff review
+            - conflict resolution
+            - final audit synthesis
+        worker:
+            - bounded code edits
+            - focused tests
+            - local refactors
+        verifier:
+            - regression review
+            - quality gate evaluation
+acceptance:
+  sample_request: 在这个 Go 仓库中完成配置 v2 迁移与并发安全 TTL 缓存，补充公开测试和升级说明。
+  verify_commands: [go test ./... -count=2, go vet ./..., gofmt -l .]
+  deliverables: [docs/upgrade.md]
+  min_quality_score: 80
+
+metadata:
+    preset: software-engineering
+    recommended_agent: software-engineer
+    recommended_workflow: plan-fix-audit
+    scaffold_preset: software-engineering
+    recommended_team: software-task-team
+    primary_skill: code-writing

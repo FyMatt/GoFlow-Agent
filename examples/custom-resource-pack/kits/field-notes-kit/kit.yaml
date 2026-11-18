@@ -1,0 +1,28 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: field-notes-kit
+title: 自定义田野笔记资源包
+description: 演示未知领域通过资源完成发现、分流、文件处理与验证，不修改 GoFlow 主程序。
+category: field-notes
+agents: [field-notes-reporter]
+providers: [primary]
+skills: [field-notes-review]
+tools: [file_tools/read_file, file_tools/write_file]
+workflows: [field-notes-review]
+routing:
+  version: 1
+  match_terms: [田野笔记整理, field notes review]
+  entry_workflow: field-notes-review
+  required_tools: [file_tools/read_file, file_tools/write_file]
+vertical_pack:
+  domain: field-notes
+  maturity: guided
+  summary: 领域名称只存在于资源中，真实文件工具负责输入与交付，权限不超过用户工作区授权。
+  supported_tasks: [source-backed field note classification]
+  required_inputs: [explicit source path, explicit report path]
+  evidence_artifacts: [source reference, actual output file, readback result]
+  quality_gates: [source unchanged, no invented facts, successful file write and readback]
+metadata:
+  recommended_workflow: field-notes-review
+  acceptance_status: example_not_production_certification

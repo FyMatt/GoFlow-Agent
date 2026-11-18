@@ -1,0 +1,103 @@
+kind: goflow.team_template_resource
+version: 2
+min_supported_version: 1
+name: binary-triage-team
+title: 二进制风险初筛团队
+category: security
+description: 面向二进制静态初筛、逆向分析记录和漏洞复核的安全协作模板。
+tags: [binary, reverse, triage]
+recommended_workflow: binary-triage
+recommended_entry_agent: auditor
+role_templates:
+  - name: triage-lead
+    label: 初筛负责人
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - 明确二进制分析范围
+      - 优先选择安全的静态检查
+      - 统一产物命名
+    produces: [triage_plan]
+  - name: reverse-analyst
+    label: 逆向分析者
+    agent: auditor
+    skill: reverse-engineering
+    responsibilities:
+      - 汇总二进制元数据
+      - 提取格式、区段、熵、符号、字符串、导入导出和偏移证据
+      - 在不执行样本的前提下标记待审查代码区域
+    tools: [python_notes/binary_file_info, python_notes/binary_format_summary, python_notes/binary_entropy_map, python_notes/binary_symbol_hints, python_notes/binary_strings, python_notes/hex_preview, python_notes/binary_extract_window]
+    consumes: [triage_plan]
+    produces: [reverse_notes, evidence]
+  - name: vulnerability-analyst
+    label: 漏洞分析者
+    agent: auditor
+    skill: binary-vulnerability-research
+    responsibilities:
+      - 按漏洞类别复核证据
+      - 谨慎判断可利用性
+      - 建议后续静态检查，并阻止未经沙箱批准的动态分析
+    consumes: [reverse_notes, evidence]
+    produces: [findings, next_checks]
+  - name: reporter
+    label: 安全报告者
+    agent: planner
+    skill: execution-plan
+    responsibilities:
+      - 输出防御性安全报告
+      - 明确保留不确定性
+      - 列出复现前置条件
+      - 记录危险动作阻塞和产物引用
+    consumes: [findings, next_checks]
+    produces: [final_report]
+handoffs:
+  - from: triage-lead
+    to: reverse-analyst
+    kind: triage_plan
+    subject: 静态分析计划
+    artifacts: [triage_plan]
+    blackboard: [request, plan]
+  - from: reverse-analyst
+    to: vulnerability-analyst
+    kind: evidence_handoff
+    subject: 逆向分析记录与证据
+    artifacts: [reverse_notes, evidence]
+    blackboard: [evidence, finding]
+  - from: vulnerability-analyst
+    to: reporter
+    kind: report_handoff
+    subject: 安全发现与后续检查
+    artifacts: [findings, next_checks]
+    blackboard: [finding, decision]
+blackboard_templates:
+  - kind: request
+    title: 原始请求与约束
+    owner_role: triage-lead
+    status: open
+    tags: [scope]
+    description: 在角色交接中持续保留用户请求、授权范围和关键假设。
+  - kind: plan
+    title: 当前分析计划
+    owner_role: triage-lead
+    status: open
+    tags: [plan]
+    description: 当前可执行计划、阶段顺序和已知阻塞项。
+  - kind: evidence
+    title: 证据与观察
+    owner_role: triage-lead
+    status: open
+    tags: [evidence]
+    description: 工具观察、文件引用、静态分析输出和已收集产物。
+  - kind: decision
+    title: 决策与审批
+    owner_role: triage-lead
+    status: open
+    tags: [decision]
+    description: 智能体或操作者作出的决策，包括审批门禁结果。
+  - kind: finding
+    title: 发现与风险
+    owner_role: triage-lead
+    status: open
+    tags: [risk]
+    description: 漏洞信号、潜在影响、剩余风险和未解决问题。
+output_contract: [reverse_notes, findings, next_checks, final_report]

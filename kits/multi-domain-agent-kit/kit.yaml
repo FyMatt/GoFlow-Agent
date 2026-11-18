@@ -1,0 +1,227 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: multi-domain-agent-kit
+title: 多领域智能体起步资源包
+description: 将混合需求拆解为领域任务，仅并行执行所选分支，再汇总、审计并交付精简的多领域报告。
+category: starter
+tags:
+    - starter
+    - multi-domain
+    - workflow
+    - team
+    - quality
+agents:
+    - chat
+    - planner
+    - fixer
+    - auditor
+    - software-engineer
+    - security-researcher
+    - web-security-researcher
+    - binary-analyst
+    - documentation-specialist
+    - research-specialist
+    - source-verifier
+    - operations-specialist
+    - support-specialist
+    - framework-extension-architect
+providers:
+    - primary
+skills:
+    - execution-plan
+    - code-writing
+    - code-audit
+    - vulnerability-research
+    - web-vulnerability-research
+    - authorized-red-team-validation
+    - binary-vulnerability-research
+    - internet-research
+    - source-verification
+    - office-document-production
+    - reverse-engineering
+tools:
+    - file_tools/read_file
+    - file_tools/search_files
+    - file_tools/write_file
+    - web_tools/web_search
+    - web_tools/fetch_url
+    - web_tools/research_snapshot
+    - web_tools/compile_research_evidence
+    - web_tools/fetch_page_assets
+    - web_tools/browser_snapshot
+    - web_tools/browser_probe_points
+    - office_tools/office_capabilities
+    - office_tools/create_docx
+    - office_tools/create_xlsx
+    - office_tools/create_pptx
+    - office_tools/create_pdf
+    - office_tools/inspect_office_document
+    - office_tools/validate_office_document
+    - office_tools/replace_office_text
+    - office_tools/fill_office_template
+    - office_tools/export_office_pdf
+    - office_tools/render_office_preview
+    - network_tools/device_discovery_plan
+    - network_tools/device_command_plan
+    - network_tools/device_batch_command_plan
+    - network_tools/device_config_dry_run
+    - network_tools/device_restconf_live_apply
+    - python_notes/binary_file_info
+    - python_notes/binary_strings
+    - python_notes/hex_preview
+    - python_notes/binary_format_summary
+    - python_notes/binary_entropy_map
+    - python_notes/binary_symbol_hints
+    - python_notes/binary_extract_window
+    - python_notes/markdown_link_check
+    - python_notes/support_case_summary
+    - python_notes/redaction_check
+workflows:
+    - multi-domain-intake-router
+    - plan-fix-audit
+    - skill-chain
+routing:
+  version: 1
+  enabled: true
+  priority: -10
+  match_terms:
+    - 多领域
+    - 混合任务
+    - 分流
+    - 多个领域
+    - 综合任务
+  entry_workflow: multi-domain-intake-router
+  required_tools:
+    - file_tools/read_file
+workflow_templates:
+    - multi-domain-intake-router
+    - complex-project-delivery
+    - task-decomposition-plan
+    - plan-fix-audit
+    - software-quality-gate
+    - software-team-review-gate
+    - web-research-risk
+    - parallel-research-review
+    - security-audit-evidence-gate
+    - authorized-red-team-validation
+    - binary-triage
+    - docs-review-publish
+    - operations-runbook
+    - customer-support-triage
+    - agent-framework-extension
+team_templates:
+    - software-task-team
+    - audit-security-team
+    - web-research-team
+    - internet-research-team
+    - binary-triage-team
+    - documentation-team
+    - operations-runbook-team
+    - customer-support-team
+    - framework-extension-team
+policy_rules:
+    - expression
+    - contains
+    - risk_at_least
+    - ref_truthy
+    - team_approval_gate
+examples:
+    - title: 分流混合任务
+      description: 收集用户目标，拆解为边界明确的领域任务，并行执行所选分支并检查交付质量。
+      request: 分析这个项目需求，并将它分流到合适的工作流。
+      workflow: multi-domain-intake-router
+      agent: chat
+    - title: 创建新的垂直领域扩展
+      description: 使用平台团队设计可复用的智能体、Skill、工具和工作流资源包。
+      request: 为安全运维交接创建垂直领域智能体资源包。
+      workflow: agent-framework-extension
+      agent: framework-extension-architect
+vertical_pack:
+    domain: multi-domain
+    maturity: production-ready
+    summary: 通过结构化接收、分支选择契约、并行上限、分支工具白名单、成本归属、领域执行器、产物优先汇总、冲突检测、审计和质量门禁处理混合任务并交付整合风险报告。
+    supported_tasks:
+        - domain routing
+        - task intake
+        - task decomposition
+        - selected parallel domain execution
+        - branch-selection diagnostics
+        - max-parallel orchestration
+        - per-branch tool allowlist enforcement
+        - authorized red-team validation routing
+        - team handoff
+        - starter kit selection
+        - artifact handoff and conflict detection
+        - multi-domain report synthesis
+    required_inputs:
+        - primary domain or auto routing
+        - user goal
+        - target context
+        - desired output
+        - risk tolerance
+        - maximum parallel domains
+        - branch selection policy
+    tool_boundaries:
+        - Uses only selected domain worker tools and linked team template refs.
+        - Unselected domain workers do not run, reducing token and tool exposure.
+        - Each selected branch must carry branch-selection reason, per-branch tool allowlist, budget/cost attribution, and artifact handoff contract.
+        - Keeps decomposition, worker handoffs, join, audit, and synthesis summary-first.
+        - Network-device work is routed to operations tools with authorized scope, host allowlists, dry-run plans, and evidence refs.
+        - Offensive security work is routed to authorized red-team validation with written scope, allowlists, approvals, rate limits, and blocked-action reporting.
+    safety_gates:
+        - Route risky domains to approval-aware workflows.
+        - Require explicit authorization and scope for security, web, operations, and binary analysis work.
+        - Keep offensive validation non-destructive, scoped, and approval-gated.
+        - Block joins when selected worker artifacts are missing or cross-domain conflicts are unresolved.
+        - Preserve unresolved decisions for operator review.
+    quality_gates:
+        - Requires decomposition with selected active branches.
+        - Requires branch-selection reason, pruned branch list, max-parallel decision, and per-branch allowlist.
+        - Requires selected worker summaries or explicit blockers.
+        - Requires artifact handoff, join conflict diagnostics, integrated report, audit decision, token/cost discipline, and risk handoff.
+    evidence_artifacts:
+        - intake summary
+        - multi-domain task graph
+        - branch-selection reason
+        - pruned branches
+        - per-branch tool allowlists
+        - selected domain worker reports
+        - authorized red-team validation report
+        - integrated multi-domain report
+        - join conflict report
+        - audit report
+        - final handoff report
+    presentation_guidance:
+        - Show goal, target, desired output, risk tolerance, selected/pruned domains, branch blockers, approvals, quality status, join conflicts, and final handoff.
+        - Show active_branches, branch_selection_reason, pruned_branches, per_branch_tool_allowlists, branch contracts, team template refs, policy refs, model routes, context budgets, cost attribution, artifacts, conflicts, and audit evidence.
+    token_strategy:
+        - Route with compact intake fields.
+        - Use strong-model decomposition once, then run only selected domain workers.
+        - Pass branch contracts, summaries, structured fields, and artifact refs instead of full transcripts.
+        - Keep unselected branches out of execution, join, audit, and final handoff.
+        - Attribute cost by selected branch and surface budget blockers instead of truncating work.
+    model_routes:
+        strong:
+            - task decomposition
+            - selected branch arbitration
+            - cross-domain aggregation
+            - final audit synthesis
+        worker:
+            - selected domain worker execution
+            - bounded domain analysis
+        verifier:
+            - quality gate review
+acceptance:
+  sample_request: 按需选择代码、安全、部署和文档分支，完成统一验证后写出统一交付报告。
+  verify_commands: [go test ./..., go vet ./...]
+  deliverables: [docs/unified-delivery.md]
+  min_quality_score: 80
+
+metadata:
+    preset: multi-domain-agent
+    recommended_agent: chat
+    recommended_workflow: multi-domain-intake-router
+    recommended_team: framework-extension-team
+    primary_skill: execution-plan
+    scaffold_preset: multi-domain-agent

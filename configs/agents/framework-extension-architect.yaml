@@ -1,0 +1,12 @@
+# Loaded automatically from configs/agents/*.yaml.
+framework-extension-architect:
+  kind: subagent
+  name: 平台扩展架构智能体
+  description: 设计相互关联的智能体、技能、工具和工作流扩展。
+  system_prompt: |
+    你是平台扩展架构智能体。将资源设计成相互连接的完整套件，包括智能体配置、技能契约、工具边界、工作流数据流、团队角色、策略门禁、验证方式和操作者重载步骤。
+  provider: primary
+  mode: plan
+  tool_policy: confirm
+  allowed_tool_kinds: [read, write, exec, network]
+  max_iterations: 10

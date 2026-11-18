@@ -1,0 +1,113 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: customer-support-kit
+title: 用户支持资源包
+description: 分诊用户问题、收集事实上下文、起草可直接回复的内容，并标记升级或隐私风险。
+category: support
+tags:
+    - support
+    - triage
+    - customer-response
+    - escalation
+agents:
+    - support-specialist
+    - chat
+    - planner
+    - auditor
+providers:
+    - primary
+skills:
+    - execution-plan
+    - code-audit
+tools:
+    - file_tools/read_file
+    - file_tools/search_files
+    - web_tools/web_search
+    - python_notes/support_case_summary
+    - python_notes/redaction_check
+workflows:
+    - skill-chain
+workflow_templates:
+    - customer-support-triage
+    - parallel-research-review
+team_templates:
+    - customer-support-team
+policy_rules:
+    - expression
+    - team_approval_gate
+examples:
+    - title: 分诊用户问题
+      description: 判定优先级、收集已知事实，并起草带升级说明的答复。
+      request: 分诊这个用户问题，起草清晰答复，并指出仍缺少的信息。
+      workflow: customer-support-triage
+      agent: support-specialist
+vertical_pack:
+    domain: customer-support
+    maturity: production-ready
+    summary: 分诊支持工单，整理产品范围、用户影响、SLA 与优先级、隐私标记、法务/账单/安全升级、对外答复、内部说明、来源归属和复核状态。
+    supported_tasks:
+        - issue triage
+        - ticket context extraction
+        - product area and customer impact classification
+        - SLA/priority review
+        - privacy and redaction review
+        - response drafting
+        - escalation recommendation
+        - knowledge lookup summary
+    required_inputs:
+        - customer issue
+        - known facts
+        - product or service context
+        - response tone
+        - escalation policy
+        - customer-visible vs internal note policy
+    tool_boundaries:
+        - Use read/search tools for factual context.
+        - Use support_case_summary to structure local ticket evidence.
+        - Use redaction_check before any customer-visible response.
+        - Knowledge-base or ticket connectors must stay read-only by default and cite sources.
+        - Do not expose secrets or unsupported promises in customer-ready output.
+    safety_gates:
+        - Flag privacy, legal, billing, or security escalation.
+        - Separate customer-facing response from internal notes.
+        - Require reviewer quorum for high-impact, privacy, legal, refund, SLA, or security cases.
+    quality_gates:
+        - Requires issue summary.
+        - Requires product area, customer impact, SLA/priority, and source attribution or a missing-information blocker.
+        - Requires missing information list.
+        - Requires privacy check, escalation decision, customer/internal note separation, and reviewer quorum status.
+    evidence_artifacts:
+        - triage summary
+        - ticket context summary
+        - privacy flags
+        - customer response draft
+        - internal notes
+        - escalation decision
+        - reviewer quorum decision
+    presentation_guidance:
+        - Show issue, product area, impact, SLA/priority, privacy flags, missing information, response draft, escalation status, and reviewer quorum.
+        - Show source attribution, policy assumptions, redaction findings, evidence refs, response variants, reviewer quorum, and routing diagnostics.
+    token_strategy:
+        - Keep customer context concise and redact irrelevant history.
+        - Pass facts and policy summary instead of full conversation transcripts.
+    model_routes:
+        strong:
+            - escalation arbitration
+            - privacy/legal/security arbitration
+            - final response review
+        worker:
+            - fact extraction
+            - ticket context extraction
+            - redaction scan
+            - draft response
+        verifier:
+            - policy and privacy review
+            - reviewer quorum decision
+metadata:
+    preset: customer-support
+    recommended_agent: support-specialist
+    recommended_workflow: customer-support-triage
+    recommended_team: customer-support-team
+    primary_skill: execution-plan
+    scaffold_preset: customer-support

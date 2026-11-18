@@ -1,0 +1,207 @@
+functions:
+  - name: contains
+    label: Contains
+    category: collection
+    description: Pass when a string, array, or object contains the provided text or value.
+    signature: contains(collection, needle)
+    insert_text: contains(${reference}, "${needle}")
+    return_type: boolean
+    min_args: 2
+    max_args: 2
+    modes: [condition, policy, expression]
+    node_types: [condition, policy_guard, quality_gate, switch, router]
+    args:
+      - name: collection
+        label: Collection
+        type: reference
+        required: true
+        accepts: [string, array, object]
+      - name: needle
+        label: Needle
+        type: value
+        required: true
+        accepts: [string, number, boolean]
+    examples:
+      - contains(stages.collect.outputs.tags, "api")
+      - contains(previous.raw_output, "vulnerability")
+
+  - name: in
+    label: In Collection
+    category: collection
+    description: Pass when a value exactly matches an item in an array, object values, or object keys.
+    signature: in(value, collection)
+    insert_text: in("${value}", ${reference})
+    return_type: boolean
+    min_args: 2
+    max_args: 2
+    modes: [condition, policy, expression]
+    node_types: [condition, policy_guard, quality_gate, switch, router]
+    args:
+      - name: value
+        label: Value
+        type: value
+        required: true
+        accepts: [string, number, boolean]
+      - name: collection
+        label: Collection
+        type: reference
+        required: true
+        accepts: [array, object, string]
+    examples:
+      - in("api", stages.collect.outputs.tags)
+      - in("risk", stages.audit.outputs.finding)
+
+  - name: matches
+    label: Regex Match
+    category: string
+    description: Pass when the value matches a Go regular expression.
+    signature: matches(value, pattern)
+    insert_text: matches(${reference}, "${pattern}")
+    return_type: boolean
+    min_args: 2
+    max_args: 2
+    modes: [condition, policy, expression]
+    node_types: [condition, policy_guard, quality_gate, switch, router]
+    args:
+      - name: value
+        label: Value
+        type: reference
+        required: true
+        accepts: [string, number, boolean]
+      - name: pattern
+        label: Pattern
+        type: regex
+        required: true
+        accepts: [string]
+    examples:
+      - matches(stages.collect.outputs.payload.risk, "high|critical")
+      - matches(previous.summary, "(?i)done")
+
+  - name: any
+    label: Any
+    category: collection
+    description: Pass when any collection item is truthy, or any item equals/contains the optional needle.
+    signature: any(collection[, needle])
+    insert_text: any(${reference}, "${needle}")
+    return_type: boolean
+    min_args: 1
+    max_args: 2
+    modes: [condition, policy, expression]
+    node_types: [condition, policy_guard, quality_gate, switch, router]
+    args:
+      - name: collection
+        label: Collection
+        type: reference
+        required: true
+        accepts: [array, object, string]
+      - name: needle
+        label: Needle
+        type: value
+        accepts: [string, number, boolean]
+    examples:
+      - any(stages.collect.outputs.tags, "auth")
+      - any(stages.audit.outputs.findings)
+
+  - name: all
+    label: All
+    category: collection
+    description: Pass when all collection items are truthy, or all items equal/contain the optional needle.
+    signature: all(collection[, needle])
+    insert_text: all(${reference})
+    return_type: boolean
+    min_args: 1
+    max_args: 2
+    modes: [condition, policy, expression]
+    node_types: [condition, policy_guard, quality_gate, switch, router]
+    args:
+      - name: collection
+        label: Collection
+        type: reference
+        required: true
+        accepts: [array, object, string]
+      - name: needle
+        label: Needle
+        type: value
+        accepts: [string, number, boolean]
+    examples:
+      - all(stages.collect.outputs.tags)
+      - all(stages.review.outputs.approvals, "approved")
+
+  - name: exists
+    label: Exists
+    category: reference
+    description: Pass when a reference resolves to an existing non-null value.
+    signature: exists(reference)
+    insert_text: exists(${reference})
+    return_type: boolean
+    min_args: 1
+    max_args: 1
+    modes: [condition, policy, expression]
+    node_types: [condition, policy_guard, quality_gate, switch, router]
+    args:
+      - name: reference
+        label: Reference
+        type: reference
+        required: true
+    examples:
+      - exists(stages.audit.outputs.findings)
+
+  - name: has
+    label: Has Truthy Value
+    category: reference
+    description: Pass when a value is truthy after resolving references and literals.
+    signature: has(value)
+    insert_text: has(${reference})
+    return_type: boolean
+    min_args: 1
+    max_args: 1
+    modes: [condition, policy, expression]
+    node_types: [condition, policy_guard, quality_gate, switch, router]
+    args:
+      - name: value
+        label: Value
+        type: reference
+        required: true
+    examples:
+      - has(stages.audit.outputs.summary)
+
+  - name: len
+    label: Length
+    category: collection
+    description: Return the length of a string, array, object, or JSON-like value.
+    signature: len(value)
+    insert_text: len(${reference})
+    return_type: number
+    min_args: 1
+    max_args: 1
+    modes: [condition, policy, switch, expression]
+    node_types: [condition, policy_guard, quality_gate, switch, router]
+    args:
+      - name: value
+        label: Value
+        type: reference
+        required: true
+        accepts: [string, array, object]
+    examples:
+      - len(stages.collect.outputs.tags) >= 2
+
+  - name: risk_rank
+    label: Risk Rank
+    category: risk
+    description: "Return a numeric severity rank: info=1, low=2, medium=3, high=4, critical=5."
+    signature: risk_rank(value)
+    insert_text: risk_rank(${reference})
+    return_type: number
+    min_args: 1
+    max_args: 1
+    modes: [condition, policy, switch, expression]
+    node_types: [condition, policy_guard, quality_gate, switch, router]
+    args:
+      - name: value
+        label: Value
+        type: reference
+        required: true
+        accepts: [string, number]
+    examples:
+      - risk_rank(stages.audit.outputs.risk) >= 4
+      - risk_rank(stages.audit.outputs.payload.severity) >= risk_rank("high")

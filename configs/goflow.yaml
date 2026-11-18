@@ -1,0 +1,73 @@
+agent:
+  name: 本地智能体工作流平台
+  max_iterations: 8
+  timeout: 2m
+
+default_agent: chat
+
+workspace:
+  # Set true to block all non-loopback model providers for this workspace.
+  local_only: false
+
+http:
+  # Optional single-user protection for HTTP/API access.
+  token: ${GOFLOW_HTTP_TOKEN}
+
+skill:
+  directory: ./skills
+  match_threshold: 1
+  hot_reload: false
+
+audit:
+  enabled: true
+  redact_content: false
+  show_trace_in_cli: false
+
+verifier:
+  enabled: true
+  agent: auditor
+  # Optional: route the verifier pass to another configured provider/model.
+  # model: ${GOFLOW_VERIFIER_MODEL}
+  modes: [fix, audit]
+  max_tokens: 768
+
+cost_control:
+  router:
+    enabled: false
+    # Optional: classify otherwise-unmatched requests with another model.
+    # model: ${GOFLOW_ROUTER_MODEL}
+    max_tokens: 96
+    temperature: 0
+  summarizer:
+    enabled: false
+    # Optional: summarize exhausted tool loops with another model.
+    # model: ${GOFLOW_SUMMARIZER_MODEL}
+    max_tokens: 512
+    temperature: 0
+
+tool_risk_policy:
+  require_approval_for_unsandboxed_risky_tools: true
+  disable_remember_for_unsandboxed_risky_tools: true
+  reject_unsandboxed_risky_tools: false
+
+session:
+  max_history: 8
+
+log:
+  level: info
+  format: text
+
+# 运行完成通知（默认关闭）。启用后每次运行结束会通过 SMTP 发送邮件。
+notifications:
+  email:
+    enabled: false
+    smtp_host: smtp.example.com
+    smtp_port: 587
+    username: ""
+    # 支持 ${SMTP_PASSWORD} 环境变量或 secret://notifications/email 引用
+    password: ""
+    from: ""
+    to: []
+    tls: starttls        # starttls | tls | none
+    subject_prefix: "[GoFlow]"
+    timeout: 20s

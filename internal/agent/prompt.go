@@ -1,0 +1,685 @@
+package agent
+
+import (
+	"fmt"
+	"strings"
+
+	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/session"
+	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
+)
+
+const (
+	systemPromptRecentPromptLimit = 3
+	systemPromptRecentToolLimit   = 4
+	systemPromptPromptItemBytes   = 700
+	systemPromptToolItemBytes     = 500
+	systemPromptSkillFullBytes    = 1800
+	systemPromptSkillSummaryBytes = 900
+)
+
+// BuildSystemPrompt assembles the runtime system prompt.
+func BuildSystemPrompt(profile config.AgentProfile, skill *schema.Skill, snapshot session.Snapshot) string {
+	_ = snapshot
+	return BuildSystemPromptWithRepository(profile, skill, session.Snapshot{}, "")
+}
+
+// BuildSystemPromptWithMemory assembles the stable runtime system prompt.
+// Dynamic memory and session history are injected as messages so provider-side
+// cacheable prefixes remain stable across turns.
+func BuildSystemPromptWithMemory(profile config.AgentProfile, skill *schema.Skill, snapshot session.Snapshot, memoryText string) string {
+	return BuildSystemPromptWithRepository(profile, skill, snapshot, "")
+}
+
+// BuildSystemPromptWithRepository assembles the stable runtime prompt and
+// includes bounded repository instructions loaded before task planning.
+func BuildSystemPromptWithRepository(profile config.AgentProfile, skill *schema.Skill, snapshot session.Snapshot, repositoryInstructions string) string {
+	_ = snapshot
+	var builder strings.Builder
+	builder.WriteString("You are ")
+	builder.WriteString(profile.Name)
+	builder.WriteString(", a local production-minded AI agent. Reason carefully, use tools when needed, and provide concise, actionable output.\n")
+	if profile.Description != "" {
+		builder.WriteString("Agent description: ")
+		builder.WriteString(profile.Description)
+		builder.WriteString("\n")
+	}
+	if profile.SystemPrompt != "" {
+		builder.WriteString(profile.SystemPrompt)
+		builder.WriteString("\n")
+	}
+	builder.WriteString("Current mode: ")
+	builder.WriteString(profile.Mode)
+	builder.WriteString("\n")
+	writeCapabilityContract(&builder)
+	writeReasoningLoopContract(&builder)
+	writeModeContract(&builder, profile.Mode)
+	if skill != nil {
+		writeSkillPromptBlock(&builder, skill)
+		if len(skill.Scripts) > 0 {
+			builder.WriteString("Skill declared scripts:\n")
+			for _, script := range skill.Scripts {
+				builder.WriteString("- ")
+				builder.WriteString(script.Name)
+				if strings.TrimSpace(script.Description) != "" {
+					builder.WriteString(": ")
+					builder.WriteString(script.Description)
+				}
+				builder.WriteString(" [")
+				builder.WriteString(script.Path)
+				if strings.TrimSpace(script.Runtime) != "" {
+					builder.WriteString(", runtime=")
+					builder.WriteString(script.Runtime)
+				}
+				if strings.TrimSpace(script.Isolation) != "" {
+					builder.WriteString(", isolation=")
+					builder.WriteString(script.Isolation)
+				}
+				if strings.TrimSpace(script.Approval) != "" {
+					builder.WriteString(", approval=")
+					builder.WriteString(script.Approval)
+				}
+				builder.WriteString("]\n")
+			}
+			builder.WriteString("When the skill_runner/run_script tool is exposed, run declared scripts only with {\"skill\":\"")
+			builder.WriteString(skill.Name)
+			builder.WriteString("\",\"script\":\"<declared-name>\",\"args\":{...}}. Do not execute scripts through any other path; normal approval, audit, and MCP isolation still apply.\n")
+		}
+		if len(skill.Resources) > 0 {
+			builder.WriteString("Skill bundled resources available in the skill folder:\n")
+			for _, resource := range skill.Resources {
+				builder.WriteString("- ")
+				builder.WriteString(resource.Path)
+				if strings.TrimSpace(resource.Kind) != "" {
+					builder.WriteString(" (")
+					builder.WriteString(resource.Kind)
+					builder.WriteString(")")
+				}
+				builder.WriteString("\n")
+			}
+			builder.WriteString("Use these resource paths as authoring context; do not assume they are workspace files unless the user copies or references them explicitly.\n")
+		}
+	}
+	if instructions := strings.TrimSpace(repositoryInstructions); instructions != "" {
+		builder.WriteString("\n")
+		builder.WriteString(instructions)
+		builder.WriteString("\n")
+	}
+	builder.WriteString("When using tools, choose only the tools necessary for the current request.")
+	return builder.String()
+}
+
+func sessionContextPromptText(snapshot session.Snapshot, currentInput string) string {
+	prompts := recentPromptsExcludingCurrent(snapshot.RecentPrompts, currentInput)
+	if snapshot.LastSkill == "" && len(prompts) == 0 && len(snapshot.RecentTools) == 0 && len(snapshot.TokenUsages) == 0 {
+		return ""
+	}
+	var builder strings.Builder
+	builder.WriteString("Session context:\n")
+	if snapshot.LastSkill != "" {
+		builder.WriteString("- Last matched skill: ")
+		builder.WriteString(snapshot.LastSkill)
+		builder.WriteString("\n")
+	}
+	if len(prompts) > 0 {
+		builder.WriteString("- Recent prompts:\n")
+		for _, prompt := range compactSessionHistoryForPrompt(prompts, systemPromptRecentPromptLimit, systemPromptPromptItemBytes, "prompts") {
+			builder.WriteString(fmt.Sprintf("  - %s\n", prompt))
+		}
+	}
+	if len(snapshot.RecentTools) > 0 {
+		builder.WriteString("- Recent tool summaries:\n")
+		for _, summary := range compactSessionHistoryForPrompt(snapshot.RecentTools, systemPromptRecentToolLimit, systemPromptToolItemBytes, "tool summaries") {
+			builder.WriteString(fmt.Sprintf("  - %s\n", summary))
+		}
+	}
+	if len(snapshot.TokenUsages) > 0 {
+		builder.WriteString("- Recent AI calls:\n")
+		usages := snapshot.TokenUsages
+		if len(usages) > 6 {
+			usages = usages[len(usages)-6:]
+		}
+		for _, usage := range usages {
+			kind := strings.TrimSpace(usage.OutputKind)
+			if kind == "" {
+				kind = "unknown"
+			}
+			line := fmt.Sprintf("  - %s/%s %s in=%d out=%d cached=%d", strings.TrimSpace(usage.AgentID), strings.TrimSpace(usage.Mode), kind, usage.PromptTokens, usage.OutputTokens, usage.CachedTokens)
+			if usage.CacheHitRate > 0 {
+				line += fmt.Sprintf(" cache_hit=%.0f%%", usage.CacheHitRate*100)
+			}
+			if len(usage.ToolNames) > 0 {
+				line += " tools=" + strings.Join(usage.ToolNames, ",")
+			}
+			builder.WriteString(line)
+			builder.WriteString("\n")
+		}
+	}
+	return strings.TrimSpace(builder.String())
+}
+
+func recentPromptsExcludingCurrent(prompts []string, currentInput string) []string {
+	currentKey := normalizeHistoryDedupeKey(currentInput)
+	if currentKey == "" || len(prompts) == 0 {
+		return append([]string(nil), prompts...)
+	}
+	out := append([]string(nil), prompts...)
+	for i := len(out) - 1; i >= 0; i-- {
+		if normalizeHistoryDedupeKey(out[i]) == currentKey {
+			return append(out[:i], out[i+1:]...)
+		}
+	}
+	return out
+}
+
+func writeSkillPromptBlock(builder *strings.Builder, skill *schema.Skill) {
+	if builder == nil || skill == nil {
+		return
+	}
+	builder.WriteString("Matched skill: ")
+	builder.WriteString(skill.Name)
+	builder.WriteString("\nSkill description: ")
+	builder.WriteString(skill.Description)
+	builder.WriteString("\n")
+	instructions := strings.TrimSpace(skill.Instructions)
+	if instructions == "" {
+		builder.WriteString("Skill instructions: no additional instructions declared.\n")
+		return
+	}
+	mode, injected, omittedBytes := compactSkillInstructionsForPrompt(instructions)
+	if mode == "full" {
+		builder.WriteString("Skill instructions:\n")
+		builder.WriteString(injected)
+		builder.WriteString("\n")
+		return
+	}
+	builder.WriteString("Skill instructions summary:\n")
+	builder.WriteString(injected)
+	builder.WriteString("\n")
+	builder.WriteString(fmt.Sprintf("[Full skill instructions omitted from default prompt: %d bytes. Use the skill file ref if exact wording is needed.]\n", omittedBytes))
+}
+
+func compactSkillInstructionsForPrompt(instructions string) (mode, injected string, omittedBytes int) {
+	instructions = strings.TrimSpace(instructions)
+	if instructions == "" {
+		return "empty", "", 0
+	}
+	originalBytes := len([]byte(instructions))
+	if originalBytes <= systemPromptSkillFullBytes {
+		return "full", instructions, 0
+	}
+	summary := skillInstructionSummary(instructions, systemPromptSkillSummaryBytes)
+	omittedBytes = originalBytes - len([]byte(summary))
+	if omittedBytes < 0 {
+		omittedBytes = 0
+	}
+	return "summary", summary, omittedBytes
+}
+
+func skillInstructionSummary(instructions string, maxBytes int) string {
+	lines := strings.Split(strings.TrimSpace(instructions), "\n")
+	selected := make([]string, 0, 12)
+	for _, line := range lines {
+		line = strings.TrimSpace(line)
+		if line == "" {
+			continue
+		}
+		if isSkillSummaryLine(line) {
+			selected = append(selected, line)
+		}
+		if len(selected) >= 10 {
+			break
+		}
+	}
+	if len(selected) == 0 {
+		for _, line := range lines {
+			line = strings.TrimSpace(line)
+			if line == "" {
+				continue
+			}
+			selected = append(selected, line)
+			if len(selected) >= 8 {
+				break
+			}
+		}
+	}
+	if len(selected) == 0 {
+		selected = append(selected, instructions)
+	}
+	summary := strings.Join(selected, "\n")
+	if maxBytes > 0 && len([]byte(summary)) > maxBytes {
+		summary = strings.TrimSpace(trimStringToMaxBytes(summary, maxBytes))
+	}
+	return summary
+}
+
+func isSkillSummaryLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" {
+		return false
+	}
+	if strings.HasPrefix(trimmed, "#") {
+		return true
+	}
+	for _, prefix := range []string{"-", "*", "1.", "2.", "3.", "4.", "5."} {
+		if strings.HasPrefix(trimmed, prefix+" ") {
+			return true
+		}
+	}
+	lower := strings.ToLower(trimmed)
+	for _, marker := range []string{"role", "workflow", "input", "output", "constraint", "verify", "example", "purpose"} {
+		if strings.Contains(lower, marker+":") {
+			return true
+		}
+	}
+	return false
+}
+
+func compactSessionHistoryForPrompt(items []string, recentLimit, itemBytes int, label string) []string {
+	stats := sessionHistoryCompactionStats(items, recentLimit)
+	if len(stats.RetainedItems) == 0 {
+		return nil
+	}
+	out := make([]string, 0, len(stats.RetainedItems)+1)
+	if stats.OlderCompacted > 0 || stats.Deduplicated > 0 {
+		out = append(out, sessionHistoryCompactionMarker(stats.OlderCompacted, stats.Deduplicated, len(stats.RetainedItems), label))
+	}
+	for _, item := range stats.RetainedItems {
+		out = append(out, compactHistoryItemForPrompt(item, itemBytes))
+	}
+	return out
+}
+
+type sessionHistoryCompaction struct {
+	OriginalItems   int
+	RetainedItems   []string
+	Deduplicated    int
+	OlderCompacted  int
+	SavedItemTokens int
+}
+
+func sessionHistoryCompactionStats(items []string, recentLimit int) sessionHistoryCompaction {
+	if len(items) == 0 {
+		return sessionHistoryCompaction{}
+	}
+	cleaned := make([]string, 0, len(items))
+	for _, item := range items {
+		item = strings.TrimSpace(item)
+		if item == "" {
+			continue
+		}
+		cleaned = append(cleaned, item)
+	}
+	if len(cleaned) == 0 {
+		return sessionHistoryCompaction{}
+	}
+	deduped, duplicateCount := dedupeHistoryItemsNewestFirst(cleaned)
+	if recentLimit <= 0 || recentLimit > len(deduped) {
+		recentLimit = len(deduped)
+	}
+	olderCount := len(deduped) - recentLimit
+	retained := append([]string(nil), deduped[len(deduped)-recentLimit:]...)
+	savedTokens := 0
+	if duplicateCount > 0 || olderCount > 0 {
+		retainedKeys := make(map[string]int, len(retained))
+		for _, item := range retained {
+			retainedKeys[normalizeHistoryDedupeKey(item)]++
+		}
+		for _, item := range cleaned {
+			key := normalizeHistoryDedupeKey(item)
+			if retainedKeys[key] > 0 {
+				retainedKeys[key]--
+				continue
+			}
+			savedTokens += estimateTextTokens(item)
+		}
+	}
+	return sessionHistoryCompaction{
+		OriginalItems:   len(cleaned),
+		RetainedItems:   retained,
+		Deduplicated:    duplicateCount,
+		OlderCompacted:  olderCount,
+		SavedItemTokens: savedTokens,
+	}
+}
+
+func dedupeHistoryItemsNewestFirst(items []string) ([]string, int) {
+	if len(items) == 0 {
+		return nil, 0
+	}
+	seen := make(map[string]struct{}, len(items))
+	reversed := make([]string, 0, len(items))
+	duplicates := 0
+	for i := len(items) - 1; i >= 0; i-- {
+		item := strings.TrimSpace(items[i])
+		if item == "" {
+			continue
+		}
+		key := normalizeHistoryDedupeKey(item)
+		if _, ok := seen[key]; ok {
+			duplicates++
+			continue
+		}
+		seen[key] = struct{}{}
+		reversed = append(reversed, item)
+	}
+	out := make([]string, len(reversed))
+	for i := range reversed {
+		out[len(reversed)-1-i] = reversed[i]
+	}
+	return out, duplicates
+}
+
+func normalizeHistoryDedupeKey(item string) string {
+	return strings.Join(strings.Fields(strings.TrimSpace(item)), " ")
+}
+
+func sessionHistoryCompactionMarker(olderCount, duplicateCount, retained int, label string) string {
+	parts := make([]string, 0, 2)
+	if olderCount > 0 {
+		parts = append(parts, fmt.Sprintf("compacted %d older %s", olderCount, fallbackHistoryLabel(label)))
+	}
+	if duplicateCount > 0 {
+		parts = append(parts, fmt.Sprintf("deduplicated %d repeated %s", duplicateCount, fallbackHistoryLabel(label)))
+	}
+	parts = append(parts, fmt.Sprintf("latest %d retained", retained))
+	return "[" + strings.Join(parts, "; ") + "]"
+}
+
+func compactHistoryItemForPrompt(item string, maxBytes int) string {
+	if maxBytes <= 0 || len([]byte(item)) <= maxBytes {
+		return item
+	}
+	trimmed := strings.TrimSpace(trimStringToMaxBytes(item, maxBytes))
+	omitted := len([]byte(item)) - len([]byte(trimmed))
+	if omitted <= 0 {
+		return trimmed
+	}
+	return fmt.Sprintf("%s ... [compacted %d bytes]", trimmed, omitted)
+}
+
+func compactMessagesForSummaryPrompt(messages []schema.Message) []schema.Message {
+	return compactMessagesForPrompt(messages, 2, 8, 1200, 900)
+}
+
+func compactMessagesForResumePrompt(messages []schema.Message) []schema.Message {
+	return compactMessagesForPrompt(messages, 2, 12, 1600, 1200)
+}
+
+// compactMessagesForConversation keeps the recent turn window intact and trims
+// older entries. The window is intentionally not tighter than this: shrinking
+// it made the model forget files it had already read, so re-reads cost more
+// calls than the saved tokens were worth.
+func compactMessagesForConversation(messages []schema.Message) []schema.Message {
+	// Keep a wide recent window: most workflow stages stay under this many
+	// messages, so nothing is pruned inside a stage and the prompt becomes
+	// append-only, which is what makes provider prefix caching pay off.
+	return dedupeRepeatedFileReads(pruneMessagesForConversation(messages, 24, 1200, 900))
+}
+
+// pruneMessagesForConversation keeps the whole conversation and only shrinks
+// entries that have already left the recent window. Dropping a sliding window
+// (the previous behaviour) rewrote the head of the prompt on every turn, so
+// provider prefix caching missed almost everything: measured runs cached a
+// fixed ~5.5k head while the prompt grew past 17k. Pruning in place changes a
+// message at most once (full text -> pruned text) and then leaves it stable, so
+// the cacheable prefix keeps growing with the conversation.
+func pruneMessagesForConversation(messages []schema.Message, keepRecent, messageBytes, toolBytes int) []schema.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	// Move the compaction boundary in blocks. A boundary that advances by one
+	// message every turn rewrites the prompt prefix and invalidates the
+	// provider cache from that point onward; a block boundary keeps the prefix
+	// stable for several turns at a time.
+	const compactionBlock = 8
+	cut := len(messages) - keepRecent
+	if cut < 0 {
+		cut = 0
+	}
+	cut = (cut / compactionBlock) * compactionBlock
+	out := make([]schema.Message, 0, len(messages))
+	for index, message := range messages {
+		copied := schema.CopyMessage(message)
+		if index < cut {
+			limit := messageBytes
+			if strings.EqualFold(copied.Role, "tool") {
+				limit = toolBytes
+			}
+			if limit > 0 {
+				copied.Content = compactHistoryItemForPrompt(copied.Content, limit)
+			}
+		}
+		out = append(out, copied)
+	}
+	return out
+}
+
+func normalizeToolConversationMessages(messages []schema.Message) ([]schema.Message, int) {
+	if len(messages) == 0 {
+		return nil, 0
+	}
+	out := make([]schema.Message, 0, len(messages))
+	repairs := 0
+	for index := 0; index < len(messages); {
+		message := schema.CopyMessage(messages[index])
+		if !strings.EqualFold(strings.TrimSpace(message.Role), "assistant") || len(message.ToolCalls) == 0 {
+			if strings.EqualFold(strings.TrimSpace(message.Role), "tool") {
+				message.Role = "user"
+				message.Content = fmt.Sprintf("[GoFlow preserved orphan tool observation call_id=%s tool=%s] %s", strings.TrimSpace(message.ToolCallID), strings.TrimSpace(message.Name), message.Content)
+				message.ToolCallID = ""
+				message.Name = ""
+				repairs++
+			}
+			out = append(out, message)
+			index++
+			continue
+		}
+
+		out = append(out, message)
+		toolMessages := make(map[string]schema.Message, len(message.ToolCalls))
+		toolOrder := make([]string, 0, len(message.ToolCalls))
+		next := index + 1
+		for next < len(messages) && strings.EqualFold(strings.TrimSpace(messages[next].Role), "tool") {
+			toolMessage := schema.CopyMessage(messages[next])
+			callID := strings.TrimSpace(toolMessage.ToolCallID)
+			if callID != "" {
+				if _, exists := toolMessages[callID]; !exists {
+					toolMessages[callID] = toolMessage
+					toolOrder = append(toolOrder, callID)
+				} else {
+					repairs++
+				}
+			} else {
+				repairs++
+			}
+			next++
+		}
+		used := make(map[string]struct{}, len(message.ToolCalls))
+		for _, call := range message.ToolCalls {
+			callID := strings.TrimSpace(call.ID)
+			if toolMessage, ok := toolMessages[callID]; ok && callID != "" {
+				out = append(out, toolMessage)
+				used[callID] = struct{}{}
+				continue
+			}
+			out = append(out, schema.Message{
+				Role:       "tool",
+				Name:       call.Name,
+				ToolCallID: call.ID,
+				Content:    fmt.Sprintf("[GoFlow synthesized missing tool result for call_id=%s tool=%s; the call outcome is unavailable and must not be treated as success]", call.ID, call.Name),
+			})
+			repairs++
+		}
+		for _, callID := range toolOrder {
+			if _, ok := used[callID]; ok {
+				continue
+			}
+			toolMessage := toolMessages[callID]
+			out = append(out, schema.Message{
+				Role:    "user",
+				Content: fmt.Sprintf("[GoFlow preserved unmatched tool observation call_id=%s tool=%s] %s", callID, toolMessage.Name, toolMessage.Content),
+			})
+			repairs++
+		}
+		index = next
+	}
+	return out, repairs
+}
+
+func compactMessagesForPrompt(messages []schema.Message, prefixCount, recentLimit, messageBytes, toolBytes int) []schema.Message {
+	if len(messages) == 0 {
+		return nil
+	}
+	if prefixCount < 0 {
+		prefixCount = 0
+	}
+	if prefixCount > len(messages) {
+		prefixCount = len(messages)
+	}
+	prefix := schema.CopyMessages(messages[:prefixCount])
+	tail := messages[prefixCount:]
+	if len(tail) == 0 {
+		return prefix
+	}
+	existingMarker := schema.Message{}
+	existingOmitted := 0
+	if isGoFlowConversationCompactionMarker(tail[0].Content) {
+		existingMarker = schema.CopyMessage(tail[0])
+		existingOmitted = markerIntAfterPrefix(existingMarker.Content, "[GoFlow compacted ")
+		tail = tail[1:]
+	}
+	if recentLimit <= 0 || recentLimit > len(messages) {
+		recentLimit = len(tail)
+	}
+	if recentLimit > len(tail) {
+		recentLimit = len(tail)
+	}
+	start := len(tail) - recentLimit
+	start = compactMessageValidSuffixStart(tail, start)
+	// Quantize the drop boundary: the retained window then stays
+	// byte-identical for several turns, so the provider prefix cache hits
+	// instead of missing on every single turn.
+	const historyBoundaryQuantum = 8
+	if start >= historyBoundaryQuantum {
+		if remainder := start % historyBoundaryQuantum; remainder != 0 {
+			start -= remainder
+			start = compactMessageValidSuffixStart(tail, start)
+		}
+	}
+	omitted := start
+	out := make([]schema.Message, 0, len(prefix)+recentLimit+1)
+	out = append(out, prefix...)
+	totalOmitted := existingOmitted + omitted
+	// Keep an existing marker even when this pass drops nothing: the marker is
+	// part of the stable prefix and removing it would shift every later message.
+	if totalOmitted > 0 || strings.TrimSpace(existingMarker.Content) != "" {
+		role := "user"
+		if strings.TrimSpace(existingMarker.Role) != "" {
+			role = existingMarker.Role
+		}
+		out = append(out, schema.Message{
+			Role:    role,
+			Content: conversationCompactionMarker(totalOmitted, len(tail)-omitted),
+		})
+	}
+	for _, message := range tail[start:] {
+		copied := schema.CopyMessage(message)
+		limit := messageBytes
+		if strings.EqualFold(copied.Role, "tool") {
+			limit = toolBytes
+		}
+		if limit > 0 {
+			copied.Content = compactHistoryItemForPrompt(copied.Content, limit)
+		}
+		out = append(out, copied)
+	}
+	return out
+}
+
+func isGoFlowConversationCompactionMarker(content string) bool {
+	return strings.HasPrefix(strings.TrimSpace(content), "[GoFlow compacted ") && strings.Contains(content, "earlier conversation messages for LLM context;")
+}
+
+// conversationCompactionMarker must stay byte-identical across turns. The
+// marker sits at the front of the message list, so embedding per-turn counts
+// (omitted/retained) changed the prefix every request and defeated provider
+// context caching: measured runs cached only the first ~5.5k tokens while the
+// prompt grew past 17k. Counts are reported through prompt-budget events
+// instead of the cached prefix.
+func conversationCompactionMarker(omitted, retained int) string {
+	return "[GoFlow compacted earlier conversation messages for LLM context; the latest window is retained below. Full run history remains in session artifacts.]"
+}
+
+func compactMessageValidSuffixStart(messages []schema.Message, start int) int {
+	if start <= 0 || start >= len(messages) {
+		if start < 0 {
+			return 0
+		}
+		return start
+	}
+	for start > 0 && strings.EqualFold(strings.TrimSpace(messages[start].Role), "tool") {
+		start--
+	}
+	return start
+}
+
+func fallbackHistoryLabel(label string) string {
+	label = strings.TrimSpace(label)
+	if label == "" {
+		return "items"
+	}
+	return label
+}
+
+func writeCapabilityContract(builder *strings.Builder) {
+	if builder == nil {
+		return
+	}
+	builder.WriteString("Workspace and tool contract:\n")
+	builder.WriteString("- Treat the configured workspace as the only project filesystem boundary.\n")
+	builder.WriteString("- File reads, writes, deletes, searches, and tree listings must target workspace paths only; never try to access parent directories or absolute paths outside the workspace.\n")
+	builder.WriteString("- If the user references files with @path, their contents may already appear under 'Referenced workspace files'; use that context before re-reading.\n")
+	builder.WriteString("- Use web/network tools only when current external information is necessary; cite fetched URLs or search result sources in the final answer.\n")
+	builder.WriteString("- For destructive actions such as delete_file, explain the target and wait for approval when policy requires it.\n")
+}
+
+func writeReasoningLoopContract(builder *strings.Builder) {
+	if builder == nil {
+		return
+	}
+	builder.WriteString("Reasoning loop:\n")
+	builder.WriteString("- Plan -> Act -> Observe -> Conclude for tool-using tasks.\n")
+	builder.WriteString("- Keep reasoning concise and private; expose only decisions, evidence, and results.\n")
+	builder.WriteString("- Use one minimal batch of tool calls at a time, then inspect the results before continuing.\n")
+	builder.WriteString("- If the next step is a tool call, call the tool directly; do not emit a prose prelude that repeats the plan.\n")
+	builder.WriteString("- After tool results arrive, continue from the observation instead of restating the same plan or previous status text.\n")
+	builder.WriteString("- Treat .goflow as GoFlow runtime state, not project source; do not inspect .goflow/session.json or other .goflow files unless the user explicitly asks about GoFlow session internals.\n")
+	builder.WriteString("- Once you have enough source context and intend to modify files, proceed to the write action instead of spending extra reads on runtime metadata.\n")
+	builder.WriteString("- For coding tasks: inspect relevant files, make focused changes, run or describe the most relevant verification, then summarize changed files and residual risk.\n")
+	builder.WriteString("- If a tool fails or is denied, treat that as an observation and recover, retry with a safer step, or ask for operator input.\n")
+	builder.WriteString("- Final answers should state what changed or what was found, how it was verified, and any remaining risk.\n")
+}
+
+func writeModeContract(builder *strings.Builder, mode string) {
+	if builder == nil {
+		return
+	}
+	switch strings.ToLower(strings.TrimSpace(mode)) {
+	case "plan":
+		builder.WriteString("Mode contract for plan:\n")
+		builder.WriteString("- Produce a scoped execution plan with objective, assumptions, ordered steps, expected files or systems touched, verification, rollback notes, and risks.\n")
+		builder.WriteString("- Make the plan directly usable by a later fixer agent; include enough file/module detail for implementation without re-planning.\n")
+		builder.WriteString("- Do not perform write actions while planning.\n")
+	case "fix":
+		builder.WriteString("Mode contract for fix:\n")
+		builder.WriteString("- Make the smallest useful change that satisfies the approved request.\n")
+		builder.WriteString("- Prefer existing project patterns and avoid unrelated refactors.\n")
+		builder.WriteString("- Summarize changed files, verification performed, and follow-up work that remains.\n")
+	case "audit":
+		builder.WriteString("Mode contract for audit:\n")
+		builder.WriteString("- Prioritize findings by severity and include evidence, affected areas, and concrete remediation guidance.\n")
+		builder.WriteString("- Separate confirmed issues from hypotheses and hardening suggestions.\n")
+		builder.WriteString("- Do not perform write actions while auditing.\n")
+	}
+}

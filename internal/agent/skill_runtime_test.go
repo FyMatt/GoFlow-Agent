@@ -1,0 +1,3264 @@
+package agent
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"slices"
+	"sort"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	"github.com/FyMatt/GoFlow-Agent/internal/config"
+	"github.com/FyMatt/GoFlow-Agent/internal/interfaces"
+	"github.com/FyMatt/GoFlow-Agent/internal/memory"
+	"github.com/FyMatt/GoFlow-Agent/internal/runtime"
+	"github.com/FyMatt/GoFlow-Agent/internal/session"
+	"github.com/FyMatt/GoFlow-Agent/pkg/schema"
+)
+
+type stubSkillManager struct {
+	skill *schema.Skill
+}
+
+func (s stubSkillManager) List() []schema.Skill {
+	if s.skill == nil {
+		return nil
+	}
+	return []schema.Skill{*s.skill}
+}
+
+func (s stubSkillManager) Match(string) (*schema.Skill, bool) {
+	if s.skill == nil {
+		return nil, false
+	}
+	return s.skill, true
+}
+
+func (s stubSkillManager) MatchWithDiagnostics(string) (*schema.Skill, schema.SkillMatchDiagnostic, bool) {
+	if s.skill == nil {
+		return nil, schema.SkillMatchDiagnostic{}, false
+	}
+	return s.skill, schema.SkillMatchDiagnostic{SkillName: s.skill.Name, Score: 1, Reason: "test stub"}, true
+}
+
+type stubLLMClient struct {
+	responses []schema.ChatResponse
+	calls     int
+}
+
+func TestMergeBufferedTextEventsPersistsOneModelResponseEvent(t *testing.T) {
+	events := []schema.StreamEvent{
+		{Type: schema.StreamEventText, Content: "hello"},
+		{Type: schema.StreamEventText, Content: " "},
+		{Type: schema.StreamEventText, Content: "world"},
+	}
+	merged := mergeBufferedTextEvents(events)
+	if len(merged) != 1 || merged[0].Content != "hello world" {
+		t.Fatalf("expected one merged text event, got %#v", merged)
+	}
+}
+
+func TestRuntimeRunStreamClearsAuditFromPreviousTask(t *testing.T) {
+	llm := &stubLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Content: "first"}},
+		{Message: schema.Message{Content: "second"}},
+	}}
+	cfg := &config.Config{
+		DefaultAgent: "chat",
+		Session:      config.SessionConfig{MaxHistory: 8},
+		Providers:    map[string]config.LLMConfig{"primary": {Model: "test-model"}},
+		Agents: map[string]config.AgentProfile{
+			"chat": {Name: "Chat", Provider: "primary", Mode: "chat", Model: "test-model", MaxIterations: 1, ToolPolicy: config.ToolPolicyAllow},
+		},
+	}
+	audit := runtime.NewAuditLogger(true, false)
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"primary": llm}, stubSkillManager{}, &stubRuntimeMCP{}, session.New(8), audit)
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	ctx := WithAgentTarget(context.Background(), "chat")
+	first, err := runtimeRef.RunStream(ctx, "first task", nil)
+	if err != nil || len(first.AuditTrail) == 0 {
+		t.Fatalf("first run audit: result=%#v err=%v", first, err)
+	}
+	firstCount := len(first.AuditTrail)
+	second, err := runtimeRef.RunStream(ctx, "second task", nil)
+	if err != nil {
+		t.Fatalf("second run: %v", err)
+	}
+	if len(second.AuditTrail) != firstCount {
+		t.Fatalf("expected task-scoped audit trail, first=%d second=%d trail=%#v", firstCount, len(second.AuditTrail), second.AuditTrail)
+	}
+}
+
+type scriptedLLMCall struct {
+	response schema.ChatResponse
+	err      error
+	events   []schema.StreamEvent
+}
+
+type scriptedLLMClient struct {
+	calls    []scriptedLLMCall
+	requests []schema.ChatRequest
+}
+
+func (s *scriptedLLMClient) Chat(context.Context, schema.ChatRequest) (schema.ChatResponse, error) {
+	return schema.ChatResponse{}, fmt.Errorf("unused")
+}
+
+func (s *scriptedLLMClient) StreamChat(_ context.Context, req schema.ChatRequest, handler interfaces.StreamHandler) (schema.ChatResponse, error) {
+	s.requests = append(s.requests, req)
+	if len(s.calls) == 0 {
+		return schema.ChatResponse{Message: schema.Message{Content: "done"}}, nil
+	}
+	call := s.calls[0]
+	s.calls = s.calls[1:]
+	if handler != nil {
+		for _, event := range call.events {
+			if err := handler(event); err != nil {
+				return schema.ChatResponse{}, err
+			}
+		}
+	}
+	if call.err != nil {
+		return schema.ChatResponse{}, call.err
+	}
+	if handler != nil && call.response.Message.Content != "" {
+		if err := handler(schema.StreamEvent{Type: schema.StreamEventText, Content: call.response.Message.Content}); err != nil {
+			return schema.ChatResponse{}, err
+		}
+	}
+	return call.response, nil
+}
+
+func (s *scriptedLLMClient) Capabilities() []string {
+	return []string{"chat", "stream"}
+}
+
+func (s *stubLLMClient) Chat(context.Context, schema.ChatRequest) (schema.ChatResponse, error) {
+	return schema.ChatResponse{}, fmt.Errorf("unused")
+}
+
+func (s *stubLLMClient) StreamChat(_ context.Context, _ schema.ChatRequest, handler interfaces.StreamHandler) (schema.ChatResponse, error) {
+	if s.calls >= len(s.responses) {
+		return schema.ChatResponse{Message: schema.Message{Content: "done"}}, nil
+	}
+	resp := s.responses[s.calls]
+	s.calls++
+	if handler != nil && resp.Message.Content != "" {
+		if err := handler(schema.StreamEvent{Type: schema.StreamEventText, Content: resp.Message.Content}); err != nil {
+			return schema.ChatResponse{}, err
+		}
+	}
+	return resp, nil
+}
+
+func (s *stubLLMClient) Capabilities() []string {
+	return []string{"chat", "stream"}
+}
+
+type delayedUsageLLMClient struct {
+	response schema.ChatResponse
+	delay    time.Duration
+	calls    int
+}
+
+func (s *delayedUsageLLMClient) Chat(context.Context, schema.ChatRequest) (schema.ChatResponse, error) {
+	return schema.ChatResponse{}, fmt.Errorf("unused")
+}
+
+func (s *delayedUsageLLMClient) StreamChat(ctx context.Context, _ schema.ChatRequest, handler interfaces.StreamHandler) (schema.ChatResponse, error) {
+	s.calls++
+	if s.delay > 0 {
+		select {
+		case <-ctx.Done():
+			return schema.ChatResponse{}, ctx.Err()
+		case <-time.After(s.delay):
+		}
+	}
+	if handler != nil && s.response.Message.Content != "" {
+		if err := handler(schema.StreamEvent{Type: schema.StreamEventText, Content: s.response.Message.Content}); err != nil {
+			return schema.ChatResponse{}, err
+		}
+	}
+	return s.response, nil
+}
+
+func (s *delayedUsageLLMClient) Capabilities() []string {
+	return []string{"chat", "stream"}
+}
+
+type fallbackAwareLLMClient struct {
+	delayedUsageLLMClient
+	fallbackUsed bool
+}
+
+func (s *fallbackAwareLLMClient) FallbackUsed() bool {
+	return s.fallbackUsed
+}
+
+type verifierPassTestLLMClient struct {
+	streamResponse schema.ChatResponse
+	chatResponse   schema.ChatResponse
+	chatRequests   []schema.ChatRequest
+}
+
+func (s *verifierPassTestLLMClient) Chat(_ context.Context, req schema.ChatRequest) (schema.ChatResponse, error) {
+	s.chatRequests = append(s.chatRequests, req)
+	return s.chatResponse, nil
+}
+
+func (s *verifierPassTestLLMClient) StreamChat(_ context.Context, _ schema.ChatRequest, handler interfaces.StreamHandler) (schema.ChatResponse, error) {
+	if handler != nil && s.streamResponse.Message.Content != "" {
+		if err := handler(schema.StreamEvent{Type: schema.StreamEventText, Content: s.streamResponse.Message.Content}); err != nil {
+			return schema.ChatResponse{}, err
+		}
+	}
+	return s.streamResponse, nil
+}
+
+func (s *verifierPassTestLLMClient) Capabilities() []string {
+	return []string{"chat", "stream"}
+}
+
+func TestRunStreamDetectsFallbackUsageFromLLMClient(t *testing.T) {
+	llm := &fallbackAwareLLMClient{
+		delayedUsageLLMClient: delayedUsageLLMClient{response: schema.ChatResponse{Message: schema.Message{Content: "fallback answer from wrapped client"}}},
+		fallbackUsed:          true,
+	}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Provider:         "primary",
+		Mode:             "audit",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(&stubRuntimeMCP{})}
+	audit := runtime.NewAuditLogger(true, false)
+
+	result, err := runner.RunStream(context.Background(), "inspect this", stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), audit, nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !result.AuditTrail[len(result.AuditTrail)-1].FallbackUsed {
+		t.Fatalf("expected automatic fallback flag in audit trail, got %#v", result.AuditTrail)
+	}
+	if !hasFallbackStructuredSection(result.Structured) {
+		t.Fatalf("expected fallback structured section, got %#v", result.Structured)
+	}
+}
+
+func TestRunStreamPersistsSkillMatchDiagnostic(t *testing.T) {
+	skill := &schema.Skill{Name: "code-audit", Mode: "audit"}
+	llm := &stubLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "done"}}}}
+	mcp := &stubRuntimeMCP{}
+	state := session.New(4)
+	runner := &AgentRunner{id: "auditor", profile: config.AgentProfile{
+		Name:             "Auditor",
+		Mode:             "audit",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	if _, err := runner.RunStream(context.Background(), "audit this", stubSkillManager{skill: skill}, mcp, state, runtime.NewAuditLogger(false, false), nil, nil); err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	snapshot := state.Snapshot()
+	if snapshot.LastSkill != "code-audit" || snapshot.LastSkillMatch == nil {
+		t.Fatalf("expected last skill match in session snapshot, got %#v", snapshot)
+	}
+	if snapshot.LastSkillMatch.Score != 1 || snapshot.LastSkillMatch.Reason != "test stub" {
+		t.Fatalf("unexpected match diagnostic: %#v", snapshot.LastSkillMatch)
+	}
+}
+
+func TestRunStreamContinuesModelOutputLimit(t *testing.T) {
+	llm := &stubLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Role: "assistant", Content: "part 1"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 2"}, StopReason: schema.StopReasonStop},
+	}}
+	mcp := &stubRuntimeMCP{}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "write the full plan", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Incomplete {
+		t.Fatalf("expected completed continued output, got %#v", result)
+	}
+	if result.Output != "part 1\npart 2" {
+		t.Fatalf("unexpected combined output %q", result.Output)
+	}
+	if result.ContinuationCount != 1 {
+		t.Fatalf("expected one continuation, got %d", result.ContinuationCount)
+	}
+	if llm.calls != 2 {
+		t.Fatalf("expected two model calls, got %d", llm.calls)
+	}
+}
+
+func TestRunStreamContinuesOutputWithoutInjectingEmptyAssistantMessage(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{
+			Message: schema.Message{Role: "assistant", ProviderFields: map[string]json.RawMessage{
+				"reasoning_content": json.RawMessage(`"private reasoning only"`),
+			}},
+			StopReason: schema.StopReasonLength,
+		}},
+		{response: schema.ChatResponse{Message: schema.Message{Role: "assistant", Content: "completed output"}, StopReason: schema.StopReasonStop}},
+	}}
+	mcp := &stubRuntimeMCP{}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "write the full plan", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Incomplete || result.Output != "completed output" || result.ContinuationCount != 1 {
+		t.Fatalf("unexpected continuation result: %#v", result)
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("expected two requests, got %d", len(llm.requests))
+	}
+	for _, message := range llm.requests[1].Messages {
+		if strings.EqualFold(strings.TrimSpace(message.Role), "assistant") && strings.TrimSpace(message.Content) == "" && len(message.ToolCalls) == 0 {
+			t.Fatalf("continuation request contains invalid empty assistant message: %#v", llm.requests[1].Messages)
+		}
+	}
+	last := llm.requests[1].Messages[len(llm.requests[1].Messages)-1]
+	if last.Role != "user" || !strings.Contains(last.Content, "write the full plan") || !strings.Contains(last.Content, "Continue") {
+		t.Fatalf("expected the continuation instruction to preserve the original user request, got %#v", last)
+	}
+}
+
+func TestRunStreamMarksIncompleteAfterContinuationLimit(t *testing.T) {
+	llm := &stubLLMClient{responses: []schema.ChatResponse{
+		{Message: schema.Message{Role: "assistant", Content: "part 1"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 2"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 3"}, StopReason: schema.StopReasonMaxTokens},
+		{Message: schema.Message{Role: "assistant", Content: "part 4"}, StopReason: schema.StopReasonMaxTokens},
+	}}
+	mcp := &stubRuntimeMCP{}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "write the full plan", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !result.Incomplete {
+		t.Fatalf("expected incomplete result after continuation cap, got %#v", result)
+	}
+	if result.StopReason != schema.StopReasonMaxTokens {
+		t.Fatalf("expected max_tokens stop reason, got %q", result.StopReason)
+	}
+	if result.ContinuationCount != maxModelOutputContinuations {
+		t.Fatalf("expected continuation cap %d, got %d", maxModelOutputContinuations, result.ContinuationCount)
+	}
+	if !strings.Contains(result.IncompleteReason, "model output remained incomplete") {
+		t.Fatalf("unexpected incomplete reason %q", result.IncompleteReason)
+	}
+}
+
+func TestRunStreamMarksIterationBudgetDoneEventIncomplete(t *testing.T) {
+	readCall := schema.ToolCall{
+		ID:        "call_read",
+		Name:      "read_file",
+		Arguments: json.RawMessage(`{"path":"README.md"}`),
+	}
+	readCallAgain := schema.ToolCall{
+		ID:        "call_read_again",
+		Name:      "read_file",
+		Arguments: json.RawMessage(`{"path":"README.md"}`),
+	}
+	llm := &stubLLMClient{responses: []schema.ChatResponse{
+		{
+			Message:    schema.Message{Role: "assistant", Content: "need to inspect", ToolCalls: []schema.ToolCall{readCall}},
+			ToolCalls:  []schema.ToolCall{readCall},
+			StopReason: schema.StopReasonToolCalls,
+		},
+		{
+			Message:    schema.Message{Role: "assistant", Content: "need one more read", ToolCalls: []schema.ToolCall{readCallAgain}},
+			ToolCalls:  []schema.ToolCall{readCallAgain},
+			StopReason: schema.StopReasonToolCalls,
+		},
+		{Message: schema.Message{Role: "assistant", Content: "partial summary after budget"}, StopReason: schema.StopReasonStop},
+	}}
+	mcp := &stubRuntimeMCP{
+		tools:  []schema.Tool{{Name: "read_file", Kind: string(config.ToolKindRead), InputSchema: json.RawMessage(`{"type":"object"}`)}},
+		result: schema.ToolResult{ToolName: "read_file", Content: "README content"},
+	}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+	events := make([]schema.StreamEvent, 0)
+
+	result, err := runner.RunStream(context.Background(), "inspect then finish", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, func(event schema.StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !result.Incomplete || result.StopReason != schema.StopReasonIterationBudget {
+		t.Fatalf("expected incomplete iteration-budget result, got %#v", result)
+	}
+	done := lastStreamEventOfType(events, schema.StreamEventDone)
+	if !done.Incomplete || !done.NeedsAction || done.StopReason != schema.StopReasonIterationBudget || done.BudgetScope != "iteration" {
+		t.Fatalf("expected done event to carry incomplete iteration diagnostics, got %#v in %#v", done, events)
+	}
+}
+
+func lastStreamEventOfType(events []schema.StreamEvent, eventType schema.StreamEventType) schema.StreamEvent {
+	for i := len(events) - 1; i >= 0; i-- {
+		if events[i].Type == eventType {
+			return events[i]
+		}
+	}
+	return schema.StreamEvent{}
+}
+
+type stubRuntimeMCP struct {
+	mu          sync.Mutex
+	tools       []schema.Tool
+	calls       int
+	result      schema.ToolResult
+	err         error
+	callResults map[string]schema.ToolResult
+	workspace   string
+	taskScope   schema.TaskWorkspaceScope
+}
+
+func toolNamesForTest(tools []schema.Tool) []string {
+	names := make([]string, 0, len(tools))
+	for _, tool := range tools {
+		names = append(names, tool.Name)
+	}
+	return names
+}
+
+func (s *stubRuntimeMCP) ListTools(context.Context) ([]schema.Tool, error) {
+	return s.tools, nil
+}
+
+func (s *stubRuntimeMCP) RefreshTools(context.Context) ([]schema.Tool, error) {
+	return s.tools, nil
+}
+
+func (s *stubRuntimeMCP) CallTool(_ context.Context, name string, _ []byte) (schema.ToolResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.callToolLocked(name)
+}
+
+func (s *stubRuntimeMCP) callToolLocked(name string) (schema.ToolResult, error) {
+	s.calls++
+	if s.err != nil {
+		return schema.ToolResult{}, s.err
+	}
+	if s.callResults != nil {
+		if result, ok := s.callResults[name]; ok {
+			return result, nil
+		}
+	}
+	if s.result.Content != "" || s.result.ToolName != "" || s.result.IsError || s.result.Denied || s.result.Suspended {
+		return s.result, nil
+	}
+	return schema.ToolResult{Content: "ok"}, nil
+}
+
+func (s *stubRuntimeMCP) CallToolInWorkspace(ctx context.Context, name string, arguments []byte, workspaceRoot string) (schema.ToolResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.workspace = workspaceRoot
+	return s.callToolLocked(name)
+}
+
+func (s *stubRuntimeMCP) CallToolInTaskWorkspace(ctx context.Context, name string, arguments []byte, scope schema.TaskWorkspaceScope) (schema.ToolResult, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.taskScope = scope
+	s.workspace = scope.Workspace
+	return s.callToolLocked(name)
+}
+
+func (s *stubRuntimeMCP) HealthStatus(context.Context) map[string]string {
+	return map[string]string{"stub": "ready"}
+}
+
+func (s *stubRuntimeMCP) ToolNames() []string {
+	names := make([]string, 0, len(s.tools))
+	for _, tool := range s.tools {
+		if strings.TrimSpace(tool.Server) != "" {
+			names = append(names, strings.TrimSpace(tool.Server)+"/"+strings.TrimSpace(tool.Name))
+			continue
+		}
+		names = append(names, strings.TrimSpace(tool.Name))
+	}
+	sort.Strings(names)
+	return names
+}
+
+func TestWorkspaceGatedMCPOnlyExposesNetworkTools(t *testing.T) {
+	mcp := workspaceGatedMCP{mcp: &stubRuntimeMCP{tools: []schema.Tool{
+		{Name: "read_file", Server: "file_tools", Kind: "read"},
+		{Name: "write_file", Server: "file_tools", Kind: "write"},
+		{Name: "run", Server: "shell", Kind: "exec"},
+		{Name: "web_search", Server: "web_tools", Kind: "network"},
+	}}}
+	tools, err := mcp.ListTools(context.Background())
+	if err != nil {
+		t.Fatalf("ListTools: %v", err)
+	}
+	if len(tools) != 1 || tools[0].Name != "web_search" {
+		t.Fatalf("expected only network tools, got %#v", tools)
+	}
+	result, err := mcp.CallTool(context.Background(), "file_tools/read_file", []byte(`{"path":"README.md"}`))
+	if err != nil {
+		t.Fatalf("CallTool: %v", err)
+	}
+	if !result.IsError || !result.Denied {
+		t.Fatalf("expected workspace tool denial, got %#v", result)
+	}
+}
+
+func TestRunStreamOnlyExposesPolicyAllowedToolsToLLM(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{{
+		response: schema.ChatResponse{Message: schema.Message{Content: "done"}},
+	}}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{
+		{Name: "read_file", Server: "file_tools", Kind: "read", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
+		{Name: "write_file", Server: "file_tools", Kind: "write", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}`)},
+		{Name: "web_search", Server: "web_tools", Kind: "network", InputSchema: []byte(`{"type":"object","properties":{"query":{"type":"string"}}}`)},
+	}}
+	state := session.New(4)
+	var budgets []schema.PromptBudget
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+		ToolPolicy:       config.ToolPolicyAllow,
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	_, err := runner.RunStream(context.Background(), "inspect this", stubSkillManager{}, mcp, state, runtime.NewAuditLogger(false, false), nil, func(event schema.StreamEvent) error {
+		if event.Type == schema.StreamEventPromptBudget && event.PromptBudget != nil {
+			budgets = append(budgets, *event.PromptBudget)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if len(llm.requests) != 1 {
+		t.Fatalf("expected one LLM request, got %d", len(llm.requests))
+	}
+	if got := toolNamesForTest(llm.requests[0].Tools); !slices.Equal(got, []string{"read_file"}) {
+		t.Fatalf("expected only read tool schema exposed to model, got %#v", got)
+	}
+	if len(budgets) != 1 {
+		t.Fatalf("expected prompt budget event, got %#v", budgets)
+	}
+	if budgets[0].ExposedToolCount != 1 || budgets[0].TotalToolCount != 3 || budgets[0].FilteredToolCount != 2 || budgets[0].EstimatedPromptTokens == 0 {
+		t.Fatalf("unexpected prompt budget: %#v", budgets[0])
+	}
+	if budgets[0].ToolSchemaSelection != "policy_filtered" || len(budgets[0].InjectedToolSchemas) != 1 || len(budgets[0].FilteredToolSchemas) != 2 {
+		t.Fatalf("expected tool schema visibility diagnostics, got %#v", budgets[0])
+	}
+	if budgets[0].InjectedToolSchemas[0].QualifiedName != "file_tools/read_file" || budgets[0].InjectedToolSchemas[0].Status != "injected" {
+		t.Fatalf("unexpected injected tool diagnostic: %#v", budgets[0].InjectedToolSchemas)
+	}
+	if !strings.Contains(budgets[0].FilteredToolSchemas[0].Reason, "not allowed") && !strings.Contains(budgets[0].FilteredToolSchemas[1].Reason, "not allowed") {
+		t.Fatalf("expected filtered tool reasons, got %#v", budgets[0].FilteredToolSchemas)
+	}
+	if budgets[0].CacheablePrefixTokens == 0 || budgets[0].PromptPrefixHash == "" || budgets[0].SystemHash == "" || budgets[0].ToolSchemaHash == "" {
+		t.Fatalf("expected prompt cache metadata in budget, got %#v", budgets[0])
+	}
+	if snapshot := state.Snapshot(); snapshot.PromptBudget == nil || snapshot.PromptBudget.FilteredToolCount != 2 {
+		t.Fatalf("expected session prompt budget snapshot, got %#v", snapshot.PromptBudget)
+	}
+}
+
+func TestRunStreamNudgesImplementationAfterBroadReadContext(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{
+			{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.go"}`)},
+			{ID: "call-2", Name: "read_file", Arguments: []byte(`{"path":"b.go"}`)},
+			{ID: "call-3", Name: "read_file", Arguments: []byte(`{"path":"c.go"}`)},
+			{ID: "call-4", Name: "read_file", Arguments: []byte(`{"path":"d.go"}`)},
+		}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "implemented"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{
+		{Name: "read_file", Server: "file_tools", Kind: "read", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`)},
+		{Name: "write_file", Server: "file_tools", Kind: "write", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`)},
+	}}
+	runner := &AgentRunner{id: "fixer", profile: config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		Model:            "test-model",
+		MaxIterations:    4,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+		ToolPolicy:       config.ToolPolicyAllow,
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	var statuses []string
+	result, err := runner.RunStream(context.Background(), "帮我优化拓展这个项目", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, func(event schema.StreamEvent) error {
+		if event.Type == schema.StreamEventStatus {
+			statuses = append(statuses, event.Content)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Output != "implemented" {
+		t.Fatalf("expected final implementation response, got %#v", result)
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("expected second request after read observations, got %d", len(llm.requests))
+	}
+	second := llm.requests[1]
+	last := second.Messages[len(second.Messages)-1]
+	if last.Role != "user" || !strings.Contains(last.Content, "Enough workspace context has been gathered") || !strings.Contains(last.Content, "make the smallest safe file write next") {
+		t.Fatalf("expected action nudge as final second-request message, got %#v", last)
+	}
+	if !slices.Contains(statuses, "enough context gathered; nudging model to act") {
+		t.Fatalf("expected visible nudge status, got %#v", statuses)
+	}
+}
+
+func TestRunStreamPreservesProviderFieldsAcrossToolLoop(t *testing.T) {
+	toolCall := schema.ToolCall{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{
+			Message: schema.Message{
+				Role:      "assistant",
+				Content:   "need to read",
+				ToolCalls: []schema.ToolCall{toolCall},
+				ProviderFields: map[string]json.RawMessage{
+					"reasoning_content": json.RawMessage(`"private reasoning"`),
+				},
+			},
+			ToolCalls: []schema.ToolCall{toolCall},
+		}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "done"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "chat", profile: config.AgentProfile{
+		Name:             "Chat",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+		ToolPolicy:       config.ToolPolicyAllow,
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	if _, err := runner.RunStream(context.Background(), "read a file", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil); err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("expected second model request after tool result, got %d", len(llm.requests))
+	}
+	assistant := llm.requests[1].Messages[len(llm.requests[1].Messages)-2]
+	if got := string(assistant.ProviderFields["reasoning_content"]); got != `"private reasoning"` {
+		t.Fatalf("expected assistant provider field to be preserved, got %#v", assistant.ProviderFields)
+	}
+	if len(assistant.ToolCalls) != 1 || assistant.ToolCalls[0].ID != "call-1" {
+		t.Fatalf("expected assistant tool call to be preserved, got %#v", assistant)
+	}
+}
+
+func TestActionNudgeTriggersAfterTwoReadResults(t *testing.T) {
+	tracker := newActionNudgeTracker(config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+	}, "fix", nil, "optimize this project")
+	if nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 1, Valid: 1}, 1); ok || nudge != "" {
+		t.Fatalf("expected one read result to avoid early nudge, got ok=%t nudge=%q", ok, nudge)
+	}
+	nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 1, Valid: 1}, 1)
+	if !ok || !strings.Contains(nudge, "make the smallest safe file write next") || !strings.Contains(nudge, "without acting") {
+		t.Fatalf("expected implementation nudge after two read results, ok=%t nudge=%q", ok, nudge)
+	}
+}
+
+func TestActionNudgeTriggersEarlierAfterDiscoveryAndContentRead(t *testing.T) {
+	tracker := newActionNudgeTracker(config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+	}, "fix", nil, "extend this project")
+	if nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 2, DiscoverySeen: true, ContentReadCalls: 1, Valid: 2}, 2); !ok || !strings.Contains(nudge, "make the smallest safe file write next") {
+		t.Fatalf("expected earlier action nudge after discovery plus content read, ok=%t nudge=%q", ok, nudge)
+	}
+}
+
+func TestActionNudgeEscalatesWhenImplementationStillHasNoWrite(t *testing.T) {
+	tracker := newActionNudgeTracker(config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite, config.ToolKindExec},
+	}, "fix", nil, "调整留言按钮间距")
+	if _, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 2, DiscoverySeen: true, ContentReadCalls: 1, Valid: 2}, 2); !ok {
+		t.Fatal("expected initial implementation nudge")
+	}
+	if nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 1, Valid: 1}, 1); ok || nudge != "" {
+		t.Fatalf("expected one post-nudge batch to remain tolerated, got ok=%t nudge=%q", ok, nudge)
+	}
+	nudge, ok := tracker.Next(toolCallBatchProfile{Mutating: true, ExecCalls: 1, Valid: 1}, 1)
+	if !ok || !strings.Contains(nudge, "Do not call more read, search, hash, or validation tools") || !strings.Contains(nudge, "apply the smallest safe patch now") {
+		t.Fatalf("expected stalled implementation escalation after exec without a write, ok=%t nudge=%q", ok, nudge)
+	}
+}
+
+func TestActionNudgeStopsAfterSuccessfulWrite(t *testing.T) {
+	tracker := newActionNudgeTracker(config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+	}, "fix", nil, "修改页面样式")
+	if _, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 2, DiscoverySeen: true, ContentReadCalls: 1, Valid: 2}, 2); !ok {
+		t.Fatal("expected initial implementation nudge")
+	}
+	if nudge, ok := tracker.Next(toolCallBatchProfile{Mutating: true, WriteCalls: 1, Valid: 1}, 1); ok || nudge != "" {
+		t.Fatalf("successful write must stop implementation nudges, got ok=%t nudge=%q", ok, nudge)
+	}
+	if nudge, ok := tracker.Next(toolCallBatchProfile{ReadOnly: true, ReadCalls: 1, Valid: 1}, 1); ok || nudge != "" {
+		t.Fatalf("successful write must keep later read verification quiet, got ok=%t nudge=%q", ok, nudge)
+	}
+}
+
+func TestPromptBudgetToolSchemaHashIsStableAcrossToolOrder(t *testing.T) {
+	tools := []schema.Tool{
+		{Name: "write_file", Server: "file_tools", Kind: "write", Description: "write", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
+		{Name: "read_file", Server: "file_tools", Kind: "read", Description: "read", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
+	}
+	reversed := []schema.Tool{tools[1], tools[0]}
+	left := estimatePromptBudget("planner", "plan", schema.ChatRequest{Model: "m", System: "system", Messages: []schema.Message{{Role: "user", Content: "hi"}}, Tools: tools}, nil, len(tools), session.Snapshot{})
+	right := estimatePromptBudget("planner", "plan", schema.ChatRequest{Model: "m", System: "system", Messages: []schema.Message{{Role: "user", Content: "hi"}}, Tools: reversed}, nil, len(reversed), session.Snapshot{})
+	if left.ToolSchemaHash == "" || left.PromptPrefixHash == "" {
+		t.Fatalf("expected stable hashes, got %#v", left)
+	}
+	if left.ToolSchemaHash != right.ToolSchemaHash || left.PromptPrefixHash != right.PromptPrefixHash {
+		t.Fatalf("expected tool schema/prefix hashes to be order-stable, left=%#v right=%#v", left, right)
+	}
+}
+
+func TestPromptBudgetPrefixHashIgnoresDynamicMemoryMessages(t *testing.T) {
+	profile := config.AgentProfile{Name: "Chat", Mode: "chat"}
+	tools := []schema.Tool{
+		{Name: "read_file", Server: "file_tools", Kind: "read", Description: "read", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
+	}
+	system := BuildSystemPrompt(profile, nil, session.Snapshot{})
+	memoryOne := memory.PromptContext{Blocks: []memory.PromptBlock{{
+		Kind:        "project",
+		Title:       "Project memory",
+		Ref:         ".goflow/memory/project.md",
+		Summary:     "Use summary-first context.",
+		ContentMode: "summary",
+	}}}
+	memoryTwo := memory.PromptContext{Blocks: []memory.PromptBlock{{
+		Kind:        "project",
+		Title:       "Project memory",
+		Ref:         ".goflow/memory/project.md",
+		Summary:     "Use summary-first context. " + strings.Repeat("Dynamic task memory changes between runs. ", 24),
+		ContentMode: "summary",
+	}}}
+	baseMessages := []schema.Message{{Role: "user", Content: "inspect project"}}
+
+	left := estimatePromptBudgetWithContext("chat", "chat", schema.ChatRequest{
+		Model:    "m",
+		System:   system,
+		Messages: dynamicContextMessages(memoryOne.PromptText(), session.Snapshot{}, "inspect project", baseMessages),
+		Tools:    tools,
+	}, nil, len(tools), session.Snapshot{}, promptBudgetContext{Memory: &memoryOne})
+	right := estimatePromptBudgetWithContext("chat", "chat", schema.ChatRequest{
+		Model:    "m",
+		System:   system,
+		Messages: dynamicContextMessages(memoryTwo.PromptText(), session.Snapshot{}, "inspect project", baseMessages),
+		Tools:    tools,
+	}, nil, len(tools), session.Snapshot{}, promptBudgetContext{Memory: &memoryTwo})
+
+	if left.SystemHash == "" || left.PromptPrefixHash == "" {
+		t.Fatalf("expected stable prompt hashes, got %#v", left)
+	}
+	if left.SystemHash != right.SystemHash || left.ToolSchemaHash != right.ToolSchemaHash || left.PromptPrefixHash != right.PromptPrefixHash {
+		t.Fatalf("expected dynamic memory to leave cacheable hashes unchanged, left=%#v right=%#v", left, right)
+	}
+	if left.MessageTokens == right.MessageTokens || left.MemoryBlocks[0].Tokens == right.MemoryBlocks[0].Tokens {
+		t.Fatalf("expected dynamic memory to affect message/memory diagnostics, left=%#v right=%#v", left, right)
+	}
+}
+
+func TestPromptBudgetTracksSessionHistoryCompactionSavings(t *testing.T) {
+	budget := estimatePromptBudget("chat", "chat", schema.ChatRequest{
+		Model:    "m",
+		System:   BuildSystemPrompt(config.AgentProfile{Name: "Chat", Mode: "chat"}, nil, session.Snapshot{RecentPrompts: []string{"repeat", "repeat", "new"}, RecentTools: []string{"read_file a", "read_file a", "write_file a"}}),
+		Messages: []schema.Message{{Role: "user", Content: "hi"}},
+	}, nil, 0, session.Snapshot{
+		RecentPrompts: []string{"repeat", "repeat", "new"},
+		RecentTools:   []string{"read_file a", "read_file a", "write_file a"},
+	})
+	if budget.HistoryPromptItems != 3 || budget.HistoryPromptRetainedItems != 2 || budget.HistoryPromptDeduplicatedItems != 1 {
+		t.Fatalf("expected prompt history compaction metrics, got %#v", budget)
+	}
+	if budget.HistoryToolItems != 3 || budget.HistoryToolRetainedItems != 2 || budget.HistoryToolDeduplicatedItems != 1 {
+		t.Fatalf("expected tool history compaction metrics, got %#v", budget)
+	}
+	if budget.HistoryEstimatedSavedTokens == 0 {
+		t.Fatalf("expected estimated saved tokens, got %#v", budget)
+	}
+}
+
+func TestPromptBudgetTracksFilteredToolSchemaSavings(t *testing.T) {
+	tools := []schema.Tool{
+		{Name: "read_file", Server: "file_tools", Kind: "read", Description: "read file", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}}}`)},
+		{Name: "write_file", Server: "file_tools", Kind: "write", Description: strings.Repeat("write file ", 80), InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}}}`)},
+	}
+	profile := config.AgentProfile{
+		Name:             "Reader",
+		Mode:             "chat",
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+		AllowedTools:     []string{"file_tools/read_file"},
+		ToolPolicy:       config.ToolPolicyAllow,
+	}
+	budget := estimatePromptBudgetWithContext("chat", "chat", schema.ChatRequest{
+		Model:    "m",
+		System:   BuildSystemPrompt(profile, nil, session.Snapshot{}),
+		Messages: []schema.Message{{Role: "user", Content: "inspect"}},
+		Tools:    filterPromptTools(profile, tools),
+	}, nil, len(tools), session.Snapshot{}, promptBudgetContextWithTools(promptBudgetContext{}, profile, tools))
+
+	if budget.ExposedToolCount != 1 || budget.FilteredToolCount != 1 {
+		t.Fatalf("expected one visible and one filtered tool, got %#v", budget)
+	}
+	if budget.ToolSchemaEstimatedSavedTokens == 0 {
+		t.Fatalf("expected filtered tool schema token savings, got %#v", budget)
+	}
+	if len(budget.FilteredToolSchemas) != 1 || budget.FilteredToolSchemas[0].QualifiedName != "file_tools/write_file" {
+		t.Fatalf("expected write_file filtered diagnostics, got %#v", budget.FilteredToolSchemas)
+	}
+	if budget.ToolSchemaEstimatedSavedTokens != budget.FilteredToolSchemas[0].Tokens {
+		t.Fatalf("expected savings to match filtered schema tokens, budget=%#v filtered=%#v", budget, budget.FilteredToolSchemas)
+	}
+}
+
+func TestPromptBudgetTracksMemorySkillAndArtifactDiagnostics(t *testing.T) {
+	largeResult := strings.Repeat("artifact-content\n", 2200)
+	artifactRef := "sha256:" + strings.Repeat("a", 64)
+	compacted := compactToolResultForPromptWithArtifact(schema.ToolResult{ToolName: "read_file", Content: largeResult}, artifactRef)
+	memoryContext := memory.PromptContext{
+		Blocks: []memory.PromptBlock{{
+			Kind:                 "file",
+			Title:                "prompt_budget.go",
+			Ref:                  "internal/agent/prompt_budget.go",
+			Summary:              "Prompt budget records memory and artifact diagnostics.",
+			Score:                4,
+			Hash:                 "abcdef1234567890",
+			Language:             "go",
+			Size:                 8192,
+			ContentMode:          "summary",
+			EstimatedSavedTokens: 2000,
+		}},
+		Omitted:              []string{"2 lower-scoring memory results omitted"},
+		EstimatedSavedTokens: 123,
+	}
+	skill := &schema.Skill{
+		Name:         "large-skill",
+		Description:  "Large skill",
+		Instructions: "## Role\n" + strings.Repeat("- Follow detailed process.\n", 120),
+		Path:         "skills/large-skill/SKILL.md",
+	}
+	budget := estimatePromptBudgetWithContext("chat", "chat", schema.ChatRequest{
+		Model:  "m",
+		System: BuildSystemPrompt(config.AgentProfile{Name: "Chat", Mode: "chat"}, skill, session.Snapshot{}),
+		Messages: []schema.Message{
+			{Role: "user", Content: memoryContext.PromptText()},
+			{Role: "user", Content: "inspect prompt budget"},
+			{Role: "tool", Name: "read_file", Content: compacted},
+		},
+	}, skill, 0, session.Snapshot{}, promptBudgetContext{Memory: &memoryContext})
+	if budget.MemoryBlockCount != 1 || budget.MemoryEstimatedSavedTokens != 123 || len(budget.MemoryBlocks) != 1 {
+		t.Fatalf("expected memory diagnostics, got %#v", budget)
+	}
+	if block := budget.MemoryBlocks[0]; block.Hash == "" || block.Language != "go" || block.ContentMode != "summary" || block.Size != 8192 || block.EstimatedSavedTokens != 2000 {
+		t.Fatalf("expected file summary diagnostics, got %#v", block)
+	}
+	if budget.ArtifactRefCount != 1 || budget.CompactedToolResultCount != 1 || budget.ArtifactOmittedTokens == 0 {
+		t.Fatalf("expected artifact diagnostics, got %#v", budget)
+	}
+	if budget.SkillInstructionMode != "summary" || budget.SkillOmittedTokens == 0 || budget.SkillSourceHash == "" {
+		t.Fatalf("expected skill summary diagnostics, got %#v", budget)
+	}
+	if len(budget.OmittedContext) < 3 {
+		t.Fatalf("expected memory, skill, and artifact omission diagnostics, got %#v", budget.OmittedContext)
+	}
+}
+
+func TestMatchedSkillDeclaredToolsNarrowPromptAndExecution(t *testing.T) {
+	skill := &schema.Skill{
+		Name:             "read-only-skill",
+		Tools:            []schema.SkillTool{{Name: "file_tools/read_file", Required: true}},
+		AllowedToolKinds: []string{"read", "write"},
+	}
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: []byte(`{"path":"a.txt","content":"x"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "write was blocked"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{
+		{Name: "read_file", Server: "file_tools", Kind: "read", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"additionalProperties":false}`)},
+		{Name: "write_file", Server: "file_tools", Kind: "write", InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`)},
+	}}
+	runner := &AgentRunner{id: "fixer", profile: config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+		ToolPolicy:       config.ToolPolicyAllow,
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "use the skill", stubSkillManager{skill: skill}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if got := toolNamesForTest(llm.requests[0].Tools); !slices.Equal(got, []string{"read_file"}) {
+		t.Fatalf("expected skill to expose only declared read_file tool, got %#v", got)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected undeclared write tool to be blocked before MCP call, got %d calls", mcp.calls)
+	}
+	if len(result.ToolResults) != 1 || !result.ToolResults[0].Denied || !strings.Contains(result.ToolResults[0].Content, "allowed tools: file_tools/read_file") {
+		t.Fatalf("expected undeclared tool denial, got %#v", result.ToolResults)
+	}
+}
+
+func TestRunStreamCompactsLargeToolResultBeforeNextLLMRequest(t *testing.T) {
+	largeContent := strings.Repeat("0123456789abcdef\n", 2200)
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"large.txt"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "summarized large output"}}},
+	}}
+	mcp := &stubRuntimeMCP{
+		tools: []schema.Tool{{
+			Name:        "read_file",
+			Server:      "file_tools",
+			Kind:        "read",
+			InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+		}},
+		result: schema.ToolResult{ToolName: "read_file", Content: largeContent},
+	}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+		ToolPolicy:       config.ToolPolicyAllow,
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	state := session.New(4)
+	result, err := runner.RunStream(context.Background(), "read large file", stubSkillManager{}, mcp, state, runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("expected two LLM requests, got %d", len(llm.requests))
+	}
+	if len(result.ToolResults) != 1 || result.ToolResults[0].Content != largeContent {
+		t.Fatalf("expected full original tool result to be preserved, got %#v", result.ToolResults)
+	}
+	second := llm.requests[1]
+	last := second.Messages[len(second.Messages)-1]
+	if last.Role != "tool" {
+		t.Fatalf("expected final message in second request to be a tool observation, got %#v", last)
+	}
+	if !toolResultPromptWasCompacted(last.Content) {
+		preview := last.Content
+		if len(preview) > 120 {
+			preview = preview[:120]
+		}
+		t.Fatalf("expected compacted tool result marker, got %q", preview)
+	}
+	if len([]byte(last.Content)) >= len([]byte(largeContent)) {
+		t.Fatalf("expected compacted prompt content to be smaller than original; compacted=%d original=%d", len([]byte(last.Content)), len([]byte(largeContent)))
+	}
+	if !strings.Contains(last.Content, "--- head ---") || !strings.Contains(last.Content, "--- tail ---") {
+		t.Fatalf("expected compacted prompt content to retain head/tail markers")
+	}
+	artifacts := state.Artifacts(session.SessionArtifactFilter{Content: true})
+	if len(artifacts) != 1 {
+		t.Fatalf("expected one stored session artifact, got %#v", artifacts)
+	}
+	if artifacts[0].Content != largeContent || artifacts[0].Ref == "" {
+		t.Fatalf("expected full artifact content and ref, got %#v", artifacts[0])
+	}
+	if !strings.Contains(last.Content, artifacts[0].Ref) {
+		t.Fatalf("expected compacted prompt to include artifact ref %q, got %q", artifacts[0].Ref, last.Content[:200])
+	}
+}
+
+func TestCompactToolResultForPromptCompactsLongLogsBeforeGlobalThreshold(t *testing.T) {
+	var builder strings.Builder
+	for i := 0; i < 180; i++ {
+		fmt.Fprintf(&builder, "2026-05-18T12:00:%02dZ ERROR worker failed path=internal/agent/file_%03d.go retry=true\n", i%60, i)
+	}
+	result := schema.ToolResult{ToolName: "test_log", Content: builder.String()}
+	compacted := compactToolResultForPrompt(result)
+	if !toolResultPromptWasCompacted(compacted) {
+		t.Fatalf("expected focused log compaction, got %q", compacted[:min(len(compacted), 160)])
+	}
+	if !strings.Contains(compacted, "kind=log") || !strings.Contains(compacted, "--- head ---") || !strings.Contains(compacted, "--- tail ---") {
+		t.Fatalf("expected log compaction metadata and head/tail, got %q", compacted[:min(len(compacted), 220)])
+	}
+	if len([]byte(compacted)) >= len([]byte(result.Content)) {
+		t.Fatalf("expected compacted log to be smaller; compacted=%d original=%d", len([]byte(compacted)), len([]byte(result.Content)))
+	}
+}
+
+func TestCompactToolResultForPromptKeepsSmallResultsUnchanged(t *testing.T) {
+	result := schema.ToolResult{ToolName: "read_file", Content: "small output"}
+	if got := compactToolResultForPrompt(result); got != result.Content {
+		t.Fatalf("expected small result unchanged, got %q", got)
+	}
+}
+
+func TestSkillAllowedToolKindsRestrictExecution(t *testing.T) {
+	skill := &schema.Skill{Name: "safe-plan", AllowedToolKinds: []string{"read"}}
+	llm := &stubLLMClient{responses: []schema.ChatResponse{{
+		ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: []byte(`{"path":"a.txt","content":"x"}`)}},
+	}}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "write_file",
+		Kind:        "write",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "plan this", stubSkillManager{skill: skill}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected skill-level restriction as tool result, got %v", err)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected blocked tool call, got %d MCP calls", mcp.calls)
+	}
+	if len(result.ToolResults) != 1 || !result.ToolResults[0].Denied || !result.ToolResults[0].IsError {
+		t.Fatalf("expected denied tool result, got %#v", result.ToolResults)
+	}
+	if !strings.Contains(result.ToolResults[0].Content, "tool kind write is not allowed; allowed kinds: read") {
+		t.Fatalf("unexpected denied tool result: %#v", result.ToolResults[0])
+	}
+}
+
+func TestSkillAllowedToolKindsCannotExpandAgentPermissions(t *testing.T) {
+	skill := &schema.Skill{Name: "unsafe-imported-skill", AllowedToolKinds: []string{"write"}}
+	llm := &stubLLMClient{responses: []schema.ChatResponse{{
+		ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: []byte(`{"path":"a.txt","content":"x"}`)}},
+	}}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "write_file",
+		Kind:        "write",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "chat", profile: config.AgentProfile{
+		Name:             "Chat",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "use imported skill", stubSkillManager{skill: skill}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected denied tool result, got %v", err)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected blocked tool call, got %d MCP calls", mcp.calls)
+	}
+	if len(result.ToolResults) != 1 || !result.ToolResults[0].Denied || !result.ToolResults[0].IsError {
+		t.Fatalf("expected denied tool result, got %#v", result.ToolResults)
+	}
+	if !strings.Contains(result.ToolResults[0].Content, "allowed kinds: -") {
+		t.Fatalf("expected empty intersection denial, got %#v", result.ToolResults[0])
+	}
+}
+
+func TestSkillDeclaredScriptsExposeOnlySkillRunnerWithinAgentPermissions(t *testing.T) {
+	skill := &schema.Skill{
+		Name:             "scripted-skill",
+		AllowedToolKinds: []string{"read"},
+		Tools:            []schema.SkillTool{{Name: "file_tools/read_file", Required: true}},
+		Scripts:          []schema.SkillScript{{Name: "collect", Path: "scripts/collect.py", Runtime: "python"}},
+	}
+	profile := applySkillToProfile(config.AgentProfile{
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindExec},
+	}, skill)
+
+	if !slices.Equal(profile.AllowedToolKinds, []config.ToolKind{config.ToolKindRead, config.ToolKindExec}) {
+		t.Fatalf("expected read and exec kinds for declared script, got %#v", profile.AllowedToolKinds)
+	}
+	if got := profile.AllowedTools; !slices.Equal(got, []string{"file_tools/read_file", "skill_runner/run_script"}) {
+		t.Fatalf("expected skill runner to be added to declared tool envelope, got %#v", got)
+	}
+}
+
+func TestRunStreamRecoversFromToolArgumentValidationError(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "path argument was missing"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "read a file", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected argument validation error to recover as observation, got %v", err)
+	}
+	if result.Output != "path argument was missing" {
+		t.Fatalf("expected final response after validation observation, got %#v", result)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected invalid tool call not to reach MCP, got %d calls", mcp.calls)
+	}
+	if len(result.ToolResults) != 1 || !result.ToolResults[0].IsError || result.ToolResults[0].Denied {
+		t.Fatalf("expected non-denied validation error result, got %#v", result.ToolResults)
+	}
+	if !strings.Contains(result.ToolResults[0].Content, "missing required field") {
+		t.Fatalf("expected missing required field detail, got %#v", result.ToolResults[0])
+	}
+	if len(llm.requests) < 2 {
+		t.Fatalf("expected recovery request after validation result, got %d", len(llm.requests))
+	}
+	lastMessage := llm.requests[1].Messages[len(llm.requests[1].Messages)-1]
+	if lastMessage.Role != "tool" || !strings.Contains(lastMessage.Content, "missing required field") {
+		t.Fatalf("expected validation error observation in second request, got %#v", lastMessage)
+	}
+}
+
+func TestRunStreamRecoversFromUnknownToolCall(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "missing_tool", Arguments: []byte(`{}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "tool was unavailable"}}},
+	}}
+	mcp := &stubRuntimeMCP{}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "use missing tool", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected unknown tool call to recover as observation, got %v", err)
+	}
+	if result.Output != "tool was unavailable" {
+		t.Fatalf("expected final response after unknown-tool observation, got %#v", result)
+	}
+	if mcp.calls != 0 {
+		t.Fatalf("expected unknown tool not to reach MCP, got %d calls", mcp.calls)
+	}
+	if len(result.ToolResults) != 1 || !result.ToolResults[0].IsError || result.ToolResults[0].Denied {
+		t.Fatalf("expected non-denied unknown-tool error result, got %#v", result.ToolResults)
+	}
+	if !strings.Contains(result.ToolResults[0].Content, "tool not found in catalog") {
+		t.Fatalf("expected tool not found detail, got %#v", result.ToolResults[0])
+	}
+}
+
+func TestRunStreamRecoversFromMCPCallError(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "reported read failure"}}},
+	}}
+	mcp := &stubRuntimeMCP{
+		tools: []schema.Tool{{
+			Name:        "read_file",
+			Kind:        "read",
+			InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+		}},
+		err: fmt.Errorf("read failed"),
+	}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "read a.txt", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected MCP call error to recover as observation, got %v", err)
+	}
+	if result.Output != "reported read failure" {
+		t.Fatalf("expected final response after MCP error observation, got %#v", result)
+	}
+	if mcp.calls != 1 {
+		t.Fatalf("expected one MCP call attempt, got %d", mcp.calls)
+	}
+	if len(result.ToolResults) != 1 || !result.ToolResults[0].IsError || result.ToolResults[0].Denied {
+		t.Fatalf("expected non-denied MCP error result, got %#v", result.ToolResults)
+	}
+	if !strings.Contains(result.ToolResults[0].Content, "read failed") {
+		t.Fatalf("expected MCP error detail, got %#v", result.ToolResults[0])
+	}
+}
+
+func TestSkillMaxIterationsOverridesAgentProfile(t *testing.T) {
+	skill := &schema.Skill{Name: "one-shot", MaxIterations: 1}
+	llm := &stubLLMClient{responses: []schema.ChatResponse{{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    3,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "plan this", stubSkillManager{skill: skill}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected skill max_iterations to allow one tool iteration plus final response, got %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("expected final response after single allowed tool iteration, got %#v", result)
+	}
+	if llm.calls != 1 {
+		t.Fatalf("expected skill max_iterations to allow one tool iteration before final response fallback, got %d recorded tool-turn calls", llm.calls)
+	}
+}
+
+func TestRunStreamEmitsVisibleModelWaitStatus(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{Message: schema.Message{Content: "done"}}},
+	}}
+	mcp := &stubRuntimeMCP{}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	var statuses []schema.StreamEvent
+	result, err := runner.RunStream(context.Background(), "hello", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, func(event schema.StreamEvent) error {
+		if event.Type == schema.StreamEventStatus {
+			statuses = append(statuses, event)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Output != "done" {
+		t.Fatalf("expected final output, got %#v", result)
+	}
+	foundWaitStatus := false
+	for _, status := range statuses {
+		if status.Content == "waiting for model response..." && status.NeedsAction {
+			foundWaitStatus = true
+			break
+		}
+	}
+	if !foundWaitStatus {
+		t.Fatalf("expected visible model wait status, got %#v", statuses)
+	}
+}
+
+func TestRunStreamRecoversFromInvalidToolArguments(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{err: fmt.Errorf("llm chat: invalid tool arguments: tool call has invalid arguments: unexpected end of JSON input")},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "recovered after retry"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    3,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	var statuses []string
+	result, err := runner.RunStream(context.Background(), "read a.txt", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, func(event schema.StreamEvent) error {
+		if event.Type == schema.StreamEventStatus {
+			statuses = append(statuses, event.Content)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected recovery from invalid tool arguments, got %v", err)
+	}
+	if result.Output != "recovered after retry" {
+		t.Fatalf("expected recovered final output, got %#v", result)
+	}
+	if mcp.calls != 1 {
+		t.Fatalf("expected recovered tool execution, got %d calls", mcp.calls)
+	}
+	if len(llm.requests) < 2 {
+		t.Fatalf("expected retry request history, got %d requests", len(llm.requests))
+	}
+	if len(llm.requests[1].Messages) < 2 {
+		t.Fatalf("expected retry to continue conversation with recovery guidance, got %#v", llm.requests[1].Messages)
+	}
+	if llm.requests[1].Messages[0].Content != "read a.txt" {
+		t.Fatalf("expected original user request to remain first message, got %#v", llm.requests[1].Messages)
+	}
+	if !strings.Contains(strings.ToLower(llm.requests[1].Messages[len(llm.requests[1].Messages)-1].Content), "complete") {
+		t.Fatalf("expected retry guidance requesting complete tool arguments, got %#v", llm.requests[1].Messages)
+	}
+	recoveryPrompt := llm.requests[1].Messages[len(llm.requests[1].Messages)-1].Content
+	for _, expected := range []string{
+		"Recovery rules:",
+		"exactly one complete tool call",
+		"Include every required field",
+		"stop calling tools",
+	} {
+		if !strings.Contains(recoveryPrompt, expected) {
+			t.Fatalf("expected recovery prompt to contain %q, got %q", expected, recoveryPrompt)
+		}
+	}
+	foundDetectedStatus := false
+	foundRecoveringStatus := false
+	for _, status := range statuses {
+		lower := strings.ToLower(status)
+		if strings.Contains(lower, "detected incomplete tool arguments") {
+			foundDetectedStatus = true
+		}
+		if strings.Contains(lower, "recovering") && strings.Contains(lower, "complete valid tool-call json") {
+			foundRecoveringStatus = true
+		}
+	}
+	if !foundDetectedStatus || !foundRecoveringStatus {
+		t.Fatalf("expected staged operator-facing recovery statuses, got %#v", statuses)
+	}
+}
+
+func TestRunStreamSuppressesFailedInvalidToolArgumentPrelude(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{
+			events: []schema.StreamEvent{
+				{Type: schema.StreamEventText, Content: "I will rewrite the file now."},
+				{Type: schema.StreamEventToolCall, ToolName: "write_file", ToolCallID: "bad-call", Content: "write"},
+			},
+			err: fmt.Errorf("llm chat: invalid tool arguments: tool call has invalid arguments: unexpected end of JSON input"),
+		},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "recovered final answer"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    3,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	var texts []string
+	var toolCalls []string
+	result, err := runner.RunStream(context.Background(), "read a.txt", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, func(event schema.StreamEvent) error {
+		switch event.Type {
+		case schema.StreamEventText:
+			texts = append(texts, event.Content)
+		case schema.StreamEventToolCall:
+			toolCalls = append(toolCalls, event.ToolName)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected recovery from invalid tool arguments, got %v", err)
+	}
+	if result.Output != "recovered final answer" {
+		t.Fatalf("expected recovered final output, got %#v", result)
+	}
+	joinedText := strings.Join(texts, "\n")
+	if strings.Contains(joinedText, "I will rewrite the file now.") {
+		t.Fatalf("expected failed prelude to be suppressed, got text events %#v", texts)
+	}
+	if joinedText != "recovered final answer" {
+		t.Fatalf("expected only final recovered text, got %#v", texts)
+	}
+	if strings.Contains(strings.Join(toolCalls, ","), "write_file") {
+		t.Fatalf("expected failed partial tool call to be suppressed, got %#v", toolCalls)
+	}
+	if len(toolCalls) != 1 || toolCalls[0] != "read_file" {
+		t.Fatalf("expected only recovered read_file tool call, got %#v", toolCalls)
+	}
+}
+
+func TestRunStreamSuppressesSuccessfulToolCallPrelude(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{
+			events: []schema.StreamEvent{
+				{Type: schema.StreamEventText, Content: "I will read the file first."},
+			},
+			response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}},
+		},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "final answer after reading"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	var texts []string
+	result, err := runner.RunStream(context.Background(), "read a.txt", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, func(event schema.StreamEvent) error {
+		if event.Type == schema.StreamEventText {
+			texts = append(texts, event.Content)
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("expected successful run, got %v", err)
+	}
+	if result.Output != "final answer after reading" {
+		t.Fatalf("expected final output, got %#v", result)
+	}
+	joinedText := strings.Join(texts, "\n")
+	if strings.Contains(joinedText, "I will read the file first.") {
+		t.Fatalf("expected tool-call prelude to be suppressed, got text events %#v", texts)
+	}
+	if joinedText != "final answer after reading" {
+		t.Fatalf("expected only final text, got %#v", texts)
+	}
+}
+
+func TestRunStreamRetriesRepeatedInvalidToolArgumentsBeforeFailing(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{err: fmt.Errorf("llm chat: invalid tool arguments: tool call has invalid arguments: unexpected end of JSON input")},
+		{err: fmt.Errorf("llm chat: invalid tool arguments: tool call has invalid arguments: unexpected end of JSON input")},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "recovered after second retry"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    3,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "read a.txt", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected recovery after repeated invalid tool arguments, got %v", err)
+	}
+	if result.Output != "recovered after second retry" {
+		t.Fatalf("expected recovered final output, got %#v", result)
+	}
+	if len(llm.requests) < 3 {
+		t.Fatalf("expected original request plus two recovery attempts, got %d", len(llm.requests))
+	}
+	finalRecoveryPrompt := llm.requests[2].Messages[len(llm.requests[2].Messages)-1].Content
+	if !strings.Contains(finalRecoveryPrompt, "This is the final recovery attempt.") {
+		t.Fatalf("expected final recovery attempt warning, got %q", finalRecoveryPrompt)
+	}
+}
+
+func TestRunStreamAllowsFinalResponseAfterToolIterationBudget(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-2", Name: "read_file", Arguments: []byte(`{"path":"b.txt"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "all done"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "read both files then summarize", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected final response after tool budget, got %v", err)
+	}
+	if result.Output != "all done" {
+		t.Fatalf("expected final output, got %#v", result)
+	}
+	if len(result.ToolResults) != 2 {
+		t.Fatalf("expected both tool results, got %#v", result.ToolResults)
+	}
+	if len(llm.requests) != 3 {
+		t.Fatalf("expected extra completion turn after tool iterations, got %d requests", len(llm.requests))
+	}
+}
+
+func TestRunStreamReturnsBudgetSummaryWhenFinalTurnStillCallsTool(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-2", Name: "read_file", Arguments: []byte(`{"path":"b.txt"}`)}}}},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-3", Name: "read_file", Arguments: []byte(`{"path":"c.txt"}`)}}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "read files then summarize", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected graceful local budget summary, got %v", err)
+	}
+	if !strings.Contains(result.Output, "Tool iteration budget reached") {
+		t.Fatalf("expected local budget summary, got %#v", result)
+	}
+	if len(result.ToolResults) != 1 {
+		t.Fatalf("expected completed tool result to remain available, got %#v", result.ToolResults)
+	}
+}
+
+func TestRunStreamFallsBackToLocalBudgetSummaryWhenSummaryRequestFails(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-2", Name: "read_file", Arguments: []byte(`{"path":"b.txt"}`)}}}},
+		{err: fmt.Errorf("provider temporarily unavailable")},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "read files then summarize", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(true, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected local recovery when summary request fails, got %v", err)
+	}
+	if !result.Incomplete || result.StopReason != schema.StopReasonIterationBudget {
+		t.Fatalf("expected recoverable iteration-budget result, got %#v", result)
+	}
+	if !strings.Contains(result.Output, "Tool iteration budget reached") {
+		t.Fatalf("expected local budget summary, got %#v", result)
+	}
+	if len(result.ToolResults) != 1 {
+		t.Fatalf("expected completed tool evidence to be preserved, got %#v", result.ToolResults)
+	}
+	foundAudit := false
+	for _, entry := range result.AuditTrail {
+		if entry.Outcome == "iteration_budget_summary_error" {
+			foundAudit = true
+			break
+		}
+	}
+	if !foundAudit {
+		t.Fatalf("expected summary failure to remain auditable, got %#v", result.AuditTrail)
+	}
+}
+
+func TestRunStreamAllowsFinalTurnMutationToReachApproval(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"calculator.py"}`)}}}},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-2", Name: "write_file", Arguments: []byte(`{"path":"calculator.py","content":"print('improved')\n"}`)}}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{
+		{
+			Name:        "read_file",
+			Kind:        "read",
+			InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+		},
+		{
+			Name:        "write_file",
+			Kind:        "write",
+			InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+		},
+	}}
+	state := session.New(4)
+	runtimeRef := &Runtime{
+		cfg:       &config.Config{WorkspaceRoot: "C:/repo"},
+		session:   state,
+		approvals: newApprovalStore(),
+	}
+	runner := &AgentRunner{id: "fixer", profile: config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		Model:            "test-model",
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+		ToolPolicy:       config.ToolPolicyConfirm,
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "optimize the calculator", stubSkillManager{}, mcp, state, runtime.NewAuditLogger(false, false), runtimeRef, nil)
+	if err != nil {
+		t.Fatalf("expected final-turn write to suspend for approval, got %v", err)
+	}
+	if mcp.calls != 1 {
+		t.Fatalf("expected only read_file to execute before write approval, got %d MCP calls", mcp.calls)
+	}
+	if len(result.ToolResults) != 2 || !result.ToolResults[1].Suspended || result.ToolResults[1].ToolName != "write_file" {
+		t.Fatalf("expected read result plus suspended write_file, got %#v", result.ToolResults)
+	}
+	if strings.Contains(result.Output, "Tool iteration budget reached") {
+		t.Fatalf("expected approval instead of budget summary, got %#v", result)
+	}
+	if pending := runtimeRef.PendingApprovals(); len(pending) != 1 || pending[0].ID != "call-2" {
+		t.Fatalf("expected pending approval for final-turn write, got %#v", pending)
+	}
+}
+
+func TestEnsureMinimumToolIterationsOnlyBumpsMutationCapableProfiles(t *testing.T) {
+	readOnly := ensureMinimumToolIterations(config.AgentProfile{
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+		Mode:             "plan",
+	})
+	if readOnly.MaxIterations != 1 {
+		t.Fatalf("expected read-only profile to keep one iteration, got %d", readOnly.MaxIterations)
+	}
+
+	mutating := ensureMinimumToolIterations(config.AgentProfile{
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+		Mode:             "fix",
+	})
+	if mutating.MaxIterations != 2 {
+		t.Fatalf("expected mutation-capable profile to get read/write/final room, got %d", mutating.MaxIterations)
+	}
+}
+
+func TestRunStreamSummarizesWhenToolBudgetExhaustedByAnotherToolCall(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-2", Name: "read_file", Arguments: []byte(`{"path":"b.txt"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "stopped after budget and summarized"}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "chat",
+		Model:            "test-model",
+		MaxIterations:    1,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(mcp)}
+
+	result, err := runner.RunStream(context.Background(), "read files then summarize", stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false), nil, nil)
+	if err != nil {
+		t.Fatalf("expected graceful budget summary, got %v", err)
+	}
+	if result.Output != "stopped after budget and summarized" {
+		t.Fatalf("expected budget summary output, got %#v", result)
+	}
+	if len(llm.requests) != 3 {
+		t.Fatalf("expected final no-tool summary request, got %d requests", len(llm.requests))
+	}
+	if len(llm.requests[2].Tools) != 0 {
+		t.Fatalf("expected final budget request to disable tools, got %#v", llm.requests[2].Tools)
+	}
+	if !strings.Contains(llm.requests[2].Messages[len(llm.requests[2].Messages)-1].Content, "Do not call more tools") {
+		t.Fatalf("expected final budget guidance, got %#v", llm.requests[2].Messages)
+	}
+}
+
+func TestRuntimeUsesCostControlSummarizerForBudgetSummary(t *testing.T) {
+	primaryLLM := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"a.txt"}`)}}}},
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-2", Name: "read_file", Arguments: []byte(`{"path":"b.txt"}`)}}}},
+	}}
+	cheapLLM := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{Message: schema.Message{Content: "cheap summary"}, Usage: schema.TokenUsage{PromptTokens: 3, OutputTokens: 2}}},
+	}}
+	mcp := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "read_file",
+		Kind:        "read",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+	}}}
+	cfg := &config.Config{
+		DefaultAgent: "planner",
+		Providers: map[string]config.LLMConfig{
+			"primary": {Model: "primary-model"},
+			"cheap":   {Model: "cheap-summary-provider"},
+		},
+		Agents: map[string]config.AgentProfile{
+			"planner": {
+				Name:             "Planner",
+				Provider:         "primary",
+				Mode:             "plan",
+				Model:            "primary-model",
+				MaxIterations:    1,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+				ToolPolicy:       config.ToolPolicyAllow,
+			},
+		},
+		CostControl: config.CostControlConfig{
+			Summarizer: config.AuxiliaryModelConfig{Enabled: true, Provider: "cheap", Model: "cheap-summary", MaxTokens: 64},
+		},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{
+		"primary": primaryLLM,
+		"cheap":   cheapLLM,
+	}, stubSkillManager{}, mcp, session.New(4), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	result, err := runtimeRef.RunStream(context.Background(), "read files then summarize", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Output != "cheap summary" {
+		t.Fatalf("expected cheap summarizer output, got %#v", result)
+	}
+	if len(primaryLLM.requests) != 2 {
+		t.Fatalf("expected primary model to handle tool loop only, got %d requests", len(primaryLLM.requests))
+	}
+	if len(cheapLLM.requests) != 1 || cheapLLM.requests[0].Model != "cheap-summary" {
+		t.Fatalf("expected cheap summarizer request, got %#v", cheapLLM.requests)
+	}
+	snapshot := runtimeRef.SessionSnapshot()
+	if len(snapshot.TokenUsages) == 0 || snapshot.TokenUsages[len(snapshot.TokenUsages)-1].PromptTokens != 3 {
+		t.Fatalf("expected summarizer token usage stored, got %#v", snapshot.TokenUsages)
+	}
+}
+
+func TestRuntimeUsesCostControlRouterForUnmatchedRequest(t *testing.T) {
+	chatLLM := &scriptedLLMClient{}
+	fixerLLM := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{Message: schema.Message{Content: "fixed through router"}}},
+	}}
+	routerLLM := &verifierPassTestLLMClient{chatResponse: schema.ChatResponse{
+		Message: schema.Message{Content: "fix"},
+		Usage:   schema.TokenUsage{PromptTokens: 2, OutputTokens: 1},
+	}}
+	cfg := &config.Config{
+		DefaultAgent: "chat",
+		Providers: map[string]config.LLMConfig{
+			"chat":   {Model: "chat-model"},
+			"fixer":  {Model: "fixer-model"},
+			"router": {Model: "router-provider-model"},
+		},
+		Agents: map[string]config.AgentProfile{
+			"chat":  {Name: "Chat", Provider: "chat", Mode: "chat", Model: "chat-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+			"fixer": {Name: "Fixer", Provider: "fixer", Mode: "fix", Model: "fixer-model", MaxIterations: 2, AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow},
+		},
+		CostControl: config.CostControlConfig{
+			Router: config.AuxiliaryModelConfig{Enabled: true, Provider: "router", Model: "cheap-router", MaxTokens: 32},
+		},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{
+		"chat":   chatLLM,
+		"fixer":  fixerLLM,
+		"router": routerLLM,
+	}, stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	result, err := runtimeRef.RunStream(context.Background(), "please handle this task", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Output != "fixed through router" || result.AgentID != "fixer" {
+		t.Fatalf("expected router to choose fixer, got %#v", result)
+	}
+	if len(routerLLM.chatRequests) != 1 || routerLLM.chatRequests[0].Model != "cheap-router" {
+		t.Fatalf("expected cheap router request, got %#v", routerLLM.chatRequests)
+	}
+	if len(fixerLLM.requests) != 1 || len(chatLLM.requests) != 0 {
+		t.Fatalf("expected fixer only after router, fixer=%d chat=%d", len(fixerLLM.requests), len(chatLLM.requests))
+	}
+	snapshot := runtimeRef.SessionSnapshot()
+	if snapshot.LastRouting.TargetAgent != "fixer" || snapshot.LastRouting.Outcome != "rerouted" {
+		t.Fatalf("expected rerouted snapshot, got %#v", snapshot.LastRouting)
+	}
+	if len(snapshot.TokenUsages) == 0 || snapshot.TokenUsages[0].AgentID != "router" {
+		t.Fatalf("expected router token usage stored, got %#v", snapshot.TokenUsages)
+	}
+}
+
+func TestRunStreamMarksFallbackUsageInResultAndAudit(t *testing.T) {
+	llm := &delayedUsageLLMClient{response: schema.ChatResponse{
+		Message: schema.Message{Content: "fallback answer"},
+		Usage:   schema.TokenUsage{PromptTokens: 5, OutputTokens: 4, CachedTokens: 0},
+	}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Provider:         "backup",
+		Mode:             "audit",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(&stubRuntimeMCP{}), fallbackUsed: true}
+	audit := runtime.NewAuditLogger(true, false)
+
+	result, err := runner.RunStream(context.Background(), "inspect this", stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), audit, nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !result.AuditTrail[len(result.AuditTrail)-1].FallbackUsed {
+		t.Fatalf("expected fallback flag in audit trail, got %#v", result.AuditTrail)
+	}
+	if !hasFallbackStructuredSection(result.Structured) {
+		t.Fatalf("expected fallback structured section, got %#v", result.Structured)
+	}
+}
+
+func TestRunStreamEmitsTokenUsageEvent(t *testing.T) {
+	llm := &delayedUsageLLMClient{response: schema.ChatResponse{
+		Message: schema.Message{Content: "answer"},
+		Usage:   schema.TokenUsage{PromptTokens: 7, OutputTokens: 3, CachedTokens: 2},
+	}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Provider:         "primary",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(&stubRuntimeMCP{})}
+
+	var events []schema.StreamEvent
+	_, err := runner.RunStream(context.Background(), "plan this", stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), runtime.NewAuditLogger(false, false), nil, func(event schema.StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	for _, event := range events {
+		if event.Type != schema.StreamEventTokenUsage {
+			continue
+		}
+		if event.PromptTokens != 7 || event.OutputTokens != 3 || event.CachedTokens != 2 || event.AgentID != "planner" || event.Mode != "plan" {
+			t.Fatalf("unexpected token usage event: %#v", event)
+		}
+		return
+	}
+	t.Fatalf("expected token usage event, got %#v", events)
+}
+
+func TestRuntimeRunStreamAddsVerifierPassForFixMode(t *testing.T) {
+	fixerLLM := &verifierPassTestLLMClient{streamResponse: schema.ChatResponse{
+		Message: schema.Message{Content: "changed files and ran tests"},
+	}}
+	auditorLLM := &verifierPassTestLLMClient{chatResponse: schema.ChatResponse{
+		Message: schema.Message{Content: "Status: pass\nChecked: implementation summary and test claim\nRisks: none\nNext: none"},
+		Usage:   schema.TokenUsage{PromptTokens: 11, OutputTokens: 7, CachedTokens: 0},
+	}}
+	cfg := &config.Config{
+		DefaultAgent: "fixer",
+		Agents: map[string]config.AgentProfile{
+			"fixer": {
+				Name:             "Fixer",
+				Provider:         "fixer",
+				Mode:             "fix",
+				Model:            "test-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+				ToolPolicy:       config.ToolPolicyAllow,
+			},
+			"auditor": {
+				Name:             "Auditor",
+				Provider:         "auditor",
+				Mode:             "audit",
+				Model:            "test-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+				ToolPolicy:       config.ToolPolicyAllow,
+			},
+		},
+		Verifier: config.VerifierConfig{Enabled: true, Agent: "auditor", Modes: []string{"fix"}, MaxTokens: 128},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	}, stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), runtime.NewAuditLogger(true, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	var events []schema.StreamEvent
+	result, err := runtimeRef.RunStream(context.Background(), "fix the bug", func(event schema.StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !strings.Contains(result.Output, "Verification pass:") || len(result.Verification) == 0 || result.Verification[len(result.Verification)-1].Kind != "verifier" {
+		t.Fatalf("expected verifier output and artifact, got %#v", result)
+	}
+	if len(auditorLLM.chatRequests) != 1 {
+		t.Fatalf("expected one verifier chat request, got %d", len(auditorLLM.chatRequests))
+	}
+	if len(auditorLLM.chatRequests[0].Tools) != 0 {
+		t.Fatalf("expected verifier pass to disable tools, got %#v", auditorLLM.chatRequests[0].Tools)
+	}
+	seenTokenUsage := false
+	seenVerifyStage := false
+	for _, event := range events {
+		if event.Type == schema.StreamEventTokenUsage && event.AgentID == "auditor" && event.PromptTokens == 11 && event.OutputTokens == 7 {
+			seenTokenUsage = true
+		}
+		if event.Type == schema.StreamEventTaskStage && event.AgentID == "auditor" && event.TaskStage == "verify" {
+			seenVerifyStage = true
+		}
+	}
+	if !seenTokenUsage {
+		t.Fatalf("expected verifier token usage event, got %#v", events)
+	}
+	if !seenVerifyStage {
+		t.Fatalf("expected verifier task stage event, got %#v", events)
+	}
+}
+
+func TestRuntimeRunStreamSkipsVerifierWhileToolApprovalIsPending(t *testing.T) {
+	fixerLLM := &verifierPassTestLLMClient{streamResponse: schema.ChatResponse{
+		ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "write_file", Arguments: json.RawMessage(`{"path":"note.txt","content":"hello"}`)}},
+	}}
+	auditorLLM := &verifierPassTestLLMClient{chatResponse: schema.ChatResponse{
+		Message: schema.Message{Content: "verifier should wait until completion"},
+	}}
+	state := session.New(4)
+	cfg := &config.Config{
+		DefaultAgent: "fixer",
+		Agents: map[string]config.AgentProfile{
+			"fixer": {
+				Name: "Fixer", Provider: "fixer", Mode: "fix", Model: "test-model", MaxIterations: 2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite}, ToolPolicy: config.ToolPolicyConfirm,
+			},
+			"auditor": {
+				Name: "Auditor", Provider: "auditor", Mode: "audit", Model: "test-model", MaxIterations: 2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead}, ToolPolicy: config.ToolPolicyAllow,
+			},
+		},
+		Verifier: config.VerifierConfig{Enabled: true, Agent: "auditor", Modes: []string{"fix"}, MaxTokens: 128},
+	}
+	mcpClient := &stubRuntimeMCP{tools: []schema.Tool{{Name: "write_file", Kind: "write"}}}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"fixer": fixerLLM, "auditor": auditorLLM}, stubSkillManager{}, mcpClient, state, runtime.NewAuditLogger(true, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	runID := runtimeRef.StartAgentRun("write a note")
+	result, err := runtimeRef.RunStream(WithAgentRunID(context.Background(), runID), "write a note", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !agentResultAwaitingToolApproval(result) {
+		t.Fatalf("expected suspended approval result, got %#v", result)
+	}
+	if len(auditorLLM.chatRequests) != 0 {
+		t.Fatalf("expected verifier to wait for resumed completion, got %d calls", len(auditorLLM.chatRequests))
+	}
+}
+
+func TestRuntimeVerifierPassCanUseProviderAndModelOverride(t *testing.T) {
+	fixerLLM := &verifierPassTestLLMClient{streamResponse: schema.ChatResponse{
+		Message: schema.Message{Content: "changed files and ran tests"},
+	}}
+	auditorLLM := &verifierPassTestLLMClient{chatResponse: schema.ChatResponse{
+		Message: schema.Message{Content: "auditor should not be called"},
+	}}
+	cheapLLM := &verifierPassTestLLMClient{chatResponse: schema.ChatResponse{
+		Message: schema.Message{Content: "Status: pass\nChecked: cheap verifier route\nRisks: none\nNext: none"},
+	}}
+	cfg := &config.Config{
+		DefaultAgent: "fixer",
+		Providers: map[string]config.LLMConfig{
+			"fixer":   {Model: "fixer-model"},
+			"auditor": {Model: "auditor-model"},
+			"cheap":   {Model: "cheap-provider-model"},
+		},
+		Agents: map[string]config.AgentProfile{
+			"fixer": {
+				Name:             "Fixer",
+				Provider:         "fixer",
+				Mode:             "fix",
+				Model:            "fixer-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+				ToolPolicy:       config.ToolPolicyAllow,
+			},
+			"auditor": {
+				Name:             "Auditor",
+				Provider:         "auditor",
+				Mode:             "audit",
+				Model:            "auditor-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+				ToolPolicy:       config.ToolPolicyAllow,
+			},
+		},
+		Verifier: config.VerifierConfig{Enabled: true, Agent: "auditor", Provider: "cheap", Model: "cheap-checker", Modes: []string{"fix"}, MaxTokens: 64},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+		"cheap":   cheapLLM,
+	}, stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), runtime.NewAuditLogger(true, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	var events []schema.StreamEvent
+	result, err := runtimeRef.RunStream(context.Background(), "fix the bug", func(event schema.StreamEvent) error {
+		events = append(events, event)
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !strings.Contains(result.Output, "cheap verifier route") {
+		t.Fatalf("expected cheap verifier output, got %s", result.Output)
+	}
+	if len(cheapLLM.chatRequests) != 1 {
+		t.Fatalf("expected cheap verifier client to be called once, got %d", len(cheapLLM.chatRequests))
+	}
+	if got := cheapLLM.chatRequests[0].Model; got != "cheap-checker" {
+		t.Fatalf("expected verifier model override, got %q", got)
+	}
+	if len(auditorLLM.chatRequests) != 0 {
+		t.Fatalf("expected auditor provider client to remain unused, got %d calls", len(auditorLLM.chatRequests))
+	}
+	route := runtimeRef.VerifierRoute()
+	if route.Provider != "cheap" || route.Model != "cheap-checker" || !route.ProviderOverride || !route.ModelOverride {
+		t.Fatalf("unexpected verifier route: %#v", route)
+	}
+	seenBudget := false
+	for _, event := range events {
+		if event.Type == schema.StreamEventPromptBudget && event.AgentID == "auditor" && event.PromptBudget != nil && event.PromptBudget.PromptPrefixHash != "" {
+			seenBudget = true
+		}
+	}
+	if !seenBudget {
+		t.Fatalf("expected verifier prompt budget event, got %#v", events)
+	}
+}
+
+func hasFallbackStructuredSection(sections []schema.StructuredSection) bool {
+	for _, section := range sections {
+		if section.Kind == "provider" && len(section.Items) == 1 && section.Items[0] == "fallback" {
+			return true
+		}
+	}
+	return false
+}
+
+func TestRunStreamBuildsStructuredArtifactsForAuditMode(t *testing.T) {
+	llm := &delayedUsageLLMClient{response: schema.ChatResponse{
+		Message: schema.Message{Content: "Found SQL injection risk in internal/api/user.go and added parameterized query verification."},
+	}}
+	runner := &AgentRunner{id: "auditor", profile: config.AgentProfile{
+		Name:             "Auditor",
+		Mode:             "audit",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(&stubRuntimeMCP{})}
+	audit := runtime.NewAuditLogger(true, false)
+
+	result, err := runner.RunStream(context.Background(), "audit this", stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), audit, nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if len(result.Findings) == 0 {
+		t.Fatalf("expected findings, got %#v", result)
+	}
+	if result.Findings[0].Summary == "" {
+		t.Fatalf("expected finding summary, got %#v", result.Findings)
+	}
+	if len(result.Verification) == 0 {
+		t.Fatalf("expected verification items, got %#v", result.Verification)
+	}
+	if result.Verification[0].Status == "" {
+		t.Fatalf("expected verification status, got %#v", result.Verification)
+	}
+}
+
+func TestRunStreamBuildsStructuredArtifactsForFixMode(t *testing.T) {
+	llm := &delayedUsageLLMClient{response: schema.ChatResponse{
+		Message: schema.Message{Content: "Updated internal/api/user.go to use parameterized queries and adjusted internal/api/user_test.go."},
+	}}
+	runner := &AgentRunner{id: "fixer", profile: config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(&stubRuntimeMCP{})}
+	audit := runtime.NewAuditLogger(true, false)
+
+	result, err := runner.RunStream(context.Background(), "fix this", stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), audit, nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if len(result.Changes) == 0 {
+		t.Fatalf("expected changes, got %#v", result)
+	}
+	if len(result.Changes[0].Files) == 0 {
+		t.Fatalf("expected changed files, got %#v", result.Changes)
+	}
+}
+
+func TestRunStreamAddsReflectionSectionForHighRiskAuditRequests(t *testing.T) {
+	llm := &delayedUsageLLMClient{response: schema.ChatResponse{
+		Message: schema.Message{Content: "Found SQL injection risk in internal/api/user.go and added parameterized query verification."},
+	}}
+	runner := &AgentRunner{id: "auditor", profile: config.AgentProfile{
+		Name:             "Auditor",
+		Mode:             "audit",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(&stubRuntimeMCP{})}
+	audit := runtime.NewAuditLogger(true, false)
+
+	result, err := runner.RunStream(context.Background(), "audit this authentication and SQL access path for high-risk security regressions", stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), audit, nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	for _, section := range result.Structured {
+		if section.Kind == "reflection" {
+			if section.Summary == "" {
+				t.Fatalf("expected reflection summary, got %#v", section)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected reflection structured section, got %#v", result.Structured)
+}
+
+func TestRunStreamAddsReflectionSectionForHighRiskFixRequests(t *testing.T) {
+	llm := &delayedUsageLLMClient{response: schema.ChatResponse{
+		Message: schema.Message{Content: "Updated internal/api/user.go authentication flow to remove a high-risk SQL injection path and tightened internal/api/user_test.go coverage."},
+	}}
+	runner := &AgentRunner{id: "fixer", profile: config.AgentProfile{
+		Name:             "Fixer",
+		Mode:             "fix",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(&stubRuntimeMCP{})}
+	audit := runtime.NewAuditLogger(true, false)
+
+	result, err := runner.RunStream(context.Background(), "fix this authentication and SQL access path for high-risk security issues", stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), audit, nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	for _, section := range result.Structured {
+		if section.Kind == "reflection" {
+			if section.Summary == "" {
+				t.Fatalf("expected reflection summary, got %#v", section)
+			}
+			if !strings.Contains(strings.ToLower(section.Summary), "remediation") {
+				t.Fatalf("expected fix reflection summary to mention remediation, got %#v", section)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected reflection structured section, got %#v", result.Structured)
+}
+
+func TestRunStreamAddsPlanVerificationForPlanModeOutputs(t *testing.T) {
+	llm := &delayedUsageLLMClient{response: schema.ChatResponse{
+		Message: schema.Message{Content: "Plan the auth middleware refactor by updating internal/api/user.go, adding regression coverage in internal/api/user_test.go, and validating session handling."},
+	}}
+	runner := &AgentRunner{id: "planner", profile: config.AgentProfile{
+		Name:             "Planner",
+		Mode:             "plan",
+		Model:            "test-model",
+		MaxIterations:    2,
+		AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+	}, llm: llm, executor: NewExecutor(&stubRuntimeMCP{})}
+	audit := runtime.NewAuditLogger(true, false)
+
+	result, err := runner.RunStream(context.Background(), "plan the auth middleware refactor", stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), audit, nil, nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	for _, item := range result.Verification {
+		if item.Kind == "plan" {
+			if item.Status != "proposed" {
+				t.Fatalf("expected plan verification status proposed, got %#v", item)
+			}
+			if !strings.Contains(strings.ToLower(item.Detail), "plan") {
+				t.Fatalf("expected plan verification detail to mention plan, got %#v", item)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected plan verification item, got %#v", result.Verification)
+}
+
+func TestRunStreamAddsReflectionVerificationForHighRiskAuditAndFixRequests(t *testing.T) {
+	tests := []struct {
+		name           string
+		mode           string
+		input          string
+		output         string
+		expectedDetail string
+	}{
+		{
+			name:           "audit request adds reflection verification",
+			mode:           "audit",
+			input:          "audit this authentication and SQL access path for high-risk security regressions",
+			output:         "Found SQL injection risk in internal/api/user.go and added parameterized query verification.",
+			expectedDetail: "self-check",
+		},
+		{
+			name:           "fix request adds reflection verification",
+			mode:           "fix",
+			input:          "fix this authentication and SQL access path for high-risk security issues",
+			output:         "Updated internal/api/user.go authentication flow to remove a high-risk SQL injection path and tightened internal/api/user_test.go coverage.",
+			expectedDetail: "remediation",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			llm := &delayedUsageLLMClient{response: schema.ChatResponse{
+				Message: schema.Message{Content: tc.output},
+			}}
+			runner := &AgentRunner{id: tc.mode, profile: config.AgentProfile{
+				Name:             tc.mode,
+				Mode:             tc.mode,
+				Model:            "test-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+			}, llm: llm, executor: NewExecutor(&stubRuntimeMCP{})}
+			audit := runtime.NewAuditLogger(true, false)
+
+			result, err := runner.RunStream(context.Background(), tc.input, stubSkillManager{}, &stubRuntimeMCP{}, session.New(4), audit, nil, nil)
+			if err != nil {
+				t.Fatalf("RunStream: %v", err)
+			}
+			for _, item := range result.Verification {
+				if item.Kind == "reflection" {
+					if item.Status != "performed" {
+						t.Fatalf("expected reflection verification status performed, got %#v", item)
+					}
+					if !strings.Contains(strings.ToLower(item.Detail), tc.expectedDetail) {
+						t.Fatalf("expected reflection verification detail to mention %q, got %#v", tc.expectedDetail, item)
+					}
+					return
+				}
+			}
+			t.Fatalf("expected reflection verification item, got %#v", result.Verification)
+		})
+	}
+}
+
+func TestRunStreamRoutesOrdinaryChatByIntent(t *testing.T) {
+	tests := []struct {
+		name          string
+		input         string
+		expectedAgent string
+		expectedMode  string
+		defaultAgent  string
+	}{
+		{
+			name:          "english architecture requests route to planner",
+			input:         "design the rollout architecture and proposal for this migration",
+			expectedAgent: "planner",
+			expectedMode:  "plan",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "english how-to planning requests route to planner",
+			input:         "how should we break this migration into steps and approach the rollout",
+			expectedAgent: "planner",
+			expectedMode:  "plan",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "english security review requests route to auditor",
+			input:         "inspect this patch for risk and do a security review",
+			expectedAgent: "auditor",
+			expectedMode:  "audit",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "english impact evaluation requests route to auditor",
+			input:         "evaluate the compatibility impact and trade-offs of this API change",
+			expectedAgent: "auditor",
+			expectedMode:  "audit",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "english worth-changing requests route to auditor",
+			input:         "take a look and judge whether this refactor is worth doing before we change it",
+			expectedAgent: "auditor",
+			expectedMode:  "audit",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "english proposal-safety requests route to auditor",
+			input:         "do you think this rollout plan is safe and reasonable",
+			expectedAgent: "auditor",
+			expectedMode:  "audit",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "english weak proposal-review requests route to auditor",
+			input:         "sanity-check this proposal and tell me if anything looks off",
+			expectedAgent: "auditor",
+			expectedMode:  "audit",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "english lightweight advisory requests stay on chat",
+			input:         "give me a rough approach and some advice on where to start with this migration",
+			expectedAgent: "chat",
+			expectedMode:  "chat",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "english rewrite requests route to fixer",
+			input:         "rewrite the handler and apply the change directly",
+			expectedAgent: "fixer",
+			expectedMode:  "fix",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "chinese optimization requests route to fixer",
+			input:         "再优化下当前项目",
+			expectedAgent: "fixer",
+			expectedMode:  "fix",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "chinese how-to planning requests route to planner",
+			input:         "plan this requirement first and split the implementation steps",
+			expectedAgent: "planner",
+			expectedMode:  "plan",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "chinese feature expansion requests route to fixer",
+			input:         "extend this project and add new features",
+			expectedAgent: "fixer",
+			expectedMode:  "fix",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "chinese compatibility evaluation requests route to auditor",
+			input:         "先评估一下这个改动的兼容性影响和权衡",
+			expectedAgent: "auditor",
+			expectedMode:  "audit",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "chinese worth-changing requests route to auditor",
+			input:         "audit whether this refactor is worth changing and assess the risk",
+			expectedAgent: "auditor",
+			expectedMode:  "audit",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "chinese proposal-safety requests route to auditor",
+			input:         "你觉得这个方案靠谱吗，风险大不大",
+			expectedAgent: "auditor",
+			expectedMode:  "audit",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "chinese weak review requests route to auditor",
+			input:         "先帮我把这个方案过一遍，看看有没有哪里不太对劲",
+			expectedAgent: "auditor",
+			expectedMode:  "audit",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "chinese lightweight advisory requests stay on chat",
+			input:         "先给我一个大概思路和建议，告诉我从哪里开始比较好",
+			expectedAgent: "chat",
+			expectedMode:  "chat",
+			defaultAgent:  "chat",
+		},
+		{
+			name:          "chinese implementation requests route to fixer after completed workflow",
+			input:         "请直接修改当前项目并完善这个功能",
+			expectedAgent: "fixer",
+			expectedMode:  "fix",
+			defaultAgent:  "planner",
+		},
+		{
+			name:          "generic chat stays on default agent",
+			input:         "hello there",
+			expectedAgent: "chat",
+			expectedMode:  "chat",
+			defaultAgent:  "chat",
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			runtimeRef := newRoutingTestRuntime(tc.defaultAgent)
+
+			result, err := runtimeRef.RunStream(context.Background(), tc.input, nil)
+			if err != nil {
+				t.Fatalf("RunStream: %v", err)
+			}
+			if result.AgentID != tc.expectedAgent {
+				t.Fatalf("expected agent %q, got %q", tc.expectedAgent, result.AgentID)
+			}
+			if result.Mode != tc.expectedMode {
+				t.Fatalf("expected mode %q, got %q", tc.expectedMode, result.Mode)
+			}
+			if runtimeRef.ActiveAgent() != tc.defaultAgent {
+				t.Fatalf("expected active agent to return to default %q, got %q", tc.defaultAgent, runtimeRef.ActiveAgent())
+			}
+			snapshot := runtimeRef.SessionSnapshot()
+			if snapshot.ActiveAgent != tc.defaultAgent {
+				t.Fatalf("expected session active agent to return to default %q, got %#v", tc.defaultAgent, snapshot)
+			}
+			defaultProfile, ok := runtimeRef.Profile(tc.defaultAgent)
+			if !ok {
+				t.Fatalf("missing default profile %q", tc.defaultAgent)
+			}
+			if snapshot.Mode != defaultProfile.Mode {
+				t.Fatalf("expected session mode to return to default %q, got %#v", defaultProfile.Mode, snapshot)
+			}
+			if snapshot.LastRouting.TargetAgent != tc.expectedAgent {
+				t.Fatalf("expected last routing target %q, got %#v", tc.expectedAgent, snapshot.LastRouting)
+			}
+			if snapshot.LastRouting.Outcome == "" {
+				t.Fatalf("expected last routing outcome to be recorded, got %#v", snapshot.LastRouting)
+			}
+		})
+	}
+}
+
+func TestNewRuntimeRestoresDefaultChatAgentWithoutResumableSessionState(t *testing.T) {
+	cfg, clients, skills, mcpClient := newRuntimeConstructionFixture("chat")
+	state := session.New(8)
+	state.SetActiveAgent("planner")
+	state.SetMode("plan")
+	state.SetWorkflow(session.WorkflowSnapshot{Name: workflowNamePlanFixAudit, Status: "completed"})
+	runtimeRef, err := NewRuntime(cfg, clients, skills, mcpClient, state, runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	if runtimeRef.ActiveAgent() != "chat" {
+		t.Fatalf("expected default chat agent after startup normalization, got %q", runtimeRef.ActiveAgent())
+	}
+	snapshot := runtimeRef.SessionSnapshot()
+	if snapshot.ActiveAgent != "chat" || snapshot.Mode != "chat" {
+		t.Fatalf("expected normalized chat session snapshot, got %#v", snapshot)
+	}
+}
+
+func TestNewRuntimePreservesPendingApprovalSessionState(t *testing.T) {
+	cfg, clients, skills, mcpClient := newRuntimeConstructionFixture("chat")
+	state := session.New(8)
+	state.SetActiveAgent("fixer")
+	state.SetMode("fix")
+	state.SetPendingApprovals([]session.PendingApprovalSnapshot{{CallID: "call-1", ToolName: "write_file", AgentID: "fixer"}})
+	runtimeRef, err := NewRuntime(cfg, clients, skills, mcpClient, state, runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	if runtimeRef.ActiveAgent() != "fixer" {
+		t.Fatalf("expected resumable fixer agent, got %q", runtimeRef.ActiveAgent())
+	}
+	snapshot := runtimeRef.SessionSnapshot()
+	if snapshot.ActiveAgent != "fixer" || snapshot.Mode != "fix" {
+		t.Fatalf("expected preserved resumable snapshot, got %#v", snapshot)
+	}
+}
+
+func TestNewRuntimePreservesPendingHandoffSessionState(t *testing.T) {
+	cfg, clients, skills, mcpClient := newRuntimeConstructionFixture("chat")
+	state := session.New(8)
+	state.SetActiveAgent("planner")
+	state.SetMode("plan")
+	state.SetPendingHandoff(session.PendingHandoffSnapshot{
+		Request:        "add export support",
+		SourceAgent:    "planner",
+		TargetAgent:    "fixer",
+		TargetMode:     "fix",
+		PlanSummary:    "Implement export support after approval",
+		ExpectedAction: "confirm_execution",
+	})
+	runtimeRef, err := NewRuntime(cfg, clients, skills, mcpClient, state, runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	if runtimeRef.ActiveAgent() != "planner" {
+		t.Fatalf("expected planner agent to remain active for resumable handoff, got %q", runtimeRef.ActiveAgent())
+	}
+	snapshot := runtimeRef.SessionSnapshot()
+	if snapshot.PendingHandoff.TargetAgent != "fixer" || snapshot.Mode != "plan" {
+		t.Fatalf("expected preserved handoff snapshot, got %#v", snapshot)
+	}
+}
+
+func TestRuntimeRunStreamPendingHandoffConfirmExecutesFixer(t *testing.T) {
+	runtimeRef := newRoutingTestRuntime("chat")
+	runtimeRef.session.SetPendingHandoff(session.PendingHandoffSnapshot{
+		Request:        "add export support",
+		SourceAgent:    "planner",
+		TargetAgent:    "fixer",
+		TargetMode:     "fix",
+		PlanSummary:    "Implement export support after approval",
+		ExpectedAction: "confirm_execution",
+	})
+	if err := runtimeRef.SetActiveAgent("planner"); err != nil {
+		t.Fatalf("SetActiveAgent: %v", err)
+	}
+
+	result, err := runtimeRef.RunStream(context.Background(), "可以", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.AgentID != "fixer" {
+		t.Fatalf("expected fixer agent to handle confirmation, got %#v", result)
+	}
+	if result.Mode != "fix" {
+		t.Fatalf("expected fixer mode after confirmation, got %#v", result)
+	}
+	if result.Output != "fix response" {
+		t.Fatalf("expected fixer response after confirmation, got %#v", result)
+	}
+	if runtimeRef.HasPendingHandoff() {
+		t.Fatalf("expected pending handoff to be cleared")
+	}
+	if runtimeRef.ActiveAgent() != "chat" {
+		t.Fatalf("expected active agent to return to chat after completed handoff execution, got %q", runtimeRef.ActiveAgent())
+	}
+	if got := runtimeRef.SessionSnapshot().LastRouting.Outcome; got != "handoff_confirmed" {
+		t.Fatalf("expected handoff_confirmed routing outcome, got %#v", runtimeRef.SessionSnapshot().LastRouting)
+	}
+}
+
+func TestRuntimeResumeApprovedOrdinaryToolCallContinuesConversation(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{
+			Message: schema.Message{Content: "I will update the file."},
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call-1",
+				Name:      "write_file",
+				Arguments: []byte(`{"path":"README.md","content":"updated"}`),
+			}},
+		}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "continued after approval"}}},
+	}}
+	mcpClient := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "write_file",
+		Kind:        "write",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}}}
+	cfg := &config.Config{
+		Session:      config.SessionConfig{MaxHistory: 8},
+		DefaultAgent: "chat",
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:             "Chat",
+				Provider:         "chat",
+				Mode:             "chat",
+				Model:            "test-model",
+				MaxIterations:    3,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+				ToolPolicy:       config.ToolPolicyConfirm,
+			},
+		},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"chat": llm}, stubSkillManager{}, mcpClient, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+
+	first, err := runtimeRef.RunStream(context.Background(), "update the README", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if len(first.ToolResults) != 1 || !first.ToolResults[0].Suspended {
+		t.Fatalf("expected suspended write_file result, got %#v", first.ToolResults)
+	}
+	if len(runtimeRef.PendingApprovals()) != 1 {
+		t.Fatalf("expected one pending approval, got %#v", runtimeRef.PendingApprovals())
+	}
+	approved, err := runtimeRef.ApproveToolCall(context.Background(), "call-1")
+	if err != nil {
+		t.Fatalf("ApproveToolCall: %v", err)
+	}
+	final, resumed, err := runtimeRef.ResumeApprovedOrdinaryToolCall(context.Background(), approved.CallID, nil)
+	if err != nil {
+		t.Fatalf("ResumeApprovedOrdinaryToolCall: %v", err)
+	}
+	if !resumed {
+		t.Fatal("expected ordinary chat to resume after approval")
+	}
+	if final.Output != "continued after approval" {
+		t.Fatalf("expected resumed final output, got %#v", final)
+	}
+	if len(llm.requests) != 2 {
+		t.Fatalf("expected original and resumed LLM requests, got %d", len(llm.requests))
+	}
+	resumedMessages := llm.requests[1].Messages
+	if len(resumedMessages) < 3 {
+		t.Fatalf("expected user, assistant tool call, and approved tool result messages, got %#v", resumedMessages)
+	}
+	if resumedMessages[len(resumedMessages)-1].Role != "tool" || resumedMessages[len(resumedMessages)-1].ToolCallID != "call-1" {
+		t.Fatalf("expected approved tool result to be replayed into resumed conversation, got %#v", resumedMessages)
+	}
+}
+
+func TestRuntimeRunStreamUsesFileSummaryMemoryWithoutFullFileContent(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "auth.go"), []byte("package auth\n\nfunc LoginValidator() string { return \"secret-full-content\" }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store := memory.NewStore(root)
+	if _, err := store.RebuildFiles(context.Background()); err != nil {
+		t.Fatalf("RebuildFiles: %v", err)
+	}
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{{
+		response: schema.ChatResponse{Message: schema.Message{Content: "done"}},
+	}}}
+	cfg := &config.Config{
+		WorkspaceRoot: root,
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:             "Chat",
+				Provider:         "chat",
+				Mode:             "chat",
+				Model:            "test-model",
+				MaxIterations:    1,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+			},
+		},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"chat": llm}, stubSkillManager{}, &stubRuntimeMCP{}, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+
+	result, err := runtimeRef.RunStream(WithAgentRunID(context.Background(), "run-file-summary"), "inspect LoginValidator auth.go", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Output != "done" || len(llm.requests) != 1 {
+		t.Fatalf("expected one completed request, result=%#v requests=%d", result, len(llm.requests))
+	}
+	system := llm.requests[0].System
+	if strings.Contains(system, "Memory context:") || strings.Contains(system, "auth.go") || strings.Contains(system, "secret-full-content") {
+		t.Fatalf("expected dynamic memory to stay out of stable system prompt, got %s", system)
+	}
+	messages := llm.requests[0].Messages
+	if len(messages) < 2 {
+		t.Fatalf("expected dynamic memory and user request messages, got %#v", messages)
+	}
+	if messages[0].Role != "user" || !strings.Contains(messages[0].Content, "Memory context:") || !strings.Contains(messages[0].Content, "auth.go") || !strings.Contains(messages[0].Content, "content=summary") {
+		t.Fatalf("expected file summary memory in first dynamic context message, got %#v", messages[0])
+	}
+	if strings.Contains(messages[0].Content, "secret-full-content") {
+		t.Fatalf("expected dynamic memory to omit full file content, got %#v", messages[0])
+	}
+	if messages[1].Role != "user" || messages[1].Content != "inspect LoginValidator auth.go" {
+		t.Fatalf("expected original request after dynamic context message, got %#v", messages[1])
+	}
+	snapshot := runtimeRef.SessionSnapshot()
+	if snapshot.PromptBudget == nil || len(snapshot.PromptBudget.MemoryBlocks) == 0 {
+		t.Fatalf("expected prompt budget memory diagnostics, got %#v", snapshot.PromptBudget)
+	}
+	found := false
+	for _, block := range snapshot.PromptBudget.MemoryBlocks {
+		if block.Kind == "file" && block.Ref == "auth.go" && block.ContentMode == "summary" && block.Hash != "" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("expected file summary diagnostic block, got %#v", snapshot.PromptBudget.MemoryBlocks)
+	}
+	index, err := store.FileIndex()
+	if err != nil {
+		t.Fatalf("FileIndex: %v", err)
+	}
+	if len(index.Files) != 1 || index.Files[0].LastUsedByTask != "run-file-summary" {
+		t.Fatalf("expected file index usage to record run id, got %#v", index.Files)
+	}
+}
+
+func TestRuntimeReadFileToolMarksFileIndexUsage(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "auth.go"), []byte("package auth\n\nfunc LoginValidator() string { return \"secret-full-content\" }\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile: %v", err)
+	}
+	store := memory.NewStore(root)
+	if _, err := store.RebuildFiles(context.Background()); err != nil {
+		t.Fatalf("RebuildFiles: %v", err)
+	}
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{ToolCalls: []schema.ToolCall{{ID: "call-1", Name: "read_file", Arguments: []byte(`{"path":"auth.go"}`)}}}},
+		{response: schema.ChatResponse{Message: schema.Message{Content: "done"}}},
+	}}
+	mcpClient := &stubRuntimeMCP{
+		tools: []schema.Tool{{
+			Name:        "read_file",
+			Kind:        "read",
+			InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"],"additionalProperties":false}`),
+		}},
+		callResults: map[string]schema.ToolResult{
+			"read_file": {ToolName: "read_file", Content: "package auth\n\nfunc LoginValidator() string { return \"secret-full-content\" }\n"},
+		},
+	}
+	cfg := &config.Config{
+		WorkspaceRoot: root,
+		Session:       config.SessionConfig{MaxHistory: 8},
+		DefaultAgent:  "chat",
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:             "Chat",
+				Provider:         "chat",
+				Mode:             "chat",
+				Model:            "test-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+			},
+		},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"chat": llm}, stubSkillManager{}, mcpClient, session.New(8), runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	runtimeRef.SetMemoryStore(store)
+
+	result, err := runtimeRef.RunStream(WithAgentRunID(context.Background(), "run-read-file"), "read auth.go", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Output != "done" || mcpClient.calls != 1 {
+		t.Fatalf("expected one read_file call and final output, result=%#v calls=%d", result, mcpClient.calls)
+	}
+	index, err := store.FileIndex()
+	if err != nil {
+		t.Fatalf("FileIndex: %v", err)
+	}
+	if len(index.Files) != 1 || index.Files[0].LastReadAt == "" || index.Files[0].LastUsedByTask != "run-read-file" {
+		t.Fatalf("expected read_file tool execution to mark file usage, got %#v", index.Files)
+	}
+}
+
+func TestRuntimeCapturesOrdinaryAgentRunApprovalContextWhileWorkflowPaused(t *testing.T) {
+	llm := &scriptedLLMClient{calls: []scriptedLLMCall{
+		{response: schema.ChatResponse{
+			Message: schema.Message{Content: "I will update the file."},
+			ToolCalls: []schema.ToolCall{{
+				ID:        "call-agent-run",
+				Name:      "write_file",
+				Arguments: []byte(`{"path":"README.md","content":"updated"}`),
+			}},
+		}},
+	}}
+	mcpClient := &stubRuntimeMCP{tools: []schema.Tool{{
+		Name:        "write_file",
+		Kind:        "write",
+		InputSchema: []byte(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"],"additionalProperties":false}`),
+	}}}
+	state := session.New(8)
+	state.SetWorkflow(session.WorkflowSnapshot{
+		Name:      "paused-workflow",
+		Status:    "awaiting_tool_approval",
+		NextStage: "fix",
+		Request:   "finish workflow",
+	})
+	cfg := &config.Config{
+		Session:      config.SessionConfig{MaxHistory: 8},
+		DefaultAgent: "chat",
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:             "Chat",
+				Provider:         "chat",
+				Mode:             "chat",
+				Model:            "test-model",
+				MaxIterations:    3,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead, config.ToolKindWrite},
+				ToolPolicy:       config.ToolPolicyConfirm,
+			},
+		},
+	}
+	runtimeRef, err := NewRuntime(cfg, map[string]interfaces.LLMClient{"chat": llm}, stubSkillManager{}, mcpClient, state, runtime.NewAuditLogger(false, false))
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	runID := runtimeRef.StartAgentRun("update the README")
+	if runID == "" {
+		t.Fatal("expected durable agent run id")
+	}
+
+	first, err := runtimeRef.RunStream(WithAgentRunID(context.Background(), runID), "update the README", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if len(first.ToolResults) != 1 || !first.ToolResults[0].Suspended {
+		t.Fatalf("expected suspended write_file result, got %#v", first.ToolResults)
+	}
+	if !runtimeRef.OrdinaryToolApprovalResumable("call-agent-run") {
+		t.Fatalf("expected ordinary agent run approval to be resumable even while a workflow is paused")
+	}
+	run, ok := runtimeRef.AgentRun(runID)
+	if !ok {
+		t.Fatalf("expected agent run %s to exist", runID)
+	}
+	if run.ResumeContext == nil || len(run.ResumeContext.SuspendedCalls) != 1 {
+		t.Fatalf("expected persisted agent run resume context, got %#v", run.ResumeContext)
+	}
+}
+
+func TestRuntimeRunStreamPendingHandoffRejectReturnsCancellation(t *testing.T) {
+	runtimeRef := newRoutingTestRuntime("chat")
+	runtimeRef.session.SetPendingHandoff(session.PendingHandoffSnapshot{
+		Request:        "add export support",
+		SourceAgent:    "planner",
+		TargetAgent:    "fixer",
+		TargetMode:     "fix",
+		PlanSummary:    "Implement export support after approval",
+		ExpectedAction: "confirm_execution",
+	})
+	if err := runtimeRef.SetActiveAgent("planner"); err != nil {
+		t.Fatalf("SetActiveAgent: %v", err)
+	}
+
+	result, err := runtimeRef.RunStream(context.Background(), "\u53d6\u6d88", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !strings.Contains(result.Output, "Cancelled pending implementation handoff") {
+		t.Fatalf("expected cancellation response, got %#v", result)
+	}
+	if runtimeRef.HasPendingHandoff() {
+		t.Fatalf("expected pending handoff to be cleared")
+	}
+	if runtimeRef.ActiveAgent() != "planner" {
+		t.Fatalf("expected active agent to remain planner after rejection, got %q", runtimeRef.ActiveAgent())
+	}
+}
+
+func TestRuntimeRunStreamPendingHandoffAmbiguousReturnsGuidanceWithoutExecuting(t *testing.T) {
+	runtimeRef := newRoutingTestRuntime("chat")
+	runtimeRef.session.SetPendingHandoff(session.PendingHandoffSnapshot{
+		Request:        "add export support",
+		SourceAgent:    "planner",
+		TargetAgent:    "fixer",
+		TargetMode:     "fix",
+		PlanSummary:    "Implement export support after approval",
+		ExpectedAction: "confirm_execution",
+	})
+	if err := runtimeRef.SetActiveAgent("planner"); err != nil {
+		t.Fatalf("SetActiveAgent: %v", err)
+	}
+
+	result, err := runtimeRef.RunStream(context.Background(), "maybe later", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if !strings.Contains(result.Output, "A plan is waiting for confirmation before execution") {
+		t.Fatalf("expected confirmation guidance, got %#v", result)
+	}
+	if !runtimeRef.HasPendingHandoff() {
+		t.Fatalf("expected pending handoff to remain for ambiguous reply")
+	}
+	if runtimeRef.ActiveAgent() != "planner" {
+		t.Fatalf("expected planner to remain active for ambiguous reply, got %q", runtimeRef.ActiveAgent())
+	}
+}
+
+func TestRuntimeRunStreamPendingHandoffReviseKeepsPlannerActive(t *testing.T) {
+	runtimeRef := newRoutingTestRuntime("chat")
+	runtimeRef.session.SetPendingHandoff(session.PendingHandoffSnapshot{
+		Request:        "add export support",
+		SourceAgent:    "planner",
+		TargetAgent:    "fixer",
+		TargetMode:     "fix",
+		PlanSummary:    "Implement export support after approval",
+		ExpectedAction: "confirm_execution",
+	})
+	if err := runtimeRef.SetActiveAgent("chat"); err != nil {
+		t.Fatalf("SetActiveAgent: %v", err)
+	}
+
+	result, err := runtimeRef.RunStream(context.Background(), "revise the plan and narrow the scope first", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	if result.Output != "plan response" {
+		t.Fatalf("expected planner to handle revision request, got %#v", result)
+	}
+	if runtimeRef.ActiveAgent() != "planner" {
+		t.Fatalf("expected runtime to switch back to planner, got %q", runtimeRef.ActiveAgent())
+	}
+	if !runtimeRef.HasPendingHandoff() {
+		t.Fatalf("expected pending handoff to remain open for revised plan")
+	}
+}
+
+func TestRuntimeRunStreamRecordsRoutingAuditWhenAgentChanges(t *testing.T) {
+	runtimeRef := newRoutingTestRuntime("chat")
+
+	_, err := runtimeRef.RunStream(context.Background(), "plan the migration steps for this database change", nil)
+	if err != nil {
+		t.Fatalf("RunStream: %v", err)
+	}
+	entries := runtimeRef.AuditTrail()
+	for _, entry := range entries {
+		if entry.Type == "intent_route" {
+			if entry.AgentID != "planner" {
+				t.Fatalf("expected routing audit for planner, got %#v", entry)
+			}
+			if entry.Outcome != "rerouted" {
+				t.Fatalf("expected rerouted outcome, got %#v", entry)
+			}
+			if !strings.Contains(entry.Detail, "plan:") {
+				t.Fatalf("expected routing detail to include scored plan reason, got %#v", entry)
+			}
+			return
+		}
+	}
+	t.Fatalf("expected intent_route audit entry, got %#v", entries)
+}
+
+func TestClassifyOrdinaryChatIntentDetailScoresExpandedVocabulary(t *testing.T) {
+	tests := []struct {
+		name         string
+		input        string
+		expectedMode string
+		expectedHits []string
+	}{
+		{
+			name:         "english architecture requests map to planner",
+			input:        "please design the rollout architecture and roadmap",
+			expectedMode: "plan",
+			expectedHits: []string{"design", "architecture", "roadmap"},
+		},
+		{
+			name:         "english how-to planning requests map to planner",
+			input:        "how should we approach this migration step by step",
+			expectedMode: "plan",
+			expectedHits: []string{"how should", "step by step", "approach"},
+		},
+		{
+			name:         "english security review requests map to auditor",
+			input:        "do a security review and risk assessment of this patch",
+			expectedMode: "audit",
+			expectedHits: []string{"security review", "risk", "assessment"},
+		},
+		{
+			name:         "english web vulnerability requests map to auditor",
+			input:        "please run web vulnerability research and inspect attack surface for this page",
+			expectedMode: "audit",
+			expectedHits: []string{"vulnerability", "vulnerability research", "attack surface", "web vulnerability"},
+		},
+		{
+			name:         "english binary vulnerability requests map to auditor",
+			input:        "audit this binary for memory corruption and exploitability",
+			expectedMode: "audit",
+			expectedHits: []string{"audit", "memory corruption", "exploitability"},
+		},
+		{
+			name:         "english impact evaluation requests map to auditor",
+			input:        "evaluate the compatibility impact and trade-off of this API change",
+			expectedMode: "audit",
+			expectedHits: []string{"evaluate", "compatibility", "impact", "trade-off"},
+		},
+		{
+			name:         "english worth-changing requests map to auditor",
+			input:        "take a look and judge whether this refactor is worth doing before we change it",
+			expectedMode: "audit",
+			expectedHits: []string{"take a look", "judge whether", "worth doing"},
+		},
+		{
+			name:         "english proposal-safety requests map to auditor",
+			input:        "do you think this rollout plan is safe and reasonable",
+			expectedMode: "audit",
+			expectedHits: []string{"do you think", "safe", "reasonable"},
+		},
+		{
+			name:         "english weak proposal-review requests map to auditor",
+			input:        "sanity-check this proposal and tell me if anything looks off",
+			expectedMode: "audit",
+			expectedHits: []string{"sanity-check", "looks off"},
+		},
+		{
+			name:         "english lightweight advisory requests stay on chat",
+			input:        "give me a rough approach and some advice on where to start with this migration",
+			expectedMode: "",
+			expectedHits: nil,
+		},
+		{
+			name:         "english implementation requests map to fixer",
+			input:        "rewrite the handler and apply the change directly",
+			expectedMode: "fix",
+			expectedHits: []string{"rewrite", "apply the change"},
+		},
+		{
+			name:         "chinese design requests map to planner",
+			input:        "\u5148\u5e2e\u6211\u62c6\u89e3\u4e00\u4e0b\u8fd9\u4e2a\u529f\u80fd\u7684\u8bbe\u8ba1\u601d\u8def\u548c\u8def\u7ebf\u56fe",
+			expectedMode: "plan",
+			expectedHits: []string{"\u62c6\u89e3", "\u8bbe\u8ba1", "\u601d\u8def", "\u8def\u7ebf"},
+		},
+		{
+			name:         "chinese how-to planning requests map to planner",
+			input:        "\u8fd9\u4e2a\u9700\u6c42\u5e94\u8be5\u600e\u4e48\u89c4\u5212\u6b65\u9aa4\uff0c\u5148\u5e2e\u6211\u62c6\u4e00\u4e0b\u5b9e\u73b0\u8def\u7ebf",
+			expectedMode: "plan",
+			expectedHits: []string{"\u5e94\u8be5\u600e\u4e48", "\u89c4\u5212", "\u6b65\u9aa4"},
+		},
+		{
+			name:         "chinese risk review requests map to auditor",
+			input:        "\u8bf7\u5206\u6790\u4e00\u4e0b\u8fd9\u4e2a\u6539\u52a8\u7684\u98ce\u9669\u5e76\u505a\u4ee3\u7801\u5ba1\u67e5",
+			expectedMode: "audit",
+			expectedHits: []string{"\u5206\u6790", "\u98ce\u9669", "\u4ee3\u7801\u5ba1\u67e5"},
+		},
+		{
+			name:         "chinese web vulnerability requests map to auditor",
+			input:        "\u5e2e\u6211\u5bf9\u8fd9\u4e2a\u7f51\u7ad9\u505aweb\u6f0f\u6d1e\u6316\u6398\u5e76\u5206\u6790\u524d\u7aef\u6f0f\u6d1e",
+			expectedMode: "audit",
+			expectedHits: []string{"\u6f0f\u6d1e", "\u6f0f\u6d1e\u6316\u6398", "web\u6f0f\u6d1e", "\u524d\u7aef\u6f0f\u6d1e"},
+		},
+		{
+			name:         "chinese binary reverse requests map to auditor",
+			input:        "\u5e2e\u6211\u505a\u4e8c\u8fdb\u5236\u9006\u5411\uff0c\u770b\u770b\u7cfb\u7edf\u8f6f\u4ef6\u6f0f\u6d1e\u98ce\u9669",
+			expectedMode: "audit",
+			expectedHits: []string{"\u98ce\u9669", "\u4e8c\u8fdb\u5236\u9006\u5411", "\u7cfb\u7edf\u8f6f\u4ef6\u6f0f\u6d1e"},
+		},
+		{
+			name:         "chinese compatibility evaluation requests map to auditor",
+			input:        "\u5148\u8bc4\u4f30\u4e00\u4e0b\u8fd9\u4e2a\u6539\u52a8\u7684\u517c\u5bb9\u6027\u5f71\u54cd\u548c\u6743\u8861",
+			expectedMode: "audit",
+			expectedHits: []string{"\u8bc4\u4f30", "\u517c\u5bb9\u6027", "\u5f71\u54cd", "\u6743\u8861"},
+		},
+		{
+			name:         "chinese worth-changing requests map to auditor",
+			input:        "\u5148\u5e2e\u6211\u770b\u4e00\u4e0b\u8fd9\u4e2a\u91cd\u6784\u503c\u4e0d\u503c\u5f97\u6539\uff0c\u518d\u5224\u65ad\u98ce\u9669",
+			expectedMode: "audit",
+			expectedHits: []string{"\u5148\u5e2e\u6211\u770b", "\u503c\u4e0d\u503c\u5f97", "\u5224\u65ad", "\u98ce\u9669"},
+		},
+		{
+			name:         "chinese proposal-safety requests map to auditor",
+			input:        "\u4f60\u89c9\u5f97\u8fd9\u4e2a\u65b9\u6848\u9760\u8c31\u5417\uff0c\u98ce\u9669\u5927\u4e0d\u5927",
+			expectedMode: "audit",
+			expectedHits: []string{"\u4f60\u89c9\u5f97", "\u9760\u8c31", "\u98ce\u9669"},
+		},
+		{
+			name:         "chinese lightweight advisory requests stay on chat",
+			input:        "\u5148\u7ed9\u6211\u4e00\u4e2a\u5927\u6982\u601d\u8def\u548c\u5efa\u8bae\uff0c\u544a\u8bc9\u6211\u4ece\u54ea\u91cc\u5f00\u59cb\u6bd4\u8f83\u597d",
+			expectedMode: "",
+			expectedHits: nil,
+		},
+		{
+			name:         "chinese direct code change requests map to fixer",
+			input:        "\u76f4\u63a5\u4fee\u6539\u8fd9\u6bb5\u4ee3\u7801\u5e76\u521b\u5efa\u65b0\u529f\u80fd",
+			expectedMode: "fix",
+			expectedHits: []string{"\u76f4\u63a5\u4fee\u6539", "\u521b\u5efa", "\u65b0\u529f\u80fd"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			intent := classifyOrdinaryChatIntentDetail(tt.input)
+			if intent.Mode != tt.expectedMode {
+				t.Fatalf("expected mode %q, got %#v", tt.expectedMode, intent)
+			}
+			if tt.expectedMode == "" {
+				if intent.Score != 0 {
+					t.Fatalf("expected zero score for default-chat advisory request, got %#v", intent)
+				}
+				if strings.TrimSpace(intent.Reason) != "" {
+					t.Fatalf("expected empty reason for default-chat advisory request, got %#v", intent)
+				}
+				if len(intent.Hits) != 0 {
+					t.Fatalf("expected no keyword hits for default-chat advisory request, got %#v", intent)
+				}
+				return
+			}
+			if intent.Score == 0 {
+				t.Fatalf("expected positive score, got %#v", intent)
+			}
+			if strings.TrimSpace(intent.Reason) == "" {
+				t.Fatalf("expected non-empty reason, got %#v", intent)
+			}
+			for _, hit := range tt.expectedHits {
+				if !containsString(intent.Hits, hit) {
+					t.Fatalf("expected hit %q in %#v", hit, intent)
+				}
+			}
+		})
+	}
+}
+
+func containsString(values []string, want string) bool {
+	return slices.Contains(values, want)
+}
+
+func newRuntimeConstructionFixture(defaultAgent string) (*config.Config, map[string]interfaces.LLMClient, interfaces.SkillManager, interfaces.MCPClient) {
+	cfg := &config.Config{
+		Audit:        config.AuditConfig{},
+		Session:      config.SessionConfig{MaxHistory: 8},
+		DefaultAgent: defaultAgent,
+		Agents: map[string]config.AgentProfile{
+			"chat": {
+				Name:             "Chat",
+				Provider:         "chat",
+				Mode:             "chat",
+				Model:            "test-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+			},
+			"planner": {
+				Name:             "Planner",
+				Provider:         "planner",
+				Mode:             "plan",
+				Model:            "test-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+			},
+			"fixer": {
+				Name:             "Fixer",
+				Provider:         "fixer",
+				Mode:             "fix",
+				Model:            "test-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindWrite},
+				ToolPolicy:       config.ToolPolicyConfirm,
+			},
+			"auditor": {
+				Name:             "Auditor",
+				Provider:         "auditor",
+				Mode:             "audit",
+				Model:            "test-model",
+				MaxIterations:    2,
+				AllowedToolKinds: []config.ToolKind{config.ToolKindRead},
+			},
+		},
+	}
+
+	chatLLM := &stubLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "chat response"}}}}
+	plannerLLM := &stubLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "plan response"}}}}
+	fixerLLM := &stubLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "fix response"}}}}
+	auditorLLM := &stubLLMClient{responses: []schema.ChatResponse{{Message: schema.Message{Content: "audit response"}}}}
+	mcpClient := &stubRuntimeMCP{}
+	clients := map[string]interfaces.LLMClient{
+		"chat":    chatLLM,
+		"planner": plannerLLM,
+		"fixer":   fixerLLM,
+		"auditor": auditorLLM,
+	}
+	return cfg, clients, stubSkillManager{}, mcpClient
+}
+
+func newRoutingTestRuntime(defaultAgent string) *Runtime {
+	cfg, clients, skills, mcpClient := newRuntimeConstructionFixture(defaultAgent)
+	state := session.New(8)
+	state.SetActiveAgent(defaultAgent)
+	state.SetMode(cfg.Agents[defaultAgent].Mode)
+
+	return &Runtime{
+		cfg:    cfg,
+		skills: skills,
+		runners: map[string]*AgentRunner{
+			"chat":    {id: "chat", profile: cfg.Agents["chat"], llm: clients["chat"], executor: NewExecutor(mcpClient)},
+			"planner": {id: "planner", profile: cfg.Agents["planner"], llm: clients["planner"], executor: NewExecutor(mcpClient)},
+			"fixer":   {id: "fixer", profile: cfg.Agents["fixer"], llm: clients["fixer"], executor: NewExecutor(mcpClient)},
+			"auditor": {id: "auditor", profile: cfg.Agents["auditor"], llm: clients["auditor"], executor: NewExecutor(mcpClient)},
+		},
+		mcp:       mcpClient,
+		session:   state,
+		audit:     runtime.NewAuditLogger(true, false),
+		active:    defaultAgent,
+		approvals: newApprovalStore(),
+	}
+}

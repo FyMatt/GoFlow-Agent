@@ -1,0 +1,281 @@
+kind: goflow.workflow_template_resource
+version: 2
+min_supported_version: 1
+name: repository-readiness-review
+title: 仓库交付就绪审查
+description: 检查仓库状态，在未经批准时保持只读，并行执行构建、测试和配置审查，最后汇总证据形成交付就绪报告。
+category: software
+tags:
+    - golden-reference
+    - golden-scenario-3
+    - read-only
+    - repository-review
+    - parallel-verification
+    - restart-safe
+    - report
+stages: 10
+graph:
+    name: repository-readiness-review
+    description: Reference workflow for a restart-safe, evidence-backed repository readiness review with no file modifications.
+    stages:
+        - name: start
+          node_type: start
+          agent: ""
+          skill: ""
+          next:
+            - inventory
+          position:
+            x: 60
+            "y": 260
+        - name: inventory
+          node_type: agent
+          agent: planner
+          skill: execution-plan
+          execution:
+            mode: planning
+            risk_level: low
+            boundary: workspace-read-only
+          params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Emit sections named Repository Scope, Instructions, Git State, Build Commands, Test Commands, Configuration Checks, Review Limits, and Evidence Plan.
+            purpose: Read repository instructions and current state, then choose non-destructive readiness checks.
+            tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/read_file_range,file_tools/search_files,command_tools/run_command,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+          outputs:
+            inventory: result.output
+            summary: result.summary
+          artifacts:
+            - name: readiness-inventory
+              kind: plan
+              title: Readiness inventory
+              ref: result.output
+              summary: Repository scope, instructions, Git state, selected checks, limits, and evidence plan.
+          acceptance_criteria:
+            - name: has-git-state
+              ref: result.output
+              contains: Git State
+              expected: inventory records tracked and untracked state
+            - name: has-evidence-plan
+              ref: result.output
+              contains: Evidence Plan
+              expected: inventory names evidence that each branch must return
+          next:
+            - review-split
+          position:
+            x: 360
+            "y": 260
+        - name: review-split
+          node_type: parallel
+          agent: ""
+          skill: ""
+          params:
+            concurrent: "true"
+          next:
+            - build-review
+            - test-review
+            - configuration-review
+          position:
+            x: 680
+            "y": 260
+        - name: build-review
+          node_type: skill
+          agent: fixer
+          skill: code-audit
+          execution:
+            mode: planning
+            risk_level: low
+            boundary: build-read-only-review
+          params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Emit sections named Build Readiness, Commands Run, Toolchain, Results, Failure Evidence, and Risks.
+            review_scope: Run only the selected build or compile checks. Do not edit source, configuration, dependency manifests, or generated files.
+            tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/read_file_range,file_tools/search_files,command_tools/run_command,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+          input:
+            inventory: stages.inventory.outputs.inventory
+          outputs:
+            build_report: result.output
+            verification: result.verification
+            summary: result.summary
+          artifacts:
+            - name: build-readiness-report
+              kind: verification
+              title: Build readiness report
+              ref: result.output
+              summary: Commands, toolchain, results, failure evidence, and risks.
+          acceptance_criteria:
+            - name: has-build-readiness
+              ref: result.output
+              contains: Build Readiness
+              expected: build branch declares pass, warning, fail, or unavailable
+            - name: has-build-commands
+              ref: result.output
+              contains: Commands Run
+              expected: build branch records exact commands
+          next:
+            - review-join
+          position:
+            x: 1020
+            "y": 80
+        - name: test-review
+          node_type: skill
+          agent: auditor
+          skill: code-audit
+          execution:
+            mode: planning
+            risk_level: low
+            boundary: test-read-only-review
+          params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Emit sections named Test Readiness, Commands Run, Coverage, Results, Failure Evidence, and Risks.
+            review_scope: Run only selected tests and report exact failures. Do not modify tests, fixtures, snapshots, or source files.
+            tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/read_file_range,file_tools/search_files,command_tools/run_command,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+          input:
+            inventory: stages.inventory.outputs.inventory
+          outputs:
+            test_report: result.output
+            verification: result.verification
+            summary: result.summary
+          artifacts:
+            - name: test-readiness-report
+              kind: verification
+              title: Test readiness report
+              ref: result.output
+              summary: Commands, coverage, results, failure evidence, and risks.
+          acceptance_criteria:
+            - name: has-test-readiness
+              ref: result.output
+              contains: Test Readiness
+              expected: test branch declares pass, warning, fail, or unavailable
+            - name: has-test-commands
+              ref: result.output
+              contains: Commands Run
+              expected: test branch records exact commands
+          next:
+            - review-join
+          position:
+            x: 1020
+            "y": 260
+        - name: configuration-review
+          node_type: skill
+          agent: planner
+          skill: code-audit
+          execution:
+            mode: planning
+            risk_level: low
+            boundary: configuration-read-only-review
+          params:
+            require_workspace_mutation: "false"
+            docs_policy: When public technical docs are requested, use public queries and URLs with web_search, fetch_url or research_snapshot as needed; record source URL, product/version and fetched_at time. Honor local-only, offline and supplied-evidence-only requests without Internet calls. Never upload private logs, credentials, configuration, source code or incident evidence to public services. Fresh docs do not authorize target scanning, host access or modifications.
+            output_contract: Emit sections named Configuration Readiness, Files Reviewed, Findings, Secret Safety, Deployment Risks, and Recommendation.
+            review_scope: Inspect manifests, CI, environment references, deployment assets, and ignored files without modifying anything or exposing secret values.
+            tools: file_tools/read_file,file_tools/read_files,file_tools/read_file_outline,file_tools/read_file_range,file_tools/search_files,command_tools/run_command,web_tools/web_search,web_tools/fetch_url,web_tools/research_snapshot
+          input:
+            inventory: stages.inventory.outputs.inventory
+          outputs:
+            configuration_report: result.output
+            findings: result.findings
+            summary: result.summary
+          artifacts:
+            - name: configuration-readiness-report
+              kind: audit
+              title: Configuration readiness report
+              ref: result.output
+              summary: Reviewed files, findings, secret safety, deployment risks, and recommendation.
+          acceptance_criteria:
+            - name: has-configuration-readiness
+              ref: result.output
+              contains: Configuration Readiness
+              expected: configuration branch declares readiness or blockers
+            - name: has-secret-safety
+              ref: result.output
+              contains: Secret Safety
+              expected: configuration branch reviews credential exposure without printing values
+          next:
+            - review-join
+          position:
+            x: 1020
+            "y": 440
+        - name: review-join
+          node_type: join
+          agent: ""
+          skill: ""
+          params:
+            wait_for: build-review,test-review,configuration-review
+          next:
+            - quality
+          position:
+            x: 1360
+            "y": 260
+        - name: quality
+          node_type: quality_gate
+          agent: ""
+          skill: ""
+          params:
+            stages: inventory,build-review,test-review,configuration-review
+            min_score: "80"
+            reason: repository review lacks build, test, configuration, or evidence coverage
+            require_acceptance: "true"
+            require_evidence: "true"
+            require_verification: "true"
+            verification_mode: command
+            allow_unknown: "false"
+          routes:
+            pass: report
+            warning: report
+            fail: report
+          position:
+            x: 1660
+            "y": 260
+        - name: report
+          node_type: skill
+          agent: chat
+          skill: execution-plan
+          execution:
+            mode: manual
+            risk_level: low
+            boundary: readiness-report
+          params:
+            require_workspace_mutation: "false"
+            output_contract: Emit sections named Readiness Decision, Build Evidence, Test Evidence, Configuration Evidence, Blocking Findings, Residual Risks, No-Change Confirmation, and Artifact References.
+            purpose: Merge branch evidence into one concise, durable readiness report without changing the repository.
+          input:
+            build: stages.build-review.outputs.build_report
+            configuration: stages.configuration-review.outputs.configuration_report
+            quality: stages.quality.outputs.quality_status
+            tests: stages.test-review.outputs.test_report
+          outputs:
+            readiness_report: result.output
+            summary: result.summary
+          artifacts:
+            - name: repository-readiness-report
+              kind: report
+              title: Repository readiness report
+              ref: result.output
+              summary: Build, test, and configuration evidence, blockers, residual risks, no-change confirmation, and artifact references.
+          acceptance_criteria:
+            - name: has-readiness-decision
+              ref: result.output
+              contains: Readiness Decision
+              expected: final report declares ready, conditionally ready, or not ready
+            - name: has-no-change-confirmation
+              ref: result.output
+              contains: No-Change Confirmation
+              expected: report confirms the review made no file changes
+            - name: has-artifact-references
+              ref: result.output
+              contains: Artifact References
+              expected: report links all branch evidence
+          next:
+            - end
+          position:
+            x: 1960
+            "y": 260
+        - name: end
+          node_type: end
+          agent: ""
+          skill: ""
+          position:
+            x: 2260
+            "y": 260

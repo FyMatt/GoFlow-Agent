@@ -1,0 +1,110 @@
+kind: goflow.kit
+version: 1
+min_supported_version: 1
+name: internet-research-kit
+title: 互联网资料研究资源包
+description: 搜索、快照、核验并交付带来源映射的互联网研究报告和结构化数据。
+category: research
+routing:
+  version: 1
+  priority: -10
+  match_terms: [查询最新文档, 查询官方文档, 查找最新资料, 互联网资料, 最新技术资料, 查最新版本, 资料核验, 来源去重, 来源核验, 事实核验, 冲突裁决, latest documentation, official documentation, internet research, source verification]
+  entry_workflow: parallel-research-review
+  required_tools: [web_tools/web_search, web_tools/research_snapshot]
+tags: [research, sources, verification, report]
+agents:
+  - research-specialist
+  - source-verifier
+providers:
+  - primary
+skills:
+  - internet-research
+  - source-verification
+tools:
+  - web_tools/web_search
+  - web_tools/research_snapshot
+  - web_tools/compile_research_evidence
+  - file_tools/write_file
+workflow_templates:
+  - parallel-research-review
+workflows:
+  - parallel-research-review
+team_templates:
+  - internet-research-team
+policy_rules:
+  - expression
+  - ref_truthy
+examples:
+  - title: 快速核验公开信息
+    description: 查找原始来源并判断一项公开说法是否有足够证据支持。
+    request: 核验指定产品最近一次正式发布的日期和主要变化，优先引用官方来源，并列出无法确认的内容。
+    workflow: parallel-research-review
+    agent: research-specialist
+  - title: 多来源对比研究
+    description: 对多个方案进行带来源、时效和冲突说明的结构化比较。
+    request: 对比三个候选技术方案的维护状态、许可证、性能证据和部署限制，交付 Markdown 报告、JSON 证据和 CSV 结论来源表。
+    workflow: parallel-research-review
+    agent: research-specialist
+vertical_pack:
+  domain: internet-research
+  maturity: production-ready
+  summary: 面向互联网资料搜索、事实核验和多来源对比，交付结论可追溯、冲突可见、格式可复用的研究产物。
+  supported_tasks:
+    - 公开资料搜索与事实核验
+    - 官方公告和版本信息追踪
+    - 多方案与竞品对比研究
+    - 来源冲突、时效和可信度检查
+    - 中文 Markdown、JSON 和 CSV 研究交付
+  required_inputs:
+    - 研究主题或需要核验的说法
+    - 时间范围或信息新鲜度要求
+    - 地域、版本或产品边界
+    - 期望的交付目录或格式
+  tool_boundaries:
+    - 搜索结果只用于发现候选来源，不能直接作为结论证据。
+    - 批量来源快照最多处理十二个 URL，并使用本地缓存、规范 URL 和正文哈希去重。
+    - 研究证据编译只核验结构化结论与来源，不替代智能体对原文语义的判断。
+    - 文件工具只写入用户指定目录或工作区内默认研究交付目录。
+  safety_gates:
+    - 不提交表单、不登录账户、不绕过付费墙，也不执行主动安全探测。
+    - 不把搜索摘要、未知转载或无法访问的页面当作已确认事实。
+    - 涉及个人信息、敏感数据或受限内容时停止收集并说明限制。
+  quality_gates:
+    - 每条关键结论必须有直接来源映射。
+    - 一般关键结论需要两个独立来源，单一官方原始来源必须明确标注限制。
+    - 来源冲突、过期信息、发布日期未知和证据缺口不得隐藏。
+    - 最终交付必须包含中文 Markdown、JSON 和 CSV 三种内容。
+  evidence_artifacts:
+    - 研究范围和检索问题
+    - 来源快照、规范 URL、抓取时间和正文哈希
+    - 结论与来源映射
+    - 来源核验报告
+    - 中文研究报告、JSON 证据和 CSV 结论来源表
+  presentation_guidance:
+    - 只显示研究主题、时间范围、来源数量、冲突状态、质量结论和产物路径。
+    - 缓存、去重、可信度规则和来源编号由系统自动处理。
+    - 在产物详情中按需查看规范 URL、正文哈希、来源类型、抓取时间和结论来源映射。
+    - 不提供第二套配置模式，也不要求用户编辑底层抓取参数。
+  token_strategy:
+    - 后续阶段只接收来源摘要、必要摘录、URL、哈希和结论映射，不内联完整网页。
+    - 重复来源使用缓存和内容哈希去重，避免重复抓取与重复模型输入。
+  model_routes:
+    strong:
+      - 复杂问题拆解、冲突裁决和最终结论表达
+    worker:
+      - 搜索、批量快照、来源整理和多格式产物生成
+    verifier:
+      - 结论来源映射、时效、可信度和独立性核验
+acceptance:
+  verify_commands: ["python -c \"import json,csv;json.load(open('deliverables/evidence.json',encoding='utf-8'));list(csv.reader(open('deliverables/claims.csv',encoding='utf-8')))\""]
+  sample_request: 核验 source-catalog.json 的全部来源，去掉转载重复、裁决冲突并标明无法确认项。
+  deliverables: [deliverables/evidence.json, deliverables/claims.csv, deliverables/report.md]
+  min_quality_score: 80
+
+metadata:
+  preset: internet-research
+  recommended_agent: research-specialist
+  recommended_workflow: parallel-research-review
+  scaffold_preset: internet-research
+  recommended_team: internet-research-team
+  primary_skill: internet-research
